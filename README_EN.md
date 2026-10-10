@@ -10,6 +10,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/all.png" alt="WPAForge UI" width="100%">
+</p>
+
 ## What it is
 
 WPAForge tries passphrases against a target network one at a time via the system's `cmd wifi` interface, and uses the **real association result** to tell whether a passphrase is correct.

@@ -10,6 +10,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/all.png" alt="WPAForge 界面" width="100%">
+</p>
+
 ## 这是什么
 
 WPAForge 通过系统的 `cmd wifi` 接口逐条尝试连接目标网络，用真实的关联结果判断口令是否正确。

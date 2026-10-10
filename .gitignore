@@ -1,0 +1,25 @@
+# 构建产物（不入库）
+build/
+*.apk
+*.ap_
+*.dex
+*.class
+out/
+stage/
+flat/
+classes/
+
+# IDE
+.idea/
+*.iml
+.gradle/
+local.properties
+
+# 证书与密钥（绝不入库）
+*.jks
+*.keystore
+signing.properties
+
+# 系统
+.DS_Store
+Thumbs.db

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WPAForge</string>
+    <string name="app_desc">无线态势观测台：周边网络扫描、信道分析、弱口令评估。仅限授权网络使用。</string>
+</resources>

@@ -158,6 +158,6 @@ assert s.count(old) == 1, 'expected 1, got %d' % s.count(old)
 ```
 audit: 连接前先 forget 目标配置
 
-系统里存着旧凭据时 connect-network 会复用，导致传入任意口令都报成功。
-实测确认：先 forget 再连，错误口令约 3 秒返回 not connected。
+系统里存着旧凭据时 connect-network 会复用，导致传入任意密码都报成功。
+实测确认：先 forget 再连，错误密码约 3 秒返回 not connected。
 ```

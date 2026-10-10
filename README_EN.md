@@ -158,6 +158,8 @@ Settings  Saved-WiFi inspection · history · export
 About     Project info · author links
 ```
 
+**UI language**: follows the system locale (Chinese systems show Chinese, others English), and can be switched manually in Settings.
+
 **Three-layer candidate strategy on the crack screen:**
 
 ```

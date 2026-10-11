@@ -86,6 +86,8 @@ public class MainActivity extends Activity {
 
     // 审计页组件
     private TextView dictStatus;
+    /** 设置页的模式说明卡片（切模式后要刷新） */
+    private TextView modeInfo;
     /** 设置页里的“当前模式能不能用”小字 */
     private TextView modeReadyLabel;
     private TextView auditLog;
@@ -115,6 +117,7 @@ public class MainActivity extends Activity {
     private TextView flowChevron;
     private TextView flowLabel;
     private TextView flowCount;
+    private TextView flowClear;
     private LinearLayout.LayoutParams streamParams;
     private boolean streamCollapsed = false;
     private ConnectionProber prober;
@@ -873,6 +876,8 @@ public class MainActivity extends Activity {
         connectTargetView.setOnClickListener(v -> showTargetPicker());
         head.addView(connectTargetView);
 
+        head.addView(divider());
+
         // 行二：字典
         connectDictView = new TextView(this);
         connectDictView.setTextSize(12.5f);
@@ -880,6 +885,8 @@ public class MainActivity extends Activity {
         connectDictView.setPadding(0, px(9), 0, 0);
         connectDictView.setOnClickListener(v -> showDictPicker());
         head.addView(connectDictView);
+
+        head.addView(divider());
 
         // 行三：执行方式
         connectModeView = new TextView(this);
@@ -937,7 +944,31 @@ public class MainActivity extends Activity {
         flowCount = new TextView(this);
         flowCount.setTextSize(11);
         flowCount.setTextColor(TEXT_DIM);
-        flowHeader.addView(flowCount);
+        LinearLayout.LayoutParams fcp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fcp.rightMargin = px(12);
+        flowHeader.addView(flowCount, fcp);
+
+        // 清空：暂停/停止后旧日志砍在那里很碍眼，
+        // 给一个明确的清掉入口。这个动作**不会**影响任务状态。
+        flowClear = new TextView(this);
+        flowClear.setText(L.s("清空", "Clear"));
+        flowClear.setTextSize(11);
+        flowClear.setTextColor(DANGER);
+        flowClear.setPadding(px(10), px(4), px(10), px(4));
+        flowClear.setBackground(roundBg(Color.parseColor("#2A2020"), 10));
+        flowClear.setOnClickListener(v -> {
+            streamBuffer.setLength(0);
+            if (connectStreamView != null) connectStreamView.setText("");
+            updateFlowHeader();
+            updateEmptyHint();
+            Toast.makeText(this, L.s("日志已清空", "Log cleared"),
+                    Toast.LENGTH_SHORT).show();
+        });
+        // 防止点清空时触发到头部的折叠
+        flowClear.setClickable(true);
+        flowClear.setFocusable(true);
+        flowHeader.addView(flowClear);
 
         flowHeader.setOnClickListener(v -> toggleStream());
         pageConnect.addView(flowHeader);
@@ -1004,6 +1035,18 @@ public class MainActivity extends Activity {
         applyStreamHeight();
         updateFlowHeader();
         refreshQueue();
+    }
+
+    /** 一条淡分隔线，用于把顶部状态卡里的几行分开 */
+    private View divider() {
+        View v = new View(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, px(0.6f)));
+        lp.topMargin = px(9);
+        lp.bottomMargin = px(1);
+        v.setLayoutParams(lp);
+        v.setBackgroundColor(Color.parseColor("#26FFFFFF"));
+        return v;
     }
 
     /** 底部操作按钮 */
@@ -1893,7 +1936,7 @@ public class MainActivity extends Activity {
 
 pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
 
-        TextView modeInfo = new TextView(this);
+        modeInfo = new TextView(this);
         modeInfo.setTextSize(12);
         modeInfo.setLineSpacing(px(4), 1f);
         modeInfo.setBackground(roundBg(SURFACE, 18));
@@ -1925,47 +1968,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         pageSettings.addView(modeReadyLabel);
         refreshModeReady();
 
-        // 根据当前模式填充说明
-        {
-            int m = Prefs.mode(this);
-            StringBuilder sb = new StringBuilder();
-            if (m == Prefs.MODE_NO_ROOT) {
-                sb.append(L.s("当前: 免 Root 模式", "Current: root-free mode")).append("\n\n");
-                sb.append(L.s(
-                        "通过系统的「网络建议」接口提交候选，系统自己去连。\n"
-                        + "优点：不需要 root。\n"
-                        + "缺点：\n"
-                        + "· 首次会弹一次系统授权框，要点「允许」\n"
-                        + "· 系统对频繁失败会退避，速度比 Root 模式慢不少\n"
-                        + "· 系统会在通知栏显示连接尝试\n"
-                        + "· 需要 Android 11 或更高版本",
-                        "Submits candidates via the system's network-suggestion API "
-                        + "and lets the system connect for you.\n"
-                        + "Pros: no root needed.\n"
-                        + "Cons:\n"
-                        + "· a one-time system permission dialog appears on first use\n"
-                        + "· the system backs off after repeated failures, so it is slower\n"
-                        + "· connection attempts show in the notification shade\n"
-                        + "· requires Android 11 or higher"));
-            } else {
-                sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
-                sb.append(L.s(
-                        "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
-                        + "实测约 1 秒/条，且进度和暂停都可控。\n"
-                        + "需要设备已 root 并给本应用授权。",
-                        "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
-                        + "Measured about 1 second per attempt, with precise progress and pause.\n"
-                        + "Requires a rooted device with root granted to this app."));
-            }
-            sb.append("\n\n").append(L.f("当前实测速度: %s 条/秒",
-                    "Measured: %s per second", Prefs.avgRateLabel(this)));
-            if (!Prefs.hasRateSample(this)) {
-                sb.append(L.s("（还没有样本，这是模式默认值）",
-                        " (no samples yet — mode default)"));
-            }
-            modeInfo.setText(sb.toString());
-            modeInfo.setTextColor(m == Prefs.MODE_NO_ROOT ? OK_GREEN : ACCENT);
-        }
+        fillModeInfo();
 
         pageSettings.addView(sectionLabel(L.s("语言", "Language")));
 
@@ -2130,6 +2133,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         Toast.makeText(this, L.f("已切换到: %s", "Switched to: %s",
                 Prefs.modeLabel(this)), Toast.LENGTH_SHORT).show();
         updateConnectMode();
+        fillModeInfo();
         refreshModeReady();
 
         if (mode == Prefs.MODE_SHIZUKU) {
@@ -2231,6 +2235,71 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     }
 
     /** 刷新设置页里「当前模式能不能用」的小字 */
+    /** 填充设置页的模式说明卡片。切模式后会重新调用。 */
+    private void fillModeInfo() {
+        if (modeInfo == null) return;
+
+            int m = Prefs.mode(this);
+            StringBuilder sb = new StringBuilder();
+            if (m == Prefs.MODE_NO_ROOT) {
+                sb.append(L.s("当前: 免 Root 模式", "Current: root-free mode")).append("\n\n");
+                sb.append(L.s(
+                        "通过系统的「网络建议」接口提交候选，系统自己去连。\n"
+                        + "优点：不需要 root。\n"
+                        + "缺点：\n"
+                        + "· 首次会弹一次系统授权框，要点「允许」\n"
+                        + "· 系统对频繁失败会退避，速度比 Root 模式慢不少\n"
+                        + "· 系统会在通知栏显示连接尝试\n"
+                        + "· 需要 Android 11 或更高版本",
+                        "Submits candidates via the system's network-suggestion API "
+                        + "and lets the system connect for you.\n"
+                        + "Pros: no root needed.\n"
+                        + "Cons:\n"
+                        + "· a one-time system permission dialog appears on first use\n"
+                        + "· the system backs off after repeated failures, so it is slower\n"
+                        + "· connection attempts show in the notification shade\n"
+                        + "· requires Android 11 or higher"));
+            } else if (m == Prefs.MODE_SHIZUKU) {
+                sb.append(L.s("当前: Shizuku 模式", "Current: Shizuku mode")).append("\n\n");
+                sb.append(L.s(
+                        "通过 Shizuku 以 shell 身份执行同一条系统命令。\n"
+                        + "优点：\n"
+                        + "· 不需要 root，只需 Shizuku 服务运行中\n"
+                        + "· 速度与 Root 模式相同（都是等目标回应）\n"
+                        + "· 进度、暂停都可控\n"
+                        + "注意：重启手机后需要重新启动 Shizuku 服务。\n"
+                        + "上方三个按钮点哪个就用哪个，下面一行会实时告诉你能不能用。",
+                        "Runs the same system command as the shell user via Shizuku.\n"
+                        + "Pros:\n"
+                        + "· no root needed, only a running Shizuku service\n"
+                        + "· same speed as root mode (both wait on the target)\n"
+                        + "· progress and pause are fully controllable\n"
+                        + "Note: the Shizuku service must be restarted after a reboot.\n"
+                        + "Tap whichever of the three buttons you want — the line below "
+                        + "shows live whether it actually works."));
+            } else {
+                sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
+                sb.append(L.s(
+                        "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
+                        + "实测约 1 秒/条，且进度和暂停都可控。\n"
+                        + "需要设备已 root 并给本应用授权。",
+                        "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
+                        + "Measured about 1 second per attempt, with precise progress and pause.\n"
+                        + "Requires a rooted device with root granted to this app."));
+            }
+            sb.append("\n\n").append(L.f("当前实测速度: %s 条/秒",
+                    "Measured: %s per second", Prefs.avgRateLabel(this)));
+            if (!Prefs.hasRateSample(this)) {
+                sb.append(L.s("（还没有样本，这是模式默认值）",
+                        " (no samples yet — mode default)"));
+            }
+            modeInfo.setText(sb.toString());
+            if (m == Prefs.MODE_NO_ROOT) modeInfo.setTextColor(OK_GREEN);
+            else if (m == Prefs.MODE_SHIZUKU) modeInfo.setTextColor(Color.parseColor("#64B5F6"));
+            else modeInfo.setTextColor(ACCENT);
+
+    }
+
     private void refreshModeReady() {
         if (modeReadyLabel == null) return;
         final int m = Prefs.mode(this);
@@ -2238,7 +2307,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         // 切模式的瞬间会出现“卡片写 Root、状态行说免 Root”的矛盾。
         // 现在每次连模式名一起刷新，不会误读。
         modeReadyLabel.setTextColor(TEXT_DIM);
-        modeReadyLabel.setText(modeName(m) + L.s("：正在检测…", ": checking\u2026"));
+        modeReadyLabel.setText(modeName(m) + L.s("：正在检测…", ": checking…"));
         // 点一下可以重新检测（Shizuku 服务刚起来时很有用）
         modeReadyLabel.setOnClickListener(v -> refreshModeReady());
 

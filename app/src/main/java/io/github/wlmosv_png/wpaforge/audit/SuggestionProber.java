@@ -56,6 +56,12 @@ public final class SuggestionProber {
         /** @param batchSize 本批提交了多少条 */
         void onBatchStart(int startIndex, int batchSize, int total);
         void onBatchResult(int startIndex, int batchSize, Verdict verdict, long ms, String note);
+        /**
+         * 每条候选真正试完一次。
+         * 之前只有 onBatchResult，UI 只能显示「第 1-8 条」，
+         * 用户看不到在试什么密码。
+         */
+        default void onCandidate(String candidate, boolean hit, long ms, String note) { }
         /** 命中 */
         void onHit(String ssid, String password);
         /** tested = 已处理条数（含整批），offset 供续跑 */
@@ -180,6 +186,7 @@ public final class SuggestionProber {
 
         cancelFlag.set(false);
         pauseFlag.set(false);
+        activeListener = l;
 
         int total = candidates.size();
         int start = Math.max(0, Math.min(startOffset, total));
@@ -254,8 +261,11 @@ public final class SuggestionProber {
             if (cancelFlag.get() || pauseFlag.get()) return Verdict.BATCH_TIMEOUT;
 
             Candidate c = cands.get(i);
+            long t0 = SystemClock.uptimeMillis();
             if (!addSuggestion(target, c.password)) {
                 noteOverride = lastSubmitError;
+                notifyCandidate(c.password, false,
+                        SystemClock.uptimeMillis() - t0, lastSubmitError);
                 return Verdict.ERROR;
             }
             activeAddCount++;
@@ -266,13 +276,28 @@ public final class SuggestionProber {
                 interruptibleSleep(POLL_MS);
                 if (isConnectedTo(target.ssid)) {
                     lastHitPassword = c.password;
+                    notifyCandidate(c.password, true,
+                            SystemClock.uptimeMillis() - t0, L.s("已连上", "Connected"));
                     return Verdict.CONNECTED;
                 }
             }
             // 这一条没成，撤掉它再试下一个
             clearSuggestions();
+            notifyCandidate(c.password, false,
+                    SystemClock.uptimeMillis() - t0, L.s("未连上", "Not connected"));
         }
         return Verdict.BATCH_TIMEOUT;
+    }
+
+    /** 当前注册的 Listener（run 时设置），供 submitBatch 回调 */
+    private Listener activeListener;
+
+    private void notifyCandidate(String pw, boolean hit, long ms, String note) {
+        Listener l = activeListener;
+        if (l == null) return;
+        try {
+            l.onCandidate(pw, hit, ms, note == null ? "" : note);
+        } catch (Throwable ignored) {}
     }
 
     private int activeAddCount = 0;

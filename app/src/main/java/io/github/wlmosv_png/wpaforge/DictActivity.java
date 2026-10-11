@@ -171,6 +171,10 @@ public class DictActivity extends Activity {
                 dd -> doMerge());
         d.addItem(L.s("刷新列表", "Refresh list"), dd -> refresh());
         d.addItem(L.s("打开字典目录", "Open dictionary folder"), dd -> openFolder());
+        d.addItem(L.s("选择字典目录", "Choose dictionary folder"),
+                dd -> pickDictDir());
+        d.addItem(L.s("恢复默认目录", "Reset to default folder"),
+                dd -> resetDictDir());
         d.addItem(L.s("释放内置字典", "Restore built-in dictionaries"),
                 dd -> releaseBuiltin());
         d.addItem(L.s("清空全部字典", "Delete all dictionaries"),
@@ -225,6 +229,90 @@ public class DictActivity extends Activity {
         d.addItem(L.s("清空全部字典", "Delete all dictionaries"), dd -> confirmClearAll());
         d.setNegative(L.s("取消", "Cancel"), null);
         d.show();
+    }
+
+    private static final int REQ_PICK_DIR = 2101;
+
+    /**
+     * 让用户选一个可写目录存字典。
+     *
+     * 为什么必需：Android 11+ 的 scoped storage 下，普通应用
+     * 建不了 /sdcard/Download 下的新目录，程序会自动退到应用
+     * 私有外部目录（Android/data/<pkg>/files/dict/）—— 那个路径
+     * **文件管理器里看不到**，用户会以为释放失败了。
+     */
+    private void pickDictDir() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+            startActivityForResult(i, REQ_PICK_DIR);
+        } catch (Throwable t) {
+            Toast.makeText(this, L.s("本机不支持选目录",
+                    "This device does not support folder picking"), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 处理用户选中的字典目录 */
+    private void handlePickedDir(Intent data) {
+        Uri uri = data.getData();
+        if (uri == null) return;
+        try {
+            getContentResolver().takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Throwable ignored) {}
+        String path = uriToPath(uri);
+        if (path == null) {
+            NetDialog.info(this, L.s("无法使用该目录", "Cannot use that folder"),
+                    L.s("选中的目录无法转成可写路径。\n\n"
+                                    + "建议在手机存储里先建一个文件夹，"
+                                    + "再选它。",
+                            "That folder cannot be turned into a writable path.\n\n"
+                                    + "Create a folder in device storage first, then pick it."));
+            return;
+        }
+        File dir = new File(path, "WPAForge-dict");
+        if (!dir.exists() && !dir.mkdirs()) {
+            NetDialog.info(this, L.s("无法写入", "Not writable"),
+                    L.s("选中的目录写不进去。\n",
+                            "The selected folder is not writable.\n") + dir.getAbsolutePath());
+            return;
+        }
+        DictStore.setDir(this, dir);
+        refresh();
+        Toast.makeText(this, L.s("已切换到: ", "Now using: ") + dir.getAbsolutePath(),
+                Toast.LENGTH_LONG).show();
+    }
+
+    /** content URI → 真实路径；转不了返回 null */
+    private static String uriToPath(Uri uri) {
+        try {
+            String p = uri.getPath();
+            if (p == null) return null;
+            int i = p.indexOf(": ");
+            if (i >= 0) return p.substring(i + 2);
+            final String[] IDS = {"/tree/primary:", "/tree/", "/document/primary:", "/document/"};
+            for (String marker : IDS) {
+                int j = p.indexOf(marker);
+                if (j >= 0) {
+                    String tail = p.substring(j + marker.length());
+                    if (tail.startsWith("/")) return tail;
+                    return "/sdcard/" + tail;
+                }
+            }
+            return null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private void resetDictDir() {
+        DictStore.clearDir(this);
+        refresh();
+        Toast.makeText(this, L.s("已恢复自动选择目录",
+                "Folder selection reset to automatic"), Toast.LENGTH_SHORT).show();
     }
 
     private void releaseBuiltin() {
@@ -591,7 +679,15 @@ public class DictActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req != REQ_PICK || res != RESULT_OK || data == null) return;
+        if (res != RESULT_OK || data == null) return;
+
+        // 选目录（字典存放位置）
+        if (req == REQ_PICK_DIR) {
+            handlePickedDir(data);
+            return;
+        }
+
+        if (req != REQ_PICK) return;
 
         List<Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) {

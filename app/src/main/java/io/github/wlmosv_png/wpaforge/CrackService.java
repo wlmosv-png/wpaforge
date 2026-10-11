@@ -443,6 +443,13 @@ public class CrackService extends Service {
                 notifyQueue();
                 stopSelfSafe();
             }
+
+            @Override
+            public void onCandidate(String candidate, boolean hit, long ms, String note) {
+                for (UiCallback cb : callbacks) {
+                    cb.onAttemptResult(candidate, hit, ms, note);
+                }
+            }
         });
     }
 
@@ -557,6 +564,11 @@ public class CrackService extends Service {
                 ft.state = TaskQueue.State.STOPPED;
                 TaskQueue.update(CrackService.this, ft);
                 running = false;
+            }
+
+            @Override
+            public void onLog(String line) {
+                log(line);
             }
         });
 

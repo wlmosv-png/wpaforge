@@ -62,10 +62,42 @@ public final class DictStore {
     private static int cachedTier = 0;
     /** 用户在设置里手动指定过的目录（可选） */
     private static File userPickedDir = null;
+    private static final String PREF = "wpaforge_prefs";
+    private static final String K_PICKED_DIR = "picked_dict_dir";
 
-    public static void setDir(File dir) {
+    /** 手动指定目录并持久化。重启后仍然生效。 */
+    public static void setDir(Context ctx, File dir) {
         userPickedDir = dir;
         cachedDir = null;
+        cachedTier = 0;
+        if (ctx != null) {
+            try {
+                ctx.getApplicationContext()
+                        .getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                        .edit()
+                        .putString(K_PICKED_DIR, dir == null ? "" : dir.getAbsolutePath())
+                        .apply();
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 清掉手动指定，恢复自动选择 */
+    public static void clearDir(Context ctx) {
+        setDir(ctx, null);
+    }
+
+    /** 启动时把上次选的目录读回来 */
+    public static void restorePickedDir(Context ctx) {
+        if (ctx == null || userPickedDir != null) return;
+        try {
+            String p = ctx.getApplicationContext()
+                    .getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                    .getString(K_PICKED_DIR, "");
+            if (p != null && !p.isEmpty()) {
+                File d = new File(p);
+                if (d.isDirectory() || d.mkdirs()) userPickedDir = d;
+            }
+        } catch (Throwable ignored) {}
     }
 
     public static File defaultDir(Context ctx) {

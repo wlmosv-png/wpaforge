@@ -19,6 +19,9 @@ local.properties
 *.jks
 *.keystore
 signing.properties
+signing.env
+local.env
+.env
 
 # 系统
 .DS_Store

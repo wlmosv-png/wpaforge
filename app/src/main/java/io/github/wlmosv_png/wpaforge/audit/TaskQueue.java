@@ -64,6 +64,12 @@ public final class TaskQueue {
         public long elapsedMs;
         /** 本次实际试过多少条（不算续跑前的） */
         public int testedThisRun;
+        /** 是否启用目标派生（入队时记录，执行时按此决定） */
+        public boolean useTargetDict = false;
+        /** 是否启用智能排序 */
+        public boolean useSmartSort = false;
+        /** 破解模式：0=Root，1=免Root（入队时记录） */
+        public int crackMode = 0;
 
         public Task() {}
 
@@ -75,7 +81,8 @@ public final class TaskQueue {
             return r;
         }
 
-        public static Task from(NetRecord r, String dictPath, String dictName) {
+        public static Task from(NetRecord r, String dictPath, String dictName,
+                                boolean useTargetDict, boolean useSmartSort, int crackMode) {
             Task t = new Task();
             t.id = "t" + System.currentTimeMillis() + "_" + (int) (Math.random() * 1000);
             t.ssid = r.ssid;
@@ -86,6 +93,9 @@ public final class TaskQueue {
             t.dictPath = dictPath == null ? "" : dictPath;
             t.dictName = dictName == null ? "" : dictName;
             t.createdAt = System.currentTimeMillis();
+            t.useTargetDict = useTargetDict;
+            t.useSmartSort = useSmartSort;
+            t.crackMode = crackMode;
             return t;
         }
 
@@ -125,6 +135,9 @@ public final class TaskQueue {
                 o.put("created", createdAt);
                 o.put("elapsed", elapsedMs);
                 o.put("tested", testedThisRun);
+                o.put("useTargetDict", useTargetDict);
+                o.put("useSmartSort", useSmartSort);
+                o.put("crackMode", crackMode);
             } catch (Exception ignored) {}
             return o;
         }
@@ -150,6 +163,9 @@ public final class TaskQueue {
             t.createdAt = o.optLong("created", System.currentTimeMillis());
             t.elapsedMs = o.optLong("elapsed", 0);
             t.testedThisRun = o.optInt("tested", 0);
+            t.useTargetDict = o.optBoolean("useTargetDict", false);
+            t.useSmartSort = o.optBoolean("useSmartSort", false);
+            t.crackMode = o.optInt("crackMode", 0);
             return t;
         }
     }
@@ -200,7 +216,18 @@ public final class TaskQueue {
     }
 
     /** 加一个任务到队尾 */
+    /** 兼容旧调用：默认两个开关都关 */
     public static Task enqueue(Context ctx, NetRecord target, String dictPath, String dictName) {
+        return enqueue(ctx, target, dictPath, dictName, false, false, 0);
+    }
+
+    public static Task enqueue(Context ctx, NetRecord target, String dictPath, String dictName,
+                               boolean useTargetDict, boolean useSmartSort) {
+        return enqueue(ctx, target, dictPath, dictName, useTargetDict, useSmartSort, 0);
+    }
+
+    public static Task enqueue(Context ctx, NetRecord target, String dictPath, String dictName,
+                               boolean useTargetDict, boolean useSmartSort, int crackMode) {
         List<Task> list = load(ctx);
         // 同一个目标 + 同一个字典，避免重复排队
         for (Task t : list) {
@@ -211,7 +238,7 @@ public final class TaskQueue {
                 return t;
             }
         }
-        Task t = Task.from(target, dictPath, dictName);
+        Task t = Task.from(target, dictPath, dictName, useTargetDict, useSmartSort, crackMode);
         list.add(t);
         save(ctx, list);
         return t;

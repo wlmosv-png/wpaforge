@@ -51,7 +51,7 @@ public final class BuiltinDicts {
 
     /** 是否需要释放 */
     public static boolean needsRelease(Context ctx) {
-        File mark = new File(DictStore.defaultDir(), MARK + RELEASE_VERSION);
+        File mark = new File(DictStore.defaultDir(ctx), MARK + RELEASE_VERSION);
         return !mark.exists();
     }
 
@@ -60,7 +60,7 @@ public final class BuiltinDicts {
      * 已存在的同名文件不覆盖（用户可能改过），只补缺失的。
      */
     public static Result release(Context ctx) {
-        File dir = DictStore.defaultDir();
+        File dir = DictStore.defaultDir(ctx);
         if (!dir.exists() && !dir.mkdirs()) {
             return new Result(0, 0, L.s("无法创建字典目录", "Cannot create dictionary folder"));
         }

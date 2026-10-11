@@ -64,11 +64,14 @@ public final class RootProber {
     /** 结束原因 */
     public enum Outcome { NORMAL, PAUSED, STOPPED }
 
-    private static final long POLL_MS = 800L;
-    private static final long COOLDOWN_MS = 800L;
+    private static final long POLL_MS = 400L;
+    private static final long COOLDOWN_MS = 400L;
     private static final String TAG = "WPAForgeRoot";
 
     private final Context appCtx;
+    /** 执行通道：true = 走 Shizuku（shell 身份），false = 走 su（root） */
+    private final boolean useShizuku;
+
     /** 取消标志。volatile 保证工作线程能立刻看到。 */
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     /** 暂停标志。与取消的区别：暂停后进度保留，可续跑。 */
@@ -77,24 +80,191 @@ public final class RootProber {
     private volatile Process activeProc;
 
     public RootProber(Context ctx) {
-        this.appCtx = ctx.getApplicationContext();
+        this(ctx, false);
     }
 
-    /** 检查 root 是否可用，返回空串表示可用 */
-    public static String checkRoot() {
-        try {
-            String out = exec(null, new String[]{"su", "-c", "id"}, 8000);
-            if (out == null || !out.contains("uid=0")) {
-                return L.s("无法获取 root（su 未授权或未安装）", "Cannot get root (su denied or not installed)");
-            }
-            String wifiCmd = exec(null, new String[]{"su", "-c", "cmd wifi help"}, 8000);
-            if (wifiCmd == null || !wifiCmd.contains("connect-network")) {
-                return L.s("本机 cmd wifi 不支持 connect-network", "This device's cmd wifi lacks connect-network");
-            }
-            return "";
-        } catch (Exception e) {
-            return L.s("检查失败: ", "Check failed: ") + e;
+    /**
+     * @param shizuku true 表示通过 Shizuku 以 shell 身份执行（免 root），
+     *                false 表示通过 su 以 root 身份执行。
+     *                两种通道跑的是**同一条 cmd wifi 命令**，行为一致。
+     */
+    public RootProber(Context ctx, boolean shizuku) {
+        this.appCtx = ctx.getApplicationContext();
+        this.useShizuku = shizuku;
+    }
+
+    /** 当前通道名，给日志用 */
+    public String channelName() {
+        return useShizuku ? "Shizuku" : "Root";
+    }
+
+    /** 检测结果（带可操作的提示） */
+    public static final class CheckResult {
+        public final boolean ok;
+        public final String title;    // 一句话结论
+        public final String detail;   // 详细原因 / 怎么办
+
+        public CheckResult(boolean ok, String title, String detail) {
+            this.ok = ok;
+            this.title = title;
+            this.detail = detail;
         }
+    }
+
+    /**
+     * 检查 root 与 cmd wifi 是否可用。
+     *
+     * 三重检测，逐级放宽，避免慢设备或输出截断造成的误判：
+     *   1. su 是否可用（id 返回 uid=0）
+     *   2. cmd wifi 是否存在
+     *   3. connect-network 子命令是否存在
+     *
+     * 任何一步失败都给出「怎么办」，而不是一句"不支持"。
+     */
+    public static CheckResult check(Context ctx) {
+        // 1) root
+        String idOut = exec(null, new String[]{"su", "-c", "id"}, 12000);
+        if (idOut == null) {
+            return new CheckResult(false,
+                    L.s("无法执行 su", "Cannot run su"),
+                    L.s("没有检测到 root 权限。\n\n"
+                            + "请确认：\n"
+                            + "· 设备已 root（Magisk / KernelSU / APatch）\n"
+                            + "· 在 root 管理器里给本应用授予了权限\n"
+                            + "· 授权后重新打开本应用",
+                        "Root was not detected.\n\n"
+                            + "Check that:\n"
+                            + "· the device is rooted (Magisk / KernelSU / APatch)\n"
+                            + "· this app is granted root in your root manager\n"
+                            + "· you reopen this app after granting"));
+        }
+        if (!idOut.contains("uid=0")) {
+            return new CheckResult(false,
+                    L.s("root 权限被拒绝", "Root denied"),
+                    L.s("su 执行了但没有拿到 root。\n\n"
+                            + "打开你的 root 管理器，在「超级用户」列表里\n"
+                            + "找到 WPAForge 并允许。",
+                        "su ran but did not return root.\n\n"
+                            + "Open your root manager, find WPAForge under\n"
+                            + "Superuser and allow it."));
+        }
+
+        // 2) cmd wifi 是否存在
+        String wifiHelp = exec(null, new String[]{"su", "-c", "cmd wifi help"}, 20000);
+        if (wifiHelp == null || wifiHelp.trim().isEmpty()) {
+            return new CheckResult(false,
+                    L.s("无法调用 cmd wifi", "Cannot invoke cmd wifi"),
+                    L.s("系统没有响应 cmd wifi 命令。\n\n"
+                            + "这通常说明：\n"
+                            + "· 系统版本过低（Android 9 及以下没有这个命令）\n"
+                            + "· 厂商裁剪了 wifi 服务\n\n"
+                            + "本功能需要 Android 10 或更高版本。",
+                        "The system did not respond to cmd wifi.\n\n"
+                            + "Usually means:\n"
+                            + "· Android 9 or lower (the command does not exist)\n"
+                            + "· the vendor stripped the wifi service\n\n"
+                            + "This feature needs Android 10 or higher."));
+        }
+
+        // 3) connect-network 子命令
+        if (wifiHelp.contains("connect-network")) {
+            return new CheckResult(true, "", "");
+        }
+
+        // 有些 ROM 的 help 输出被截断，再宽一点：直接问 add-network / forget-network
+        String extra = exec(null, new String[]{"su", "-c", "cmd wifi list-networks"}, 20000);
+        if (extra != null && (extra.contains("Network Id") || extra.contains("SSID"))) {
+            // 能列出网络说明 wifi 服务是活着的，connect-network 大概率也在，
+            // 只是 help 文本被截断。放行，真出错时执行阶段会报出来。
+            return new CheckResult(true, "", "");
+        }
+
+        return new CheckResult(false,
+                L.s("本机不支持连接命令", "Device lacks the connect command"),
+                L.s("你的系统 cmd wifi 里没有 connect-network。\n\n"
+                        + "常见于：\n"
+                        + "· Android 10 以下的设备\n"
+                        + "· 厂商深度定制的 ROM\n\n"
+                        + "可以试试换一台 Android 11 以上的设备。",
+                    "Your system's cmd wifi has no connect-network.\n\n"
+                        + "Common on:\n"
+                        + "· devices below Android 10\n"
+                        + "· heavily customised ROMs\n\n"
+                        + "Try an Android 11+ device."));
+    }
+
+    /** 检查 Shizuku 通道是否可用 */
+    public static CheckResult checkShizuku(Context ctx) {
+        // 顺序很重要：先看服务在不在（能连上 binder 就说明装了，
+        // 也绕开了包可见性可能带来的误判），再看授权。
+        boolean alive = ShizukuRunner.isAvailable();
+
+        if (!alive && !ShizukuRunner.isInstalled(ctx)) {
+            return new CheckResult(false,
+                    L.s("没有检测到 Shizuku", "Shizuku not detected"),
+                    L.s("Shizuku 让应用以 shell 身份运行，不需要 root。\n\n"
+                            + "如果你已经装了 Shizuku，多半是服务没启动：\n"
+                            + "1. 打开 Shizuku 应用\n"
+                            + "2. 点「启动服务」（需要 ADB 或 root 激活一次）\n"
+                            + "3. 回到本应用重试\n\n"
+                            + "还没装的话，去 Shizuku 的 GitHub 下载。\n"
+                            + "不想折腾就直接用 Root 模式。",
+                        "Shizuku lets apps run as the shell user — no root needed.\n\n"
+                            + "If you already installed it, the service is probably not running:\n"
+                            + "1. Open the Shizuku app\n"
+                            + "2. Tap Start (needs a one-time ADB or root activation)\n"
+                            + "3. Come back and retry\n\n"
+                            + "Or just use Root mode."));
+        }
+
+        if (!alive) {
+            return new CheckResult(false,
+                    L.s("Shizuku 服务未运行", "Shizuku service is not running"),
+                    L.s("Shizuku 装了但服务没起来。\n\n"
+                            + "打开 Shizuku 应用，点「启动」——\n"
+                            + "注意：重启手机后需要重新激活。",
+                        "Shizuku is installed but its service is not running.\n\n"
+                            + "Open the Shizuku app and tap Start.\n"
+                            + "Note: activation must be repeated after a reboot."));
+        }
+
+        if (!ShizukuRunner.isGranted()) {
+            return new CheckResult(false,
+                    L.s("尚未授权本应用", "Permission not granted"),
+                    L.s("Shizuku 在运行了，但还没允许本应用使用它。\n\n"
+                            + "打开 Shizuku → 已授权应用 → 找到 WPAForge → 打开开关。",
+                        "Shizuku is running but this app is not authorised.\n\n"
+                            + "Shizuku → Authorised apps → WPAForge → enable."));
+        }
+
+        // 真跑一条命令确认通道可用
+        String out = ShizukuRunner.exec("cmd wifi help", 15000);
+        if (out == null || out.trim().isEmpty()) {
+            return new CheckResult(false,
+                    L.s("Shizuku 通道无法执行命令",
+                            "Shizuku channel cannot execute commands"),
+                    L.s("授权了但命令执行失败。\n\n"
+                            + "试试：重启 Shizuku 服务，或重启手机后重新激活。",
+                        "Granted but command execution failed.\n\n"
+                            + "Try restarting the Shizuku service."));
+        }
+        if (!out.contains("connect-network")
+                && !out.contains("list-networks")) {
+            return new CheckResult(false,
+                    L.s("本机不支持连接命令", "Device lacks the connect command"),
+                    L.s("能执行命令，但系统里没有 connect-network。\n\n"
+                            + "通常出现在 Android 10 以下的设备。",
+                        "Commands run, but connect-network is missing.\n"
+                            + "Usually an Android 10 or older device."));
+        }
+        return new CheckResult(true, "", "");
+    }
+
+    /** 兼容旧调用：只返回错误文案（空串表示可用） */
+    public static String checkRoot() {
+        CheckResult r = check(null);
+        if (r.ok) return "";
+        return r.title + (r.detail.isEmpty() ? "" : "\n" + r.detail);
     }
 
     public boolean isRunning() {
@@ -206,9 +376,14 @@ public final class RootProber {
 
         // 命令异步发出，立刻返回。轮询期间持续检查取消标志。
         // su -c 里加了 timeout，防止 connect-network 自己挂太久。
-        String cmd = "timeout 20 cmd wifi connect-network "
+        String cmd = "cmd wifi connect-network "
                 + shellQuote(target.ssid) + " " + sec + " " + shellQuote(password);
-        execAsync(new String[]{"su", "-c", cmd});
+        if (useShizuku) {
+            final String scmd = cmd;
+            new Thread(() -> ShizukuRunner.exec(scmd, 20000), "wpaforge-shizuku-conn").start();
+        } else {
+            execAsync(new String[]{"su", "-c", "timeout 20 " + cmd});
+        }
 
         // 正确密码约 12 秒能连上；错误密码约 3 秒进入未连接。
         // 最长等 16 秒，超过就当超时（避免阻塞太久）。
@@ -240,7 +415,42 @@ public final class RootProber {
     }
 
     private String status() {
-        return exec(this, new String[]{"su", "-c", "cmd wifi status"}, 6000);
+        if (useShizuku) {
+            return ShizukuRunner.exec("cmd wifi status", 3000);
+        }
+        return execTracked(new String[]{"su", "-c", "cmd wifi status"}, 3000);
+    }
+
+    /** 与 exec 相同，但会把进程登记到 activeProc，使 cancel() 能中断它 */
+    private String execTracked(String[] cmd, long timeoutMs) {
+        Process p = null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            p = pb.start();
+            activeProc = p;                    // ← 关键：让 cancel 能杀到
+            final Process fp = p;
+
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String line;
+                long deadline = System.currentTimeMillis() + timeoutMs;
+                while ((line = r.readLine()) != null) {
+                    sb.append(line).append('\n');
+                    if (System.currentTimeMillis() > deadline) break;
+                    if (cancelFlag.get()) break;
+                }
+            }
+            p.waitFor(300, TimeUnit.MILLISECONDS);
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (activeProc == p) activeProc = null;
+            if (p != null) {
+                try { p.destroy(); } catch (Exception ignored) {}
+            }
+        }
     }
 
     private static boolean isConnectedTo(String status, String ssid) {
@@ -252,7 +462,9 @@ public final class RootProber {
     private void forgetTarget(NetRecord target) {
         if (cancelFlag.get()) return;
         try {
-            String list = exec(this, new String[]{"su", "-c", "cmd wifi list-networks"}, 6000);
+            String list = useShizuku
+                    ? ShizukuRunner.exec("cmd wifi list-networks", 4000)
+                    : execTracked(new String[]{"su", "-c", "cmd wifi list-networks"}, 4000);
             if (list == null) return;
             for (String line : list.split("\n")) {
                 String t = line.trim();
@@ -262,8 +474,12 @@ public final class RootProber {
                 String netId = parts[0];
                 String ssid = parts[1];
                 if (!ssid.equals(target.ssid)) continue;
-                exec(this, new String[]{"su", "-c",
-                        "cmd wifi forget-network " + netId}, 6000);
+                if (useShizuku) {
+                    ShizukuRunner.exec("cmd wifi forget-network " + netId, 4000);
+                } else {
+                    execTracked(new String[]{"su", "-c",
+                            "cmd wifi forget-network " + netId}, 4000);
+                }
                 android.util.Log.i(TAG, "forget " + ssid + " netId=" + netId);
             }
         } catch (Exception e) {
@@ -299,8 +515,26 @@ public final class RootProber {
         }
     }
 
+    /** 按当前通道执行命令（实例方法） */
+    private String runShell(String shellCmd, long timeoutMs) {
+        if (useShizuku) {
+            return ShizukuRunner.exec(shellCmd, timeoutMs);
+        }
+        return exec(this, new String[]{"su", "-c", shellCmd}, timeoutMs);
+    }
+
     /** 异步跑一个进程，不读输出。用于发命令 */
     private void execAsync(String[] cmd) {
+        if (useShizuku) {
+            // Shizuku 通道：把整条命令交给 shell
+            final String full = String.join(" ", cmd);
+            new Thread(() -> {
+                try {
+                    ShizukuRunner.exec(full, 20000);
+                } catch (Exception ignored) {}
+            }, "wpaforge-shizuku-async").start();
+            return;
+        }
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);

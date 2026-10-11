@@ -1,14 +1,41 @@
 #!/bin/sh
-# NetScope 出包脚本 —— 第二段（Linux 侧）
-# 前提：已在 Android 侧跑完 1-aapt2.sh 生成 build/out/apk/base.apk
+# WPAForge 出包脚本 —— 第二段（桌面侧）
+#
+# 前提：已在设备侧跑完 1-aapt2.sh，生成 build/out/apk/base.apk
+#
+# 项目根自动从脚本位置推导；工具路径可覆盖：
+#   WP_TOOLS        工具根目录（需含 libs/android.jar 与 libs/android-16/）
+#   WP_ANDROID_JAR  单独指定 android.jar
+#   WP_D8_JAR       单独指定 d8.jar
+#
+# 签名通过环境变量传入，**不要把密码写进脚本**（详见下方说明）。
 set -e
 
-PROJ=/sdcard/Download/projects/netscope
-TOOLS=/storage/emulated/0/Download/TGAutoSign-build/tools
-ANDROID_JAR=$TOOLS/libs/android.jar
-D8=$TOOLS/libs/android-16/d8
-APKSIGNER_JAR=$TOOLS/libs/android-16/lib/apksigner.jar
-KS="/storage/emulated/0/工程tg/签名材料/release.jks"
+# 项目根 = 本脚本所在目录
+PROJ="$(cd "$(dirname "$0")" && pwd)"
+
+TOOLS="${WP_TOOLS:-/storage/emulated/0/Download/TGAutoSign-build/tools}"
+ANDROID_JAR="${WP_ANDROID_JAR:-$TOOLS/libs/android.jar}"
+D8_JAR="${WP_D8_JAR:-$TOOLS/libs/android-16/lib/d8.jar}"
+APKSIGNER_JAR="${WP_APKSIGNER_JAR:-$TOOLS/libs/android-16/lib/apksigner.jar}"
+
+# Shizuku 的 API 与 Provider（本地 jar，不走 Maven）
+SHIZUKU_LIBS="$PROJ/app/libs/shizuku-api.jar:$PROJ/app/libs/shizuku-provider.jar"
+# ---------------------------------------------------------------------------
+# 签名材料通过环境变量传入，**不要把密码写进脚本**。
+#
+# 使用方式（在本地未入库的 env 文件里设置，或直接 export）：
+#   export WP_FORGE_KS="/path/to/release.jks"
+#   export WP_FORGE_KS_PASS="..."
+#   export WP_FORGE_KEY_PASS="..."      # 省略则与 KS_PASS 相同
+#   export WP_FORGE_KS_ALIAS="..."
+#
+# 脚本会在缺少这些变量时明确报错，而不是静默失败。
+# ---------------------------------------------------------------------------
+KS="${WP_FORGE_KS:-}"
+KS_PASS="${WP_FORGE_KS_PASS:-}"
+KEY_PASS="${WP_FORGE_KEY_PASS:-$KS_PASS}"
+KS_ALIAS="${WP_FORGE_KS_ALIAS:-}"
 
 BUILD=$PROJ/build
 APP=$PROJ/app
@@ -17,8 +44,23 @@ DEX=$OUT/dex
 rm -rf "$DEX"
 mkdir -p "$DEX"
 
+# ---- 前置检查 ----
 if [ ! -f "$OUT/apk/base.apk" ]; then
-  echo "错误: 缺少 $OUT/apk/base.apk，请先在 Android 侧执行 1-aapt2.sh"
+  echo "错误: 缺少 $OUT/apk/base.apk" >&2
+  echo "请先在设备侧执行:  sh 1-aapt2.sh" >&2
+  exit 1
+fi
+if [ ! -f "$ANDROID_JAR" ]; then
+  echo "错误: 找不到 android.jar：$ANDROID_JAR" >&2
+  echo "请用 WP_ANDROID_JAR 指定，或用 WP_TOOLS 指定工具根目录" >&2
+  exit 1
+fi
+if [ ! -f "$D8_JAR" ]; then
+  echo "错误: 找不到 d8.jar：$D8_JAR" >&2
+  exit 1
+fi
+if [ ! -f "$APKSIGNER_JAR" ]; then
+  echo "错误: 找不到 apksigner.jar：$APKSIGNER_JAR" >&2
   exit 1
 fi
 
@@ -27,12 +69,19 @@ rm -rf "$OUT/classes"
 mkdir -p "$OUT/classes"
 # 源码 + aapt2 生成的 R.java（资源引用需要）
 SRC="$(find "$APP/src/main/java" -name "*.java") $(find "$OUT/gen" -name "*.java" 2>/dev/null)"
-javac --release 17 -encoding UTF-8 -cp "$ANDROID_JAR" -d "$OUT/classes" $SRC
+javac --release 17 -encoding UTF-8 \
+  -cp "$ANDROID_JAR:$SHIZUKU_LIBS" \
+  -d "$OUT/classes" $SRC
 
-echo "==> d8 转 dex"
-java -cp "$TOOLS/libs/android-16/lib/d8.jar" com.android.tools.r8.D8 \
+echo "==> d8 转 dex（含 Shizuku API 类）"
+# 把 Shizuku 的 jar 也交给 d8 —— 它们最终要一起进 classes.dex，
+# 否则运行时找不到 rikka.shizuku.ShizukuProvider 会直接崩。
+java -cp "$D8_JAR" com.android.tools.r8.D8 \
   --release --min-api 26 --lib "$ANDROID_JAR" \
-  --output "$DEX" $(find "$OUT/classes" -name "*.class")
+  --output "$DEX" \
+  $(find "$OUT/classes" -name "*.class") \
+  "$PROJ/app/libs/shizuku-api.jar" \
+  "$PROJ/app/libs/shizuku-provider.jar"
 
 echo "==> 组装未签名 APK"
 STAGE=$OUT/stage
@@ -51,11 +100,24 @@ zip -q -X -r "$OUT/unsigned.apk" . \
 cd "$OUT"
 
 echo "==> 签名"
+if [ -z "$KS" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ]; then
+  echo "错误: 缺少签名配置。请先设置环境变量：" >&2
+  echo "  WP_FORGE_KS        签名文件路径" >&2
+  echo "  WP_FORGE_KS_PASS   keystore 密码" >&2
+  echo "  WP_FORGE_KS_ALIAS  key 别名" >&2
+  echo "（可选）WP_FORGE_KEY_PASS  key 密码，默认与 ks 密码相同" >&2
+  exit 1
+fi
+if [ ! -f "$KS" ]; then
+  echo "错误: 找不到签名文件 $KS" >&2
+  exit 1
+fi
+
 java -jar "$APKSIGNER_JAR" sign \
   --ks "$KS" \
-  --ks-pass "pass:wlmosv@2026" \
-  --key-pass "pass:wlmosv@2026" \
-  --ks-key-alias wlmosv \
+  --ks-pass "pass:$KS_PASS" \
+  --key-pass "pass:$KEY_PASS" \
+  --ks-key-alias "$KS_ALIAS" \
   --min-sdk-version 26 \
   --out "$OUT/wpaforge-signed.apk" \
   "$OUT/unsigned.apk"

@@ -1,0 +1,187 @@
+package io.github.wlmosv_png.wpaforge.ui;
+
+import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.util.AttributeSet;
+import android.view.View;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 三层分段进度条。
+ *
+ * 为什么不是一条进度条：
+ *   破解是「整个字典 → 当前批次 → 当前候选」三层的嵌套过程。
+ *   一条进度条只能表达最外层，用户看到 37% 时并不知道
+ *   「是字典走了 37%，还是某个批次里的 37%」——尤其是暂停恢复、
+ *   智能排序让候选顺序变化之后，单条进度条的语义会漂。
+ *
+ *   所以这里把三层**同时**画在一根轨道上：
+ *     外层（长条）  整个字典的完成度
+ *     中层（亮条）  当前批次的完成度
+ *     内层（点）    当前正在试的候选位置
+ *
+ * 三层用同一套色系、不同亮度，视觉上是「一段包含一段」的关系，
+ * 不需要图例就能读懂。
+ *
+ * 数值全部可空：拿不到层就画 0，不猜。
+ */
+public class StagedProgress extends View {
+
+    /** 一层的进度（0..1）与标签 */
+    public static final class Stage {
+        final float value;
+        final String label;
+        public Stage(float value, String label) {
+            this.value = Math.max(0f, Math.min(1f, value));
+            this.label = label == null ? "" : label;
+        }
+    }
+
+    private final List<Stage> stages = new ArrayList<>();
+    private String headline = "";
+    private String footnote = "";
+
+    private final Paint pTrack = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint[] pFill = new Paint[3];
+    private final Paint pHead = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pFoot = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pStage = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pTick = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    private int accent = Color.parseColor("#FFB300");
+    private int okGreen = Color.parseColor("#4CAF50");
+    private int textMain = Color.parseColor("#E8E8EE");
+    private int textDim = Color.parseColor("#8A8A94");
+    private int track = Color.parseColor("#242430");
+
+    private boolean done = false;
+
+    public StagedProgress(Context c) { this(c, null); }
+
+    public StagedProgress(Context c, AttributeSet a) {
+        super(c, a);
+        // 三层亮度：外暗 → 内亮，视觉上「一层套一层」
+        int[] colors = {
+                Color.parseColor("#7A5300"),   // 外层 深琥珀
+                Color.parseColor("#C68A00"),   // 中层 中琥珀
+                Color.parseColor("#FFB300")    // 内层 亮琥珀（主色）
+        };
+        for (int i = 0; i < pFill.length; i++) {
+            pFill[i] = new Paint(Paint.ANTI_ALIAS_FLAG);
+            pFill[i].setColor(colors[i]);
+        }
+        pHead.setTextAlign(Paint.Align.LEFT);
+        pFoot.setTextAlign(Paint.Align.LEFT);
+        pStage.setTextAlign(Paint.Align.LEFT);
+        pTick.setColor(Color.parseColor("#FFFFFF"));
+        pTrack.setColor(track);
+    }
+
+    private float dp(float v) {
+        return v * getResources().getDisplayMetrics().density;
+    }
+
+    /** 设置三层。列表顺序 = 外层 → 内层。多余三层会被忽略。 */
+    public void setStages(List<Stage> list) {
+        stages.clear();
+        if (list != null) {
+            for (int i = 0; i < list.size() && i < 3; i++) {
+                if (list.get(i) != null) stages.add(list.get(i));
+            }
+        }
+        invalidate();
+    }
+
+    /** 顶部一行粗体说明 + 底部一行补充 */
+    public void setText(String headline, String footnote) {
+        this.headline = headline == null ? "" : headline;
+        this.footnote = footnote == null ? "" : footnote;
+        invalidate();
+    }
+
+    /** 命中后整体转绿 */
+    public void setDone(boolean d) {
+        this.done = d;
+        for (Paint p : pFill) p.setColor(d ? okGreen : accent);
+        if (d) {
+            pFill[0].setColor(Color.parseColor("#2E7D32"));
+            pFill[1].setColor(Color.parseColor("#388E3C"));
+            pFill[2].setColor(okGreen);
+        } else {
+            pFill[0].setColor(Color.parseColor("#7A5300"));
+            pFill[1].setColor(Color.parseColor("#C68A00"));
+            pFill[2].setColor(accent);
+        }
+        invalidate();
+    }
+
+    @Override
+    protected void onDraw(Canvas cv) {
+        super.onDraw(cv);
+        int w = getWidth();
+        if (w == 0) return;
+
+        float y = 0;
+
+        // ---- 顶行说明 ----
+        if (!headline.isEmpty()) {
+            pHead.setTextSize(dp(13));
+            pHead.setColor(done ? okGreen : textMain);
+            cv.drawText(headline, 0, y + dp(13), pHead);
+            y += dp(20);
+        }
+
+        // ---- 三层轨道 ----
+        final float barH = dp(9);
+        final float gap = dp(6);
+        for (int i = 0; i < stages.size(); i++) {
+            Stage st = stages.get(i);
+            float top = y;
+            float radius = barH / 2f;
+
+            // 轨道底
+            RectF r = new RectF(0, top, w, top + barH);
+            cv.drawRoundRect(r, radius, radius, pTrack);
+
+            // 填充
+            if (st.value > 0.001f) {
+                float fw = Math.max(barH, w * st.value);
+                RectF f = new RectF(0, top, fw, top + barH);
+                cv.drawRoundRect(f, radius, radius, pFill[Math.min(i, pFill.length - 1)]);
+            }
+
+            // 行尾标签（第几层 / 百分比）
+            if (!st.label.isEmpty()) {
+                pStage.setTextSize(dp(10.5f));
+                pStage.setColor(textDim);
+                float lw = pStage.measureText(st.label);
+                cv.drawText(st.label, w - lw, top + barH - dp(0.5f), pStage);
+            }
+
+            y += barH + gap;
+        }
+
+        // ---- 底行补充 ----
+        if (!footnote.isEmpty()) {
+            pFoot.setTextSize(dp(11));
+            pFoot.setColor(textDim);
+            cv.drawText(footnote, 0, y + dp(13), pFoot);
+            y += dp(16);
+        }
+    }
+
+    @Override
+    protected void onMeasure(int wSpec, int hSpec) {
+        float h = 0;
+        if (!headline.isEmpty()) h += dp(20);
+        h += stages.size() * (dp(9) + dp(6));
+        if (!footnote.isEmpty()) h += dp(16);
+        if (h < dp(20)) h = dp(20);
+        super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(Math.round(h), MeasureSpec.EXACTLY));
+    }
+}

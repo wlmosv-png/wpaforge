@@ -32,16 +32,18 @@ import io.github.wlmosv_png.wpaforge.audit.RootProber;
 import io.github.wlmosv_png.wpaforge.audit.HistStore;
 import io.github.wlmosv_png.wpaforge.audit.SavedWifiReader;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
+import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
 import io.github.wlmosv_png.wpaforge.scan.ChannelAnalyzer;
 import io.github.wlmosv_png.wpaforge.scan.Scanner;
+import io.github.wlmosv_png.wpaforge.ui.ChannelBars;
 import io.github.wlmosv_png.wpaforge.ui.RadarSweep;
 import io.github.wlmosv_png.wpaforge.ui.AuthorCard;
 import io.github.wlmosv_png.wpaforge.ui.NetDialog;
 import io.github.wlmosv_png.wpaforge.ui.SignalBars;
-import io.github.wlmosv_png.wpaforge.ui.ThinProgress;
+import io.github.wlmosv_png.wpaforge.ui.StagedProgress;
 
 /**
  * 主界面。四个页签：观测 / 审计 / 试连 / 设置。
@@ -59,7 +61,12 @@ public class MainActivity extends Activity {
     private static final int OK_GREEN  = Color.parseColor("#4CAF50");
 
     private LinearLayout root;
-    private LinearLayout content;
+    private LinearLayout content;          // 外层（竖直排列 4 个 page）
+    private LinearLayout pageObserve;      // 观测页容器（建一次）
+    private LinearLayout pageAudit;
+    private LinearLayout pageConnect;
+    private LinearLayout pageSettings;
+    private boolean[] pageBuilt = new boolean[4];   // 是否已构建过
     private TextView tabObserve, tabAudit, tabConnect, tabSettings;
 
     private Scanner scanner;
@@ -68,7 +75,12 @@ public class MainActivity extends Activity {
     // 观测页组件
     private RadarSweep radar;
     private SignalBars bars;
+    private ChannelBars channelBars;
     private LinearLayout netList;
+    /** 观测页的已存 WiFi 卡片；缓存上次结果，不重复读 root */
+    private TextView savedWifiCard;
+    private int savedWifiTotal = -1;
+    private int savedWifiWeak = -1;
     private TextView observeNotice;
     private List<NetRecord> lastRecords = new ArrayList<>();
 
@@ -81,17 +93,28 @@ public class MainActivity extends Activity {
 
     // 试连页组件
     private Button languageBtn;
+    private ScrollView mainScroll;
+    private TextView connectModeView;
+    private TextView connectEmptyHint;
     private TextView connectDictView;
     private TextView smartToggle;
     private TextView targetDictToggle;
-    private boolean smartSortEnabled = true;
-    private boolean targetDictEnabled = true;
+    private boolean smartSortEnabled = false;
+    private boolean targetDictEnabled = false;
     private Button startBtn;
+    private Button pauseBtn;
     private Button stopBtn;
-    private ThinProgress connectProgress;
+    private io.github.wlmosv_png.wpaforge.ui.StagedProgress connectProgress;
     private TextView connectTargetView;
     private TextView connectStatsView;
     private TextView connectStreamView;
+    /** 候选流折叠：头部、箭头、行数、布局参数 */
+    private LinearLayout flowHeader;
+    private TextView flowChevron;
+    private TextView flowLabel;
+    private TextView flowCount;
+    private LinearLayout.LayoutParams streamParams;
+    private boolean streamCollapsed = false;
     private ConnectionProber prober;
     private RootProber rootProber;
     private volatile boolean rootProberRunning = false;
@@ -198,11 +221,27 @@ public class MainActivity extends Activity {
         root.addView(tabs);
 
         // 内容容器（可滚动）
-        ScrollView sv = new ScrollView(this);
+        mainScroll = new ScrollView(this);
+        ScrollView sv = mainScroll;
         sv.setFillViewport(true);
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(px(16), px(8), px(16), px(24));
+
+        // 四个页面各建一次，之后只切换可见性 ——
+        // 这样切页签不会丢日志、不会重置滚动、不会丢按钮状态
+        pageObserve = new LinearLayout(this);
+        pageObserve.setOrientation(LinearLayout.VERTICAL);
+        pageAudit = new LinearLayout(this);
+        pageAudit.setOrientation(LinearLayout.VERTICAL);
+        pageConnect = new LinearLayout(this);
+        pageConnect.setOrientation(LinearLayout.VERTICAL);
+        pageSettings = new LinearLayout(this);
+        pageSettings.setOrientation(LinearLayout.VERTICAL);
+        content.addView(pageObserve);
+        content.addView(pageAudit);
+        content.addView(pageConnect);
+        content.addView(pageSettings);
         sv.addView(content, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(sv, new LinearLayout.LayoutParams(
@@ -213,15 +252,57 @@ public class MainActivity extends Activity {
     }
 
     /** 统一控制"运行中"状态：运行中才能停止，空闲时才能开始 */
-    private void setRunning(boolean running) {
+    /**
+     * 拿当前活着的服务实例。
+     * 优先用在 ServiceConnection 里拿到的 binder 实例；
+     * 拿不到（绑定未完成 / 被系统解绑）就退回服务的静态引用。
+     * 没有这层兜底时，点停止会因为 crackService == null 直接弹
+     * "没有正在跑的任务"，表现就是"停不下来"。
+     */
+    private CrackService liveService() {
+        if (crackService != null) return crackService;
+        return CrackService.get();
+    }
+
+    /**
+     * 刷新按钮状态。
+     *
+     * 唯一真相是「队列里有没有进行中的任务」，不是服务实例上的标志 ——
+     * 之前两者会不一致，导致"显示已暂停但按钮还能点开始"这种矛盾。
+     */
+    private void syncButtons() {
+        boolean running = false;
+        boolean paused = false;
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING) running = true;
+            if (t.state == TaskQueue.State.PAUSED) paused = true;
+        }
+        boolean active = running || paused;
+
         if (startBtn != null) {
-            startBtn.setEnabled(!running);
-            startBtn.setAlpha(running ? 0.45f : 1f);
+            startBtn.setEnabled(!active);
+            startBtn.setAlpha(active ? 0.4f : 1f);
+            startBtn.setText(active
+                    ? L.s("▶ 开始破解", "▶ Start")
+                    : L.s("▶ 开始破解", "▶ Start"));
+        }
+        if (pauseBtn != null) {
+            boolean canPause = running;
+            pauseBtn.setEnabled(canPause);
+            pauseBtn.setAlpha(canPause ? 1f : 0.4f);
+            pauseBtn.setText(paused
+                    ? L.s("▶ 继续", "▶ Resume")
+                    : L.s("‖ 暂停", "‖ Pause"));
         }
         if (stopBtn != null) {
-            stopBtn.setEnabled(running);
-            stopBtn.setAlpha(running ? 1f : 0.45f);
+            stopBtn.setEnabled(active);
+            stopBtn.setAlpha(active ? 1f : 0.4f);
         }
+    }
+
+    /** 兼容旧调用 */
+    private void setRunning(boolean ignored) {
+        syncButtons();
     }
 
     /** 带右侧间隔的等分权重 */
@@ -250,38 +331,54 @@ public class MainActivity extends Activity {
 
     private void showTab(int index) {
         currentTab = index;
-        tabObserve.setTextColor(index == 0 ? ACCENT : TEXT_DIM);
-        tabAudit.setTextColor(index == 1 ? ACCENT : TEXT_DIM);
-        tabConnect.setTextColor(index == 2 ? ACCENT : TEXT_DIM);
-        tabSettings.setTextColor(index == 3 ? ACCENT : TEXT_DIM);
-        tabObserve.setTypeface(index == 0 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        tabAudit.setTypeface(index == 1 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        tabConnect.setTypeface(index == 2 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        tabSettings.setTypeface(index == 3 ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+
+        // 页签样式
+        TextView[] tabs = {tabObserve, tabAudit, tabConnect, tabSettings};
         int chipOff = Color.parseColor("#1A1A22");
         int onText  = Color.parseColor("#14141A");
-        tabObserve.setBackground(roundBg(index == 0 ? ACCENT : chipOff, 18));
-        tabAudit.setBackground(roundBg(index == 1 ? ACCENT : chipOff, 18));
-        tabConnect.setBackground(roundBg(index == 2 ? ACCENT : chipOff, 18));
-        tabSettings.setBackground(roundBg(index == 3 ? ACCENT : chipOff, 18));
-        tabObserve.setTextColor(index == 0 ? onText : TEXT_DIM);
-        tabAudit.setTextColor(index == 1 ? onText : TEXT_DIM);
-        tabConnect.setTextColor(index == 2 ? onText : TEXT_DIM);
-        tabSettings.setTextColor(index == 3 ? onText : TEXT_DIM);
+        for (int i = 0; i < tabs.length; i++) {
+            boolean on = (i == index);
+            tabs[i].setBackground(roundBg(on ? ACCENT : chipOff, 18));
+            tabs[i].setTextColor(on ? onText : TEXT_DIM);
+            tabs[i].setTypeface(on ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        }
 
-        content.removeAllViews();
-        if (index == 0) buildObserveTab();
-        else if (index == 1) buildAuditTab();
-        else if (index == 2) buildConnectTab();
-        else buildSettingsTab();
+        LinearLayout[] pages = {pageObserve, pageAudit, pageConnect, pageSettings};
 
-        if (index == 0 && scanner != null) {
-            // buildObserveTab 里会重建 radar 实例，这里必须对新实例启动
+        // 首次访问该页时才构建内容
+        if (!pageBuilt[index]) {
+            switch (index) {
+                case 0: buildObserveTab(); break;
+                case 1: buildAuditTab(); break;
+                case 2: buildConnectTab(); break;
+                default: buildSettingsTab(); break;
+            }
+            pageBuilt[index] = true;
+        }
+
+        // 只切可见性
+        for (int i = 0; i < pages.length; i++) {
+            pages[i].setVisibility(i == index ? View.VISIBLE : View.GONE);
+        }
+
+        // 离开观测页时停扫描与动画
+        if (index == 0) {
             if (radar != null) radar.startSpin();
-            scanner.start();
-        } else if (scanner != null) {
+            if (scanner != null) scanner.start();
+        } else {
             if (radar != null) radar.stopSpin();
-            scanner.stop();
+            if (scanner != null) scanner.stop();
+        }
+
+        // 回到破解页：刷新队列与日志（内容不用重建）
+        if (index == 2) {
+            refreshQueue();
+            if (connectStreamView != null && streamBuffer.length() > 0) {
+                connectStreamView.setText(streamBuffer.toString().trim());
+            }
+            updateConnectDict();
+            updateConnectMode();
+            updateTargetLabel();
         }
     }
 
@@ -292,7 +389,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, px(240));
         rp.bottomMargin = px(12);
-        content.addView(radar, rp);
+        pageObserve.addView(radar, rp);
         radar.setCenterText(L.s("扫描中", "Scanning"), L.s("正在探测周边网络", "Probing nearby networks"));
 
         observeNotice = new TextView(this);
@@ -300,17 +397,40 @@ public class MainActivity extends Activity {
         observeNotice.setTextColor(DANGER);
         observeNotice.setPadding(0, 0, 0, px(8));
         observeNotice.setVisibility(View.GONE);
-        content.addView(observeNotice);
+        pageObserve.addView(observeNotice);
 
-        content.addView(sectionLabel(L.s("信号分布", "Signal distribution")));
+        pageObserve.addView(sectionLabel(L.s("信号分布", "Signal distribution")));
 
         bars = new SignalBars(this);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, px(150));
         bp.bottomMargin = px(16);
-        content.addView(bars, bp);
+        pageObserve.addView(bars, bp);
 
-        content.addView(sectionLabel(L.s("发现网络", "Networks found")));
+        // 信道占用：横向条，一眼看出哪个信道空、哪个挤
+        pageObserve.addView(sectionLabel(L.s("信道占用", "Channel occupancy")));
+        channelBars = new ChannelBars(this);
+        LinearLayout.LayoutParams cbp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cbp.bottomMargin = px(16);
+        pageObserve.addView(channelBars, cbp);
+
+        pageObserve.addView(sectionLabel(L.s("本机已存 WiFi", "Saved Wi-Fi on this device")));
+        savedWifiCard = new TextView(this);
+        savedWifiCard.setTextSize(12.5f);
+        savedWifiCard.setTextColor(TEXT_DIM);
+        savedWifiCard.setLineSpacing(px(4), 1f);
+        savedWifiCard.setBackground(roundBg(SURFACE, 16));
+        savedWifiCard.setPadding(px(16), px(14), px(16), px(14));
+        LinearLayout.LayoutParams swlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        swlp.bottomMargin = px(16);
+        savedWifiCard.setLayoutParams(swlp);
+        savedWifiCard.setOnClickListener(v -> showSavedWifi());
+        pageObserve.addView(savedWifiCard);
+        updateSavedWifiCard();
+
+        pageObserve.addView(sectionLabel(L.s("发现网络", "Networks found")));
 
         // 筛选行
         HorizontalScrollView filterBar = new HorizontalScrollView(this);
@@ -323,11 +443,11 @@ public class MainActivity extends Activity {
         fb.addView(filterChip(L.s("开放", "Open"), FILTER_OPEN));
         fb.addView(filterChip(L.s("隐藏 SSID", "Hidden SSID"), FILTER_HIDDEN));
         filterBar.addView(fb);
-        content.addView(filterBar);
+        pageObserve.addView(filterBar);
 
         netList = new LinearLayout(this);
         netList.setOrientation(LinearLayout.VERTICAL);
-        content.addView(netList);
+        pageObserve.addView(netList);
 
         // 立即渲染一遍缓存（回到该页时不至于空白）
         renderRecords(lastRecords);
@@ -433,28 +553,52 @@ public class MainActivity extends Activity {
         if (visible.isEmpty()) {
             TextView empty = new TextView(this);
             empty.setText(netFilter == FILTER_ALL
-                    ? L.s("还没扫描到网络。请确认 WiFi 已开启、权限已授予。", "No networks found. Check that Wi-Fi is on and permissions are granted.")
+                    ? emptyTextWithDiag()
                     : L.s("当前筛选下没有匹配的网络。", "No networks match the current filter."));
             empty.setTextSize(12.5f);
             empty.setTextColor(TEXT_DIM);
             empty.setBackground(roundBg(SURFACE, 16));
             empty.setPadding(px(16), px(18), px(16), px(18));
+            empty.setLineSpacing(px(3), 1f);
             netList.addView(empty);
         }
 
-        // 信道建议
+        // 信道占用图：横向条比纯文字更直观，直接替换掉原来的文字建议
         ChannelAnalyzer.Report rep = ChannelAnalyzer.analyze(records);
-        if (rep.recommended24 > 0 || rep.recommended5 > 0) {
-            TextView tip = new TextView(this);
-            StringBuilder sb = new StringBuilder(L.s("信道建议  ", "Channel suggestion  "));
-            if (rep.recommended24 > 0) sb.append("2.4G→ch").append(rep.recommended24).append("  ");
-            if (rep.recommended5 > 0) sb.append("5G→ch").append(rep.recommended5);
-            tip.setText(sb.toString());
-            tip.setTextSize(12);
-            tip.setTextColor(OK_GREEN);
-            tip.setPadding(0, px(12), 0, 0);
-            netList.addView(tip);
+        if (channelBars != null) channelBars.setReport(rep);
+    }
+
+    /**
+     * 观测页"没扫到网络"时展示的文案。
+     *
+     * 不再是干巴巴一句"还没扫描到" —— 而是把 Scanner 记下的真实原因
+     * 和特权通道（root / Shizuku）的结果一起摊开，用户一眼能看出
+     * 是权限问题、WiFi 没开、还是系统节流。
+     */
+    private String emptyTextWithDiag() {
+        String base = L.s("还没扫描到网络。请确认 WiFi 已开启、权限已授予。",
+                "No networks found. Check that Wi-Fi is on and permissions are granted.");
+        if (scanner == null) return base;
+
+        StringBuilder sb = new StringBuilder(base);
+        String d = scanner.lastDiagnostic();
+        if (d != null && !d.isEmpty()) {
+            sb.append("\n\n").append(L.s("诊断: ", "Diagnostic: ")).append(d);
         }
+        String priv = scanner.privilegedDiagnostic();
+        if (priv != null && !priv.isEmpty()) {
+            sb.append("\n");
+            if ("PRIV_UNAVAILABLE".equals(priv)) {
+                sb.append(L.s("系统通道不可用：本机没有可用的 root，Shizuku 服务也没在运行。",
+                        "System channel unavailable: no working root, and the Shizuku service is not running."));
+            } else if ("PRIV_EMPTY".equals(priv)) {
+                sb.append(L.s("系统通道可用，但系统本身也没有扫描数据。",
+                        "The system channel works, but the system itself has no scan data."));
+            } else {
+                sb.append(priv);
+            }
+        }
+        return sb.toString();
     }
 
     private View netRow(NetRecord r) {
@@ -551,23 +695,23 @@ public class MainActivity extends Activity {
     private void buildAuditTab() {
         if (radar != null) radar.stopSpin();
 
-        content.addView(sectionLabel(L.s("字典", "Dictionary")));
+        pageAudit.addView(sectionLabel(L.s("字典", "Dictionary")));
 
         dictStatus = new TextView(this);
         dictStatus.setTextSize(13);
         dictStatus.setTextColor(TEXT);
         dictStatus.setPadding(0, 0, 0, px(10));
         updateDictStatus();
-        content.addView(dictStatus);
+        pageAudit.addView(dictStatus);
 
         Button manage = makeButton(L.s("打开字典管理", "Manage dictionaries"), ACCENT);
         manage.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, DictActivity.class)));
-        content.addView(manage);
+        pageAudit.addView(manage);
 
         Button load = makeButton(L.s("加载字典文件", "Load dictionary file"), Color.parseColor("#4CAF50"));
         load.setOnClickListener(v -> showDictPicker());
-        content.addView(load);
+        pageAudit.addView(load);
 
         Button gen = makeButton(L.s("内置生成器（快速）", "Built-in generator (quick)"), Color.parseColor("#5A5A66"));
         gen.setOnClickListener(v -> {
@@ -585,9 +729,9 @@ public class MainActivity extends Activity {
                 });
             }).start();
         });
-        content.addView(gen);
+        pageAudit.addView(gen);
 
-        content.addView(sectionLabel(L.s("口令强度检查", "Passphrase strength check")));
+        pageAudit.addView(sectionLabel(L.s("口令强度检查", "Passphrase strength check")));
 
         EditText input = new EditText(this);
         input.setHint(L.s("输入一个口令，看它在字典里的位置", "Enter a passphrase to see its position in the dictionary"));
@@ -596,7 +740,7 @@ public class MainActivity extends Activity {
         input.setTextSize(13);
         input.setBackground(roundBg(SURFACE, 16));
         input.setPadding(px(16), px(14), px(16), px(14));
-        content.addView(input);
+        pageAudit.addView(input);
 
         Button check = makeButton("评估", ACCENT);
         check.setOnClickListener(v -> {
@@ -616,9 +760,9 @@ public class MainActivity extends Activity {
                 appendLog("未命中: \"" + pw + "\" 不在当前字典里");
             }
         });
-        content.addView(check);
+        pageAudit.addView(check);
 
-        content.addView(sectionLabel(L.s("日志", "Log")));
+        pageAudit.addView(sectionLabel(L.s("日志", "Log")));
 
         auditLog = new TextView(this);
         auditLog.setTextSize(11);
@@ -627,7 +771,7 @@ public class MainActivity extends Activity {
         auditLog.setBackground(roundBg(SURFACE, 16));
         auditLog.setPadding(px(16), px(16), px(16), px(16));
         auditLog.setMinLines(6);
-        content.addView(auditLog);
+        pageAudit.addView(auditLog);
     }
 
     private void updateDictStatus() {
@@ -640,7 +784,7 @@ public class MainActivity extends Activity {
     private void showDictPicker() {
         java.util.List<io.github.wlmosv_png.wpaforge.audit.DictStore.Entry> entries =
                 io.github.wlmosv_png.wpaforge.audit.DictStore.scan(
-                        io.github.wlmosv_png.wpaforge.audit.DictStore.defaultDir());
+                        io.github.wlmosv_png.wpaforge.audit.DictStore.defaultDir(this));
         if (entries.isEmpty()) {
             Toast.makeText(this, L.s("还没有字典，请先去字典管理里新建或导入", "No dictionaries yet. Create or import one in dictionary management."), Toast.LENGTH_LONG).show();
             return;
@@ -697,132 +841,283 @@ public class MainActivity extends Activity {
 
     // ---------------- 试连页 ----------------
 
+    /**
+     * 破解页。
+     *
+     * 布局分三段：
+     *   顶部  三行紧凑状态（目标 / 字典 / 执行方式）+ 进度条  —— 固定，不随滚动
+     *   中部  候选流                                        —— 唯一可滚动区
+     *   底部  开始 / 暂停 / 停止                              —— 固定，永远可见
+     *
+     * 这样做的原因：跑起来之后用户最常做的是「看进度」和「按停止」，
+     * 这两个都不该需要先滚动才能看到。
+     */
     private void buildConnectTab() {
-        if (radar != null) radar.stopSpin();
+        // ============ 顶部：状态区 ============
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setBackground(roundBg(SURFACE, 18));
+        head.setPadding(px(16), px(14), px(16), px(14));
 
-        content.addView(sectionLabel(L.s("目标网络", "Target network")));
-
+        // 行一：目标
         connectTargetView = new TextView(this);
-        connectTargetView.setTextSize(13);
+        connectTargetView.setTextSize(14);
         connectTargetView.setTextColor(TEXT);
-        connectTargetView.setBackground(roundBg(SURFACE, 18));
-        connectTargetView.setPadding(px(18), px(16), px(18), px(16));
-        content.addView(connectTargetView);
+        connectTargetView.setLineSpacing(px(3), 1f);
+        connectTargetView.setOnClickListener(v -> showTargetPicker());
+        head.addView(connectTargetView);
 
-        Button pick = makeButton(L.s("选择目标网络", "Select target network"), ACCENT);
-        pick.setOnClickListener(v -> showTargetPicker());
-        content.addView(pick);
-
+        // 行二：字典
         connectDictView = new TextView(this);
-        connectDictView.setTextSize(12);
+        connectDictView.setTextSize(13);
         connectDictView.setTextColor(TEXT_DIM);
-        connectDictView.setBackground(roundBg(SURFACE, 16));
-        connectDictView.setPadding(px(16), px(14), px(16), px(14));
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+        connectDictView.setPadding(0, px(8), 0, 0);
+        connectDictView.setOnClickListener(v -> showDictPicker());
+        head.addView(connectDictView);
+
+        // 行三：执行方式
+        connectModeView = new TextView(this);
+        connectModeView.setTextSize(12);
+        connectModeView.setTextColor(TEXT_DIM);
+        connectModeView.setPadding(0, px(6), 0, 0);
+        connectModeView.setOnClickListener(v -> showModePicker());
+        head.addView(connectModeView);
+
+        // 进度条（整合了 已试/总数/速度/剩余）
+        connectProgress = new io.github.wlmosv_png.wpaforge.ui.StagedProgress(this);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.bottomMargin = px(10);
-        content.addView(connectDictView, dlp);
-        updateConnectDict();
+        plp.topMargin = px(4);
+        head.addView(connectProgress, plp);
 
-        smartToggle = new TextView(this);
-        smartToggle.setTextSize(12);
-        smartToggle.setPadding(px(16), px(14), px(16), px(14));
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.bottomMargin = px(10);
-        smartToggle.setOnClickListener(v -> {
-            smartSortEnabled = !smartSortEnabled;
-            updateSmartToggle();
-        });
-        content.addView(smartToggle, slp);
-        updateSmartToggle();
+        pageConnect.addView(head);
 
-        targetDictToggle = new TextView(this);
-        targetDictToggle.setTextSize(12);
-        targetDictToggle.setPadding(px(16), px(14), px(16), px(14));
-        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        tlp.bottomMargin = px(10);
-        targetDictToggle.setOnClickListener(v -> {
-            targetDictEnabled = !targetDictEnabled;
-            updateTargetDictToggle();
-        });
-        content.addView(targetDictToggle, tlp);
-        updateTargetDictToggle();
+        // 提示条（权限、错误等）
+        observeNotice = new TextView(this);
+        observeNotice.setTextSize(12);
+        observeNotice.setTextColor(DANGER);
+        observeNotice.setPadding(px(4), px(8), px(4), 0);
+        observeNotice.setVisibility(View.GONE);
+        pageConnect.addView(observeNotice);
 
-        content.addView(sectionLabel(L.s("进度", "Progress")));
+        // ============ 中部：候选流（可折叠）============
+        // 标题行本身可点：展开时占满剩余空间，
+        // 收起时只留最近几行，让下面的队列卡片露出来。
+        flowHeader = new LinearLayout(this);
+        flowHeader.setOrientation(LinearLayout.HORIZONTAL);
+        flowHeader.setGravity(Gravity.CENTER_VERTICAL);
+        flowHeader.setPadding(px(4), px(14), px(4), px(8));
 
-        connectProgress = new ThinProgress(this);
-        content.addView(connectProgress);
+        flowChevron = new TextView(this);
+        flowChevron.setTextSize(11.5f);
+        flowChevron.setTextColor(ACCENT);
+        flowHeader.addView(flowChevron);
 
-        connectStatsView = new TextView(this);
-        connectStatsView.setTextSize(12);
-        connectStatsView.setTextColor(TEXT_DIM);
-        connectStatsView.setPadding(0, px(4), 0, px(12));
-        content.addView(connectStatsView);
+        flowLabel = new TextView(this);
+        flowLabel.setTextSize(11.5f);
+        flowLabel.setTextColor(TEXT_DIM);
+        flowLabel.setLetterSpacing(0.12f);
+        flowLabel.setText(L.s("候选流", "CANDIDATES"));
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        flp.leftMargin = px(6);
+        flowHeader.addView(flowLabel, flp);
 
-        startBtn = makeButton(L.s("加入队列并开始", "Add to queue and start"), ACCENT);
-        startBtn.setOnClickListener(v -> startConnect());
-        content.addView(startBtn);
+        flowCount = new TextView(this);
+        flowCount.setTextSize(11);
+        flowCount.setTextColor(TEXT_DIM);
+        flowHeader.addView(flowCount);
 
-        Button pauseBtn = makeButton(L.s("暂停（可续跑）", "Pause (resumable)"), Color.parseColor("#FFA726"));
-        pauseBtn.setOnClickListener(v -> {
-            if (crackService != null && crackService.isWorking()) {
-                crackService.pause();
-                appendStreamColored(L.s("正在暂停…（进度会保留）", "Pausing… (progress kept)"), ACCENT);
-            } else {
-                Toast.makeText(this, L.s("当前没有正在跑的任务", "No task is currently running"), Toast.LENGTH_SHORT).show();
-            }
-        });
-        content.addView(pauseBtn);
-
-        stopBtn = makeButton("停止破解", DANGER);
-        stopBtn.setOnClickListener(v -> {
-            if (rootProber == null || !rootProberRunning) return;
-            appendStreamColored(L.s("正在停止…", "Stopping…"), ACCENT);
-            rootProber.cancel();
-            stopBtn.setEnabled(false);
-            stopBtn.setAlpha(0.45f);
-        });
-        content.addView(stopBtn);
-        setRunning(false);
-
-        content.addView(sectionLabel(L.s("任务队列", "Task queue")));
-
-        queueBox = new LinearLayout(this);
-        queueBox.setOrientation(LinearLayout.VERTICAL);
-        content.addView(queueBox);
-
-        Button clearDone = makeButton(L.s("清理已完成任务", "Clear finished tasks"), Color.parseColor("#5A5A66"));
-        clearDone.setOnClickListener(v -> {
-            int n = TaskQueue.clearFinished(this);
-            Toast.makeText(this, "清理了 " + n + L.s(" 条", " entries"), Toast.LENGTH_SHORT).show();
-            refreshQueue();
-        });
-        content.addView(clearDone);
-
-        content.addView(sectionLabel(L.s("候选流", "Candidate stream")));
+        flowHeader.setOnClickListener(v -> toggleStream());
+        pageConnect.addView(flowHeader);
 
         connectStreamView = new TextView(this);
-        connectStreamView.setTextSize(11);
+        connectStreamView.setTextSize(12);
         connectStreamView.setTextColor(TEXT_DIM);
         connectStreamView.setTypeface(Typeface.MONOSPACE);
-        connectStreamView.setBackground(roundBg(SURFACE, 16));
-        connectStreamView.setPadding(px(16), px(16), px(16), px(16));
-        connectStreamView.setMinLines(12);
+        connectStreamView.setBackground(roundBg(Color.parseColor("#14141A"), 16));
+        connectStreamView.setPadding(px(16), px(14), px(16), px(14));
         connectStreamView.setTextIsSelectable(true);
-        content.addView(connectStreamView);
+        connectStreamView.setLineSpacing(px(5), 1f);
+        streamParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        pageConnect.addView(connectStreamView, streamParams);
 
-        TextView warn = new TextView(this);
-        warn.setText("速度说明：每条需等系统认证结果，约 3–12 秒。"
-                + "手机一次只能连一个网络，无法并行，所以再优化也有这个上限。"
-                + "首次使用请先在 Magisk 里给本应用授予 root。");
-        warn.setTextSize(10);
-        warn.setTextColor(TEXT_DIM);
-        warn.setPadding(0, px(12), 0, 0);
-        content.addView(warn);
+        // 空状态提示（浮在候选流上层的简单做法：先放一行说明）
+        connectEmptyHint = new TextView(this);
+        connectEmptyHint.setTextSize(12.5f);
+        connectEmptyHint.setTextColor(TEXT_DIM);
+        connectEmptyHint.setGravity(Gravity.CENTER);
+        connectEmptyHint.setPadding(px(20), px(40), px(20), px(40));
+        connectEmptyHint.setBackground(roundBg(Color.parseColor("#14141A"), 16));
+        pageConnect.addView(connectEmptyHint);
+        updateEmptyHint();
 
+        // ============ 底部：操作栏（固定）============
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setPadding(0, px(12), 0, 0);
+        actions.setBackgroundColor(BG);
+
+        startBtn = primaryAction(L.s("▶ 开始", "▶ Start"), ACCENT);
+        startBtn.setOnClickListener(v -> startConnect());
+        actions.addView(startBtn, actParams(0, 1.6f));
+
+        pauseBtn = primaryAction(L.s("‖ 暂停", "‖ Pause"), Color.parseColor("#2A2A36"));
+        pauseBtn.setOnClickListener(v -> onPauseResumeClicked());
+        actions.addView(pauseBtn, actParams(8, 1f));
+
+        stopBtn = primaryAction(L.s("■ 停止", "■ Stop"), Color.parseColor("#2A2020"));
+        stopBtn.setOnClickListener(v -> onStopClicked());
+        actions.addView(stopBtn, actParams(8, 1f));
+
+        pageConnect.addView(actions);
+
+        // 队列（多目标才有意义，默认折叠成一行文字）
+        queueBox = new LinearLayout(this);
+        queueBox.setOrientation(LinearLayout.VERTICAL);
+        queueBox.setPadding(0, px(8), 0, 0);
+        pageConnect.addView(queueBox);
+
+        //
+        // 开关与高级设置收进弹窗，主界面不再占位置 ——
+        // 智能排序 / 目标派生 默认关闭，普通用户不需要天天调。
+        //
+        smartToggle = null;
+        targetDictToggle = null;
+
+        // 初始化显示
         updateTargetLabel();
+        updateConnectDict();
+        updateConnectMode();
+        applyStreamHeight();
+        updateFlowHeader();
+        refreshQueue();
+    }
+
+    /** 底部操作按钮 */
+    private Button primaryAction(String label, int bg) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(14.5f);
+        b.setTextColor(Color.WHITE);
+        b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setMinHeight(0); b.setMinimumHeight(0);
+        b.setStateListAnimator(null);
+        b.setPadding(px(8), px(15), px(8), px(15));
+        b.setBackground(roundBg(bg, 24));
+        return b;
+    }
+
+    private LinearLayout.LayoutParams actParams(int rightMargin, float weight) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
+        lp.rightMargin = px(rightMargin);
+        return lp;
+    }
+
+    /** 暂停 / 继续 的统一入口 */
+    private void onPauseResumeClicked() {
+        TaskQueue.Task pausedTask = null, runningTask = null;
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.PAUSED && pausedTask == null) pausedTask = t;
+            if (t.state == TaskQueue.State.RUNNING && runningTask == null) runningTask = t;
+        }
+        if (pausedTask != null && runningTask == null) {
+            resumeTask(pausedTask);
+            appendStreamColored(L.s("▶ 继续执行…", "▶ Resuming…"), OK_GREEN);
+        } else if (runningTask != null) {
+            CrackService svc = liveService();
+            if (svc != null) svc.pause();
+            appendStreamColored(L.s("‖ 正在暂停…（进度保留）",
+                    "‖ Pausing… (progress kept)"), ACCENT);
+            refreshQueue();
+        } else {
+            Toast.makeText(this, L.s("当前没有正在跑的任务", "No task is running"),
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** 停止的统一入口 */
+    private void onStopClicked() {
+        boolean active = false;
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING
+                    || t.state == TaskQueue.State.PENDING
+                    || t.state == TaskQueue.State.PAUSED) { active = true; break; }
+        }
+        if (!active) {
+            Toast.makeText(this, L.s("当前没有正在跑的任务", "No task is running"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        CrackService svc = liveService();
+        if (svc != null) {
+            svc.stopAll();
+        } else {
+            // 服务拿不到：直接改队列，保证下次不会接着跑
+            for (TaskQueue.Task t : queueCache) {
+                if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
+                    t.state = TaskQueue.State.STOPPED;
+                    TaskQueue.update(this, t);
+                }
+            }
+        }
+        appendStreamColored(L.s("■ 正在停止…", "■ Stopping…"), DANGER);
+        refreshQueue();
+    }
+
+    /** 执行方式选择 */
+    private void showModePicker() {
+        NetDialog d = new NetDialog(this, L.s("执行方式", "Execution mode"),
+                L.s("三种方式跑的是同一条系统命令，区别只在拿权限的途径。",
+                        "All three run the same system command — only the way of obtaining permission differs."));
+
+        int cur = Prefs.mode(this);
+
+        d.addItem(L.s("Root 模式", "Root mode")
+                        + "\n" + L.s("su 执行 · 约 1 秒/条 · 需要 root",
+                                "via su · ~1s each · requires root")
+                        + (cur == Prefs.MODE_ROOT ? "\n✓ " + L.s("当前", "current") : ""),
+                dd -> applyCrackMode(Prefs.MODE_ROOT));
+
+        d.addItem(L.s("Shizuku 模式", "Shizuku mode")
+                        + "\n" + L.s("shell 身份执行 · 同样约 1 秒/条 · 不需要 root",
+                                "as shell user · also ~1s each · no root needed")
+                        + (cur == Prefs.MODE_SHIZUKU ? "\n✓ " + L.s("当前", "current") : ""),
+                dd -> applyCrackMode(Prefs.MODE_SHIZUKU));
+
+        d.addItem(L.s("普通模式", "Normal mode")
+                        + "\n" + L.s("系统接口 · 每条需手动确认 · 很慢",
+                                "system API · manual confirmation per attempt · slow")
+                        + (cur == Prefs.MODE_NO_ROOT ? "\n✓ " + L.s("当前", "current") : ""),
+                dd -> applyCrackMode(Prefs.MODE_NO_ROOT));
+
+        d.addHint(L.s("Shizuku 是目前免 root 的最佳方案：\n"
+                        + "先在 Shizuku 应用里激活一次（用 ADB 或 root），\n"
+                        + "然后回到这里授权即可。重启手机后需要重新激活。",
+                "Shizuku is the best root-free option:\n"
+                        + "activate it once in the Shizuku app (via ADB or root),\n"
+                        + "then grant permission here. Re-activation is needed after a reboot."));
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
+    }
+
+    /** 空状态提示 */
+    private void updateEmptyHint() {
+        if (connectEmptyHint == null) return;
+        boolean empty = streamBuffer.length() == 0;
+        connectEmptyHint.setVisibility(empty ? View.VISIBLE : View.GONE);
+        if (empty) {
+            boolean ready = targetNet != null && currentDict != null && !currentDict.isEmpty();
+            connectEmptyHint.setText(ready
+                    ? L.s("准备就绪\n点下面的「▶ 开始」",
+                            "Ready\nTap “▶ Start” below")
+                    : L.s("先选目标和字典\n（点上面两行可以更换）",
+                            "Pick a target and a dictionary first\n(tap the lines above to change)"));
+        }
     }
 
     /** 智能排序开关外观 */
@@ -857,17 +1152,41 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 破解页显示当前模式 */
+    private void updateConnectMode() {
+        if (connectModeView == null) return;
+        int mode = Prefs.mode(this);
+        String label;
+        int color;
+        if (mode == Prefs.MODE_SHIZUKU) {
+            label = L.s("Shizuku", "Shizuku");
+            color = Color.parseColor("#64B5F6");
+        } else if (mode == Prefs.MODE_NO_ROOT) {
+            label = L.s("普通（手动确认）", "Normal (manual)");
+            color = AMBER;
+        } else {
+            label = L.s("Root", "Root");
+            color = ACCENT;
+        }
+        connectModeView.setText(L.f("执行方式: %s   ·   实测 %s 条/秒   ·   点此更改",
+                "Mode: %s   ·   %s/s   ·   tap to change",
+                label, Prefs.avgRateLabel(this)));
+        connectModeView.setTextColor(color);
+    }
+
     /** 破解页显示当前选中的字典 */
     private void updateConnectDict() {
         if (connectDictView == null) return;
         if (currentDict == null || currentDict.isEmpty()) {
-            connectDictView.setText(L.s("字典: 未选择 —— 请先去「审计」页加载或生成", "Dictionary: none — load or generate one in the Audit tab"));
+            connectDictView.setText(L.s("未选择字典 —— 点这里选择",
+                    "No dictionary — tap to select"));
             connectDictView.setTextColor(TEXT_DIM);
         } else {
-            connectDictView.setText(L.s("字典: ", "Dictionary: ") + currentDictName
-                    + "（" + currentDict.size() + L.s(" 条）", " entries)"));
+            connectDictView.setText(currentDictName + "   ·   "
+                    + currentDict.size() + L.s(" 条", " entries"));
             connectDictView.setTextColor(OK_GREEN);
         }
+        updateEmptyHint();
     }
 
     /** 服务状态回调 */
@@ -885,9 +1204,19 @@ public class MainActivity extends Activity {
         public void onAttempt(int index, int total, String candidate) {
             ui.post(() -> {
                 if (connectProgress == null) return;
-                connectProgress.setProgress(total > 0 ? (index - 1f) / total : 0f);
-                connectProgress.setText(L.f("正在尝试 %d / %d", "Trying %d / %d", index, total), "");
-                connectProgress.setSubText(L.f("当前候选: %s", "Current: %s", candidate));
+                java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
+                        new java.util.ArrayList<>();
+                float outer = total > 0 ? (index - 1f) / total : 0f;
+                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        outer, L.f("整个字典 %.0f%%", "whole %.0f%%", outer * 100)));
+                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        outer, L.f("当前位置 %d / %d", "at %d / %d", index, total)));
+                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(outer, ""));
+                connectProgress.setStages(st);
+                connectProgress.setDone(false);
+                connectProgress.setText(
+                        L.f("正在尝试 %d / %d", "Trying %d / %d", index, total),
+                        L.f("当前候选: %s", "Current: %s", candidate));
             });
         }
 
@@ -903,11 +1232,22 @@ public class MainActivity extends Activity {
         public void onProgress(int tested, int total, double rate, long etaMs) {
             ui.post(() -> {
                 if (connectProgress == null) return;
-                connectProgress.setProgress(total > 0 ? (float) tested / total : 0f);
+                float outer = total > 0 ? (float) tested / total : 0f;
                 String eta = etaMs < 0 ? "计算中" : formatDuration(etaMs);
-                connectProgress.setText(L.f("已试 %d / %d", "Tried %d / %d", tested, total), "");
-                connectProgress.setSubText(L.f("速率 %.2f 条/秒   预计剩余 %s",
-                        "%.2f/s   %s remaining", rate, eta));
+                java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
+                        new java.util.ArrayList<>();
+                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        outer, L.f("整个字典 %.0f%%", "whole %.0f%%", outer * 100)));
+                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        outer, L.f("已试 %d / %d", "tried %d / %d", tested, total)));
+                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        outer, L.f("%.2f 条/秒", "%.2f/s", rate)));
+                connectProgress.setStages(st);
+                connectProgress.setDone(false);
+                connectProgress.setText(
+                        L.f("已试 %d / %d", "Tried %d / %d", tested, total),
+                        L.f("速率 %.2f 条/秒   预计剩余 %s",
+                            "%.2f/s   %s remaining", rate, eta));
             });
         }
 
@@ -936,6 +1276,26 @@ public class MainActivity extends Activity {
                             task.dictName, task.dictSize, task.testedThisRun,
                             task.elapsedMs, false, null));
                 }
+                // 进度条收尾：命中整条变绿，停止清空
+                if (connectProgress != null) {
+                    if ("DONE_HIT".equals(outcome)) {
+                        java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> fs =
+                                new java.util.ArrayList<>();
+                        for (int i = 0; i < 3; i++) {
+                            fs.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(1f, ""));
+                        }
+                        connectProgress.setStages(fs);
+                        connectProgress.setDone(true);
+                        connectProgress.setText(
+                                L.s("★ 命中", "★ HIT"),
+                                task.ssid + " = " + (hitPassword == null ? "" : hitPassword));
+                    } else if ("STOPPED".equals(outcome)) {
+                        connectProgress.setDone(false);
+                        connectProgress.setStages(new java.util.ArrayList<>());
+                        connectProgress.setText(
+                                L.s("已停止", "Stopped"), "");
+                    }
+                }
                 refreshQueue();
             });
         }
@@ -946,53 +1306,78 @@ public class MainActivity extends Activity {
         }
     };
 
-    /** 渲染队列 */
+    /** 破解页的候选流日志。切页签会重建界面，所以文本要留在字段里。 */
+    private final StringBuilder streamBuffer = new StringBuilder();
+
+    /** 渲染队列。会保留主滚动位置，避免列表更新后页面乱跳。 */
     private void renderQueue() {
         if (queueBox == null) return;
+        final int keepY = mainScroll != null ? mainScroll.getScrollY() : 0;
         queueBox.removeAllViews();
 
         if (queueCache.isEmpty()) {
-            TextView t = new TextView(this);
-            t.setText(L.s("队列为空。选好目标和字典后点「加入队列并开始」。", "Queue is empty. Pick a target and dictionary, then tap “Add to queue and start”."));
-            t.setTextSize(12);
-            t.setTextColor(TEXT_DIM);
-            t.setBackground(roundBg(SURFACE, 16));
-            t.setPadding(px(16), px(16), px(16), px(16));
-            queueBox.addView(t);
+            // 没任务时不占位置 —— 空的时候放一块提示反而乱
+            syncButtons();
+            restoreScroll(keepY);
             return;
         }
 
-        // 顶部汇总条：一眼看清有几条在跑、几条暂停、几条待办
+        // 任务多于 1 个才显示汇总条
+        if (queueCache.size() > 1) {
+            queueBox.addView(summaryBar());
+        }
+        for (TaskQueue.Task task : queueCache) {
+            queueBox.addView(taskCard(task));
+        }
+        syncButtons();
+        restoreScroll(keepY);
+    }
+
+    /**
+     * 恢复主滚动位置。
+     *
+     * 必须 clamp 到内容实际高度内 —— 队列变短后旧位置可能超出，
+     * 会出现整页空白（看起来像"什么都没了"）。
+     */
+    private void restoreScroll(int y) {
+        if (mainScroll == null || y <= 0) return;
+        mainScroll.post(() -> {
+            if (mainScroll.getChildCount() == 0) return;
+            int contentH = mainScroll.getChildAt(0).getHeight();
+            int viewH = mainScroll.getHeight();
+            int max = Math.max(0, contentH - viewH);
+            mainScroll.scrollTo(0, Math.min(y, max));
+        });
+    }
+
+    /** 队列汇总条（只在多任务时出现） */
+    private View summaryBar() {
         int running = 0, paused = 0, pending = 0, done = 0;
         for (TaskQueue.Task t : queueCache) {
             switch (t.state) {
                 case RUNNING: running++; break;
                 case PAUSED: paused++; break;
                 case PENDING: pending++; break;
-                case DONE_HIT: case DONE_MISS: done++; break;
-                default: break;
+                default: done++; break;
             }
         }
-        TextView summary = new TextView(this);
         StringBuilder sb = new StringBuilder();
-        if (running > 0) sb.append(L.f("● 进行中 %d   ", "● Running %d   ", running));
-        if (paused > 0) sb.append(L.f("‖ 已暂停 %d   ", "‖ Paused %d   ", paused));
-        if (pending > 0) sb.append(L.f("○ 待办 %d   ", "○ Pending %d   ", pending));
-        if (done > 0) sb.append(L.f("✓ 已完成 %d", "✓ Done %d", done));
-        if (sb.length() == 0) sb.append(L.s("共 ", "Total ")).append(queueCache.size()).append(" 项");
-        summary.setText(sb.toString().trim());
-        summary.setTextSize(12);
-        summary.setTextColor(running > 0 ? OK_GREEN : (paused > 0 ? AMBER : TEXT_DIM));
-        summary.setBackground(roundBg(Color.parseColor("#1A1A22"), 16));
-        summary.setPadding(px(16), px(12), px(16), px(12));
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.bottomMargin = px(10);
-        queueBox.addView(summary, slp);
+        if (running > 0) sb.append("● ").append(running).append("   ");
+        if (paused > 0) sb.append("‖ ").append(paused).append("   ");
+        if (pending > 0) sb.append("○ ").append(pending).append("   ");
+        if (done > 0) sb.append("✓ ").append(done);
 
-        for (TaskQueue.Task task : queueCache) {
-            queueBox.addView(taskCard(task));
-        }
+        TextView t = new TextView(this);
+        t.setText(sb.toString().trim());
+        t.setTextSize(12);
+        t.setTextColor(running > 0 ? OK_GREEN : (paused > 0 ? AMBER : TEXT_DIM));
+        t.setBackground(roundBg(Color.parseColor("#1A1A22"), 14));
+        t.setPadding(px(14), px(10), px(14), px(10));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = px(8);
+        t.setLayoutParams(lp);
+        return t;
     }
 
     private static final int AMBER = Color.parseColor("#FFA726");
@@ -1052,11 +1437,17 @@ public class MainActivity extends Activity {
         TextView meta = new TextView(this);
         String hit = task.hitPassword == null || task.hitPassword.isEmpty()
                 ? "" : L.f("\n口令: %s", "\nPassphrase: %s", task.hitPassword);
-        meta.setText("字典 " + task.dictName + "（" + io.github.wlmosv_png.wpaforge.audit.DictRule.formatCount(task.dictSize) + "）"
-                + "\n进度 " + task.offset + " / " + task.dictSize
-                + (task.testedThisRun > 0
-                    ? "   本轮试了 " + task.testedThisRun + L.s(" 条", " entries") : "")
-                + hit);
+        String modeTag = task.crackMode == Prefs.MODE_NO_ROOT
+                ? L.s("免 Root", "root-free") : L.s("Root", "Root");
+        meta.setText(L.f("%s 模式\n字典 %s（%s）\n进度 %d / %d%s%s",
+                "%s mode\nDictionary %s (%s)\nProgress %d / %d%s%s",
+                modeTag,
+                task.dictName,
+                io.github.wlmosv_png.wpaforge.audit.DictRule.formatCount(task.dictSize),
+                task.offset, task.dictSize,
+                task.testedThisRun > 0
+                    ? L.f("   本轮试了 %d 条", "   %d tried this run", task.testedThisRun) : "",
+                hit));
         meta.setTextSize(11.5f);
         meta.setTextColor(TaskQueue.State.DONE_HIT == task.state ? OK_GREEN : TEXT_DIM);
         meta.setLineSpacing(px(4), 1f);
@@ -1199,15 +1590,21 @@ public class MainActivity extends Activity {
 
     private void refreshQueue() {
         ui.post(() -> {
-            if (crackService != null) {
-                queueCache.clear();
-                queueCache.addAll(TaskQueue.load(this));
-            } else {
-                queueCache.clear();
-                queueCache.addAll(TaskQueue.load(this));
-            }
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
             renderQueue();
         });
+    }
+
+    /** 队列里第一个进行中/待处理的任务 */
+    private TaskQueue.Task currentTaskFromQueue() {
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING) return t;
+        }
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.PENDING) return t;
+        }
+        return null;
     }
 
     /** 继续一个暂停的任务 */
@@ -1221,14 +1618,16 @@ public class MainActivity extends Activity {
     private void updateTargetLabel() {
         if (connectTargetView == null) return;
         if (targetNet == null) {
-            connectTargetView.setText(L.s("未选择目标 —— 请先在观测页扫描，再点上方按钮选择", "No target selected — scan in the Observe tab, then use the button above."));
+            connectTargetView.setText(L.s("未选择目标 —— 点这里选择",
+                    "No target — tap to select"));
             connectTargetView.setTextColor(TEXT_DIM);
         } else {
-            connectTargetView.setText(targetNet.displayName() + "\n"
-                    + targetNet.bssid + "  ·  ch" + targetNet.channel
-                    + "  ·  " + targetNet.rssi + "dBm  ·  " + targetNet.security);
+            connectTargetView.setText(targetNet.displayName()
+                    + "   " + targetNet.rssi + "dBm   ch" + targetNet.channel
+                    + "   " + securityLabel(targetNet.security));
             connectTargetView.setTextColor(TEXT);
         }
+        updateEmptyHint();
     }
 
     private void showTargetPicker() {
@@ -1314,12 +1713,49 @@ public class MainActivity extends Activity {
             return;
         }
 
-        String issue = RootProber.checkRoot();
-        if (!issue.isEmpty()) {
+        // 按当前模式选择检查器
+        final int mode = Prefs.mode(this);
+        RootProber.CheckResult chk;
+        if (mode == Prefs.MODE_SHIZUKU) {
+            chk = RootProber.checkShizuku(this);
+        } else if (mode == Prefs.MODE_NO_ROOT) {
+            SuggestionProber.CheckResult sc = SuggestionProber.check(this);
+            chk = sc.ok ? new RootProber.CheckResult(true, "", "")
+                    : new RootProber.CheckResult(false, sc.title, sc.detail);
+        } else {
+            chk = RootProber.check(this);
+        }
+        if (!chk.ok) {
             connectStreamView.setText("");
-            appendStreamColored(L.s("Root 模式不可用: ", "Root mode unavailable: ") + issue, DANGER);
-            Toast.makeText(this, issue, Toast.LENGTH_LONG).show();
+            appendStreamColored(L.f("无法开始: %s", "Cannot start: %s", chk.title), DANGER);
+            NetDialog d = new NetDialog(this, chk.title, chk.detail);
+            d.setNegative(L.s("知道了", "Got it"), null);
+            // 给一个「换用其它方式」的快捷入口
+            if (mode != Prefs.MODE_ROOT) {
+                d.setPositive(L.s("改用 Root 模式", "Use root mode"),
+                        dd -> applyCrackMode(Prefs.MODE_ROOT));
+            } else if (android.os.Build.VERSION.SDK_INT >= 26) {
+                d.setPositive(L.s("改用 Shizuku", "Use Shizuku"),
+                        dd -> applyCrackMode(Prefs.MODE_SHIZUKU));
+            }
+            d.show();
             return;
+        }
+
+        // 耗时预估：按实测速度算，比固定假设准
+        {
+            int planned = currentDict.size();
+            String est = Prefs.estimate(this, planned);
+            String rate = Prefs.avgRateLabel(this);
+            boolean sampled = Prefs.hasRateSample(this);
+            appendStream(L.f("模式 %s · 字典 %d 条 · 预计 %s（%s %s 条/秒）",
+                    "Mode %s · %d entries · est. %s (%s %s/s)",
+                    Prefs.modeLabel(this), planned, est,
+                    sampled ? L.s("实测", "measured") : L.s("默认", "default"), rate));
+            if (mode == Prefs.MODE_NO_ROOT) {
+                appendStream(L.s("免 Root 模式下系统会退避，实际可能比预估更慢",
+                        "Root-free mode backs off — it may take longer than estimated"));
+            }
         }
 
         // 记下原网络，跑完连回去
@@ -1328,7 +1764,8 @@ public class MainActivity extends Activity {
         // 入队。crackService 可能还没绑定好（bindService 是异步的），
         // 所以先直接写持久化队列，不依赖服务实例 —— 避免 NPE。
         final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
-                currentDictPath, currentDictName);
+                currentDictPath, currentDictName,
+                targetDictEnabled, smartSortEnabled, Prefs.mode(this));
         queueCache.clear();
         queueCache.addAll(TaskQueue.load(this));
         renderQueue();
@@ -1370,24 +1807,69 @@ public class MainActivity extends Activity {
         return (m / 60) + " 小时 " + (m % 60) + " 分";
     }
 
+    /** 反转候选流的折叠状态 */
+    private void toggleStream() {
+        streamCollapsed = !streamCollapsed;
+        applyStreamHeight();
+        updateFlowHeader();
+    }
+
+    /** 折叠时跟随内容（限 5 行）；展开时占满剩余空间 */
+    private void applyStreamHeight() {
+        if (connectStreamView == null || streamParams == null) return;
+        if (streamCollapsed) {
+            streamParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            streamParams.weight = 0f;
+            connectStreamView.setMaxLines(5);
+            connectStreamView.setSingleLine(false);
+            connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
+        } else {
+            streamParams.height = 0;
+            streamParams.weight = 1f;
+            connectStreamView.setMaxLines(Integer.MAX_VALUE);
+            connectStreamView.setEllipsize(null);
+        }
+        connectStreamView.setLayoutParams(streamParams);
+    }
+
+    /** 刷新头部箭头与行数 */
+    private void updateFlowHeader() {
+        if (flowChevron != null) {
+            flowChevron.setText(streamCollapsed ? "▸" : "▾");
+        }
+        if (flowCount != null) {
+            int lines = 0;
+            for (int i = 0; i < streamBuffer.length(); i++) {
+                if (streamBuffer.charAt(i) == '\n') lines++;
+            }
+            flowCount.setText(lines > 0 ? (lines + " 行") : "");
+        }
+    }
+
     private void appendStream(String line) {
         appendStreamColored(line, TEXT_DIM);
     }
 
     private void appendStreamColored(String line, int color) {
-        if (connectStreamView == null) return;
-        String cur = connectStreamView.getText().toString();
-        String next = cur.isEmpty() ? line : cur + "\n" + line;
-        String[] lines = next.split("\n");
-        if (lines.length > 60) {
-            StringBuilder sb = new StringBuilder();
-            for (int i = lines.length - 60; i < lines.length; i++) {
-                sb.append(lines[i]).append("\n");
-            }
-            next = sb.toString().trim();
+        if (line == null) return;
+        streamBuffer.append(line).append('\n');
+        // 只保留最近 200 行，避免无限增长
+        int lines = 0;
+        for (int i = 0; i < streamBuffer.length(); i++) {
+            if (streamBuffer.charAt(i) == '\n') lines++;
         }
-        connectStreamView.setText(next);
-        connectStreamView.setTextColor(color);
+        if (lines > 200) {
+            int cut = streamBuffer.indexOf("\n", streamBuffer.length() / 2);
+            if (cut > 0) streamBuffer.delete(0, cut + 1);
+        }
+        if (connectStreamView != null) {
+            connectStreamView.setText(streamBuffer.toString().trim());
+            connectStreamView.setTextColor(color);
+            updateFlowHeader();
+            // 注意：不要在这里做 fullScroll，那会把整个页面的滚动位置带跑，
+            // 表现就是"切个页签回来内容全空了"。候选流本身是自适应的，
+            // 让用户自己滑。
+        }
     }
 
     // ---------------- 设置页 ----------------
@@ -1395,14 +1877,76 @@ public class MainActivity extends Activity {
     private void buildSettingsTab() {
         if (radar != null) radar.stopSpin();
 
-content.addView(sectionLabel(L.s("语言", "Language")));
+pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
+
+        TextView modeInfo = new TextView(this);
+        modeInfo.setTextSize(12);
+        modeInfo.setLineSpacing(px(4), 1f);
+        modeInfo.setBackground(roundBg(SURFACE, 18));
+        modeInfo.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(modeInfo);
+
+        LinearLayout modeRow = new LinearLayout(this);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        modeRow.setPadding(0, px(10), 0, 0);
+        Button rootMode = secondaryButton(L.s("Root 模式", "Root mode"), ACCENT);
+        rootMode.setOnClickListener(v -> applyCrackMode(Prefs.MODE_ROOT));
+        modeRow.addView(rootMode, twoColParams(8));
+        Button noRootMode = secondaryButton(L.s("免 Root", "Root-free"), OK_GREEN);
+        noRootMode.setOnClickListener(v -> applyCrackMode(Prefs.MODE_NO_ROOT));
+        modeRow.addView(noRootMode, twoColParams(0));
+        pageSettings.addView(modeRow);
+
+        // 根据当前模式填充说明
+        {
+            int m = Prefs.mode(this);
+            StringBuilder sb = new StringBuilder();
+            if (m == Prefs.MODE_NO_ROOT) {
+                sb.append(L.s("当前: 免 Root 模式", "Current: root-free mode")).append("\n\n");
+                sb.append(L.s(
+                        "通过系统的「网络建议」接口提交候选，系统自己去连。\n"
+                        + "优点：不需要 root。\n"
+                        + "缺点：\n"
+                        + "· 首次会弹一次系统授权框，要点「允许」\n"
+                        + "· 系统对频繁失败会退避，速度比 Root 模式慢不少\n"
+                        + "· 系统会在通知栏显示连接尝试\n"
+                        + "· 需要 Android 11 或更高版本",
+                        "Submits candidates via the system's network-suggestion API "
+                        + "and lets the system connect for you.\n"
+                        + "Pros: no root needed.\n"
+                        + "Cons:\n"
+                        + "· a one-time system permission dialog appears on first use\n"
+                        + "· the system backs off after repeated failures, so it is slower\n"
+                        + "· connection attempts show in the notification shade\n"
+                        + "· requires Android 11 or higher"));
+            } else {
+                sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
+                sb.append(L.s(
+                        "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
+                        + "实测约 1 秒/条，且进度和暂停都可控。\n"
+                        + "需要设备已 root 并给本应用授权。",
+                        "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
+                        + "Measured about 1 second per attempt, with precise progress and pause.\n"
+                        + "Requires a rooted device with root granted to this app."));
+            }
+            sb.append("\n\n").append(L.f("当前实测速度: %s 条/秒",
+                    "Measured: %s per second", Prefs.avgRateLabel(this)));
+            if (!Prefs.hasRateSample(this)) {
+                sb.append(L.s("（还没有样本，这是模式默认值）",
+                        " (no samples yet — mode default)"));
+            }
+            modeInfo.setText(sb.toString());
+            modeInfo.setTextColor(m == Prefs.MODE_NO_ROOT ? OK_GREEN : ACCENT);
+        }
+
+        pageSettings.addView(sectionLabel(L.s("语言", "Language")));
 
         languageBtn = makeButton(L.f("语言: %s", "Language: %s",
                 L.modeLabel(this)), Color.parseColor("#2A2A36"));
         languageBtn.setOnClickListener(v -> showLanguagePicker());
-        content.addView(languageBtn);
+        pageSettings.addView(languageBtn);
 
-                content.addView(sectionLabel(L.s("破解设置", "Crack settings")));
+                pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));
 
         TextView speedInfo = new TextView(this);
         speedInfo.setText(L.s("破解速度由目标路由器决定，实测约 1 秒/条。",
@@ -1415,43 +1959,43 @@ content.addView(sectionLabel(L.s("语言", "Language")));
         speedInfo.setLineSpacing(px(4), 1f);
         speedInfo.setBackground(roundBg(SURFACE, 18));
         speedInfo.setPadding(px(18), px(16), px(18), px(16));
-        content.addView(speedInfo);
+        pageSettings.addView(speedInfo);
 
         Button toAuthor = makeButton(L.s("关于我 / 我的其它项目", "About me / my other projects"), ACCENT);
         toAuthor.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, AboutActivity.class)));
-        content.addView(toAuthor);
+        pageSettings.addView(toAuthor);
 
-        content.addView(sectionLabel(L.s("工具", "Tools")));
+        pageSettings.addView(sectionLabel(L.s("工具", "Tools")));
 
         Button saved = makeButton(L.s("本机已存 WiFi 自查", "Inspect saved Wi-Fi"), Color.parseColor("#4CAF50"));
         saved.setOnClickListener(v -> showSavedWifi());
-        content.addView(saved);
+        pageSettings.addView(saved);
 
         Button hist = makeButton(L.s("破解记录", "Crack history"), ACCENT);
         hist.setOnClickListener(v -> showHistory());
-        content.addView(hist);
+        pageSettings.addView(hist);
 
         Button exp = makeButton(L.s("导出记录", "Export records"), Color.parseColor("#5A5A66"));
         exp.setOnClickListener(v -> doExport());
-        content.addView(exp);
+        pageSettings.addView(exp);
 
-        content.addView(sectionLabel(L.s("使用边界", "Scope of use")));
+        pageSettings.addView(sectionLabel(L.s("使用边界", "Scope of use")));
 
-        content.addView(infoBlock(L.s("仅对自己有授权的网络使用", "Use only on networks you are authorised for"),
+        pageSettings.addView(infoBlock(L.s("仅对自己有授权的网络使用", "Use only on networks you are authorised for"),
                 L.s("破解会向目标 AP 发起真实的关联请求。对自有网络是自查，", "WPAForge issues real association requests. On your own network that is a self-audit;")
                 + L.s("对未授权网络是违法行为，且路由器侧会留下失败记录。", "on an unauthorised network it is unlawful, and the AP will log the failures.")));
 
-        content.addView(infoBlock(L.s("关于速度", "About speed"),
+        pageSettings.addView(infoBlock(L.s("关于速度", "About speed"),
                 L.s("逐条连接受目标响应速度限制，快的 AP 约 1 秒，慢的可能 5 秒以上。", "Each attempt waits on the target. A fast AP takes ~1s, a slow one 5s or more.")
                 + L.s("字典越大耗时越久 —— 建议先用目标派生 + 智能排序，几百条往往比十万条有效。", "Bigger dictionaries take longer — target derivation plus smart ranking makes a few hundred entries beat a hundred thousand.")));
 
-        content.addView(sectionLabel(L.s("版本", "Version")));
+        pageSettings.addView(sectionLabel(L.s("版本", "Version")));
         TextView ver = new TextView(this);
-        ver.setText("WPAForge 0.5.0 (5)");
+        ver.setText(Ver.labeled(this));
         ver.setTextSize(12);
         ver.setTextColor(TEXT_DIM);
-        content.addView(ver);
+        pageSettings.addView(ver);
     }
 
     /** 圆角胶囊按钮 */
@@ -1507,6 +2051,31 @@ content.addView(sectionLabel(L.s("语言", "Language")));
         return box;
     }
 
+    /** 次级按钮（中等宽度，胶囊） */
+    private Button secondaryButton(String label, int color) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(14);
+        b.setTextColor(color);
+        b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        b.setBackground(roundBg(Color.parseColor("#232330"), 22));
+        b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setMinHeight(0); b.setMinimumHeight(0);
+        b.setStateListAnimator(null);
+        b.setPadding(px(14), px(13), px(14), px(13));
+        return b;
+    }
+
+    /** 两列等分布局参数 */
+    private LinearLayout.LayoutParams twoColParams(int rightMargin) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp.rightMargin = px(rightMargin);
+        lp.bottomMargin = px(4);
+        return lp;
+    }
+
     /** 圆角背景 */
     private android.graphics.drawable.Drawable roundBg(int color, float radiusDp) {
         android.graphics.drawable.GradientDrawable g =
@@ -1527,6 +2096,19 @@ content.addView(sectionLabel(L.s("语言", "Language")));
     }
 
     // ---------------- 本机已存 WiFi 自查 ----------------
+
+    /** 切换破解模式 */
+    private void applyCrackMode(int mode) {
+        if (Prefs.mode(this) == mode) {
+            Toast.makeText(this, L.s("已经是这个模式了", "Already using this mode"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Prefs.setMode(this, mode);
+        Toast.makeText(this, L.f("已切换到: %s", "Switched to: %s",
+                Prefs.modeLabel(this)), Toast.LENGTH_SHORT).show();
+        updateConnectMode();
+    }
 
     /** 语言选择 */
     private void showLanguagePicker() {
@@ -1551,6 +2133,36 @@ content.addView(sectionLabel(L.s("语言", "Language")));
         overridePendingTransition(0, 0);
     }
 
+    /** 刷新观测页的已存 WiFi 卡片文案 */
+    private void updateSavedWifiCard() {
+        if (savedWifiCard == null) return;
+        if (savedWifiTotal < 0) {
+            savedWifiCard.setText(L.s(
+                    "点击自查本机已保存的 WiFi 口令\n"
+                    + "口令由系统明文保存，需 root 读取。\n"
+                    + "只在本机展示，不上传。",
+                    "Tap to audit saved Wi-Fi passphrases\n"
+                    + "Passphrases are stored in plaintext; root is required.\n"
+                    + "Shown locally only, never uploaded."));
+            savedWifiCard.setTextColor(TEXT_DIM);
+            return;
+        }
+        if (savedWifiTotal == 0) {
+            savedWifiCard.setText(L.s("没有读到已保存的网络。\n点击重试。",
+                    "No saved networks found.\nTap to retry."));
+            savedWifiCard.setTextColor(TEXT_DIM);
+            return;
+        }
+        boolean bad = savedWifiWeak > 0;
+        savedWifiCard.setText(L.f(
+                "已保存 %d 个网络，其中 %d 个弱口令\n点击查看明细\n"
+                + "口令只在本机展示，不上传。",
+                "%d saved networks, %d weak passphrases\nTap for details\n"
+                + "Shown locally only, never uploaded.",
+                savedWifiTotal, savedWifiWeak));
+        savedWifiCard.setTextColor(bad ? DANGER : OK_GREEN);
+    }
+
     private void showSavedWifi() {
         final NetDialog dlg = new NetDialog(this, L.s("本机已存 WiFi", "Saved Wi-Fi"),
                 L.s("正在读取系统配置…", "Reading system configuration…"));
@@ -1560,12 +2172,31 @@ content.addView(sectionLabel(L.s("语言", "Language")));
         new Thread(() -> {
             String issue = SavedWifiReader.checkAccess();
             if (!issue.isEmpty()) {
+                ui.post(() -> {
+                    savedWifiTotal = -2;
+                    if (savedWifiCard != null) {
+                        savedWifiCard.setText(L.s(
+                                "无法读取：需要 root\n点击重试",
+                                "Cannot read: root required\nTap to retry"));
+                        savedWifiCard.setTextColor(DANGER);
+                    }
+                });
                 ui.post(() -> dlg.dismiss());
                 ui.post(() -> NetDialog.info(this, L.s("无法读取", "Cannot read"), issue
                         + "\n\n这项功能需要 root，用来读取系统保存的 WiFi 配置。"));
                 return;
             }
             java.util.List<SavedWifiReader.Saved> list = SavedWifiReader.read();
+            int weakCount = 0;
+            for (SavedWifiReader.Saved sw : list) {
+                if (sw.hasPassword() && SavedWifiReader.weaknessScore(sw.password) >= 50) weakCount++;
+            }
+            final int fWeak = weakCount;
+            ui.post(() -> {
+                savedWifiTotal = list.size();
+                savedWifiWeak = fWeak;
+                updateSavedWifiCard();
+            });
             ui.post(() -> dlg.dismiss());
             ui.post(() -> {
                 if (list.isEmpty()) {

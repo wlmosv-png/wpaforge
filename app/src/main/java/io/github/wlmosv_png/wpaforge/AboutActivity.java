@@ -137,7 +137,7 @@ public class AboutActivity extends Activity {
         // ---- 版本 ----
         content.addView(section(L.s("版本", "Version")));
         TextView ver = new TextView(this);
-        ver.setText("WPAForge 0.5.0 (5)");
+        ver.setText(Ver.labeled(this));
         ver.setTextSize(12);
         ver.setTextColor(TEXT_DIM);
         content.addView(ver);

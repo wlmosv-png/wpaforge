@@ -42,12 +42,22 @@ public final class Scanner {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Listener listener;
 
+    private static final String TAG = "WPAForgeScan";
     private BroadcastReceiver receiver;
     private boolean running;
     private long lastScanRequestAt;
     /** 主动 startScan 的最小间隔，Android 限制约 30s，这里给 15s 以免被系统丢弃 */
     private static final long MIN_SCAN_INTERVAL_MS = 15_000L;
     private static final long POLL_INTERVAL_MS = 5_000L;
+    /** 特权通道两次尝试之间的最小间隔，避免频繁起 su 进程 */
+    private static final long PRIV_MIN_INTERVAL_MS = 20_000L;
+
+    /** 上次用特权通道读的时间 */
+    private long lastPrivAt;
+    /** 特权通道是否曾经成功过（成功过就优先用它，避免反复降级失败） */
+    private boolean privEverWorked;
+    /** 上次特权通道失败的原因，供诊断展示 */
+    private volatile String privDiag = "";
 
     public Scanner(Context ctx, Listener listener) {
         this.appCtx = ctx.getApplicationContext();
@@ -138,31 +148,89 @@ public final class Scanner {
         if (now - lastScanRequestAt < MIN_SCAN_INTERVAL_MS) return;
         lastScanRequestAt = now;
         try {
-            wifi.startScan();
-        } catch (Exception ignored) {
-            // SecurityException 等：权限不足时被动读取也会拿不到，由 emit 处理
+            boolean ok = wifi.startScan();
+            if (!ok) {
+                // startScan 返回 false = 系统拒绝了这次扫描
+                // （通常是频率限制：两次扫描间隔太近）
+                android.util.Log.d(TAG, "startScan 被拒绝（可能触发频率限制）");
+            }
+        } catch (SecurityException e) {
+            lastDiag = "SCAN_PERMISSION: " + e.getMessage();
+            android.util.Log.w(TAG, "startScan 权限不足", e);
+        } catch (Exception e) {
+            lastDiag = "SCAN_" + e.getClass().getSimpleName();
+            android.util.Log.w(TAG, "startScan 失败", e);
         }
     }
 
-    /** 读取当前结果并回调 */
+    /** 读取当前结果并回调。空结果时附带诊断，让界面能说清原因。 */
     public void emit() {
         List<NetRecord> records = readNow();
+        if (records.isEmpty()) {
+            String d = lastDiag;
+            if (d.startsWith("PERMISSION")) {
+                listener.onNotice(L.s("读取扫描结果被拒绝：权限不足",
+                        "Reading scan results was denied: missing permission"), true);
+            } else if (d.startsWith("SCAN_PERMISSION")) {
+                listener.onNotice(L.s("发起扫描被拒绝：权限不足",
+                        "Starting a scan was denied: missing permission"), true);
+            } else if ("EMPTY_RESULT".equals(d)) {
+                listener.onNotice(L.s("扫描完成但一个网络都没发现（可能周围确实没有）",
+                        "Scan finished but found nothing nearby"), false);
+            } else if (d.startsWith("NULL") || d.startsWith("WIFI_SERVICE")) {
+                listener.onNotice(L.s("系统没有返回扫描数据",
+                        "The system returned no scan data"), true);
+            }
+        }
         listener.onResults(records);
     }
 
-    /** 同步读一次当前扫描结果 */
+    /** 最近一次读取的诊断信息，供界面展示 */
+    private volatile String lastDiag = "";
+
+    public String lastDiagnostic() {
+        return lastDiag;
+    }
+
+    /**
+     * 同步读一次当前扫描结果。
+     *
+     * 注意：getScanResults 抛异常时**不能静默返回空列表** ——
+     * 那样界面只能显示"还没扫描到网络"，用户根本不知道是权限问题、
+     * Wi-Fi 关着、还是系统限制。这里把原因记下来供界面显示。
+     */
     public List<NetRecord> readNow() {
         List<NetRecord> out = new ArrayList<>();
-        if (wifi == null) return out;
-        List<ScanResult> raw;
-        try {
-            raw = wifi.getScanResults();
-        } catch (Exception e) {
+        if (wifi == null) {
+            lastDiag = "WIFI_SERVICE_NULL";
             return out;
         }
-        if (raw == null) return out;
 
-        // 同名 SSID 只保留信号最强的一条，但把 BSSID 数量记下来
+        List<ScanResult> raw = null;
+        try {
+            raw = wifi.getScanResults();
+        } catch (SecurityException e) {
+            // 权限不足是最常见的原因
+            lastDiag = "PERMISSION: " + e.getMessage();
+            android.util.Log.w(TAG, "getScanResults 权限不足", e);
+            return fallbackOr(out);
+        } catch (Exception e) {
+            lastDiag = e.getClass().getSimpleName() + ": " + e.getMessage();
+            android.util.Log.w(TAG, "getScanResults 失败", e);
+            return fallbackOr(out);
+        }
+
+        if (raw == null) {
+            lastDiag = "NULL_RESULT";
+            return fallbackOr(out);
+        }
+        if (raw.isEmpty()) {
+            lastDiag = "EMPTY_RESULT";
+            return fallbackOr(out);
+        }
+        lastDiag = "OK(" + raw.size() + ")";
+
+        // 同名 SSID 只保留信号最强的一条
         Map<String, NetRecord> best = new LinkedHashMap<>();
         for (ScanResult sr : raw) {
             if (sr == null) continue;
@@ -184,6 +252,60 @@ public final class Scanner {
         out.addAll(best.values());
         Collections.sort(out, (a, b) -> Integer.compare(b.rssi, a.rssi));
         return out;
+    }
+
+    /**
+     * 普通 API 拿不到东西时的兜底：走 root / Shizuku 读系统扫描结果。
+     *
+     * 为什么需要这条：
+     *   部分 ROM（ColorOS 等）上 getScanResults() 会**静默返回空** ——
+     *   不抛异常、不报错，界面只能干显示"还没扫描到网络"。
+     *   而本工具本来就有特权通道，用它跑 `cmd wifi list-scan-results`
+     *   拿的是系统权威数据，实测比普通 API 更完整。
+     *
+     * 触发条件（三者同时满足才走，避免无谓开销）：
+     *   · 普通 API 这一轮确实没读到网络
+     *   · 距上次特权读取超过 PRIV_MIN_INTERVAL_MS
+     *   · 上次特权读取成功过，或还没试过
+     */
+    private List<NetRecord> readPrivilegedIfNeeded() {
+        long now = System.currentTimeMillis();
+        if (now - lastPrivAt < PRIV_MIN_INTERVAL_MS) return null;
+        lastPrivAt = now;
+
+        try {
+            List<NetRecord> priv = PrivScanReader.read(false);
+            if (priv != null && !priv.isEmpty()) {
+                privEverWorked = true;
+                privDiag = "";
+                return priv;
+            }
+            privDiag = PrivScanReader.lastChannel().isEmpty()
+                    ? "PRIV_UNAVAILABLE"        // 没有可用通道（没 root、Shizuku 没跑）
+                    : "PRIV_EMPTY";             // 通道在，但系统也没数据
+        } catch (Throwable t) {
+            privDiag = "PRIV_ERR:" + t.getClass().getSimpleName();
+        }
+        return null;
+    }
+
+    /** 特权通道诊断信息，供界面/日志展示 */
+    public String privilegedDiagnostic() {
+        return privDiag;
+    }
+
+    /**
+     * 普通 API 读不到时的统一出口：
+     * 先试特权通道，拿到就用特权数据，拿不到就返回原来的空列表。
+     * 这样调用方（emit / 界面）完全不用感知通道差异。
+     */
+    private List<NetRecord> fallbackOr(List<NetRecord> empty) {
+        List<NetRecord> priv = readPrivilegedIfNeeded();
+        if (priv != null && !priv.isEmpty()) {
+            lastDiag = "PRIV(" + priv.size() + ")";
+            return priv;
+        }
+        return empty;
     }
 
     public void stop() {

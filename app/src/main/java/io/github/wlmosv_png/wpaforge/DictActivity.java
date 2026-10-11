@@ -14,6 +14,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -116,38 +117,66 @@ public class DictActivity extends Activity {
         root.addView(head);
 
         // 操作区：两行三列，全部可见，不需要横向滚动
-        LinearLayout barWrap = new LinearLayout(this);
-        barWrap.setOrientation(LinearLayout.VERTICAL);
-        barWrap.setPadding(px(14), px(10), px(14), px(6));
+        // 【收拢】原来这里是两行六个大按钮，占了屏幕上部一整块，
+        // 而六个功能里有四个一周用不到一次。
+        // 现在全部收进右下角的悬浮按钮，列表直接顶到标题下面。
+        FrameLayout stage = new FrameLayout(this);
 
-        LinearLayout row1 = new LinearLayout(this);
-        row1.setOrientation(LinearLayout.HORIZONTAL);
-        row1.addView(actionBtn(L.s("新建字典", "New dictionary"), L.s("空白普通表", "Blank list"), v -> dialogNewPlain()), weight1());
-        row1.addView(actionBtn(L.s("新建规则", "New rule"), L.s("区间批量生成", "Range-generated"), v -> dialogNewRule()), weight1());
-        row1.addView(actionBtn(L.s("导入文件", "Import file"), L.s("从手机选", "Pick from device"), v -> pickFile()), weight1());
-        barWrap.addView(row1);
-
-        LinearLayout row2 = new LinearLayout(this);
-        row2.setOrientation(LinearLayout.HORIZONTAL);
-        row2.setPadding(0, px(9), 0, 0);
-        row2.addView(actionBtn(L.s("在线字典", "Online sources"), L.s("公开来源", "Public sources"), v -> showOnlineSources()), weight1());
-        row2.addView(actionBtn(L.s("合并所选", "Merge selected"), L.s("自动去重", "Auto de-duplicated"), v -> doMerge()), weight1());
-        row2.addView(actionBtn(L.s("更多", "More"), L.s("刷新 / 目录", "Refresh / folder"), v -> showMoreMenu()), weight1());
-        barWrap.addView(row2);
-
-        root.addView(barWrap);
-
-        // 列表
         ScrollView sv = new ScrollView(this);
         listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
-        listBox.setPadding(px(14), 0, px(14), px(24));
+        listBox.setPadding(px(14), px(8), px(14), px(96));
         sv.addView(listBox, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(sv, new LinearLayout.LayoutParams(
+        stage.addView(sv, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        Button fab = new Button(this);
+        fab.setText("+");
+        fab.setAllCaps(false);
+        fab.setTextSize(24);
+        fab.setTextColor(Color.parseColor("#14141A"));
+        fab.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        fab.setMinWidth(0); fab.setMinimumWidth(0);
+        fab.setMinHeight(0); fab.setMinimumHeight(0);
+        fab.setStateListAnimator(null);
+        fab.setPadding(0, 0, 0, px(2));
+        fab.setBackground(roundBg(ACCENT, 30));
+        fab.setOnClickListener(v -> showActionSheet());
+
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(px(58), px(58));
+        flp.gravity = Gravity.BOTTOM | Gravity.END;
+        flp.rightMargin = px(20);
+        flp.bottomMargin = px(24);
+        stage.addView(fab, flp);
+
+        root.addView(stage, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
+    }
+
+    /** 主操作弹窗：原来的六个入口都在这里 */
+    private void showActionSheet() {
+        NetDialog d = new NetDialog(this, L.s("字典操作", "Dictionary actions"), null);
+        d.addItem(L.s("新建字典（空白普通表）", "New dictionary (blank list)"),
+                dd -> dialogNewPlain());
+        d.addItem(L.s("新建规则（区间批量生成）", "New rule (range-generated)"),
+                dd -> dialogNewRule());
+        d.addItem(L.s("从手机导入文件", "Import file from device"),
+                dd -> pickFile());
+        d.addItem(L.s("在线字典来源", "Online dictionary sources"),
+                dd -> showOnlineSources());
+        d.addItem(L.s("合并所选（自动去重）", "Merge selected (de-duplicated)"),
+                dd -> doMerge());
+        d.addItem(L.s("刷新列表", "Refresh list"), dd -> refresh());
+        d.addItem(L.s("打开字典目录", "Open dictionary folder"), dd -> openFolder());
+        d.addItem(L.s("释放内置字典", "Restore built-in dictionaries"),
+                dd -> releaseBuiltin());
+        d.addItem(L.s("清空全部字典", "Delete all dictionaries"),
+                dd -> confirmClearAll());
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
     }
 
     /** 等分权重布局参数 */
@@ -213,7 +242,7 @@ public class DictActivity extends Activity {
                 L.s("将删除字典目录里的所有 txt 文件。此操作不可恢复。", "This deletes every txt file in the dictionary folder. It cannot be undone."));
         d.setNegative(L.s("取消", "Cancel"), null);
         d.setDanger(L.s("全部删除", "Delete all"), dd -> {
-            java.util.List<DictStore.Entry> list = DictStore.scan(DictStore.defaultDir());
+            java.util.List<DictStore.Entry> list = DictStore.scan(DictStore.defaultDir(this));
             int n = 0;
             for (DictStore.Entry e : list) if (e.file.delete()) n++;
             Toast.makeText(this, L.s("删除了 ", "Deleted ") + n + " 个文件", Toast.LENGTH_SHORT).show();
@@ -245,7 +274,7 @@ public class DictActivity extends Activity {
     // ---------------- 列表 ----------------
 
     private void refresh() {
-        File dir = DictStore.defaultDir();
+        File dir = DictStore.defaultDir(this);
         pathLabel.setText(L.s("目录: ", "Directory: ") + dir.getAbsolutePath());
         listBox.removeAllViews();
         selected.clear();
@@ -444,7 +473,7 @@ public class DictActivity extends Activity {
             String name = nameEt.getText().toString().trim();
             if (name.isEmpty()) name = "新字典";
             String body = bodyEt.getText().toString();
-            File f = new File(DictStore.defaultDir(), name + ".txt");
+            File f = new File(DictStore.defaultDir(this), name + ".txt");
             final String fn = name;
             new Thread(() -> {
                 boolean ok = DictStore.save(f, splitLines(body));
@@ -519,7 +548,7 @@ public class DictActivity extends Activity {
             }
             String name = nameEt.getText().toString().trim();
             if (name.isEmpty()) name = "新规则";
-            File f = new File(DictStore.defaultDir(), name + ".txt");
+            File f = new File(DictStore.defaultDir(this), name + ".txt");
             final DictRule rule = r;
             final String fn = name;
             new Thread(() -> {
@@ -588,14 +617,14 @@ public class DictActivity extends Activity {
                             && !orig.toLowerCase().endsWith(".dic")) {
                         orig = orig + ".txt";
                     }
-                    File dst = new File(DictStore.defaultDir(), orig);
+                    File dst = new File(DictStore.defaultDir(this), orig);
 
                     // 重名时加序号，不覆盖已有字典
                     int seq = 1;
                     String base = orig.replaceAll("\\.(txt|lst|dic)$", "");
                     String ext = orig.substring(base.length());
                     while (dst.exists()) {
-                        dst = new File(DictStore.defaultDir(), base + "-" + (seq++) + ext);
+                        dst = new File(DictStore.defaultDir(this), base + "-" + (seq++) + ext);
                     }
 
                     try (InputStream in = getContentResolver().openInputStream(u);
@@ -679,7 +708,7 @@ public class DictActivity extends Activity {
         dlg.setPositive(L.s("合并", "Merge"), d -> {
             String name = et.getText().toString().trim();
             if (name.isEmpty()) name = L.s("合并字典", "Merged dictionary");
-            File target = new File(DictStore.defaultDir(), name + ".txt");
+            File target = new File(DictStore.defaultDir(this), name + ".txt");
             new Thread(() -> {
                 int n = DictStore.merge(files, target, 500000);
                 ui.post(() -> {
@@ -758,7 +787,7 @@ public class DictActivity extends Activity {
         prog.setNegative(L.s("后台继续", "Continue in background"), null);
         prog.show();
 
-        new Thread(() -> DictSources.download(src, DictStore.defaultDir(),
+        new Thread(() -> DictSources.download(src, DictStore.defaultDir(this),
                 new DictSources.Progress() {
                     @Override public void onStart(int totalBytes) {
                         ui.post(() -> tv.setText(totalBytes > 0
@@ -793,15 +822,54 @@ public class DictActivity extends Activity {
                 })).start();
     }
 
+    /**
+     * 打开字典目录。
+     *
+     * 没有通用的「打开文件夹」Intent，各 ROM 支持不同，所以多路尝试：
+     *   1. 交给系统文件管理器（多数 ROM 认 resource/folder）
+     *   2. 退而用 ACTION_GET_CONTENT 打开该目录所在位置
+     *   3. 全失败则把路径复制到剪贴板并说明在哪找
+     */
     private void openFolder() {
+        File dir = DictStore.defaultDir(this);
+        String path = dir.getAbsolutePath();
+
+        // 1) 标准文件夹 Intent
         try {
             Intent i = new Intent(Intent.ACTION_VIEW);
-            i.setDataAndType(Uri.parse("file://" + DictStore.defaultDir()),
-                    "resource/folder");
+            i.setDataAndType(Uri.parse("file://" + path), "resource/folder");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(i);
-        } catch (Exception e) {
-            Toast.makeText(this, L.s("目录: ", "Directory: ") + DictStore.defaultDir(), Toast.LENGTH_LONG).show();
-        }
+            return;
+        } catch (Exception ignored) {}
+
+        // 2) 试 DocumentsUI 打开父目录
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(Uri.parse("file://" + (dir.getParent() != null
+                    ? dir.getParent() : path)), "vnd.android.document/directory");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            return;
+        } catch (Exception ignored) {}
+
+        // 3) 兜底：复制路径，并说清楚怎么去
+        try {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("path", path));
+            }
+        } catch (Exception ignored) {}
+
+        NetDialog d = new NetDialog(this, L.s("字典目录", "Dictionary folder"),
+                path);
+        d.addHint(L.s("没有应用能直接打开文件夹，路径已复制到剪贴板。\n"
+                        + "你可以用「文件管理」进入这个路径查看或替换字典文件。",
+                "No app can open folders directly. The path is copied to the clipboard.\n"
+                        + "Use a file manager to browse it."));
+        d.setNegative(L.s("知道了", "Got it"), null);
+        d.show();
     }
 
     private void showDialog(String title, String body) {

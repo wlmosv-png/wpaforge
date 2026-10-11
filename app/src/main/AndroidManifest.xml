@@ -6,9 +6,13 @@
         android:minSdkVersion="26"
         android:targetSdkVersion="35" />
 
-    <!-- Android 13+ 扫描周边 WiFi 需要此项 -->
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
+    <!-- Android 13+ 扫描周边 WiFi 需要此项。
+         注意：不能加 android:usesPermissionFlags="neverForLocation" ——
+         加了之后系统认为本应用不需要位置来推断，会在部分 ROM 上
+         把扫描结果里的 SSID/BSSID 抹掉（或直接返回空列表），
+         表现为"扫描到 0 个网络"但权限全部已授予。
+         WPAForge 需要完整 SSID 做字典派生，所以必须不带这个标志。 -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
     <!-- Android 12 及以下依赖定位权限才能拿到扫描结果 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -23,11 +27,30 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- ================= Shizuku 集成（必须的三件套）=================
+         缺任何一样都会表现为：
+           · 应用不出现在 Shizuku 的「已授权应用」列表里
+           · Shizuku.pingBinder() 永远返回 false
+         这三条来自 Shizuku 官方 API 模块的 manifest，也与其 demo 一致。 -->
+
+    <!-- ① 声明使用 Shizuku 的 API 权限。不声明的话 Shizuku 不会把这
+         个应用列入可授权列表。 -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!-- Android 11+ 包可见性：不声明就查不到 Shizuku 是否安装，
+         会导致"明明装了却提示去下载"。 -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="moe.shizuku.manager" />
+        <package android:name="rikka.shizuku" />
+    </queries>
+
     <uses-feature
         android:name="android.hardware.wifi"
         android:required="false" />
 
     <application
+        android:name=".App"
         android:label="WPAForge"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -60,5 +83,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- ② 声明支持 Shizuku V3 协议（用了新版 API 就需要） -->
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
+
+        <!-- ③ Shizuku 的 binder 是通过这个 ContentProvider 递给客户端的，
+             不是普通 Service。没有它，Shizuku.getBinder() 拿不到东西，
+             pingBinder() 永远是 false，也就永远不会出现在授权列表里。
+             如果只想支持 Sui，可以移除本 provider。 -->
+        <provider
+            android:name="io.github.wlmosv_png.wpaforge.shizuku.SafeShizukuProvider"
+            android:authorities="io.github.wlmosv_png.wpaforge.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
     </application>
 </manifest>

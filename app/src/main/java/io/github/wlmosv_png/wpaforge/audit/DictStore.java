@@ -2,6 +2,8 @@ package io.github.wlmosv_png.wpaforge.audit;
 
 import io.github.wlmosv_png.wpaforge.L;
 
+import android.content.Context;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -46,9 +48,107 @@ public final class DictStore {
         }
     }
 
-    /** 默认扫描目录 */
+    /**
+     * 字典目录。
+     *
+     * 三级降级，因为 Android 10+ 的分区存储可能让应用写不了公共 Download 目录：
+     *   1. /sdcard/Download/WPAForge-dict/   用户找得到（首选）
+     *   2. 应用专属外部目录                   一定可写，文件管理器也能看到
+     *   3. 应用内部目录                       兜底
+     *
+     * 结果会缓存，避免每次调用都做 IO。
+     */
+    private static File cachedDir = null;
+    private static int cachedTier = 0;
+    /** 用户在设置里手动指定过的目录（可选） */
+    private static File userPickedDir = null;
+
+    public static void setDir(File dir) {
+        userPickedDir = dir;
+        cachedDir = null;
+    }
+
+    public static File defaultDir(Context ctx) {
+        if (userPickedDir != null) return userPickedDir;
+        if (cachedDir != null) return cachedDir;
+
+        // 第 1 级：公共 Download
+        File publicDir = new File("/sdcard/Download/WPAForge-dict");
+        if (ensureWritable(publicDir)) {
+            cachedDir = publicDir;
+            cachedTier = 1;
+            return cachedDir;
+        }
+
+        // 第 2 级：应用专属外部目录
+        if (ctx != null) {
+            File ext = ctx.getExternalFilesDir("dict");
+            if (ext != null && ensureWritable(new File(ext, "WPAForge-dict"))) {
+                cachedDir = new File(ext, "WPAForge-dict");
+                cachedTier = 2;
+                return cachedDir;
+            }
+            // 第 3 级：内部目录
+            File inner = new File(ctx.getFilesDir(), "WPAForge-dict");
+            if (ensureWritable(inner)) {
+                cachedDir = inner;
+                cachedTier = 3;
+                return cachedDir;
+            }
+        }
+
+        // 全部失败也要返回一个（后续操作会报错，但至少不是 null）
+        cachedDir = publicDir;
+        cachedTier = 0;
+        return cachedDir;
+    }
+
+    /** 目录是否真的可写（写一个探针文件验证，不只看 mkdir 返回值） */
+    private static boolean ensureWritable(File dir) {
+        try {
+            if (!dir.exists() && !dir.mkdirs()) return false;
+            if (!dir.isDirectory()) return false;
+            File probe = new File(dir, ".wprobe");
+            try (java.io.FileOutputStream f = new java.io.FileOutputStream(probe)) {
+                f.write(1);
+            }
+            //noinspection ResultOfMethodCallIgnored
+            probe.delete();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 当前用的是第几级目录（1/2/3），0 表示全部失败 */
+    public static int dirTier() {
+        if (cachedDir == null) return 0;
+        return cachedTier;
+    }
+
+    /** 目录说明，给界面显示 */
+    public static String dirLabel(Context ctx) {
+        File d = defaultDir(ctx);
+        switch (dirTier()) {
+            case 1: return d.getAbsolutePath();
+            case 2: return d.getAbsolutePath() + "（应用专属目录）";
+            case 3: return d.getAbsolutePath() + "（内部存储）";
+            default: return d.getAbsolutePath() + "（不可写）";
+        }
+    }
+
+    /** 目录不可写时的可读原因 */
+    public static String dirProblem(Context ctx) {
+        int tier = dirTier();
+        if (tier == 0) {
+            return "无法写入任何字典目录。请检查存储权限与剩余空间。";
+        }
+        return dirLabel(ctx);
+    }
+
+    /** 兼容旧签名。没有 Context 时只能尝试公共目录。 */
     public static File defaultDir() {
-        return new File("/sdcard/Download/WPAForge-dict");
+        return defaultDir(null);
     }
 
     /** 旧版本用过的目录，启动时会把里面的东西迁过来 */
@@ -64,8 +164,8 @@ public final class DictStore {
         File[] fs = oldDir.listFiles();
         if (fs == null || fs.length == 0) return 0;
 
-        File dst = defaultDir();
-        if (!dst.exists() && !dst.mkdirs()) return 0;
+        File dst = defaultDir(null);
+        if (!ensureWritable(dst)) return 0;
 
         int moved = 0;
         for (File f : fs) {

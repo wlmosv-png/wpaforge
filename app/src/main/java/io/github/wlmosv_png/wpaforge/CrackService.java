@@ -18,6 +18,7 @@ import java.util.List;
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
+import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
@@ -67,6 +68,13 @@ public class CrackService extends Service {
     private volatile boolean running = false;
     private Thread worker;
     private RootProber prober;
+    /**
+     * 免 root 执行器。**故意声明为 Object** —— SuggestionProber 引用了
+     * API 30 才有的 WifiNetworkSuggestion，如果这里用具体类型，服务类
+     * 一被加载就会去解析它，在低版本设备上直接 NoClassDefFoundError。
+     * 用 Object 装，只在真的要跑免 root 模式时才强转（那时已确认版本）。
+     */
+    private Object sugProberRef;
     private TaskQueue.Task currentTask;
     private List<Candidate> currentDict = new ArrayList<>();
     private long taskStartAt;
@@ -150,8 +158,18 @@ public class CrackService extends Service {
         callbacks.remove(cb);
     }
 
+    /**
+     * 是否正在破解。
+     *
+     * 以**队列状态**为唯一真相，不看 running 标志 ——
+     * running 只表示"工作线程存在"，停止后要等线程自然退出才变 false，
+     * 拿它判断会让 UI 状态滞后，也会让停止按钮失效。
+     */
     public boolean isWorking() {
-        return running;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            if (t.state == TaskQueue.State.RUNNING) return true;
+        }
+        return false;
     }
 
     public TaskQueue.Task current() {
@@ -167,12 +185,16 @@ public class CrackService extends Service {
 
     /** 开始/继续执行队列 */
     public void startQueue() {
-        if (running) return;
+        if (worker != null && worker.isAlive()) {
+            log(L.s("已有任务在运行", "A task is already running"));
+            return;
+        }
         if (!TaskQueue.hasWork(this)) {
             log(L.s("队列里没有待办任务", "No pending tasks in the queue"));
             stopSelfSafe();
             return;
         }
+        stopRequested = false;
         running = true;
         worker = new Thread(this::runQueue, "wpaforge-crack");
         worker.start();
@@ -181,37 +203,85 @@ public class CrackService extends Service {
     /** 暂停：当前任务保留进度，队列原地等待 */
     public void pause() {
         if (prober != null) prober.pause();
-        log("正在暂停…");
+        safeInvoke("pause");
+        // 立刻把当前任务标 PAUSED，UI 马上能看到
+        TaskQueue.Task cur = currentTask;
+        if (cur != null && cur.state == TaskQueue.State.RUNNING) {
+            cur.state = TaskQueue.State.PAUSED;
+            TaskQueue.update(this, cur);
+            notifyQueue();
+        }
+        log(L.s("正在暂停…（进度会保留）", "Pausing… (progress kept)"));
     }
 
-    /** 全部停止：当前任务标记为已停止，队列清空执行 */
+    /** 安全调用免 root 执行器的方法（它可能是 null，也可能类型不可用） */
+    private void safeInvoke(String method) {
+        Object o = sugProberRef;
+        if (o == null) return;
+        try {
+            o.getClass().getMethod(method).invoke(o);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 用户点过停止 */
+    private volatile boolean stopRequested = false;
+
+    /**
+     * 立即停止。
+     *
+     * 做法：把正在跑的任务直接标记为 STOPPED（队列是唯一真相，
+     * 改完 UI 立刻能看到），同时通知工作线程退出。
+     * 不动 running 标志 —— 那会和线程状态打架。
+     */
     public void stopAll() {
+        stopRequested = true;
+
         if (prober != null) prober.cancel();
+        safeInvoke("cancel");
+
+        // 当前任务立刻标为已停止
+        TaskQueue.Task cur = currentTask;
+        if (cur != null && cur.state == TaskQueue.State.RUNNING) {
+            cur.state = TaskQueue.State.STOPPED;
+            TaskQueue.update(this, cur);
+        }
+        // 排队中的一并作废（点停止 = 不想跑了）
+        List<TaskQueue.Task> all = TaskQueue.load(this);
+        boolean changed = false;
+        for (TaskQueue.Task t : all) {
+            if (t.state == TaskQueue.State.PENDING) {
+                t.state = TaskQueue.State.STOPPED;
+                changed = true;
+            }
+        }
+        if (changed) TaskQueue.save(this, all);
+
         log(L.s("正在停止…", "Stopping…"));
+        notifyQueue();
     }
 
     // ---------------- 队列执行 ----------------
 
     private void runQueue() {
         try {
-            while (true) {
+            while (!stopRequested) {
                 if (Thread.currentThread().isInterrupted()) break;
                 TaskQueue.Task task = TaskQueue.nextPending(this);
                 if (task == null) break;
                 if (task.state == TaskQueue.State.PAUSED) {
-                    // 暂停状态的任务不自动跑，等用户点继续
-                    log(L.s("任务「", "Task “") + task.ssid + L.s("」处于暂停，跳过", "” is paused, skipping"));
+                    log(L.f("任务「%s」处于暂停，跳过", "Task “%s” is paused, skipping", task.ssid));
                     break;
                 }
                 executeTask(task);
-                if (!running) break;
+                if (stopRequested) break;
             }
         } catch (Exception e) {
-            log(L.s("队列执行异常: ", "Queue execution error: ") + e);
+            log(L.f("队列执行异常: %s", "Queue error: %s", String.valueOf(e)));
         } finally {
             running = false;
             currentTask = null;
             log(L.s("队列已结束", "Queue finished"));
+            notifyQueue();
             stopSelfSafe();
         }
     }
@@ -224,40 +294,47 @@ public class CrackService extends Service {
 
         log(L.s("===== 开始任务: ", "===== Starting task: ") + task.ssid + " =====");
 
-        // 准备候选
-        if (task.dictSize <= 0) {
-            List<Candidate> base;
-            if (task.dictPath != null && !task.dictPath.isEmpty()) {
-                java.io.File f = new java.io.File(task.dictPath);
-                base = DictStore.load(f, 0);
-                log(L.s("加载字典 ", "Loading dictionary ") + task.dictName + " -> " + base.size() + L.s(" 条", " entries"));
-            } else {
-                base = new ArrayList<>();
-            }
-            // 目标派生插到最前
-            TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800);
-            List<Candidate> merged = new ArrayList<>();
-            java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
-            for (Candidate c : dr.candidates) if (seen.add(c.password)) merged.add(c);
-            for (Candidate c : base) if (seen.add(c.password)) merged.add(c);
-            // 智能排序
-            currentDict = SmartSorter.prioritize(task.toNetRecord(), merged, 0);
-            task.dictSize = currentDict.size();
-            TaskQueue.update(this, task);
-        } else {
-            // 续跑：重建候选列表（保证顺序一致）
+        // 准备候选。按任务入队时记录的开关决定，不再无条件叠加。
+        // 续跑时必须用完全相同的规则重建列表，否则 offset 会对不上。
+        {
             List<Candidate> base;
             if (task.dictPath != null && !task.dictPath.isEmpty()) {
                 base = DictStore.load(new java.io.File(task.dictPath), 0);
+                log(L.f("加载字典 %s -> %d 条", "Loaded dictionary %s -> %d entries",
+                        task.dictName, base.size()));
             } else {
                 base = new ArrayList<>();
             }
-            TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800);
-            List<Candidate> merged = new ArrayList<>();
-            java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
-            for (Candidate c : dr.candidates) if (seen.add(c.password)) merged.add(c);
-            for (Candidate c : base) if (seen.add(c.password)) merged.add(c);
-            currentDict = SmartSorter.prioritize(task.toNetRecord(), merged, 0);
+
+            List<Candidate> work = base;
+
+            if (task.useTargetDict) {
+                TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800);
+                if (!dr.candidates.isEmpty()) {
+                    List<Candidate> merged = new ArrayList<>();
+                    java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+                    for (Candidate c : dr.candidates) if (seen.add(c.password)) merged.add(c);
+                    for (Candidate c : base) if (seen.add(c.password)) merged.add(c);
+                    work = merged;
+                    log(L.f("目标派生: 已启用，插入 %d 条候选",
+                            "Target derivation: on, %d inserted", dr.candidates.size()));
+                }
+            } else {
+                log(L.s("目标派生: 已关闭", "Target derivation: off"));
+            }
+
+            if (task.useSmartSort) {
+                work = SmartSorter.prioritize(task.toNetRecord(), work, 0);
+                log(L.s("智能排序: 已启用", "Smart ranking: on"));
+            } else {
+                log(L.s("智能排序: 已关闭", "Smart ranking: off"));
+            }
+
+            currentDict = work;
+            if (task.dictSize <= 0) {
+                task.dictSize = currentDict.size();
+                TaskQueue.update(this, task);
+            }
         }
 
         if (currentDict.isEmpty()) {
@@ -274,10 +351,149 @@ public class CrackService extends Service {
             log(L.s("从第 ", "Resuming from ") + startOffset + L.s(" 条继续", " entries"));
         }
 
-        prober = new RootProber(this);
         final TaskQueue.Task ft = task;
 
-        prober.run(task.toNetRecord(), currentDict, startOffset, new RootProber.Listener() {
+        // 按任务记录的模式选择执行器
+        if (task.crackMode == Prefs.MODE_NO_ROOT) {
+            runNoRoot(task, startOffset);
+        } else {
+            // Root 与 Shizuku 走同一套逻辑，只是执行通道不同
+            runWithRoot(task, startOffset);
+        }
+    }
+
+    /** 免 root 模式执行。低版本设备上会直接拒绝，不加载任何 API 30 的类。 */
+    private void runNoRoot(final TaskQueue.Task ft, int startOffset) {
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            log(L.s("免 Root 模式需要 Android 11 或更高版本",
+                    "Root-free mode requires Android 11 or higher"));
+            ft.state = TaskQueue.State.STOPPED;
+            TaskQueue.update(this, ft);
+            running = false;
+            notifyQueue();
+            stopSelfSafe();
+            return;
+        }
+        try {
+            runNoRootImpl(ft, startOffset);
+        } catch (Throwable t) {
+            // 类加载失败等各种情况都不该让应用挂掉
+            log(L.f("免 Root 模式不可用: %s", "Root-free mode unavailable: %s",
+                    t.getClass().getSimpleName()));
+            ft.state = TaskQueue.State.STOPPED;
+            TaskQueue.update(this, ft);
+            running = false;
+            notifyQueue();
+            stopSelfSafe();
+        }
+    }
+
+    /**
+     * 真正用到 SuggestionProber 的地方。
+     * 只有版本 >= 30 才会走到这里，JVM 才会去解析 WifiNetworkSuggestion。
+     */
+    @android.annotation.SuppressLint("NewApi")
+    private void runNoRootImpl(final TaskQueue.Task ft, int startOffset) {
+        final SuggestionProber sug = new SuggestionProber(this);
+        sugProberRef = sug;
+        log(L.s("模式: 免 Root（通过系统网络建议）", "Mode: root-free (network suggestions)"));
+
+        sug.run(ft.toNetRecord(), currentDict, startOffset, new SuggestionProber.Listener() {
+            @Override
+            public void onBatchStart(int startIndex, int batchSize, int total) {
+                for (UiCallback cb : callbacks) cb.onAttempt(startIndex, total, "…");
+                updateNotification(L.f("正在破解 %s", "Cracking %s", ft.ssid),
+                        L.f("%d / %d", "%d / %d", startIndex, total), startIndex, total);
+            }
+
+            @Override
+            public void onBatchResult(int startIndex, int batchSize, SuggestionProber.Verdict v,
+                                      long ms, String note) {
+                for (UiCallback cb : callbacks) {
+                    cb.onAttemptResult(L.f("第 %d-%d 条", "#%d-%d", startIndex,
+                            startIndex + batchSize - 1), false, ms, note);
+                }
+            }
+
+            @Override
+            public void onHit(String ssid, String password) {
+                for (UiCallback cb : callbacks) cb.onTaskDone(ft, password, "DONE_HIT");
+            }
+
+            @Override
+            public void onProgress(int tested, int total, double rate, long etaMs) {
+                for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
+            }
+
+            @Override
+            public void onFinished(SuggestionProber.Outcome outcome, int tested, int offset,
+                                   String hitPassword) {
+                sugProberRef = null;
+                finishTask(ft, outcome.name(), tested, offset, hitPassword);
+            }
+
+            @Override
+            public void onBlocked(String title, String detail) {
+                log(L.f("无法开始: %s", "Cannot start: %s", title));
+                for (UiCallback cb : callbacks) cb.onLog(title + "\n" + detail);
+                sugProberRef = null;
+                ft.state = TaskQueue.State.STOPPED;
+                TaskQueue.update(CrackService.this, ft);
+                running = false;
+                notifyQueue();
+                stopSelfSafe();
+            }
+        });
+    }
+
+    /** 统一收尾 */
+    private void finishTask(TaskQueue.Task ft, String outcomeName,
+                            int tested, int offset, String hitPassword) {
+        ft.offset = offset;
+        ft.testedThisRun += tested;
+        ft.elapsedMs += System.currentTimeMillis() - taskStartAt;
+
+        if (hitPassword != null && !hitPassword.isEmpty()) {
+            ft.hitPassword = hitPassword;
+            ft.state = TaskQueue.State.DONE_HIT;
+            log(L.f("★ 命中！%s = %s", "★ HIT! %s = %s", ft.ssid, hitPassword));
+            // 记录实测速度
+            if (tested > 0) {
+                Prefs.recordRate(this, System.currentTimeMillis() - taskStartAt, tested);
+            }
+        } else if ("PAUSED".equals(outcomeName)) {
+            ft.state = TaskQueue.State.PAUSED;
+            log(L.f("已暂停，进度 %d/%d", "Paused at %d/%d", offset, ft.dictSize));
+        } else if ("STOPPED".equals(outcomeName)) {
+            ft.state = TaskQueue.State.STOPPED;
+            log(L.f("已停止，进度 %d/%d", "Stopped at %d/%d", offset, ft.dictSize));
+        } else {
+            ft.state = TaskQueue.State.DONE_MISS;
+            log(L.f("任务完成，未命中（试了 %d 条）",
+                    "Task complete, no match (%d tried)", tested));
+            if (tested > 0) {
+                Prefs.recordRate(this, System.currentTimeMillis() - taskStartAt, tested);
+            }
+        }
+
+        TaskQueue.update(this, ft);
+        for (UiCallback cb : callbacks) cb.onTaskDone(ft, hitPassword, ft.state.name());
+        notifyQueue();
+
+        if (ft.state == TaskQueue.State.STOPPED) running = false;
+    }
+
+    /** 走 shell 通道执行（Root 或 Shizuku） */
+    private void runWithRoot(final TaskQueue.Task ft, int startOffset) {
+        boolean shizuku = ft.crackMode == Prefs.MODE_SHIZUKU;
+        prober = new RootProber(this, shizuku);
+        log(shizuku
+                ? L.s("模式: Shizuku（以 shell 身份执行 cmd wifi）",
+                      "Mode: Shizuku (cmd wifi as shell user)")
+                : L.s("模式: Root（通过 su 执行 cmd wifi）",
+                      "Mode: root (cmd wifi via su)"));
+
+        prober.run(ft.toNetRecord(), currentDict, startOffset, new RootProber.Listener() {
             @Override
             public void onAttemptStart(int index, int total, String candidate) {
                 for (UiCallback cb : callbacks) cb.onAttempt(index, total, candidate);
@@ -345,7 +561,7 @@ public class CrackService extends Service {
         });
 
         // 暂停时整个队列也跟着停
-        if (task.state == TaskQueue.State.PAUSED) {
+        if (ft.state == TaskQueue.State.PAUSED) {
             log(L.s("队列已暂停", "Queue paused"));
             running = false;
         }
@@ -430,6 +646,10 @@ public class CrackService extends Service {
 
     private void stopSelfSafe() {
         try {
+            // 先把通知撤掉再退出前台，否则会残留一条"正在初始化…"
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.cancel(NOTI_ID);
             if (foregroundOk) stopForeground(true);
         } catch (Exception ignored) {}
         foregroundOk = false;

@@ -121,7 +121,26 @@ public final class DictSources {
     public static void download(Source src, File destDir, Progress cb) {
         HttpURLConnection conn = null;
         try {
-            if (!destDir.exists()) destDir.mkdirs();
+            if (destDir == null) {
+                cb.onError("字典目录不可用：无法写入任何存储位置");
+                return;
+            }
+            if (!destDir.exists() && !destDir.mkdirs()) {
+                cb.onError("无法创建字典目录: " + destDir.getAbsolutePath()
+                        + "\n请检查存储权限或剩余空间");
+                return;
+            }
+            // 写探针确认真的可写，否则文件选择器会给出难懂的 ENOENT
+            try {
+                File probe = new File(destDir, ".probe");
+                try (FileOutputStream f = new FileOutputStream(probe)) { f.write(1); }
+                //noinspection ResultOfMethodCallIgnored
+                probe.delete();
+            } catch (Exception e) {
+                cb.onError("字典目录不可写: " + destDir.getAbsolutePath()
+                        + "\n" + e.getClass().getSimpleName());
+                return;
+            }
             String safeName = src.name.replaceAll("[\\\\/:*?\"<>|]", "_");
             File out = new File(destDir, safeName + ".txt");
 

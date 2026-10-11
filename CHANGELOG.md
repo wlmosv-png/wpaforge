@@ -4,6 +4,39 @@
 
 ---
 
+## [1.4.1] - 2026-10-11
+
+**Shizuku 模式改用 binder 直调，绕开 `cmd wifi` 字符串命令。**
+
+你另一台手机的连接自测里，【5/6】显示「新建配置 netId: -1」——
+命令发出去了，但系统根本没建出目标配置。实测「连一个不存在的 SSID」
+配置都能建出来（netId 不会是 -1），所以 netId=-1 只可能是
+`cmd wifi connect-network` 这条字符串命令**被 shell 转义/ROM 差异吞掉了**。
+
+`cmd wifi` 在不同 ROM 上行为不一、对 SSID/密码里的特殊字符敏感。
+这是最大不稳定源。
+
+### 改动
+
+Shizuku 模式下，连接动作从「shell 字符串命令」改成 **binder 直调**：
+
+    IWifiManager.addOrUpdateNetwork(WifiConfiguration) → 返回 netId
+    IWifiManager.enableNetwork(netId, true)             → 发起连接
+
+这是参考项目 bszapp 的核心做法：把 WifiConfiguration 对象直接交给系统，
+不经 shell 拼接，SSID/密码里有什么字符都不影响。netId 直接拿到。
+
+Root 模式仍走 `cmd wifi`（本机实测可用）。
+
+### 判定不变
+
+仍是双保险：status 的「SSID + COMPLETED + IP」为主，
+日志「associate 之后 Key negotiation completed」为辅。
+
+测试 275 项全过。
+
+---
+
 ## [1.4.0] - 2026-10-11
 
 **这版的目标：让一个普通用户装上去就能用，不再需要懂 root / Shizuku。**

@@ -2180,11 +2180,29 @@ public class MainActivity extends Activity {
                         .append(cmdOut == null || cmdOut.trim().isEmpty() ? L.s("（无输出，正常）", "(none, normal)") : cmdOut.trim())
                         .append('\n');
                 long newId = -1;
+                String listDump = null;
                 try {
-                    String ln = sh.exec("cmd wifi list-networks", 5000);
-                    newId = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser.findNetId(ln, ssid);
+                    listDump = sh.exec("cmd wifi list-networks", 5000);
+                    newId = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser.findNetId(listDump, ssid);
                 } catch (Throwable ignored) {}
                 sb.append(L.s("  新建配置 netId: ", "  new netId: ")).append(newId).append('\n');
+                // 把保存列表完整打出来，便于定位「为什么找不到目标 netId」
+                if (newId < 0) {
+                    sb.append(L.s("  ⚠ 没找到目标配置，下面是 list-networks 完整输出:\n",
+                            "  ! target config not found; full list-networks below:\n"));
+                    if (listDump == null || listDump.trim().isEmpty()) {
+                        sb.append("    (空)\n");
+                    } else {
+                        for (String ln : listDump.split("\n")) {
+                            sb.append("    ").append(ln).append('\n');
+                        }
+                    }
+                    // 同时报一下我们输入的 SSID 的字节形态（长度 + 是否有空格）
+                    sb.append("  输入 SSID = [").append(ssid).append("] 长度=")
+                            .append(ssid.length())
+                            .append(" 含空格=").append(ssid.contains(" "))
+                            .append("\n");
+                }
 
                 // ── 步骤 6：观察 15 秒 ──
                 sb.append(L.s("\n【6/6】观察 15 秒\n", "\n[6/6] Watching 15s\n"));

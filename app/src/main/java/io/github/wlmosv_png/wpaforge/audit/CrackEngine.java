@@ -919,12 +919,43 @@ public final class CrackEngine {
         final String ssidBefore = snapshotSsid();
         final long netIdBefore = currentNetId();
 
-        final String cmd = "cmd wifi connect-network "
-                + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
-        final ShellChannel sh = shell;
-        new Thread(() -> {
-            try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
-        }, "wpaforge-engine-conn").start();
+        // ══════════════════════════════════════════════════════════════
+        //  发起连接。
+        //
+        //  Shizuku 模式下改用 **binder 直调**（addOrUpdateNetwork + enableNetwork），
+        //  而不是 `cmd wifi connect-network` 字符串命令。
+        //
+        //  为什么：`cmd wifi` 这条命令在不同 ROM 上行为不一、对 SSID/密码里的
+        //  特殊字符敏感（shell 转义一旦出错，命令就被吞掉，netId 建不出来，
+        //  判定永远失败）。binder 直调是把 WifiConfiguration 直接交给系统，
+        //  返回 netId，不经过 shell 字符串拼接 —— 这是参考项目 bszapp 的核心做法。
+        //
+        //  Root 模式仍走 `cmd wifi`（本机实测可用；Root 下没有 Shizuku 的
+        //  binder 通道可借用）。
+        // ══════════════════════════════════════════════════════════════
+        if (mode == Prefs.MODE_SHIZUKU) {
+            new Thread(() -> {
+                try {
+                    int netId = ShizukuRunner.addOrUpdateNetwork(
+                            target.ssid, password, target.isHidden(), 0);
+                    if (netId != -1) {
+                        ShizukuRunner.enableNetwork(netId);
+                        android.util.Log.i(TAG, "binder 直调: netId=" + netId);
+                    } else {
+                        android.util.Log.w(TAG, "binder addOrUpdateNetwork 失败(-1)");
+                    }
+                } catch (Throwable t) {
+                    android.util.Log.w(TAG, "binder 连接异常: " + t.getClass().getSimpleName());
+                }
+            }, "wpaforge-engine-binder").start();
+        } else {
+            final String cmd = "cmd wifi connect-network "
+                    + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
+            final ShellChannel sh = shell;
+            new Thread(() -> {
+                try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
+            }, "wpaforge-engine-conn").start();
+        }
 
         // 命令后目标会得到一个新 netId（配置已在此之前删净并回读确认）。
         // 用它和 status 里的 Net ID 比对，把「连上了目标」严格归因到这条候选。

@@ -192,6 +192,217 @@ public final class ShizukuRunner {
         }
     }
 
+    // ---------------- Wi-Fi 连接（Binder 直调） ----------------
+    //
+    // 为什么不用 `cmd wifi connect-network`：
+    //   系统对**同名网络**会复用已保存的配置。如果目标之前连过（或者
+    //   上一次尝试留下过配置），那么无论我们传什么密码，系统都拿旧配置去连。
+    //   结果就是**任何密码都会"成功"** —— 用户实测 00000000 也报命中。
+    //
+    // IWifiManager.addOrUpdateNetwork 的行为是「有则更新、无则新增」，
+    // 密码一定会被写成我们给的那个。这是参考开源实现验证过的做法。
+
+    private static final String PKG = "io.github.wlmosv_png.wpaforge";
+
+    /** 反射调用一个方法，参数个数不同版本会变，逐个试 */
+    private static Object invokeFlexible(Object target, String name, Object[][] argSets) {
+        for (Object[] args : argSets) {
+            try {
+                Class<?>[] types = new Class<?>[args.length];
+                for (int i = 0; i < args.length; i++) {
+                    types[i] = args[i] == null ? Object.class : args[i].getClass();
+                }
+                java.lang.reflect.Method m = target.getClass().getMethod(name, types);
+                return m.invoke(target, args);
+            } catch (Throwable ignored) {
+                // 换下一组参数
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 添加或更新网络配置，返回 netId（-1 表示失败）。
+     *
+     * 通过 Shizuku 获取 IWifiManager 的 binder，然后反射调 addOrUpdateNetwork。
+     * 不能用普通 API：WifiManager.addNetwork 在 API 29+ 对普通应用已被封。
+     */
+    public static int addOrUpdateNetwork(String ssid, String password, boolean hidden, int security) {
+        try {
+            if (!isAvailable() || !isGranted()) return -1;
+
+            // 拿 IWifiManager
+            Class<?> ssh = Class.forName("rikka.shizuku.SystemServiceHelper");
+            java.lang.reflect.Method getSvc = ssh.getDeclaredMethod("getSystemService", String.class);
+            getSvc.setAccessible(true);
+            android.os.IBinder wifiBinder =
+                    (android.os.IBinder) getSvc.invoke(null, android.content.Context.WIFI_SERVICE);
+            if (wifiBinder == null) return -1;
+
+            Class<?> stub = Class.forName("android.net.wifi.IWifiManager$Stub");
+            java.lang.reflect.Method asInterface = stub.getDeclaredMethod("asInterface", android.os.IBinder.class);
+            asInterface.setAccessible(true);
+            Object wifiService = asInterface.invoke(null, wifiBinder);
+            if (wifiService == null) return -1;
+
+            // 构造 WifiConfiguration
+            Class<?> cfgCls = Class.forName("android.net.wifi.WifiConfiguration");
+            Object cfg = cfgCls.getDeclaredConstructor().newInstance();
+            cfgCls.getField("SSID").set(cfg, "\"" + ssid + "\"");
+            if (password != null && !password.isEmpty()) {
+                cfgCls.getField("preSharedKey").set(cfg, "\"" + password + "\"");
+            }
+            java.util.BitSet keyMgmt = new java.util.BitSet();
+            keyMgmt.set(password == null || password.isEmpty() ? 0 : 1);
+            cfgCls.getField("allowedKeyManagement").set(cfg, keyMgmt);
+            if (hidden) {
+                try { cfgCls.getField("hiddenSSID").set(cfg, true); } catch (Throwable ignored) {}
+            }
+
+            // addOrUpdateNetwork(config, packageName, Bundle) / (config, packageName) / (config)
+            Object ret = invokeFlexible(wifiService, "addOrUpdateNetwork", new Object[][]{
+                    {cfg, PKG, new android.os.Bundle()},
+                    {cfg, PKG},
+                    {cfg},
+            });
+            if (ret instanceof Integer) {
+                int netId = (Integer) ret;
+                android.util.Log.i(TAG, "addOrUpdateNetwork -> netId=" + netId);
+                return netId;
+            }
+            return -1;
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "addOrUpdateNetwork 失败: " + t);
+            return -1;
+        }
+    }
+
+    /** 启用某个 netId（就是发起连接） */
+    public static boolean enableNetwork(int netId) {
+        try {
+            if (!isAvailable() || !isGranted() || netId < 0) return false;
+
+            Class<?> ssh = Class.forName("rikka.shizuku.SystemServiceHelper");
+            java.lang.reflect.Method getSvc = ssh.getDeclaredMethod("getSystemService", String.class);
+            getSvc.setAccessible(true);
+            android.os.IBinder wifiBinder =
+                    (android.os.IBinder) getSvc.invoke(null, android.content.Context.WIFI_SERVICE);
+            if (wifiBinder == null) return false;
+
+            Class<?> stub = Class.forName("android.net.wifi.IWifiManager$Stub");
+            java.lang.reflect.Method asInterface = stub.getDeclaredMethod("asInterface", android.os.IBinder.class);
+            asInterface.setAccessible(true);
+            Object wifiService = asInterface.invoke(null, wifiBinder);
+
+            Object ret = invokeFlexible(wifiService, "enableNetwork", new Object[][]{
+                    {netId, Boolean.TRUE, PKG},
+                    {netId, Boolean.TRUE},
+            });
+            android.util.Log.i(TAG, "enableNetwork(" + netId + ") -> " + ret);
+            return ret == null || Boolean.TRUE.equals(ret);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "enableNetwork 失败: " + t);
+            return false;
+        }
+    }
+
+    /** 删掉配置，避免下一条复用 */
+    public static void forgetNetwork(int netId) {
+        try {
+            if (!isAvailable() || netId < 0) return;
+            Class<?> ssh = Class.forName("rikka.shizuku.SystemServiceHelper");
+            java.lang.reflect.Method getSvc = ssh.getDeclaredMethod("getSystemService", String.class);
+            getSvc.setAccessible(true);
+            android.os.IBinder wifiBinder =
+                    (android.os.IBinder) getSvc.invoke(null, android.content.Context.WIFI_SERVICE);
+            if (wifiBinder == null) return;
+            Class<?> stub = Class.forName("android.net.wifi.IWifiManager$Stub");
+            java.lang.reflect.Method asInterface = stub.getDeclaredMethod("asInterface", android.os.IBinder.class);
+            asInterface.setAccessible(true);
+            Object wifiService = asInterface.invoke(null, wifiBinder);
+            invokeFlexible(wifiService, "removeNetwork", new Object[][]{
+                    {netId, PKG},
+                    {netId},
+            });
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "forgetNetwork 失败: " + t);
+        }
+    }
+
+    // ---------------- Wi-Fi Binder 通道自测 ----------------
+
+    /** 自测结果 */
+    public static final class WifiApiProbe {
+        public final boolean ok;
+        public final String message;
+        WifiApiProbe(boolean ok, String message) {
+            this.ok = ok;
+            this.message = message;
+        }
+    }
+
+    /**
+     * 真跑一遍 Binder 通道，确认能拿到 IWifiManager 并调用它的方法。
+     *
+     * 只探测到「能拿到 service 对象 + 能查到一个已知方法」为止，
+     * **不会**真的添加网络（那会改用户的 Wi-Fi 配置）。
+     */
+    public static WifiApiProbe probeWifiApi() {
+        try {
+            if (!isAvailable()) return new WifiApiProbe(false, "服务未运行");
+            if (!isGranted()) return new WifiApiProbe(false, "未授权");
+
+            Class<?> ssh = Class.forName("rikka.shizuku.SystemServiceHelper");
+            java.lang.reflect.Method getSvc =
+                    ssh.getDeclaredMethod("getSystemService", String.class);
+            getSvc.setAccessible(true);
+            android.os.IBinder wifiBinder =
+                    (android.os.IBinder) getSvc.invoke(null, android.content.Context.WIFI_SERVICE);
+            if (wifiBinder == null) return new WifiApiProbe(false, "拿不到 wifi binder");
+
+            Class<?> stub = Class.forName("android.net.wifi.IWifiManager$Stub");
+            java.lang.reflect.Method asInterface =
+                    stub.getDeclaredMethod("asInterface", android.os.IBinder.class);
+            asInterface.setAccessible(true);
+            Object wifiService = asInterface.invoke(null, wifiBinder);
+            if (wifiService == null) return new WifiApiProbe(false, "asInterface 返回 null");
+
+            // 找 addOrUpdateNetwork / enableNetwork。
+            // 注意：Proxy 类本身的 getMethods() 可能看不到 AIDL 方法，
+            // 要一并遍历它实现的接口（IWifiManager）。
+            java.util.List<java.lang.reflect.Method> all = new java.util.ArrayList<>();
+            for (java.lang.reflect.Method m : wifiService.getClass().getMethods()) all.add(m);
+            for (Class<?> itf : wifiService.getClass().getInterfaces()) {
+                for (java.lang.reflect.Method m : itf.getMethods()) all.add(m);
+            }
+            try {
+                Class<?> itf = Class.forName("android.net.wifi.IWifiManager");
+                for (java.lang.reflect.Method m : itf.getMethods()) all.add(m);
+            } catch (Throwable ignored) {}
+
+            boolean hasAdd = false, hasEnable = false;
+            StringBuilder sigs = new StringBuilder();
+            for (java.lang.reflect.Method m : all) {
+                if ("addOrUpdateNetwork".equals(m.getName())) {
+                    hasAdd = true;
+                    sigs.append("add").append(m.getParameterTypes().length).append(" ");
+                } else if ("enableNetwork".equals(m.getName())) {
+                    hasEnable = true;
+                    sigs.append("en").append(m.getParameterTypes().length).append(" ");
+                }
+            }
+            if (!hasAdd) return new WifiApiProbe(false, "找不到 addOrUpdateNetwork");
+            if (!hasEnable) return new WifiApiProbe(false, "找不到 enableNetwork");
+
+            return new WifiApiProbe(true, "可用（" + sigs.toString().trim()
+                    + "），无需 cmd wifi");
+        } catch (Throwable t) {
+            Throwable c = t.getCause() != null ? t.getCause() : t;
+            return new WifiApiProbe(false, c.getClass().getSimpleName()
+                    + (c.getMessage() == null ? "" : " " + c.getMessage()));
+        }
+    }
+
     // ---------------- 执行 ----------------
 
     /** 缓存反射到的方法，避免每次调用都查找 */

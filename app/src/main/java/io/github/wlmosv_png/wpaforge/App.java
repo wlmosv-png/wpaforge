@@ -137,6 +137,7 @@ public class App extends Application {
                         sb.append("  Shizuku 版本: ")
                                 .append(io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.version()).append('\n');
                         sb.append("  Shizuku 通道实测: ").append(shizukuProbeResult).append('\n');
+                        sb.append("  Wi-Fi Binder 通道: ").append(wifiApiProbeResult).append('\n');
                     }
                 } catch (Throwable t) {
                     sb.append("  Shizuku 查询失败: ").append(t.getClass().getSimpleName()).append('\n');
@@ -199,6 +200,13 @@ public class App extends Application {
     /** 自测结果（写进启动自检，用户不用连电脑就能看到） */
     private static volatile String shizukuProbeResult = "尚未检测";
 
+    /** Wi-Fi Binder 通道自测结果 */
+    private static volatile String wifiApiProbeResult = "尚未检测";
+
+    public static String wifiApiProbe() {
+        return wifiApiProbeResult;
+    }
+
     public static String shizukuProbe() {
         return shizukuProbeResult;
     }
@@ -236,6 +244,17 @@ public class App extends Application {
                     shizukuProbeResult = "命令返回空";
                 } else {
                     shizukuProbeResult = "部分可用（cmd wifi 有响应，但未见 connect-network）";
+                }
+
+                // **关键自测**：Binder 直调 addOrUpdateNetwork 能不能走通。
+                // 这是修「任何密码都判成功」的核心路径，
+                // 不跑通就不能发包。
+                try {
+                    io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.WifiApiProbe pr =
+                            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.probeWifiApi();
+                    wifiApiProbeResult = pr.message;
+                } catch (Throwable t) {
+                    wifiApiProbeResult = "异常: " + t.getClass().getSimpleName();
                 }
             } catch (Throwable t) {
                 shizukuProbeResult = "自测异常: " + t.getClass().getSimpleName();

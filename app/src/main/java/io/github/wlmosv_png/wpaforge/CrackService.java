@@ -19,6 +19,7 @@ import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
+import io.github.wlmosv_png.wpaforge.audit.SpecifierProber;
 import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
@@ -416,30 +417,30 @@ public class CrackService extends Service {
      */
     @android.annotation.SuppressLint("NewApi")
     private void runNoRootImpl(final TaskQueue.Task ft, int startOffset) {
-        final SuggestionProber sug = new SuggestionProber(this);
-        sugProberRef = sug;
-        log(L.s("模式: 免 Root（通过系统网络建议）", "Mode: root-free (network suggestions)"));
+        // **免 Root 改走 WifiNetworkSpecifier + requestNetwork**
+        //
+        // 旧的 WifiNetworkSuggestion 是「白名单」：提交后由系统自己挑时间连，
+        // 应用根本不知道它试没试过 —— 判定只能靠猜，必然误判。
+        // requestNetwork 则是「指定这一个 SSID + 这一个密码，立刻去连」，
+        // 成功失败由 onAvailable / onUnavailable 明确回调。
+        final SpecifierProber spec = new SpecifierProber(this);
+        sugProberRef = spec;
+        log(L.s("模式: 免 Root（系统精确连接）", "Mode: root-free (precise request)"));
 
-        sug.run(ft.toNetRecord(), currentDict, startOffset, new SuggestionProber.Listener() {
+        spec.run(ft.toNetRecord(), currentDict, startOffset, 0L, new SpecifierProber.Listener() {
             @Override
-            public void onBatchStart(int startIndex, int batchSize, int total) {
-                for (UiCallback cb : callbacks) cb.onAttempt(startIndex, total, "…");
+            public void onAttemptStart(int index, int total, String candidate) {
+                for (UiCallback cb : callbacks) cb.onAttempt(index, total, candidate);
                 updateNotification(L.f("正在破解 %s", "Cracking %s", ft.ssid),
-                        L.f("%d / %d", "%d / %d", startIndex, total), startIndex, total);
+                        candidate + "   " + index + "/" + total, index, total);
             }
 
             @Override
-            public void onBatchResult(int startIndex, int batchSize, SuggestionProber.Verdict v,
-                                      long ms, String note) {
+            public void onAttemptResult(SpecifierProber.Result r) {
+                boolean hit = r.isSuccess();
                 for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(L.f("第 %d-%d 条", "#%d-%d", startIndex,
-                            startIndex + batchSize - 1), false, ms, note);
+                    cb.onAttemptResult(r.password, hit, r.elapsedMs, r.detail);
                 }
-            }
-
-            @Override
-            public void onHit(String ssid, String password) {
-                for (UiCallback cb : callbacks) cb.onTaskDone(ft, password, "DONE_HIT");
             }
 
             @Override
@@ -448,10 +449,24 @@ public class CrackService extends Service {
             }
 
             @Override
-            public void onFinished(SuggestionProber.Outcome outcome, int tested, int offset,
-                                   String hitPassword) {
+            public void onLog(String line) {
+                log(line);
+            }
+
+            @Override
+            public void onFinished(int tested, int offset, String hitPassword) {
                 sugProberRef = null;
-                finishTask(ft, outcome.name(), tested, offset, hitPassword);
+                String outcome;
+                if (hitPassword != null && !hitPassword.isEmpty()) {
+                    outcome = "NORMAL";
+                } else if (spec.isPaused()) {
+                    outcome = "PAUSED";
+                } else if (ft.state == TaskQueue.State.STOPPED) {
+                    outcome = "STOPPED";
+                } else {
+                    outcome = "NORMAL";
+                }
+                finishTask(ft, outcome, tested, offset, hitPassword);
             }
 
             @Override
@@ -464,13 +479,6 @@ public class CrackService extends Service {
                 running = false;
                 notifyQueue();
                 stopSelfSafe();
-            }
-
-            @Override
-            public void onCandidate(String candidate, boolean hit, long ms, String note) {
-                for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(candidate, hit, ms, note);
-                }
             }
         });
     }

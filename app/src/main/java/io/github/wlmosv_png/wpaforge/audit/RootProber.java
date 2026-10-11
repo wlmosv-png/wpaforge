@@ -79,6 +79,9 @@ public final class RootProber {
     private final boolean useShizuku;
 
     /** 取消标志。volatile 保证工作线程能立刻看到。 */
+    /** Shizuku 通道下当前配置的 netId，用于收尾时删掉 */
+    private volatile int activeNetId = -1;
+
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     /** 暂停标志。与取消的区别：暂停后进度保留，可续跑。 */
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
@@ -363,6 +366,15 @@ public final class RootProber {
 
             forgetTarget(target);
 
+            // **假阳性防护**：如果目标本来就连着，任何密码都会被判成成功。
+            // 先断开，让基线回到「未连接目标」。
+            if (connectedByLocalApi(target.ssid)) {
+                l.onLog(L.s("当前已连着目标网络，先断开以便从干净状态开始。",
+                        "Already connected to the target - disconnecting so the baseline is clean."));
+                disconnectTarget();
+                interruptibleSleep(2500);
+            }
+
             for (int i = startIdx; i < total; i++) {
                 if (cancelFlag.get() || pauseFlag.get()) break;
                 Candidate c = candidates.get(i);
@@ -433,12 +445,26 @@ public final class RootProber {
         // 不先清掉就永远试不到新的。
         forgetTarget(target);
 
-        String cmd = "cmd wifi connect-network "
-                + shellQuote(target.ssid) + " " + sec + " " + shellQuote(password);
         if (useShizuku) {
-            final String scmd = cmd;
-            new Thread(() -> ShizukuRunner.exec(scmd, 20000), "wpaforge-shizuku-conn").start();
+            // **Shizuku 通道：Binder 直调 addOrUpdateNetwork + enableNetwork**
+            //
+            // 不能用 `cmd wifi connect-network`：它对同名网络会
+            // **复用已保存的旧配置**，于是不管传什么密码都用旧的去连。
+            // 用户实测到的「00000000 也判成功」就是这个原因。
+            // addOrUpdateNetwork 有则更新，密码必定被写成我们给的那个。
+            final String pw = password;
+            final NetRecord tgt = target;
+            new Thread(() -> {
+                int netId = ShizukuRunner.addOrUpdateNetwork(
+                        tgt.ssid, pw, tgt.isHidden(), 0);
+                if (netId != -1) {
+                    ShizukuRunner.enableNetwork(netId);
+                    activeNetId = netId;
+                }
+            }, "wpaforge-shizuku-conn").start();
         } else {
+            String cmd = "cmd wifi connect-network "
+                    + shellQuote(target.ssid) + " " + sec + " " + shellQuote(password);
             execAsync(new String[]{"su", "-c", "timeout 20 " + cmd});
         }
 
@@ -529,6 +555,24 @@ public final class RootProber {
      *   这句压根没进来 —— 用户看到的就是已经连上了却判超时。
      *   WifiManager 是本地接口，不经过命令行，作为交叉验证最合适。
      */
+    /** 断开目标（把基线清成「未连接目标」） */
+    private void disconnectTarget() {
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    appCtx.getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                wm.disconnect();
+                interruptibleSleep(1500);
+                if (!connectedByLocalApi(null)) return;
+            }
+        } catch (Throwable ignored) {}
+        // 还是连着就重启 Wi-Fi 开关
+        runShell("cmd wifi set-wifi-enabled disabled", 5000);
+        interruptibleSleep(1500);
+        runShell("cmd wifi set-wifi-enabled enabled", 5000);
+        interruptibleSleep(2000);
+    }
+
     private boolean connectedByLocalApi(String ssid) {
         try {
             android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
@@ -541,6 +585,7 @@ public final class RootProber {
             if (cur.startsWith("\"") && cur.endsWith("\"") && cur.length() >= 2) {
                 cur = cur.substring(1, cur.length() - 1);
             }
+            if (ssid == null) return cur != null && !cur.isEmpty() && !"<unknown ssid>".equals(cur);
             return ssid.equals(cur);
         } catch (Throwable t) {
             return false;
@@ -633,6 +678,46 @@ public final class RootProber {
                             "cmd wifi forget-network " + netId}, 4000);
                 }
                 android.util.Log.i(TAG, "forget " + ssid + " netId=" + netId);
+            }
+
+            // **删净校验**
+            //
+            // 同名网络没删干净 = 后面 connect-network 会复用旧配置 =
+            // 任何密码都「成功」—— 这就是用户看到的 00000000 假阳性。
+            // 删完必须回读一次，确认系统里真的没有这个 SSID 了。
+            for (int check = 0; check < 3; check++) {
+                String after = useShizuku
+                        ? ShizukuRunner.exec("cmd wifi list-networks", 4000)
+                        : execTracked(new String[]{"su", "-c", "cmd wifi list-networks"}, 4000);
+                if (after == null) break;
+                boolean still = false;
+                String leftoverId = null;
+                for (String line : after.split("\n")) {
+                    String t = line.trim();
+                    if (!t.matches("^\\d+\\s+.*")) continue;
+                    String[] parts = t.split("\\s+");
+                    if (parts.length < 3) continue;
+                    if (parts[1].equals(target.ssid)) {
+                        still = true;
+                        leftoverId = parts[0];
+                        break;
+                    }
+                }
+                if (!still) {
+                    android.util.Log.i(TAG, "配置已清干净: " + target.ssid);
+                    break;
+                }
+                // 还在 —— 再删一次
+                android.util.Log.w(TAG, "配置未删净，重试: " + target.ssid + " netId=" + leftoverId);
+                if (leftoverId != null) {
+                    if (useShizuku) {
+                        ShizukuRunner.exec("cmd wifi forget-network " + leftoverId, 4000);
+                    } else {
+                        execTracked(new String[]{"su", "-c",
+                                "cmd wifi forget-network " + leftoverId}, 4000);
+                    }
+                }
+                interruptibleSleep(600);
             }
         } catch (Exception e) {
             android.util.Log.w(TAG, L.s("forgetTarget 失败: ", "forgetTarget failed: ") + e);

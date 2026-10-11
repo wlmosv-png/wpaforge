@@ -957,6 +957,24 @@ public final class CrackEngine {
             if (probe != null && !probe.trim().isEmpty()) logReadable = true;
         }
 
+        // ══════════════════════════════════════════════════════════════
+        //  唯一判据：Supplicant state: COMPLETED
+        //
+        //  判定「密码对不对」的本质是「4-Way Handshake 有没有完成」。
+        //  密码错误时握手必然失败，wpa_supplicant 永远到不了 COMPLETED。
+        //  这是系统对「密钥协商成功」的宣告，不是我们猜的状态。
+        //
+        //  为什么砍掉了之前的四条判据（日志 / watcher / wifiinfo / netId 组合）：
+        //  它们都能被「系统回连别的网络」满足 —— 实机反复出现假阳性，
+        //  自己的网、邻居家的网都在第一条 12345678 上被误判成功。
+        //  宁可漏判（把对的判成没连上），也绝不能误判（把错的判成命中）。
+        //
+        //  四个条件必须**同源于同一行 WifiInfo**：
+        //    ① SSID == 目标
+        //    ② Supplicant state == COMPLETED
+        //    ③ IP 是有效地址（排除 0.0.0.0）
+        //    ④ Net ID == 本条新建的 netId
+        // ══════════════════════════════════════════════════════════════
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
                 return new Attempt(password, Verdict.ABORTED,
@@ -964,132 +982,32 @@ public final class CrackEngine {
             }
             sleep(300);
 
-            // ---------- 判据 A：网络状态机日志（root 通道可用） ----------
-            //
-            // ColorOS / AOSP 的 WifiClientModeImpl 在连上时会打：
-            //   ClientModeImpl$L2ConnectedState screen=on 36 0 "B209" 28:93:7d:...
-            //
-            // 注意 tag 带实例后缀（WifiClientModeImpl[xxx:wlan0]），
-            // 不能用 -s 精确过滤，所以整段读回来本地匹配。
-            if (logReadable) {
-                String stateLog = WifiStateLog.read(shell, 600);
-                if (stateLog != null) {
-                    logRounds++;
-                    if (!sawAttempt && WifiStateLog.sawAttemptFor(stateLog, target.ssid)) {
-                        sawAttempt = true;
-                    }
-                    if (WifiStateLog.sawConnectedFor(stateLog, target.ssid)) {
-                        // **必须交叉验证，不能只凭日志就判成功。**
-                        //
-                        // 实机教训：4 个不同网络都在第 1 条就"已破解"——系统
-                        // 用旧配置/缓存凭据连上时，日志里同样会出现目标的
-                        // L2ConnectedState，光看它分不出是谁的功劳。
-                        //
-                        // 硬条件：本次 netId 必须已被分配（targetNetId > 0），
-                        // 且 status 里的 Net ID 必须等于它 —— 这才是「本条候选
-                        // 新建的配置连上了」的正面证据。
-                        String xst = null;
-                        try { xst = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
-                        if (xst != null && StatusParser.connectedTo(xst, target.ssid)) {
-                            long xid = StatusParser.parse(xst, target.ssid).netId;
-                            if (targetNetId > 0 && xid == targetNetId) {
-                                long ms = SystemClock.uptimeMillis() - t0;
-                                android.util.Log.i(TAG, "命中(状态机日志+netId): " + target.ssid
-                                        + " netId=" + xid);
-                                return new Attempt(password, Verdict.SUCCESS, ms,
-                                        L.s("系统确认已连上（新配置）",
-                                            "confirmed connected (fresh config)"),
-                                        "wifistate");
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---------- 判据 B：status + netId（两条通道都可用） ----------
-            //
-            // Shizuku(shell uid) 读不到 logcat，但能跑 `cmd wifi status`。
-            // 关键：connect-network 会把目标写进已保存列表并分配 netId；
-            // 命令后 status 里 Net ID 必须等于**目标本次的 netId**，
-            // 才能确认「连上的就是这条候选建的配置」，而不是别的网络。
             String st = null;
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
             if (st != null && !st.trim().isEmpty()) {
                 channelAlive = true;
                 statusRounds++;
-                lastStatusSsid = StatusParser.currentSsid(st);
-                roundNetId = StatusParser.parse(st, null).netId;
-                long[] r = parseStatusFor(st, target.ssid);
-                boolean onTarget = r[0] == 1;
-                long nowNetId = r[1];
-                // 归因条件：连着目标，且不是「命令前就存在的同一条连接」。
-                // 判定「是不是同一条」优先看 netId（更可靠）：
-                //   · 之前连着目标、命令后 netId 没变 → 是同一条旧连接，不算命中
-                //   · netId 变了 → 这条候选新建的连接，算命中
-                // netId 拿不到时退回 SSID 比较。
-                boolean isNewLink = true;
-                if (target.ssid.equals(ssidBefore)) {
-                    if (nowNetId >= 0 && netIdBefore >= 0) {
-                        isNewLink = nowNetId != netIdBefore;
-                    } else {
-                        isNewLink = false;   // 无从区分，保守不算新连接
-                    }
+                SupplicantParser.Info info = SupplicantParser.parse(st);
+                lastStatusSsid = info.ssid;
+
+                // 记录「目标是否进入过握手」——用于区分「密码错」和「根本没试」
+                if (!sawAttempt && target.ssid.equals(info.ssid)
+                        && info.state != null && !info.state.isEmpty()) {
+                    sawAttempt = true;
                 }
-                if (onTarget && isNewLink) {
-                    // **收紧**：必须拿到本次新建的 netId，且 status 的 Net ID 与之一致。
-                    //
-                    // 旧写法 `targetNetId < 0 || nowNetId < 0 || ...` 太宽松 ——
-                    // 两个值任一拿不到就放行，等于没校验。这正是假阳性的口子。
-                    boolean netOk = targetNetId > 0 && nowNetId == targetNetId;
-                    if (netOk) {
+
+                if (info.isTargetConnected(target.ssid)) {
+                    // netId 归因：必须是本条候选新建的那个配置
+                    if (targetNetId > 0 && info.netId == targetNetId) {
                         long ms = SystemClock.uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "命中(status): connected to " + target.ssid
-                                + " netId=" + nowNetId + " targetNetId=" + targetNetId);
+                        android.util.Log.i(TAG, "命中: " + info);
                         return new Attempt(password, Verdict.SUCCESS, ms,
-                                L.s("系统状态确认已连上", "confirmed by cmd wifi status"), "status");
+                                L.s("握手完成且已获取 IP（确认连上）",
+                                    "handshake completed and IP obtained"),
+                                "supplicant");
                     }
-                    // SSID 对上了但 netId 不符 —— 可能是旧连接，继续等
-                    android.util.Log.i(TAG, "status SSID 命中但 netId 不符: now="
-                            + nowNetId + " target=" + targetNetId + "，继续等待");
-                }
-            }
-
-            // ---------- 判据 C：NetworkWatcher 事件 ----------
-            // 同样必须过 netId 校验：系统回连已保存的网络也会触发事件。
-            long at = watcher != null
-                    ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
-            if (at > 0) {
-                watcherHits++;
-                long wid = roundNetId;
-                if (targetNetId > 0 && wid == targetNetId) {
-                    long ms = SystemClock.uptimeMillis() - t0;
-                    android.util.Log.i(TAG, "命中(watcher+netId): 事件在命令后 "
-                            + (at - commandAt) + "ms netId=" + wid);
-                    return new Attempt(password, Verdict.SUCCESS, ms,
-                            L.s("系统确认已连上（新配置）", "confirmed connected (fresh config)"),
-                            "watcher");
-                }
-            }
-
-            // ---------- 判据 D：WifiInfo 本地 API ----------
-            //
-            // **必须和 status 判据同等严格**。
-            //
-            // 实机出现过：系统弹「无法连接到 WLAN 网络 BTWIFL_0923」，
-            // 但 WifiManager.getConnectionInfo().getSSID() 短暂返回了目标名，
-            // 于是这条弱判据把失败判成了成功（依据: wifiinfo）。
-            //
-            // 连接过程中 SSID 字段会瞬时指向正在尝试的网络，这并不代表连上了。
-            // 只有 netId 对得上（= 本条新建的配置）才是硬证据。
-            String nowSsid = snapshotSsid();
-            if (target.ssid.equals(nowSsid) && !target.ssid.equals(ssidBefore)) {
-                long did = roundNetId;
-                if (targetNetId > 0 && did == targetNetId) {
-                    long ms = SystemClock.uptimeMillis() - t0;
-                    android.util.Log.i(TAG, "命中(WifiInfo+netId): netId=" + did);
-                    return new Attempt(password, Verdict.SUCCESS, ms,
-                            L.s("系统确认已连上（新配置）", "confirmed connected (fresh config)"),
-                            "wifiinfo");
+                    // SSID 和握手都对，但 netId 不是本次的 —— 可能是旧连接/回连
+                    android.util.Log.i(TAG, "命中候选但 netId 不符，继续等: " + info);
                 }
             }
         }

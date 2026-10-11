@@ -132,7 +132,7 @@ public final class CrackEngine {
      *   · 或读到了上一次连接的残留状态
      * 所以设一个物理下限，低于它一律不算命中。
      */
-    private static final long MIN_HIT_MS = 3000L;
+    private static final long MIN_HIT_MS = 1500L;
 
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
@@ -684,6 +684,14 @@ public final class CrackEngine {
 
         final long deadline = t0 + timeoutMs;
 
+        // 本条的判定：事件必须在「命令发出之后」出现，且不能早得离谱。
+        //
+        // 注意 elapsedMs 的算法：
+        //   事件时刻 - commandAt   → 这条候选从发命令到连上的真实间隔
+        //   不要用 (现在 - t0)，那会把后面的等待时间也算进去，
+        //   进而让一个 1.5 秒的真实事件在 3 秒后"看起来"满足了门槛 —— 语义就错了。
+        long eventAt = -1;
+
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
                 return new Attempt(password, Verdict.ABORTED,
@@ -691,18 +699,22 @@ public final class CrackEngine {
             }
             sleep(300);
 
-            // ---- 唯一判据：命令发出之后，系统报告过目标可用吗 ----
+            // 命令发出之后，系统报告过目标可用吗
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
+
             if (at > 0) {
-                long ms = SystemClock.uptimeMillis() - t0;
-                // 物理下限：真关联要走 4-way 握手，不可能几百毫秒完成
-                if (ms < MIN_HIT_MS) {
-                    android.util.Log.i(TAG, "目标可用事件过早(" + ms + "ms)，忽略");
-                    continue;
+                eventAt = at;
+                long sinceCommand = at - commandAt;
+                if (sinceCommand >= MIN_HIT_MS) {
+                    long ms = SystemClock.uptimeMillis() - t0;
+                    return new Attempt(password, Verdict.SUCCESS, ms,
+                            L.s("系统确认已连上", "system reported connected"), "watcher");
                 }
-                return new Attempt(password, Verdict.SUCCESS, ms,
-                        L.s("系统确认已连上", "system reported connected"), "watcher");
+                // 事件来得太快：可能是命令发出瞬间的残留状态。
+                // **不要 continue 到天荒地老** —— 继续等，看连接是否稳定，
+                // 或者是否有更晚的事件。
+                android.util.Log.i(TAG, "事件过早(" + sinceCommand + "ms)，继续观察");
             }
         }
 
@@ -711,26 +723,35 @@ public final class CrackEngine {
         // 超时后给出可诊断的原因
         boolean currentOnTarget = target.ssid.equals(
                 watcher != null ? watcher.currentSsid() : null);
+
         String detail;
+        Verdict verdict;
         if (!watcherRegistered()) {
             detail = L.s("事件监听未生效（判定不可用）",
                     "network event listener not active (verdict unavailable)");
+            verdict = Verdict.UNKNOWN;
+        } else if (eventAt > 0) {
+            // **有事件，但来得太早被门槛拦住** —— 这种情况不能判「密码错」，
+            // 因为我们确实观测到目标变可用了，只是无法确认是不是这条造成的。
+            detail = L.s("检测到连接事件，但发生得太快，无法确认是这条密码造成的",
+                    "a connect event was seen, but it came too soon to attribute "
+                            + "to this passphrase");
+            verdict = Verdict.UNKNOWN;
         } else if (currentOnTarget) {
-            // 现在连着目标，但命令发出之后没有"变为可用"事件 ——
-            // 说明连接在命令之前就存在，无法归因
             detail = L.s("当前连着目标，但命令发出后没有连接事件（可能是原有连接）",
                     "on target now, but no connect event after the command "
                             + "(possibly a pre-existing link)");
+            verdict = Verdict.UNKNOWN;
         } else {
             detail = L.s("未连上", "not connected");
+            verdict = Verdict.AUTH_FAIL;
         }
 
         android.util.Log.i(TAG, "tryOneShell end: " + total + "ms events="
                 + (watcher != null ? watcher.eventCount() : -1) + " currentOnTarget="
                 + currentOnTarget);
 
-        return new Attempt(password,
-                currentOnTarget ? Verdict.UNKNOWN : Verdict.AUTH_FAIL, total, detail, "");
+        return new Attempt(password, verdict, total, detail, "");
     }
 
     private boolean watcherRegistered() {
@@ -894,21 +915,39 @@ public final class CrackEngine {
             try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
         }, "wpaforge-verify-conn").start();
 
-        // 复验同样只认事件：命令发出之后必须有一次「目标变为可用」
+        // 复验只认事件：命令发出之后，系统报告过目标可用即算通过。
+        //
+        // 这里**不再叠最短时间门槛** ——
+        // 复验的前提已经是「断开并确认断开」，所以此刻目标必然是未连接状态，
+        // 任何随后出现的可用事件都只能来自这次重连，可归因是确定的。
+        // 再叠门槛只会让正确密码也被拒（之前就是这个毛病）。
         final long commandAt = commandAt0;
         long deadline = t0 + timeoutMs;
         while (SystemClock.uptimeMillis() < deadline) {
+            if (cancelFlag.get()) {
+                return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
+                        L.s("复验被取消", "verification cancelled"));
+            }
             sleep(300);
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
             if (at > 0) {
                 long ms = SystemClock.uptimeMillis() - t0;
-                if (ms >= MIN_HIT_MS) {
-                    return new VerifyResult(true, ms,
-                            L.s("复验通过（用同一密码能再次连上）",
-                                "verified (reconnected with the same passphrase)"));
-                }
+                android.util.Log.i(TAG, "复验通过: 事件在命令后 " + (at - commandAt) + "ms");
+                return new VerifyResult(true, ms,
+                        L.s("复验通过（用同一密码能再次连上）",
+                            "verified (reconnected with the same passphrase)"));
             }
+        }
+
+        // 超时了。区分两种原因，便于排查
+        boolean onTargetNow = target.ssid.equals(
+                watcher != null ? watcher.currentSsid() : null);
+        if (onTargetNow) {
+            return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
+                    L.s("复验失败：确实连上了目标，但没收到连接事件（监听可能失效）",
+                        "verification failed: on target now but no event was received "
+                                + "(listener may be broken)"));
         }
 
         return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
@@ -947,6 +986,22 @@ public final class CrackEngine {
         if (watcher != null) {
             watcher.clear();
             watcher.start();
+            // 把监听器状态打到 UI 上。
+            // 判定完全依赖它，如果它没生效，
+            // 必须能从界面看出来，而不是去翻 logcat。
+            l.onLog(L.f("事件监听器: %s",
+                    "event watcher: %s",
+                    watcher.isRegistered()
+                            ? L.s("已启用（判定可用）", "active (verdict available)")
+                            : L.s("启用失败（判定不可用）", "failed to register (verdict unavailable)")));
+            l.onLog(L.s("  说明: 判定完全依赖系统回调。若回调拿不到 SSID，",
+                    "  Note: the verdict depends entirely on system callbacks. "
+                            + "If a callback cannot carry an SSID,"));
+            l.onLog(L.s("  所有密码都会被判为「无法确认」，请不要误以为密码不对。",
+                    "  every passphrase will read as unconfirmed - that is not a wrong passphrase."));
+        } else {
+            l.onLog(L.s("事件监听器未初始化",
+                    "event watcher not initialised"));
         }
 
         // **跑之前先自检通道**
@@ -1022,8 +1077,11 @@ public final class CrackEngine {
 
                 Attempt a = tryOne(target, security, c.password, perItem);
 
-                // **命中复核**：单次"连上了"无法区分是真密码还是系统自己重连。
-                // 用同一密码再连一次，能复现才算数。
+                // 复验通过才算命中；否则降级为 UNKNOWN 后继续。
+                //
+                // 用 reported 标志而不是把 a 置 null：
+                // 之前置 null 之后还有 a.verdict 的访问，直接 NPE 崩了。
+                boolean reported = false;
                 if (a.isSuccess()) {
                     l.onLog(L.f("候选 %s 看起来连上了，正在复验…",
                             "candidate %s looked connected; verifying...", c.password));
@@ -1034,24 +1092,39 @@ public final class CrackEngine {
                         l.onAttemptResult(a);
                         hit = c.password;
                         break;
-                    } else {
-                        // 复验不过 → 降级为 UNKNOWN，不算命中
-                        l.onLog(L.f("✗ 复验失败（%dms）：%s",
-                                "verification failed (%dms): %s",
-                                vr.elapsedMs, vr.detail));
-                        l.onLog(L.s("  这条不算命中，继续下一条。",
-                                "  Not counting this as a hit; continuing."));
-                        l.onAttemptResult(new Attempt(c.password, Verdict.UNKNOWN,
-                                a.elapsedMs, vr.detail, "verify-failed"));
-                        a = null;
                     }
-                } else {
+                    l.onLog(L.f("✗ 复验失败（%dms）：%s",
+                            "verification failed (%dms): %s", vr.elapsedMs, vr.detail));
+                    l.onLog(L.s("  这条不算命中，继续下一条。",
+                            "  Not counting this as a hit; continuing."));
+                    l.onAttemptResult(new Attempt(c.password, Verdict.UNKNOWN,
+                            a.elapsedMs, vr.detail, "verify-failed"));
+                    reported = true;
+                }
+
+                if (!reported) {
                     l.onAttemptResult(a);
                 }
 
-                if (a != null && a.isSuccess()) { hit = c.password; break; }
+                // 判定失败时把事件摘要打出来。
+                // 「没收到事件」和「收到事件但 SSID 对不上」是两种不同故障。
+                if (watcher != null && a.verdict != Verdict.SUCCESS) {
+                    int n = watcher.eventCount();
+                    if (n == 0) {
+                        // 没有事件 —— 把监听器自己的诊断也带上。
+                        // 「没注册」「注册了但系统不回调」「回调了但拿不到 SSID」
+                        // 是三种完全不同的故障。
+                        l.onLog(L.s("  监听器诊断: ", "  watcher: ") + watcher.diagnose());
+                    } else {
+                        StringBuilder sb = new StringBuilder("  ");
+                        sb.append(L.s("事件 ", "events ")).append(n).append(": ");
+                        for (NetworkWatcher.Event e : watcher.recent(6)) {
+                            sb.append(e.ssid).append(e.available ? "↑" : "↓").append(' ');
+                        }
+                        l.onLog(sb.toString().trim());
+                    }
+                }
 
-                // \u8fde\u7eed\u8d85\u65f6\u63d0\u9192\uff1a\u8bf4\u660e\u901a\u9053\u53ef\u80fd\u6839\u672c\u6ca1\u5de5\u4f5c
                 if (a.verdict == Verdict.TIMEOUT) {
                     consecutiveTimeouts++;
                     if (consecutiveTimeouts == TIMEOUT_ALERT) {
@@ -1064,6 +1137,7 @@ public final class CrackEngine {
                 } else {
                     consecutiveTimeouts = 0;
                 }
+
 
                 double elapsed = Math.max(0.001,
                         (SystemClock.uptimeMillis() - beginAt) / 1000.0);

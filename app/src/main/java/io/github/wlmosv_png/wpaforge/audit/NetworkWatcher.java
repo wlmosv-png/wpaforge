@@ -86,6 +86,13 @@ public final class NetworkWatcher {
     private ConnectivityManager.NetworkCallback callback;
     private boolean registered = false;
 
+    /** 回调触发次数（不管能不能拿到 SSID） */
+    private int callbackHits = 0;
+    /** 触发但拿不到 SSID 的次数 —— 判定失效最可能的原因 */
+    private int ssidMisses = 0;
+    /** 是否从 caps 成功拿到过 SSID */
+    private boolean capsWorked = false;
+
     public NetworkWatcher(Context ctx) {
         this.appCtx = ctx.getApplicationContext();
         this.cm = (ConnectivityManager) appCtx.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -151,6 +158,26 @@ public final class NetworkWatcher {
         }
     }
 
+    /** 监听是否真的注册成功了。判定完全依赖它，必须能对外报告。 */
+    public synchronized boolean isRegistered() {
+        return registered;
+    }
+
+    public synchronized int callbackHits() { return callbackHits; }
+    public synchronized int ssidMisses() { return ssidMisses; }
+    public synchronized boolean capsWorked() { return capsWorked; }
+
+    /** 一句话诊断，给界面用 */
+    public synchronized String diagnose() {
+        if (!registered) return "listener not registered";
+        if (callbackHits == 0) return "registered, but the system fired no callbacks";
+        if (ssidMisses == callbackHits) {
+            return "fired " + callbackHits + "x, SSID unavailable every time"
+                    + (capsWorked ? "" : " (getTransportInfo also unavailable)");
+        }
+        return "fired " + callbackHits + "x, " + ssidMisses + " without SSID";
+    }
+
     public synchronized void stop() {
         if (!registered || cm == null) return;
         try {
@@ -206,20 +233,39 @@ public final class NetworkWatcher {
     // ------------------------------------------------------------ 内部
 
     private void record(String ssid, boolean available, String source) {
-        if (ssid == null || ssid.isEmpty() || "<unknown ssid>".equals(ssid)) return;
+        callbackHits++;
+        if (ssid == null || ssid.isEmpty() || "<unknown ssid>".equals(ssid)) {
+            ssidMisses++;
+            android.util.Log.w(TAG, "callback fired but no SSID (source=" + source
+                    + ") hits=" + callbackHits + " misses=" + ssidMisses);
+            return;
+        }
         if (events.size() >= MAX_EVENTS) events.remove(0);
         events.add(new Event(ssid, available, SystemClock.uptimeMillis(), source));
     }
 
-    /** 通过 NetworkCapabilities 拿 SSID（首选，最可靠） */
+    /**
+     * 拿某个 Network 对应的 SSID。
+     *
+     * 优先 NetworkCapabilities.getTransportInfo()（最精确），
+     * 拿不到时退回 WifiInfo —— 前者在部分 ROM 上返回 null 或
+     * `<unknown ssid>`，直接丢弃事件会让判定彻底失效，
+     * 退一步用 WifiInfo 至少能保留事件。
+     */
     private String ssidOf(Network network) {
         try {
-            if (cm == null || network == null) return null;
-            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-            return ssidFromCaps(caps);
-        } catch (Throwable t) {
-            return null;
+            if (network != null && cm != null) {
+                NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                String byCaps = ssidFromCaps(caps);
+                if (byCaps != null) return byCaps;
+            }
+        } catch (Throwable ignored) {}
+        // 兜底
+        String byWifi = currentSsid();
+        if (byWifi != null) {
+            android.util.Log.i(TAG, "SSID 由 WifiInfo 兜底取得: " + byWifi);
         }
+        return byWifi;
     }
 
     private String ssidFromCaps(NetworkCapabilities caps) {
@@ -228,8 +274,11 @@ public final class NetworkWatcher {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 Object ti = caps.getTransportInfo();
                 if (ti instanceof WifiInfo) {
-                    return cleanSsid(((WifiInfo) ti).getSSID());
+                    String v = cleanSsid(((WifiInfo) ti).getSSID());
+                    if (v != null) capsWorked = true;
+                    return v;
                 }
+                android.util.Log.w(TAG, "getTransportInfo unavailable: " + ti);
             }
         } catch (Throwable ignored) {}
         return null;

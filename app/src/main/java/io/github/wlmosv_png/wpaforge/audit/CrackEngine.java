@@ -848,6 +848,94 @@ public final class CrackEngine {
                         + "· use \"submit batch to system\" (one dialog, but the result is inferred)");
     }
 
+    // ------------------------------------------------------------------ 命中复核
+
+    /** 复核结果 */
+    public static final class VerifyResult {
+        /** 复验是否成功复现 */
+        public final boolean reproduced;
+        /** 复验耗时 */
+        public final long elapsedMs;
+        public final String detail;
+        VerifyResult(boolean reproduced, long ms, String detail) {
+            this.reproduced = reproduced;
+            this.elapsedMs = ms;
+            this.detail = detail == null ? "" : detail;
+        }
+    }
+
+    /**
+     * 命中之后做一次**独立复验**。
+     *
+     * <p>步骤：
+     * <ol>
+     *   <li>断开当前连接，并确认断开了（目标保持未连 3 秒以上）</li>
+     *   <li>用**同一个密码**再连一次</li>
+     *   <li>只有这次也成功，才算「可复现」</li>
+     * </ol>
+     *
+     * <p>为什么需要它：单次「连上了」无法区分两种情况 ——
+     * 真是这条密码连上的，还是系统自己重连的。这两者在日志里长得一样。
+     * <b>能被复现的才算数。</b>
+     *
+     * @param timeoutMs 复验最长等待
+     */
+    public VerifyResult verifyHit(NetRecord target, String security, String password, long timeoutMs) {
+        long t0 = SystemClock.uptimeMillis();
+
+        if (shell == null) {
+            return new VerifyResult(false, 0,
+                    L.s("没有 shell 通道，无法复验", "no shell channel; cannot verify"));
+        }
+
+        // 1. 断开 + 确认
+        try { shell.exec("cmd wifi forget-network 0", 2000); } catch (Throwable ignored) {}
+        boolean off = disconnectAndVerify(target.ssid);
+        if (!off) {
+            return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
+                    L.s("复验前无法断开目标，结果不可信",
+                        "could not disconnect before verification; result unreliable"));
+        }
+
+        // 2. 重新渋净配置
+        try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
+
+        // 3. 用同一密码再连一次
+        final String cmd = "cmd wifi connect-network "
+                + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
+        final ShellChannel sh = shell;
+        new Thread(() -> {
+            try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
+        }, "wpaforge-verify-conn").start();
+
+        boolean observedOff = false;
+        long deadline = t0 + timeoutMs;
+        while (SystemClock.uptimeMillis() < deadline) {
+            sleep(400);
+            String cur = snapshotSsid();
+            String status = null;
+            try { status = sh.exec("cmd wifi status", 3000); } catch (Throwable ignored) {}
+
+            boolean on = target.ssid.equals(cur)
+                    || (status != null && status.contains("connected to \"" + target.ssid + "\""));
+            if (!on) observedOff = true;
+
+            if (on && observedOff) {
+                long ms = SystemClock.uptimeMillis() - t0;
+                if (ms >= MIN_HIT_MS) {
+                    return new VerifyResult(true, ms,
+                            L.s("复验通过（用同一密码能再次连上）",
+                                "verified (reconnected with the same passphrase)"));
+                }
+            }
+        }
+
+        return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
+                L.s("复验失败：用同一密码没有再连上 —— 很可能是误判，或信号太差",
+                    "verification failed: could not reconnect with the same passphrase "
+                            + "- likely a false positive, or the signal is too weak"));
+    }
+
     // ------------------------------------------------------------------ 批量跑
 
     /**
@@ -946,9 +1034,35 @@ public final class CrackEngine {
                 l.onAttemptStart(cursor, total, c.password);
 
                 Attempt a = tryOne(target, security, c.password, perItem);
-                l.onAttemptResult(a);
 
-                if (a.isSuccess()) { hit = c.password; break; }
+                // **命中复核**：单次"连上了"无法区分是真密码还是系统自己重连。
+                // 用同一密码再连一次，能复现才算数。
+                if (a.isSuccess()) {
+                    l.onLog(L.f("候选 %s 看起来连上了，正在复验…",
+                            "candidate %s looked connected; verifying...", c.password));
+                    VerifyResult vr = verifyHit(target, security, c.password,
+                            Math.max(perItem, 12_000L));
+                    if (vr.reproduced) {
+                        l.onLog(L.f("✓ 复验通过（%dms）", "verified (%dms)", vr.elapsedMs));
+                        l.onAttemptResult(a);
+                        hit = c.password;
+                        break;
+                    } else {
+                        // 复验不过 → 降级为 UNKNOWN，不算命中
+                        l.onLog(L.f("✗ 复验失败（%dms）：%s",
+                                "verification failed (%dms): %s",
+                                vr.elapsedMs, vr.detail));
+                        l.onLog(L.s("  这条不算命中，继续下一条。",
+                                "  Not counting this as a hit; continuing."));
+                        l.onAttemptResult(new Attempt(c.password, Verdict.UNKNOWN,
+                                a.elapsedMs, vr.detail, "verify-failed"));
+                        a = null;
+                    }
+                } else {
+                    l.onAttemptResult(a);
+                }
+
+                if (a != null && a.isSuccess()) { hit = c.password; break; }
 
                 // \u8fde\u7eed\u8d85\u65f6\u63d0\u9192\uff1a\u8bf4\u660e\u901a\u9053\u53ef\u80fd\u6839\u672c\u6ca1\u5de5\u4f5c
                 if (a.verdict == Verdict.TIMEOUT) {

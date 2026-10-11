@@ -459,8 +459,16 @@ public class CrackService extends Service {
 
             @Override
             public void onAttemptResult(CrackEngine.Attempt a) {
+                // UNKNOWN 既不是成功也不是失败 —— 要如实透出去，
+                // 否则界面会把「无法确认」显示成「未连上」，
+                // 用户看到的就是"明明密码对却说不匹配"。
+                String detail = a.detail;
+                if (a.verdict == CrackEngine.Verdict.UNKNOWN) {
+                    detail = L.s("无法确认（当前连着目标，但可能是原有连接）",
+                            "unconfirmed (connected to target, but may be a pre-existing link)");
+                }
                 for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, a.detail);
+                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail);
                 }
             }
 

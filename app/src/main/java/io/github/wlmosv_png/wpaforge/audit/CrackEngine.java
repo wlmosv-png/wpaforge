@@ -74,6 +74,13 @@ public final class CrackEngine {
         TIMEOUT,
         /** 目标不在扫描范围 → 这条无意义 */
         TARGET_GONE,
+        /**
+         * 当前确实连着目标，但**无法确认是不是这条候选造成的**。
+         *
+         * 例如：开跑前就连着、或者上一条的连接还没断开。
+         * 这种状态**不能算命中** —— 否则任何密码都会在第一条被误报成功。
+         */
+        UNKNOWN,
         /** 通道出错 */
         ERROR,
         /** 用户停止 */
@@ -256,6 +263,53 @@ public final class CrackEngine {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // ------------------------------------------------------------------ 连接状态与基线
+
+    /**
+     * 当前是否连着某个网络（返回 SSID，没连返回 null）。
+     *
+     * 注意：这里读的是**系统级的当前连接**，它可能是：
+     *   · 用户自己连的
+     *   · 上一条候选留下的
+     *   · 本条候选刚建立的
+     * 单看这个值**无法区分**，所以不能直接当命中依据。
+     */
+    private String snapshotSsid() {
+        return currentSsid();
+    }
+
+    /**
+     * 断开当前连接，并确认真的断开了。
+     *
+     * 这是「基线」步骤：只有基线是「未连接目标」，
+     * 后面的「连上了」才有意义。
+     */
+    private boolean disconnectAndVerify(String targetSsid) {
+        // 先用本地 API
+        try {
+            if (wifi != null) wifi.disconnect();
+        } catch (Throwable ignored) {}
+
+        for (int i = 0; i < 12; i++) {
+            String cur = snapshotSsid();
+            if (cur == null || !cur.equals(targetSsid)) return true;
+            sleep(300);
+        }
+
+        // 本地 API 不生效就走 shell（有通道的话）
+        if (shell != null) {
+            try { shell.exec("cmd wifi set-wifi-enabled disabled", 5000); } catch (Throwable ignored) {}
+            sleep(1200);
+            try { shell.exec("cmd wifi set-wifi-enabled enabled", 5000); } catch (Throwable ignored) {}
+            for (int i = 0; i < 15; i++) {
+                String cur = snapshotSsid();
+                if (cur == null || !cur.equals(targetSsid)) return true;
+                sleep(400);
+            }
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------ 通道自检
@@ -550,7 +604,21 @@ public final class CrackEngine {
         }
     }
 
-    /** Root / Shizuku：shell 发命令 + 多信号判定 */
+    /**
+     * Root / Shizuku：shell 发命令 + 多信号判定。
+     *
+     * <h3>为什么每条都要记基线</h3>
+     * 旧实现只看「当前 SSID == 目标」就判成功。这个判据是**错的**：
+     * <pre>
+     *   手机本来就连着目标（用户自己连的 / 上一条没断）
+     *     → 第一条候选一进来就"成功"
+     *     → 任何密码都会在第 1 条被误报，实测 12345678、00000000 全中
+     * </pre>
+     * 现在每条开始前记录「这一条之前是不是已经连着目标」。
+     * 只有「之前没连 → 之后连上了」才算这条候选的功劳。
+     * 如果之前就连着，且一直没断，结果记为 {@link Verdict#UNKNOWN}，
+     * **不算命中**。
+     */
     private Attempt tryOneShell(NetRecord target, String security, String password,
                                 long timeoutMs, long t0) {
         if (shell == null) {
@@ -558,7 +626,11 @@ public final class CrackEngine {
                     SystemClock.uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
         }
 
-        // 每条之前删净旧配置（配置复用是假阳性根源）
+        // ---- 基线 ----
+        String baseline = snapshotSsid();
+        boolean wasConnectedToTarget = target.ssid.equals(baseline);
+
+        // 每条之前删净旧配置（配置复用会导致任何密码都"成功"）
         try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
 
         final String cmd = "cmd wifi connect-network "
@@ -569,13 +641,18 @@ public final class CrackEngine {
         }, "wpaforge-engine-conn").start();
 
         final long minWait = 3500L;
-        long deadline = t0 + timeoutMs;
+        final long deadline = t0 + timeoutMs;
+
+        // 关键：只有「本来没连，现在连上了」才叫成功
         boolean sawTarget = false;
         int polls = 0;
         boolean statusSeen = false;
+        boolean wasConnectedDuringRun = false;
 
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
-                + " pw=" + password.length() + "字 timeout=" + timeoutMs + "ms");
+                + " pw=" + password.length() + "字 baseline="
+                + (baseline == null ? "none" : baseline)
+                + " timeout=" + timeoutMs + "ms");
 
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
@@ -593,27 +670,50 @@ public final class CrackEngine {
                         + (status == null ? "null"
                            : (status.length() > 120 ? status.substring(0, 120) + "..." : status)));
             }
-            String by = connectedSignal(target.ssid, status);
-            if (by != null) {
-                return new Attempt(password, Verdict.SUCCESS,
-                        SystemClock.uptimeMillis() - t0, L.s("已连上", "connected"), by);
+
+            String cur = snapshotSsid();
+            boolean nowOnTarget = target.ssid.equals(cur)
+                    || (status != null && status.contains("connected to \"" + target.ssid + "\""));
+
+            if (nowOnTarget) {
+                wasConnectedDuringRun = true;
+                if (!wasConnectedToTarget) {
+                    // 基线未连 → 现在连上 = 这条候选的功劳
+                    String by = L.s("状态变化", "state change");
+                    if (cur != null && cur.equals(target.ssid)) by = "WifiInfo";
+                    else by = "cmd-status";
+                    return new Attempt(password, Verdict.SUCCESS,
+                            SystemClock.uptimeMillis() - t0, L.s("已连上", "connected"), by);
+                }
+                // 基线就连着 → 无法确认是本条造成的，继续观察到超时
             }
             if (status != null && status.contains(target.ssid)) sawTarget = true;
 
-            // 最短等待期内**绝不判负**
-            if (SystemClock.uptimeMillis() - t0 < minWait) continue;
+            long elapsed = SystemClock.uptimeMillis() - t0;
+            if (elapsed < minWait) continue;
         }
 
         long total = SystemClock.uptimeMillis() - t0;
         android.util.Log.i(TAG, "tryOneShell end: " + total + "ms polls=" + polls
-                + " statusSeen=" + statusSeen + " sawTarget=" + sawTarget);
-        String detail = sawTarget
-                ? L.s("未连上（已尝试）", "not connected (attempted)")
-                : L.s("未连上", "not connected");
+                + " statusSeen=" + statusSeen + " sawTarget=" + sawTarget
+                + " baselineConnected=" + wasConnectedToTarget);
+
+        // 一直连着目标，但从头到尾都在 —— 无法归因
+        if (wasConnectedToTarget && wasConnectedDuringRun) {
+            return new Attempt(password, Verdict.UNKNOWN, total,
+                    L.s("当前连着目标，但无法确认是这条密码造成的（可能是原有连接）",
+                        "connected to target, but cannot attribute it to this passphrase "
+                                + "(possibly a pre-existing connection)"), "");
+        }
+
+        String detail;
         if (!statusSeen) {
-            // 连 status 都读不到 —— 这不是密码问题，是通道问题
             detail = L.s("读取状态失败（通道问题，不是密码问题）",
                     "cannot read status (channel problem, not a passphrase problem)");
+        } else if (sawTarget) {
+            detail = L.s("未连上（已尝试）", "not connected (attempted)");
+        } else {
+            detail = L.s("未连上", "not connected");
         }
         return new Attempt(password, Verdict.AUTH_FAIL, total, detail, "");
     }
@@ -755,6 +855,37 @@ public final class CrackEngine {
             return;
         }
         l.onLog("✓ " + probe.summary);
+
+        // ---- 建立基线 ----
+        //
+        // **这是修「任何密码都成功」的关键一步**。
+        // 如果手机本来就连着目标网络，那么第一条候选一进来就会看到
+        // 「当前 SSID == 目标」—— 旧实现据此判成功，于是 12345678、
+        // 00000000 全都在第一条“命中”。
+        //
+        // 所以必须先断开，并**确认真的断开了**，把基线清成「未连接目标」。
+        // 之后任何“连上了”才是这条候选的功劳。
+        String baseline = snapshotSsid();
+        if (target.ssid.equals(baseline)) {
+            l.onLog(L.f("建立基线：当前连着目标 %s，先断开…",
+                    "Baseline: already connected to %s, disconnecting first...", target.ssid));
+            boolean ok = disconnectAndVerify(target.ssid);
+            if (ok) {
+                l.onLog(L.s("✓ 基线已清空（当前未连接目标）",
+                        "baseline cleared (not connected to target)"));
+            } else {
+                l.onLog(L.s("⚠ 无法断开目标连接。",
+                        "could not disconnect from the target."));
+                l.onLog(L.s("  此时任何密码都会看到「已经连着目标」，",
+                        "  Any passphrase would then see already-connected,"));
+                l.onLog(L.s("  结果将被标记为「无法确认」而不是成功。",
+                        "  and results will be marked UNKNOWN instead of success."));
+            }
+        } else {
+            l.onLog(L.f("基线：当前连接 = %s（不是目标，可以直接开始）",
+                    "Baseline: currently on %s (not the target, ready to start)",
+                    baseline == null ? L.s("无", "none") : baseline));
+        }
 
         final long perItem = timeoutMsPerItem > 0 ? timeoutMsPerItem
                 : (mode == Prefs.MODE_NO_ROOT ? 15_000L : 10_000L);

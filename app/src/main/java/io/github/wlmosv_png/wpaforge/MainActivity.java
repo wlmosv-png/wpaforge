@@ -119,6 +119,10 @@ public class MainActivity extends Activity {
     private TextView flowLabel;
     private TextView flowCount;
     private TextView flowClear;
+    /** 日志区的滚动容器：可滚动 + 自动跟随 */
+    private android.widget.ScrollView streamScroll;
+    /** 是否自动跟随到底部（用户上滑后关闭） */
+    private boolean streamAutoScroll = true;
     private LinearLayout.LayoutParams streamParams;
     private boolean streamCollapsed = false;
     private ConnectionProber prober;
@@ -978,16 +982,41 @@ public class MainActivity extends Activity {
         connectStreamView.setTextSize(12);
         connectStreamView.setTextColor(TEXT_DIM);
         connectStreamView.setTypeface(Typeface.MONOSPACE);
-        connectStreamView.setBackground(roundBg(Color.parseColor("#14141A"), 16));
         connectStreamView.setPadding(px(16), px(14), px(16), px(14));
         connectStreamView.setTextIsSelectable(true);
-        connectStreamView.setLineSpacing(px(5), 1f);
-        // **不要用 weight**：pageConnect 在 ScrollView 里，
-        // ScrollView 的测量方式让 weight 失效，height=0 会直接塌成看不见。
-        // 用固定高度：展开时约 240dp，收起时 5 行。
+        connectStreamView.setLineSpacing(px(4), 1f);
+        connectStreamView.setHorizontallyScrolling(false);
+
+        // 日志区必须可滚动。
+        // 之前是一个裸 TextView 放在固定高度里 —— 内容一多，后面的就看不到了，
+        // 而且新内容进来不会自动跟随，用户得自己猜"是不是卡住了"。
+        streamScroll = new android.widget.ScrollView(this);
+        streamScroll.setBackground(roundBg(Color.parseColor("#14141A"), 16));
+        streamScroll.setFillViewport(true);
+        // 不要自己 new LayoutParams —— ScrollView 内部按自己的规则处理子 View，
+        // 传错类型会 ClassCastException（LinearLayout$LayoutParams → FrameLayout）。
+        // 直接让它自己生成即可。
+        streamScroll.addView(connectStreamView);
+
+        // 用户自己上滑查看历史时暂停自动跟随，
+        // 否则新日志一来就把他拽回底部，历史根本看不了。
+        streamScroll.setOnTouchListener((v, e) -> {
+            if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                streamAutoScroll = false;
+            } else if (e.getAction() == android.view.MotionEvent.ACTION_UP) {
+                android.view.View child = streamScroll.getChildAt(0);
+                if (child != null
+                        && streamScroll.getScrollY() + streamScroll.getHeight()
+                           >= child.getMeasuredHeight() - px(24)) {
+                    streamAutoScroll = true;
+                }
+            }
+            return false;
+        });
+
         streamParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, px(240));
-        pageConnect.addView(connectStreamView, streamParams);
+        pageConnect.addView(streamScroll, streamParams);
 
         // 空状态提示（浮在候选流上层的简单做法：先放一行说明）
         connectEmptyHint = new TextView(this);
@@ -1936,23 +1965,24 @@ public class MainActivity extends Activity {
         updateFlowHeader();
     }
 
-    /** 折叠时跟随内容（限 5 行）；展开时占满剩余空间 */
+    /** 折叠时只留几行；展开时约 240dp。高度作用在 ScrollView 上。 */
     private void applyStreamHeight() {
         if (connectStreamView == null || streamParams == null) return;
         if (streamCollapsed) {
-            // 收起：约 5 行高
             streamParams.height = px(108);
             streamParams.weight = 0f;
             connectStreamView.setMaxLines(5);
             connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else {
-            // 展开：固定约 240dp，不靠 weight
             streamParams.height = px(240);
             streamParams.weight = 0f;
             connectStreamView.setMaxLines(Integer.MAX_VALUE);
             connectStreamView.setEllipsize(null);
         }
-        connectStreamView.setLayoutParams(streamParams);
+        // 高度加在滚动容器上。
+        // 之前这里对 connectStreamView 调 setLayoutParams ——
+        // 那是 ScrollView 的子 View，拿到 LinearLayout 的 params 会 ClassCastException。
+        if (streamScroll != null) streamScroll.setLayoutParams(streamParams);
     }
 
     /** 刷新头部箭头与行数 */
@@ -1989,6 +2019,9 @@ public class MainActivity extends Activity {
             connectStreamView.setText(streamBuffer.toString().trim());
             connectStreamView.setTextColor(color);
             updateFlowHeader();
+            if (streamAutoScroll && streamScroll != null) {
+                streamScroll.post(() -> streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+            }
             // 注意：不要在这里做 fullScroll，那会把整个页面的滚动位置带跑，
             // 表现就是"切个页签回来内容全空了"。候选流本身是自适应的，
             // 让用户自己滑。

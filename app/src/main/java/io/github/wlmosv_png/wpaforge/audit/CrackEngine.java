@@ -123,6 +123,17 @@ public final class CrackEngine {
     private final ConnectivityManager cm;
     private final int mode;
 
+    /**
+     * 判为成功的最短耗时。
+     *
+     * WPA 关联要走完 4-way 握手，真机实测**正确密码约 12 秒**。
+     * 低于这个数量级的"连上"只可能是：
+     *   · 系统自己回连了已保存的网络（不是这条候选的功劳）
+     *   · 或读到了上一次连接的残留状态
+     * 所以设一个物理下限，低于它一律不算命中。
+     */
+    private static final long MIN_HIT_MS = 3000L;
+
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
 
@@ -292,9 +303,20 @@ public final class CrackEngine {
             if (wifi != null) wifi.disconnect();
         } catch (Throwable ignored) {}
 
-        for (int i = 0; i < 12; i++) {
+        // **不能一看到“不是目标”就算断开成功**。
+        // 断开瞬间 SSID 会变成 null / <unknown>，但系统可能马上又自动连回去（
+        // 已保存的配置还在）。要“持续一段时间都没连目标”才能认。
+        long stableSince = -1;
+        for (int i = 0; i < 40; i++) {          // 最长 12 秒
             String cur = snapshotSsid();
-            if (cur == null || !cur.equals(targetSsid)) return true;
+            boolean off = (cur == null || !cur.equals(targetSsid));
+            if (off) {
+                if (stableSince < 0) stableSince = SystemClock.uptimeMillis();
+                // 连续 3 秒未连目标 → 认为基线稳定
+                if (SystemClock.uptimeMillis() - stableSince >= 3000) return true;
+            } else {
+                stableSince = -1;
+            }
             sleep(300);
         }
 
@@ -643,8 +665,12 @@ public final class CrackEngine {
         final long minWait = 3500L;
         final long deadline = t0 + timeoutMs;
 
-        // 关键：只有「本来没连，现在连上了」才叫成功
+        // 关键：只有「本来没连 → 过程中确实看到过未连 → 现在连上」才叫成功
         boolean sawTarget = false;
+        // 这条期间是否真的观测到过「未连目标」。
+        // 如果从头到尾都没离开过目标，说明中间那个“已清空”
+        // 只是瞬态，不能当作变化起点。
+        boolean observedOffTarget = false;
         int polls = 0;
         boolean statusSeen = false;
         boolean wasConnectedDuringRun = false;
@@ -675,17 +701,25 @@ public final class CrackEngine {
             boolean nowOnTarget = target.ssid.equals(cur)
                     || (status != null && status.contains("connected to \"" + target.ssid + "\""));
 
+            if (!nowOnTarget) observedOffTarget = true;
+
             if (nowOnTarget) {
                 wasConnectedDuringRun = true;
-                if (!wasConnectedToTarget) {
-                    // 基线未连 → 现在连上 = 这条候选的功劳
-                    String by = L.s("状态变化", "state change");
-                    if (cur != null && cur.equals(target.ssid)) by = "WifiInfo";
-                    else by = "cmd-status";
-                    return new Attempt(password, Verdict.SUCCESS,
-                            SystemClock.uptimeMillis() - t0, L.s("已连上", "connected"), by);
+                long elapsedMs = SystemClock.uptimeMillis() - t0;
+
+                // 三个条件同时满足才算命中：
+                //   1. 基线未连目标
+                //   2. 这条运行期间**确实观测到过未连**
+                //   3. 耗时不低于物理下限
+                //
+                // 第 3 条是关键：WPA 要走完 4-way 握手，
+                // 实测正确密码约 12 秒。不可能 1.5 秒完成。
+                // 之前就是因为缺少这个下限，把系统自己回连当成了命中。
+                if (!wasConnectedToTarget && observedOffTarget && elapsedMs >= MIN_HIT_MS) {
+                    String by = (cur != null && cur.equals(target.ssid)) ? "WifiInfo" : "cmd-status";
+                    return new Attempt(password, Verdict.SUCCESS, elapsedMs,
+                            L.s("已连上", "connected"), by);
                 }
-                // 基线就连着 → 无法确认是本条造成的，继续观察到超时
             }
             if (status != null && status.contains(target.ssid)) sawTarget = true;
 

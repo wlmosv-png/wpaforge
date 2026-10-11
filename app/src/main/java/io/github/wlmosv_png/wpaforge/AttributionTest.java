@@ -44,6 +44,19 @@ public class AttributionTest {
         check("基线未连 → 始终未连 → AUTH_FAIL",
                 neverConnectedVerdict() == CrackEngine.Verdict.AUTH_FAIL);
 
+        System.out.println("== 最短成功时间（物理下限）==");
+        // WPA 要 4-way 握手，实测正确密码约 12 秒。1.5 秒绝不可能。
+        check("1.5 秒连上 → 不算命中", !hitWithin(1538));
+        check("1 秒连上 → 不算命中", !hitWithin(1000));
+        check("2999ms 连上 → 不算命中（低于下限）", !hitWithin(2999));
+        check("3000ms 连上 → 可以算命中", hitWithin(3000));
+        check("12 秒连上 → 可以算命中", hitWithin(12000));
+
+        System.out.println("== 中间态观测 ==");
+        // 全程没离开过目标 → 是原有连接，不是这条候选的功劳
+        check("从未观测到「未连目标」→ 不算命中", !hitWithObservation(true, false));
+        check("观测到「未连目标」后才连上 → 算命中", hitWithObservation(false, true));
+
         System.out.println("== 旧 bug 回归 ==");
 
         // 5) \u65e7\u5b9e\u73b0\uff1a\u53ea\u770b\u5f53\u524d SSID \u5339\u914d\u5c31\u7b97\u6210\u529f
@@ -64,6 +77,21 @@ public class AttributionTest {
     }
 
     // --- \u6a21\u62df tryOneShell \u7684\u5206\u652f ---
+
+    /** 最短成功时间：低于物理下限不算命中 */
+    private static boolean hitWithin(long elapsedMs) {
+        return elapsedMs >= MIN_HIT_MS;
+    }
+
+    /** 中间态观测：必须在运行期间真的看到过「未连目标」 */
+    private static boolean hitWithObservation(boolean wasConnectedToTarget,
+                                              boolean observedOffTarget) {
+        return !wasConnectedToTarget && observedOffTarget;
+    }
+
+    /** 与 CrackEngine.MIN_HIT_MS 保持一致 */
+    private static final long MIN_HIT_MS = 3000L;
+
 
     /** \u5f00\u8dd1\u524d\u5c31\u8fde\u7740\u76ee\u6807\uff0c\u4e14\u4e00\u76f4\u6ca1\u65ad */
     private static CrackEngine.Verdict baselineConnectedVerdict() {

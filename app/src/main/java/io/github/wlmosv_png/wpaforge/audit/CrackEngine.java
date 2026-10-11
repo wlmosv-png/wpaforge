@@ -124,15 +124,14 @@ public final class CrackEngine {
     private final int mode;
 
     /**
-     * 判为成功的最短耗时。
+     * （已弃用）曾经用作"判为成功的最短耗时"。
      *
-     * WPA 关联要走完 4-way 握手，真机实测**正确密码约 12 秒**。
-     * 低于这个数量级的"连上"只可能是：
-     *   · 系统自己回连了已保存的网络（不是这条候选的功劳）
-     *   · 或读到了上一次连接的残留状态
-     * 所以设一个物理下限，低于它一律不算命中。
+     * 移除原因：它误杀了快速连接。
+     * 归因已经由「事件必须发生在命令之后」保证，再加时间门槛是多余且有害的。
+     * 保留常量只为兼容历史测试，实际判定不再使用。
      */
-    private static final long MIN_HIT_MS = 1500L;
+    @Deprecated
+    private static final long MIN_HIT_MS = 0L;
 
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
@@ -699,22 +698,25 @@ public final class CrackEngine {
             }
             sleep(300);
 
-            // 命令发出之后，系统报告过目标可用吗
+            // 命令发出之后，系统报告过目标可用吗。
+            //
+            // **这就是命中判据，不加任何时间门槛。**
+            //
+            // firstAvailableAfter(ssid, commandAt) 已经保证事件发生在命令之后 ——
+            // 命令之前的事件根本不会被返回。再加上开跑前的基线断开、
+            // 每条之前的配置删除，命令之后出现的可用事件只能来自这条候选。
+            //
+            // 之前额外要求「间隔 >= 1.5 秒」，结果把快速连接误杀成 UNKNOWN ——
+            // 用户日志里 B210 明明产生了可用事件，却因为间隔太短被拒。
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
 
             if (at > 0) {
                 eventAt = at;
-                long sinceCommand = at - commandAt;
-                if (sinceCommand >= MIN_HIT_MS) {
-                    long ms = SystemClock.uptimeMillis() - t0;
-                    return new Attempt(password, Verdict.SUCCESS, ms,
-                            L.s("系统确认已连上", "system reported connected"), "watcher");
-                }
-                // 事件来得太快：可能是命令发出瞬间的残留状态。
-                // **不要 continue 到天荒地老** —— 继续等，看连接是否稳定，
-                // 或者是否有更晚的事件。
-                android.util.Log.i(TAG, "事件过早(" + sinceCommand + "ms)，继续观察");
+                long ms = SystemClock.uptimeMillis() - t0;
+                android.util.Log.i(TAG, "命中: 事件在命令后 " + (at - commandAt) + "ms");
+                return new Attempt(password, Verdict.SUCCESS, ms,
+                        L.s("系统确认已连上", "system reported connected"), "watcher");
             }
         }
 
@@ -729,13 +731,6 @@ public final class CrackEngine {
         if (!watcherRegistered()) {
             detail = L.s("事件监听未生效（判定不可用）",
                     "network event listener not active (verdict unavailable)");
-            verdict = Verdict.UNKNOWN;
-        } else if (eventAt > 0) {
-            // **有事件，但来得太早被门槛拦住** —— 这种情况不能判「密码错」，
-            // 因为我们确实观测到目标变可用了，只是无法确认是不是这条造成的。
-            detail = L.s("检测到连接事件，但发生得太快，无法确认是这条密码造成的",
-                    "a connect event was seen, but it came too soon to attribute "
-                            + "to this passphrase");
             verdict = Verdict.UNKNOWN;
         } else if (currentOnTarget) {
             detail = L.s("当前连着目标，但命令发出后没有连接事件（可能是原有连接）",

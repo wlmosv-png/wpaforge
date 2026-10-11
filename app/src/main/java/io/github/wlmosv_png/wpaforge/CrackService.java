@@ -16,9 +16,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
+import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
+import io.github.wlmosv_png.wpaforge.audit.ShizukuRunner;
 import io.github.wlmosv_png.wpaforge.audit.SpecifierProber;
 import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
@@ -77,6 +79,8 @@ public class CrackService extends Service {
      * 用 Object 装，只在真的要跑免 root 模式时才强转（那时已确认版本）。
      */
     private Object sugProberRef;
+    /** 统一引擎实例（取消/暂停走它） */
+    private volatile CrackEngine engineRef;
     private TaskQueue.Task currentTask;
     private List<Candidate> currentDict = new ArrayList<>();
     private long taskStartAt;
@@ -240,6 +244,8 @@ public class CrackService extends Service {
 
         if (prober != null) prober.cancel();
         safeInvoke("cancel");
+        CrackEngine eng = engineRef;
+        if (eng != null) eng.cancel();
 
         // 当前任务立刻标为已停止
         TaskQueue.Task cur = currentTask;
@@ -376,13 +382,114 @@ public class CrackService extends Service {
 
         final TaskQueue.Task ft = task;
 
-        // 按任务记录的模式选择执行器
-        if (task.crackMode == Prefs.MODE_NO_ROOT) {
-            runNoRoot(task, startOffset);
-        } else {
-            // Root 与 Shizuku 走同一套逻辑，只是执行通道不同
-            runWithRoot(task, startOffset);
+        // **三种模式统一走 CrackEngine**
+        //
+        // 之前每条通道各有一套逻辑、各有一套判定，结果同一个 bug
+        // 要在两三个地方修，还修不全（双重 onFinished、配置复用假阳性
+        // 都同时存在于两条通道）。现在通道只负责「把一条候选发出去」，
+        // 判定全部由引擎统一做。
+        runViaEngine(task, startOffset);
+    }
+
+    /**
+     * 统一引擎入口。
+     *
+     * Shizuku / Root 走 shell 通道，免 Root 走系统精确连接。
+     * 判定全在引擎里，不分正两份。
+     */
+    private void runViaEngine(final TaskQueue.Task ft, int startOffset) {
+        final CrackEngine engine = new CrackEngine(this, ft.crackMode);
+        engineRef = engine;
+
+        if (ft.crackMode != Prefs.MODE_NO_ROOT) {
+            final boolean useShizuku = ft.crackMode == Prefs.MODE_SHIZUKU;
+            engine.setShellChannel(new CrackEngine.ShellChannel() {
+                @Override
+                public String exec(String cmd, long timeoutMs) {
+                    if (useShizuku) return ShizukuRunner.exec(cmd, timeoutMs);
+                    return RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                }
+                @Override
+                public void forgetTarget(String ssid) {
+                    // 删净旧配置 + 回读校验
+                    for (int round = 0; round < 3; round++) {
+                        String list = exec("cmd wifi list-networks", 4000);
+                        if (list == null) return;
+                        String leftover = null;
+                        boolean found = false;
+                        for (String line : list.split("\n")) {
+                            String t = line.trim();
+                            if (!t.matches("^\\d+\\s+.*")) continue;
+                            String[] parts = t.split("\\s+");
+                            if (parts.length < 3) continue;
+                            if (parts[1].equals(ssid)) {
+                                found = true;
+                                leftover = parts[0];
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            log(L.f("配置已清干净: %s", "config cleared: %s", ssid));
+                            return;
+                        }
+                        exec("cmd wifi forget-network " + leftover, 4000);
+                        log(L.f("清除旧配置: %s netId=%s",
+                                "forgot stale config: %s netId=%s", ssid, leftover));
+                        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                    }
+                    log(L.s("警告: 旧配置可能未删净，结果可能不准",
+                            "Warning: stale config may remain; results may be unreliable"));
+                }
+                @Override
+                public String name() { return useShizuku ? "Shizuku" : "Root"; }
+            });
         }
+
+        log(L.f("引擎模式: %s", "Engine mode: %s",
+                ft.crackMode == Prefs.MODE_NO_ROOT ? L.s("免 Root", "root-free")
+                        : (ft.crackMode == Prefs.MODE_SHIZUKU ? "Shizuku" : "Root")));
+
+        engine.run(ft.toNetRecord(), currentDict, startOffset, 0L, new CrackEngine.Listener() {
+            @Override
+            public void onAttemptStart(int index, int total, String candidate) {
+                for (UiCallback cb : callbacks) cb.onAttempt(index, total, candidate);
+                updateNotification(L.f("正在破解 %s", "Cracking %s", ft.ssid),
+                        candidate + "   " + index + "/" + total, index, total);
+            }
+
+            @Override
+            public void onAttemptResult(CrackEngine.Attempt a) {
+                for (UiCallback cb : callbacks) {
+                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, a.detail);
+                }
+            }
+
+            @Override
+            public void onProgress(int tested, int total, double rate, long etaMs) {
+                for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
+            }
+
+            @Override
+            public void onLog(String line) { log(line); }
+
+            @Override
+            public void onFinished(int tested, int offset, String hitPassword, String outcome) {
+                engineRef = null;
+                finishTask(ft, outcome, tested, offset, hitPassword);
+            }
+
+            @Override
+            public void onBlocked(String title, String detail) {
+                log(L.f("无法开始: %s", "Cannot start: %s", title));
+                for (UiCallback cb : callbacks) cb.onLog(title + "\n" + detail);
+                engineRef = null;
+                ft.state = TaskQueue.State.STOPPED;
+                TaskQueue.update(CrackService.this, ft);
+                running = false;
+                notifyQueue();
+                stopSelfSafe();
+            }
+        });
     }
 
     /** 免 root 模式执行。低版本设备上会直接拒绝，不加载任何 API 30 的类。 */

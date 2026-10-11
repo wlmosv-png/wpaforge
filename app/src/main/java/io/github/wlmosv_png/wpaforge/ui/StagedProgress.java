@@ -126,6 +126,12 @@ public class StagedProgress extends View {
         int w = getWidth();
         if (w == 0) return;
 
+        // 空状态：没有分段也没有文字就什么都不画。
+        // 否则会在界面上留下一条空轨道，看起来像组件坏了。
+        if (stages.isEmpty() && headline.isEmpty() && footnote.isEmpty()) {
+            return;
+        }
+
         float y = 0;
 
         // ---- 顶行说明 ----
@@ -177,6 +183,10 @@ public class StagedProgress extends View {
 
     @Override
     protected void onMeasure(int wSpec, int hSpec) {
+        if (stages.isEmpty() && headline.isEmpty() && footnote.isEmpty()) {
+            super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.EXACTLY));
+            return;
+        }
         float h = 0;
         if (!headline.isEmpty()) h += dp(20);
         h += stages.size() * (dp(9) + dp(6));

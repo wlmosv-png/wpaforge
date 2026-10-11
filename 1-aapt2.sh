@@ -17,8 +17,8 @@ P="$(cd "$(dirname "$0")" && pwd)"
 AR="${WP_AAPT2_DIR:-/data/local/tmp/eta/aapt2run}"
 AJ="${WP_ANDROID_JAR:-/storage/emulated/0/Download/TGAutoSign-build/tools/libs/android.jar}"
 
-VER_CODE="${WP_VERSION_CODE:-10}"
-VER_NAME="${WP_VERSION_NAME:-0.5.5}"
+VER_CODE="${WP_VERSION_CODE:-12}"
+VER_NAME="${WP_VERSION_NAME:-0.5.7}"
 
 OUT="$P/build/out"
 

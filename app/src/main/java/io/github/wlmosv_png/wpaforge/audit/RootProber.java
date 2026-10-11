@@ -453,6 +453,20 @@ public final class RootProber {
         }
     }
 
+    /**
+     * 把 {"su","-c",X} / {"su","-c",X,Y} 剥成纯命令字符串 X。
+     * 不是该形态就原样拼接（保底不改变行为）。
+     */
+    private static String unwrapSu(String[] cmd) {
+        if (cmd == null || cmd.length == 0) return "";
+        if (cmd.length >= 3 && "su".equals(cmd[0]) && "-c".equals(cmd[1])) {
+            StringBuilder sb = new StringBuilder(cmd[2]);
+            for (int i = 3; i < cmd.length; i++) sb.append(' ').append(cmd[i]);
+            return sb.toString();
+        }
+        return String.join(" ", cmd);
+    }
+
     private static boolean isConnectedTo(String status, String ssid) {
         if (status == null) return false;
         return status.contains("connected to \"" + ssid + "\"");
@@ -523,14 +537,24 @@ public final class RootProber {
         return exec(this, new String[]{"su", "-c", shellCmd}, timeoutMs);
     }
 
-    /** 异步跑一个进程，不读输出。用于发命令 */
+    /**
+     * 异步跑一个进程，不读输出。用于发命令。
+     *
+     * 注意两种通道的**命令形态不同**：
+     *   Root    —— 传 {"su","-c",X}，由 ProcessBuilder 直接起 su
+     *   Shizuku —— 传 {"su","-c",X} 是**错的**：Shizuku 已经是 shell 身份，
+     *              没有 su，命令会直接失败。必须把 X 单独交给 ShizukuRunner。
+     *   这里以前用 `String.join(" ", cmd)` 拼成 "su -c X" 再丢给 Shizuku，
+     *   结果是 Shizuku 模式永远发不出连接命令 —— 这正是「三种模式只有 root 能用」
+     *   的根因之一。
+     */
     private void execAsync(String[] cmd) {
         if (useShizuku) {
-            // Shizuku 通道：把整条命令交给 shell
-            final String full = String.join(" ", cmd);
+            // 剥掉 su -c 包装，只把真正的命令交给 shell 身份执行
+            final String shellCmd = unwrapSu(cmd);
             new Thread(() -> {
                 try {
-                    ShizukuRunner.exec(full, 20000);
+                    ShizukuRunner.exec(shellCmd, 20000);
                 } catch (Exception ignored) {}
             }, "wpaforge-shizuku-async").start();
             return;

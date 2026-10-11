@@ -249,11 +249,13 @@ public final class SuggestionProber {
      */
     private Verdict submitBatch(NetRecord target, List<Candidate> cands,
                                 int from, int to) {
+        noteOverride = "";
         for (int i = from; i < to; i++) {
             if (cancelFlag.get() || pauseFlag.get()) return Verdict.BATCH_TIMEOUT;
 
             Candidate c = cands.get(i);
             if (!addSuggestion(target, c.password)) {
+                noteOverride = lastSubmitError;
                 return Verdict.ERROR;
             }
             activeAddCount++;
@@ -274,9 +276,21 @@ public final class SuggestionProber {
     }
 
     private int activeAddCount = 0;
+    /** 本次 submitBatch 要覆盖的错误说明 */
+    private String noteOverride = "";
 
-    /** 提交一条建议 */
+    /** 上一次提交失败的原因（给界面用，不再只写 logcat） */
+    private String lastSubmitError = "";
+
+    /**
+     * 提交一条建议。
+     *
+     * 失败时记下原因（包括系统返回的状态码），
+     * 曾经只写 logcat，用户在界面上看到的只有「本批未成功」，
+     * 完全不知道是权限问题、重复问题还是系统不支持。
+     */
     private boolean addSuggestion(NetRecord target, String password) {
+        lastSubmitError = "";
         try {
             WifiNetworkSuggestion.Builder b = new WifiNetworkSuggestion.Builder()
                     .setSsid(target.ssid);
@@ -290,6 +304,8 @@ public final class SuggestionProber {
                     break;
                 case WEP:
                     // WifiNetworkSuggestion 不支持 WEP，免 root 模式跳过
+                    lastSubmitError = L.s("系统接口不支持 WEP，请改用 Root/Shizuku 模式",
+                            "The system API does not support WEP — use Root/Shizuku mode");
                     return false;
                 default:
                     b.setWpa2Passphrase(password);
@@ -307,11 +323,40 @@ public final class SuggestionProber {
                 activeBatch.add(sug);
                 return true;
             }
+
+            lastSubmitError = describeStatus(status);
             android.util.Log.w("WPAForgeSug", "addNetworkSuggestions 返回 " + status);
             return false;
+        } catch (SecurityException e) {
+            lastSubmitError = L.s("缺少权限：请在系统设置里允许本应用修改 WiFi",
+                    "Missing permission: allow this app to modify Wi-Fi in system settings");
+            android.util.Log.w("WPAForgeSug", "addSuggestion SecurityException: " + e);
+            return false;
         } catch (Exception e) {
+            lastSubmitError = e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : " " + e.getMessage());
             android.util.Log.w("WPAForgeSug", "addSuggestion 失败: " + e);
             return false;
+        }
+    }
+
+    /** 把系统状态码翻成人话 */
+    private static String describeStatus(int status) {
+        switch (status) {
+            case 1:  // STATUS_NETWORK_SUGGESTIONS_ERROR_INTERNAL
+                return L.s("提交失败：系统内部错误",
+                        "Submit failed: internal system error");
+            case 2:  // ...ERROR_GENERIC
+                return L.s("提交失败：系统拒绝（可能未授权本应用）",
+                        "Submit failed: rejected (the app may not be authorised)");
+            case 3:  // ...ERROR_ADD_DUPLICATE
+                return L.s("提交失败：重复条目",
+                        "Submit failed: duplicate entry");
+            case 4:  // ...ERROR_ADD_ALREADY_EXISTS
+                return L.s("提交失败：该网络已存在",
+                        "Submit failed: network already exists");
+            default:
+                return L.f("提交失败（状态码 %d）", "Submit failed (status %d)", status);
         }
     }
 
@@ -342,6 +387,9 @@ public final class SuggestionProber {
     }
 
     private String noteOf(Verdict v) {
+        if (v == Verdict.ERROR && noteOverride != null && !noteOverride.isEmpty()) {
+            return noteOverride;
+        }
         switch (v) {
             case CONNECTED: return L.s("已连上", "Connected");
             case BATCH_TIMEOUT: return L.s("本批未成功", "Batch unsuccessful");

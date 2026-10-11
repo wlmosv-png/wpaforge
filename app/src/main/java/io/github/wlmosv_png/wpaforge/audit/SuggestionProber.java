@@ -196,6 +196,8 @@ public final class SuggestionProber {
         try {
             // 清掉上一次可能残留的建议
             clearSuggestions();
+            connectedSsid = "";
+            registerNetCallback();
 
             while (cursor < total) {
                 if (cancelFlag.get() || pauseFlag.get()) break;
@@ -235,6 +237,7 @@ public final class SuggestionProber {
                 if (cancelFlag.get() || pauseFlag.get()) break;
             }
         } finally {
+            unregisterNetCallback();
             clearSuggestions();
             Outcome oc = cancelFlag.get() ? Outcome.STOPPED
                     : pauseFlag.get() ? Outcome.PAUSED
@@ -244,6 +247,74 @@ public final class SuggestionProber {
     }
 
     private String lastHitPassword = "";
+
+    /** 监听对应当前连接的 SSID（比 getConnectionInfo 可靠） */
+    private volatile String connectedSsid = "";
+
+    private ConnectivityManager.NetworkCallback netCb;
+
+    /**
+     * 注册网络回调。
+     *
+     * 为什么不能只靠 `getConnectionInfo()`：
+     *   它在 Android 10+ 已经被限制，且只在连接**稳定后**才反映，
+     *   频繁调用会返回过期值。而回调是事件驱动的，
+     *   能在系统真正连上目标网络的那一刻立即通知。
+     */
+    private void registerNetCallback() {
+        if (netCb != null) return;
+        try {
+            netCb = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onCapabilitiesChanged(Network n, NetworkCapabilities caps) {
+                    try {
+                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                            String ssid = currentSsid();
+                            if (ssid != null && !ssid.isEmpty()) connectedSsid = ssid;
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            };
+            NetworkRequest req = new NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .build();
+            cm.registerNetworkCallback(req, netCb);
+        } catch (Throwable ignored) {
+            netCb = null;
+        }
+    }
+
+    private void unregisterNetCallback() {
+        if (netCb == null) return;
+        try {
+            cm.unregisterNetworkCallback(netCb);
+        } catch (Throwable ignored) {}
+        netCb = null;
+    }
+
+    /** 当前连着的 SSID（去引号） */
+    private String currentSsid() {
+        try {
+            WifiInfo info = wifi.getConnectionInfo();
+            if (info == null) return null;
+            String cur = info.getSSID();
+            if (cur == null) return null;
+            if (cur.startsWith("\"") && cur.endsWith("\"") && cur.length() >= 2) {
+                cur = cur.substring(1, cur.length() - 1);
+            }
+            return cur;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 已连上目标？优先用回调给的值 */
+    private boolean connectedTo(String ssid) {
+        String s1 = connectedSsid;
+        if (s1 != null && s1.equals(ssid)) return true;
+        String s2 = currentSsid();
+        return s2 != null && s2.equals(ssid);
+    }
 
     /**
      * 提交一批建议。
@@ -274,7 +345,7 @@ public final class SuggestionProber {
             while (SystemClock.uptimeMillis() < deadline) {
                 if (cancelFlag.get() || pauseFlag.get()) return Verdict.BATCH_TIMEOUT;
                 interruptibleSleep(POLL_MS);
-                if (isConnectedTo(target.ssid)) {
+                if (connectedTo(target.ssid)) {
                     lastHitPassword = c.password;
                     notifyCandidate(c.password, true,
                             SystemClock.uptimeMillis() - t0, L.s("已连上", "Connected"));

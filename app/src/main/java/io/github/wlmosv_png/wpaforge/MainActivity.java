@@ -21,6 +21,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -1075,6 +1076,33 @@ public class MainActivity extends Activity {
         return lp;
     }
 
+    /**
+     * 把当前内存里的候选写成一个真实文件，返回路径。
+     *
+     * 目录用 DictStore.defaultDir（跟字典管理页同一个），文件名固定，
+     * 下次生成会覆盖 —— 不会堆一堆临时文件。
+     */
+    private String persistGeneratedDict() {
+        if (currentDict == null || currentDict.isEmpty()) return "";
+        File dir = io.github.wlmosv_png.wpaforge.audit.DictStore.defaultDir(this);
+        if (dir == null) return "";
+        if (!dir.exists() && !dir.mkdirs()) return "";
+        File out = new File(dir, L.s("00 内置生成器.txt", "00 Built-in generator.txt"));
+        try (java.io.BufferedWriter w = new java.io.BufferedWriter(
+                new java.io.OutputStreamWriter(new java.io.FileOutputStream(out), "UTF-8"))) {
+            for (Candidate c : currentDict) {
+                w.write(c.password);
+                w.write("\n");
+            }
+        } catch (Exception e) {
+            android.util.Log.w("WPAForge", "persistGeneratedDict 失败: " + e);
+            return "";
+        }
+        appendStream(L.s("内置字典已落地: ", "Generated dictionary saved: ")
+                + out.getAbsolutePath() + "（" + currentDict.size() + L.s(" 条）", " entries)"));
+        return out.getAbsolutePath();
+    }
+
     /** 暂停 / 继续 的统一入口 */
     private void onPauseResumeClicked() {
         TaskQueue.Task pausedTask = null, runningTask = null;
@@ -1110,18 +1138,26 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
+        // **先改队列**，再通知服务。顺序很重要：
+        // 队列是 UI 的唯一真相，先改这里，用户点完立刻能看到状态变化，
+        // 不会出现「点了没反应，过几秒才停」的观感。
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING
+                    || t.state == TaskQueue.State.PENDING
+                    || t.state == TaskQueue.State.PAUSED) {
+                t.state = TaskQueue.State.STOPPED;
+                TaskQueue.update(this, t);
+            }
+        }
+        // 再让工作线程退出当前那条。
+        // 它会阻塞到当前候选等完（Shizuku 通道最多 ~3 秒），
+        // 但队列状态已经是停止，界面不会再显示"进行中"。
         CrackService svc = liveService();
         if (svc != null) {
             svc.stopAll();
-        } else {
-            // 服务拿不到：直接改队列，保证下次不会接着跑
-            for (TaskQueue.Task t : queueCache) {
-                if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
-                    t.state = TaskQueue.State.STOPPED;
-                    TaskQueue.update(this, t);
-                }
-            }
         }
+        CrackService st = CrackService.get();
+        if (st != null && st != svc) st.stopAll();
         appendStreamColored(L.s("■ 正在停止…", "■ Stopping…"), DANGER);
         refreshQueue();
     }
@@ -1820,6 +1856,22 @@ public class MainActivity extends Activity {
 
         // 记下原网络，跑完连回去
         rememberCurrentWifi();
+
+        // 如果当前用的是内置生成器（没有落盘文件），**入队前先落地**。
+        //
+        // 为什么必须这么做：服务进程只认 dictPath。
+        // path 为空时它无法重建候选，只能走「候选为空，跳过」——
+        // 用户看到的「三种模式点开始都秒结束」就是这个。
+        // 落盘后 path 有值，服务端行为与界面显示完全一致，不再依赖
+        // 「运行时用同样参数重建」这种脆弱假设。
+        if (currentDictPath == null || currentDictPath.isEmpty()) {
+            try {
+                currentDictPath = persistGeneratedDict();
+            } catch (Throwable t) {
+                appendStreamColored(L.s("内置字典落地失败: ", "Failed to save generated dictionary: ")
+                        + t.getClass().getSimpleName(), DANGER);
+            }
+        }
 
         // 入队。crackService 可能还没绑定好（bindService 是异步的），
         // 所以先直接写持久化队列，不依赖服务实例 —— 避免 NPE。

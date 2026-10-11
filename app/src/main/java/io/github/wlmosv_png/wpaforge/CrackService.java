@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
+import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
 import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
@@ -303,7 +304,28 @@ public class CrackService extends Service {
                 log(L.f("加载字典 %s -> %d 条", "Loaded dictionary %s -> %d entries",
                         task.dictName, base.size()));
             } else {
-                base = new ArrayList<>();
+                // **重点**：dictPath 为空有两种情况
+                //   a) 任务是用「内置生成器」建的 —— 候选只在内存里，从没落盘
+                //   b) 真的是空任务
+                //
+                // 旧代码一律当 (b) 处理，于是「内置生成器 1771 条」的任务
+                // 一进 executeTask 就 base 为空 → 直接走「候选为空，跳过」。
+                // 表现就是：三种模式点开始都秒结束，看起来像模式坏的，
+                // 其实是候选根本没被重建出来。
+                //
+                // 这里按入队时记录的名字/条数判断，并用完全相同的参数重建 ——
+                // 必须与 startConnect() 里生成时用的参数一致，否则 offset 对不上。
+                if (task.dictSize > 0) {
+                    base = new DictGenerator(task.dictSize)
+                            .classic().numericPatterns().phoneSegments()
+                            .wordVariants().wordDigits()
+                            .build();
+                    log(L.f("重建内置字典 %s -> %d 条",
+                            "Rebuilt built-in dictionary %s -> %d entries",
+                            task.dictName, base.size()));
+                } else {
+                    base = new ArrayList<>();
+                }
             }
 
             List<Candidate> work = base;

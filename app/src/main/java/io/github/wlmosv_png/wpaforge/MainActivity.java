@@ -2380,6 +2380,13 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
 
     }
 
+    /**
+     * 模式可用性检测。
+     *
+     * 现在改成调用 **引擎的通道自检** —— 它会把整条判定链实际跑一遍
+     * 并逐条给出证据（命令能不能执行、返回什么、判定信号读不读得到）。
+     * 之前在设置页只显示一句结论，用户没法判断到底是哪一环坏了。
+     */
     private void refreshModeReady() {
         if (modeReadyLabel == null) return;
         final int m = Prefs.mode(this);
@@ -2396,6 +2403,11 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
             if (Prefs.mode(this) == Prefs.MODE_SHIZUKU) {
                 ensureShizukuPermission();
             }
+        });
+        // 长按看完整自检证据
+        modeReadyLabel.setOnLongClickListener(v -> {
+            showChannelProbeDetail();
+            return true;
         });
 
         new Thread(() -> {
@@ -2429,6 +2441,46 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                 modeReadyLabel.setTextColor(fok ? OK_GREEN : DANGER);
             });
         }, "wpaforge-modecheck").start();
+    }
+
+    /**
+     * 弹出通道自检的完整证据。
+     *
+     * 用户点长按状态行就能看到：命令跑了多久、返回了什么、
+     * 两个判定信号当前能不能读到值 —— 不用再来回问我。
+     */
+    private void showChannelProbeDetail() {
+        final int m = Prefs.mode(this);
+        new Thread(() -> {
+            io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
+                    new io.github.wlmosv_png.wpaforge.audit.CrackEngine(this, m);
+            if (m != Prefs.MODE_NO_ROOT) {
+                final boolean useShizuku = m == Prefs.MODE_SHIZUKU;
+                eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                    @Override
+                    public String exec(String cmd, long timeoutMs) {
+                        if (useShizuku) {
+                            return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
+                        }
+                        return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                    }
+                    @Override public void forgetTarget(String ssid) { }
+                    @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
+                });
+            }
+            io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe p = eng.probeChannel();
+            StringBuilder sb = new StringBuilder();
+            for (String line : p.steps) sb.append(line).append('\n');
+            final String body = sb.toString().trim();
+            final String title = (p.ok ? "✓ " : "✗ ") + p.summary;
+            ui.post(() -> {
+                NetDialog d = new NetDialog(MainActivity.this,
+                        L.s("通道自检", "Channel self-check"), body);
+                d.setPositive(L.s("知道了", "Got it"), null);
+                d.show();
+            });
+        }, "wpaforge-probe").start();
     }
 
     /** 模式名（不带“模式”后缀，用于状态行前缀） */

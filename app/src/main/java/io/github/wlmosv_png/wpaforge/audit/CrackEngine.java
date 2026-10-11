@@ -258,6 +258,187 @@ public final class CrackEngine {
         }
     }
 
+    // ------------------------------------------------------------------ 通道自检
+
+    /** 接入自检结果 */
+    public static final class ChannelProbe {
+        public final boolean ok;
+        public final String summary;
+        public final String detail;
+        /** 逐项检查结果，给用户看细节 */
+        public final java.util.List<String> steps = new java.util.ArrayList<>();
+
+        ChannelProbe(boolean ok, String summary, String detail) {
+            this.ok = ok;
+            this.summary = summary == null ? "" : summary;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        /** 连同已收集的步骤一起构造。
+         *
+         * 之前 probeChannel 里先在临时对象上 step()，最后 new 了一个新对象返回 ——
+         * detail（字符串）带过去了，但 steps（列表）留在了临时对象上，
+         * 于是日志里出现「结论有、检查项 0 条」的怪现象。
+         */
+        ChannelProbe(boolean ok, String summary, String detail, java.util.List<String> from) {
+            this(ok, summary, detail);
+            if (from != null) this.steps.addAll(from);
+        }
+
+        void step(String s) { steps.add(s); }
+    }
+
+    /**
+     * 检查当前通道是不是真的接入了。
+     *
+     * 这是用户要求的「完全判定」：不看界面写着什么，
+     * 而是**实际跑一遍判定链**，每一步都留证据。
+     *
+     * <p>为什么必须做这个：用户看到的「执行方式: Shizuku」只是 prefs 里
+     * 存的一个数字，跟通道是否真的可用完全无关。之前没有自检，
+     * 通道断了也照跑，跑完 97 条全是「未连上」，用户以为密码不对。
+     */
+    public ChannelProbe probeChannel() {
+        ChannelProbe p = new ChannelProbe(true, "", "");
+
+        // --- 1. WiFi 开关 ---
+        boolean wifiOn = false;
+        try { wifiOn = wifi != null && wifi.isWifiEnabled(); } catch (Throwable ignored) {}
+        p.step((wifiOn ? "✓ " : "✗ ") + L.s("WiFi 开关: ", "Wi-Fi enabled: ")
+                + (wifiOn ? L.s("开", "on") : L.s("关", "off")));
+        if (!wifiOn) {
+            p.step(L.s("  → 请先打开 WiFi", "  -> turn Wi-Fi on first"));
+            return new ChannelProbe(false,
+                    L.s("WiFi 未开启", "Wi-Fi is off"),
+                    join(p), p.steps);
+        }
+
+        // --- 2. 通道类型 ---
+        if (mode == Prefs.MODE_NO_ROOT) {
+            p.step("✓ " + L.s("通道: 系统精确连接（不需要 shell）",
+                    "channel: system precise request (no shell needed)"));
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                p.step("✗ " + L.s("需要 Android 10+", "needs Android 10+"));
+                return new ChannelProbe(false,
+                        L.s("系统版本过低", "Android version too old"), join(p), p.steps);
+            }
+            if (cm == null) {
+                p.step("✗ " + L.s("拿不到 ConnectivityManager", "no ConnectivityManager"));
+                return new ChannelProbe(false,
+                        L.s("系统服务缺失", "system service missing"), join(p), p.steps);
+            }
+            // 读当前连接作为一次实读
+            String cur = currentSsid();
+            p.step((cur != null ? "✓ " : "· ") + L.s("当前连接读取: ", "current SSID read: ")
+                    + (cur == null ? L.s("读不到（正常，可能没连）", "n/a (may be disconnected)") : cur));
+            return new ChannelProbe(true, L.s("免 Root 通道可用", "root-free channel ready"), join(p), p.steps);
+        }
+
+        // --- 3. shell 通道 ---
+        if (shell == null) {
+            p.step("✗ " + L.s("shell 通道未设置", "shell channel not set"));
+            return new ChannelProbe(false,
+                    L.s("通道未接入", "channel not attached"),
+                    join(p) + "\n" + L.s("这是程序内部错误，请反馈。",
+                            "This is an internal error; please report it."));
+        }
+        p.step("✓ " + L.s("通道类型: ", "channel type: ") + shell.name());
+
+        // 真跑一条，看能不能执行
+        String out = null;
+        long t0 = SystemClock.uptimeMillis();
+        try {
+            out = shell.exec("cmd wifi status", 8000);
+        } catch (Throwable t) {
+            p.step("✗ " + L.s("执行命令抛异常: ", "exec threw: ") + t.getClass().getSimpleName());
+        }
+        long cost = SystemClock.uptimeMillis() - t0;
+
+        if (out == null) {
+            p.step("✗ " + L.s("命令没有返回（通道断了或未授权）",
+                    "command returned nothing (channel down or not granted)"));
+            p.step("  " + L.s("耗时 ", "took ") + cost + "ms");
+            return new ChannelProbe(false,
+                    L.s("通道未真正接入", "channel is not actually attached"),
+                    join(p) + "\n\n" + L.s(
+                            "「执行方式」里显示的模式只是设置项，不代表通道可用。\n"
+                                    + "请到设置页点那行状态重新检测，或重新授予 Shizuku 权限。",
+                            "The mode shown in Settings is just a preference; it does not mean "
+                                    + "the channel works. Re-check the status line on the Settings page, "
+                                    + "or re-grant Shizuku permission."));
+        }
+
+        String trimmed = out.trim();
+        if (trimmed.isEmpty()) {
+            p.step("✗ " + L.s("命令返回空（通道没真正执行）",
+                    "command returned empty (channel did not actually run)"));
+            return new ChannelProbe(false,
+                    L.s("通道未真正接入", "channel is not actually attached"),
+                    join(p) + "\n\n" + L.s(
+                            "常见原因：Shizuku 未授权本应用，或服务已停止。",
+                            "Common causes: Shizuku has not granted this app, or the service stopped."));
+        }
+
+        boolean looksLikeWifi = trimmed.contains("Wifi") || trimmed.contains("Wi-Fi")
+                || trimmed.contains("wlan") || trimmed.contains("connected");
+        p.step((looksLikeWifi ? "✓ " : "? ") + L.s("命令返回看起来像 WiFi 输出", "output looks like Wi-Fi status"));
+        p.step("  " + L.s("耗时 ", "took ") + cost + "ms");
+        if (!looksLikeWifi) {
+            p.step("  " + L.s("首行: ", "first line: ") + firstLine(trimmed));
+        }
+
+        // --- 4. 判定信号可用性 ---
+        String cur = currentSsid();
+        p.step((cur != null ? "✓ " : "· ") + L.s("WifiInfo 信号: ", "WifiInfo signal: ")
+                + (cur == null ? L.s("读不到", "unavailable") : cur));
+        boolean cmdSignal = trimmed.contains("connected to \"");
+        p.step((cmdSignal ? "✓ " : "· ") + L.s("cmd-status 信号: ",
+                "cmd-status signal: ")
+                + (cmdSignal ? L.s("可用（当前已连着网络）", "usable (connected now)")
+                             : L.s("当前没连网络，连上后才有", "no network connected right now")));
+
+        if (cur == null && !cmdSignal) {
+            p.step(L.s("  ⚠ 两个判定信号当前都读不到值。",
+                    "  ! both verdict signals read nothing right now."));
+            p.step(L.s("    这不一定是故障（可能只是当前没连网），",
+                    "    This is not necessarily a fault (you may just be offline),"));
+            p.step(L.s("    但如果跑完所有候选都没命中，请先怀疑这里。",
+                    "    but if every candidate misses, suspect this first."));
+        }
+
+        if (cost > 5000) {
+            p.step(L.s("  ⚠ 命令较慢，判定会拖时间（不影响正确性）",
+                    "  ! command is slow; verdicts will lag (correctness unaffected)"));
+        }
+
+        // **慢不等于不可用**。
+        // 之前用「cost < 5000」当门槛，会把能用但慢的机器误判成未接入 ——
+        // 那是把可用性判据和性能判据混在一起了，是错的。
+        // 现在只看：命令能不能执行、返回内容像不像 WiFi 输出。
+        boolean ok = looksLikeWifi;
+        String summary;
+        if (!ok) {
+            summary = L.s("通道返回内容异常", "channel returned unexpected output");
+        } else if (cost > 8000) {
+            summary = L.s("通道已接入（较慢）", "channel attached (slow)");
+        } else {
+            summary = L.s("通道已接入", "channel attached");
+        }
+        return new ChannelProbe(ok, summary, join(p), p.steps);
+    }
+
+    private static String join(ChannelProbe p) {
+        StringBuilder sb = new StringBuilder();
+        for (String s : p.steps) sb.append(s).append('\n');
+        return sb.toString().trim();
+    }
+
+    private static String firstLine(String s) {
+        int i = s.indexOf('\n');
+        String line = i > 0 ? s.substring(0, i) : s;
+        return line.length() > 80 ? line.substring(0, 80) + "..." : line;
+    }
+
     // ------------------------------------------------------------------ 单条尝试
 
     /**
@@ -390,6 +571,11 @@ public final class CrackEngine {
         final long minWait = 3500L;
         long deadline = t0 + timeoutMs;
         boolean sawTarget = false;
+        int polls = 0;
+        boolean statusSeen = false;
+
+        android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
+                + " pw=" + password.length() + "字 timeout=" + timeoutMs + "ms");
 
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
@@ -397,9 +583,16 @@ public final class CrackEngine {
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
             sleep(400);
+            polls++;
 
             String status = null;
             try { status = sh.exec("cmd wifi status", 3000); } catch (Throwable ignored) {}
+            if (status != null) statusSeen = true;
+            if (polls == 1) {
+                android.util.Log.i(TAG, "first status: "
+                        + (status == null ? "null"
+                           : (status.length() > 120 ? status.substring(0, 120) + "..." : status)));
+            }
             String by = connectedSignal(target.ssid, status);
             if (by != null) {
                 return new Attempt(password, Verdict.SUCCESS,
@@ -411,10 +604,18 @@ public final class CrackEngine {
             if (SystemClock.uptimeMillis() - t0 < minWait) continue;
         }
 
-        return new Attempt(password, Verdict.AUTH_FAIL,
-                SystemClock.uptimeMillis() - t0,
-                sawTarget ? L.s("未连上（已尝试）", "not connected (attempted)")
-                          : L.s("未连上", "not connected"), "");
+        long total = SystemClock.uptimeMillis() - t0;
+        android.util.Log.i(TAG, "tryOneShell end: " + total + "ms polls=" + polls
+                + " statusSeen=" + statusSeen + " sawTarget=" + sawTarget);
+        String detail = sawTarget
+                ? L.s("未连上（已尝试）", "not connected (attempted)")
+                : L.s("未连上", "not connected");
+        if (!statusSeen) {
+            // 连 status 都读不到 —— 这不是密码问题，是通道问题
+            detail = L.s("读取状态失败（通道问题，不是密码问题）",
+                    "cannot read status (channel problem, not a passphrase problem)");
+        }
+        return new Attempt(password, Verdict.AUTH_FAIL, total, detail, "");
     }
 
     private static void sleep(long ms) {
@@ -538,6 +739,22 @@ public final class CrackEngine {
         cancelFlag.set(false);
         pauseFlag.set(false);
         consecutiveTimeouts = 0;
+
+        // **跑之前先自检通道**
+        //
+        // 用户看到的「执行方式: Shizuku」只是设置里的一个数字，
+        // 跟通道能不能用毫无关系。之前没有这一步，通道断了也照跑 97 条，
+        // 全是「未连上」，用户以为是密码不对 —— 这就是他反复遇到的
+        // 「明明密码对却识别不到」。
+        ChannelProbe probe = probeChannel();
+        l.onLog(L.s("── 通道自检 ──", "── channel self-check ──"));
+        for (String line : probe.steps) l.onLog("  " + line);
+        if (!probe.ok) {
+            l.onLog(L.s("✗ 自检未通过，已停止。", "x self-check failed, stopping."));
+            l.onBlocked(probe.summary, probe.detail);
+            return;
+        }
+        l.onLog("✓ " + probe.summary);
 
         final long perItem = timeoutMsPerItem > 0 ? timeoutMsPerItem
                 : (mode == Prefs.MODE_NO_ROOT ? 15_000L : 10_000L);

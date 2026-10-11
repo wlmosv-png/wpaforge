@@ -149,6 +149,60 @@ public class App extends Application {
                     sb.append("  特权通道查询失败: ").append(t.getClass().getSimpleName()).append('\n');
                 }
 
+                // 引擎通道自检（含判定信号可用性）
+                //
+                // 用户反复遇到「密码对却识别不到」，而线上看不到任何证据。
+                // 现在每次启动都把它写进这份文件，报障时直接发文件就行。
+                try {
+                    sb.append('\n').append("-- 引擎通道自检 --\n");
+                    int mode = io.github.wlmosv_png.wpaforge.Prefs.mode(App.this);
+                    sb.append("  当前模式: ")
+                            .append(mode == io.github.wlmosv_png.wpaforge.Prefs.MODE_NO_ROOT
+                                    ? "免 Root"
+                                    : (mode == io.github.wlmosv_png.wpaforge.Prefs.MODE_SHIZUKU
+                                            ? "Shizuku" : "Root"))
+                            .append('\n');
+                    io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
+                            new io.github.wlmosv_png.wpaforge.audit.CrackEngine(App.this, mode);
+                    if (mode != io.github.wlmosv_png.wpaforge.Prefs.MODE_NO_ROOT) {
+                        final boolean useShizuku =
+                                mode == io.github.wlmosv_png.wpaforge.Prefs.MODE_SHIZUKU;
+                        eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                            @Override
+                            public String exec(String cmd, long timeoutMs) {
+                                if (useShizuku) {
+                                    return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
+                                }
+                                return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                        .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                            }
+                            @Override public void forgetTarget(String ssid) { }
+                            @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
+                        });
+                    }
+                    io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe cp = eng.probeChannel();
+                    // 拼成一个字符串再一次性追加。
+                    // 之前逐行 append 出现过 steps 全部空白的情况，
+                    // 排查成本太高，改成先 join 再写。
+                    StringBuilder ps = new StringBuilder();
+                    ps.append("  结论: ")
+                      .append(cp.ok ? "已接入" : "未接入")
+                      .append(" (").append(cp.summary).append(')').append('\n');
+                    ps.append("  检查项 ").append(cp.steps.size()).append(" 条:").append('\n');
+                    for (int i = 0; i < cp.steps.size(); i++) {
+                        ps.append("    [").append(i + 1).append("] ")
+                          .append(cp.steps.get(i)).append('\n');
+                    }
+                    if (!cp.detail.isEmpty()) {
+                        ps.append("  详情:").append('\n');
+                        ps.append(cp.detail).append('\n');
+                    }
+                    sb.append(ps);
+                } catch (Throwable t) {
+                    sb.append("  引擎自检异常: ")
+                            .append(t.getClass().getSimpleName()).append('\n');
+                }
+
                 try (FileWriter w = new FileWriter(safeTruncate(f))) {
                     w.write(sb.toString());
                 }

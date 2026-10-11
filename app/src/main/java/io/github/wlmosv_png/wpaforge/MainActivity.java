@@ -2505,6 +2505,15 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
             io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe p = eng.probeChannel();
             StringBuilder sb = new StringBuilder();
             for (String line : p.steps) sb.append(line).append('\n');
+            // 附上完整环境诊断（设备/权限/Shizuku 状态/各判据层可读性）
+            try {
+                io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.Report r =
+                        io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.run(
+                                MainActivity.this, m, eng.getShellChannelForDiag());
+                sb.append('\n').append(r.text);
+            } catch (Throwable t) {
+                sb.append("\n环境诊断失败: ").append(t.getClass().getSimpleName());
+            }
             final String body = sb.toString().trim();
             final String title = (p.ok ? "✓ " : "✗ ") + p.summary;
             ui.post(() -> {

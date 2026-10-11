@@ -398,6 +398,7 @@ public class CrackService extends Service {
      * 判定全在引擎里，不分正两份。
      */
     private void runViaEngine(final TaskQueue.Task ft, int startOffset) {
+        logFile = null;   // 每次任务新建一个日志文件
         final CrackEngine engine = new CrackEngine(this, ft.crackMode);
         engineRef = engine;
 
@@ -459,13 +460,15 @@ public class CrackService extends Service {
 
             @Override
             public void onAttemptResult(CrackEngine.Attempt a) {
-                // UNKNOWN 既不是成功也不是失败 —— 要如实透出去，
-                // 否则界面会把「无法确认」显示成「未连上」，
-                // 用户看到的就是"明明密码对却说不匹配"。
+                // 不要再覆盖引擎给出的 detail。
+                //
+                // 旧代码把 UNKNOWN 一律改写成「无法确认（当前连着目标，但可能是原有连接）」，
+                // 抹掉了引擎辛苦区分出来的真实原因（通道没响应 / 未见尝试 / 证据不足），
+                // 用户因此永远看不到问题出在哪。现在原样透传。
                 String detail = a.detail;
-                if (a.verdict == CrackEngine.Verdict.UNKNOWN) {
-                    detail = L.s("无法确认（当前连着目标，但可能是原有连接）",
-                            "unconfirmed (connected to target, but may be a pre-existing link)");
+                if (a.isSuccess() && a.confirmedBy != null && !a.confirmedBy.isEmpty()) {
+                    // 命中时补上判定依据，便于自证：wifistate / status / watcher / wifiinfo
+                    detail = L.s(detail + "（依据: ", detail + " (via: ") + a.confirmedBy + "）";
                 }
                 for (UiCallback cb : callbacks) {
                     cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail);
@@ -796,6 +799,42 @@ public class CrackService extends Service {
     private void log(String line) {
         android.util.Log.i("WPAForgeSvc", line);
         for (UiCallback cb : callbacks) cb.onLog(line);
+        appendFileLog(line);
+    }
+
+    /**
+     * 把日志同时写一份到文件，便于用户报障时直接发出来。
+     *
+     * 路径：/sdcard/Download/WPAForge-log-YYYYMMDD-HHMMSS.txt
+     * 每次任务开始时新建一个文件（文件名由 {@link #ensureFileLog()} 生成）。
+     * 写失败静默 —— 日志只是辅助，绝不能因为它影响主流程。
+     */
+    private java.io.File logFile = null;
+
+    private void ensureFileLog() {
+        if (logFile != null) return;
+        try {
+            // 用应用自己的外部私有目录：无需任何存储权限，root/文件管理器也能拿到。
+            // 公共 Download 目录在 Android 10+ 需要 MANAGE_EXTERNAL_STORAGE，太重。
+            java.io.File dir = CrackService.this.getExternalFilesDir("logs");
+            if (dir == null) dir = CrackService.this.getFilesDir();
+            if (dir != null && !dir.exists()) dir.mkdirs();
+            String ts = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                    .format(new java.util.Date());
+            logFile = new java.io.File(dir, "WPAForge-log-" + ts + ".txt");
+        } catch (Throwable ignored) {}
+    }
+
+    private void appendFileLog(String line) {
+        try {
+            ensureFileLog();
+            if (logFile == null) return;
+            String ts = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                    .format(new java.util.Date());
+            java.io.FileWriter w = new java.io.FileWriter(logFile, true);
+            w.write("[" + ts + "] " + line + "\n");
+            w.close();
+        } catch (Throwable ignored) {}
     }
 
     private void notifyQueue() {

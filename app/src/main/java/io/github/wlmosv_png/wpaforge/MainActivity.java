@@ -138,6 +138,8 @@ public class MainActivity extends Activity {
     /** 当前用作字典的文件路径（空表示用内置生成器） */
     private String currentDictPath = "";
     private LinearLayout queueBox;
+    /** 设置页里的权限状态行（授权后要刷新） */
+    private TextView permLabel;
 
     private static final int REQ_SHIZUKU = 3001;
 
@@ -2226,6 +2228,28 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         languageBtn.setOnClickListener(v -> showLanguagePicker());
         pageSettings.addView(languageBtn);
 
+        // ---------------- 权限 ----------------
+        pageSettings.addView(sectionLabel(L.s("权限", "Permissions")));
+
+        permLabel = new TextView(this);
+        permLabel.setTextSize(11.5f);
+        permLabel.setTextColor(TEXT_DIM);
+        permLabel.setLineSpacing(px(4), 1f);
+        permLabel.setBackground(roundBg(SURFACE, 18));
+        permLabel.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(permLabel);
+        refreshPermLabel();
+
+        Button askPerm = makeButton(L.s("申请缺失的权限", "Request missing permissions"),
+                Color.parseColor("#7A5CFF"));
+        askPerm.setOnClickListener(v -> requestPermsForce());
+        pageSettings.addView(askPerm);
+
+        Button goAppSettings = makeButton(L.s("打开系统「应用信息」页",
+                "Open system app settings"), Color.parseColor("#2A2A36"));
+        goAppSettings.setOnClickListener(v -> openAppSettings());
+        pageSettings.addView(goAppSettings);
+
         // ---------------- 诊断 ----------------
         pageSettings.addView(sectionLabel(L.s("诊断", "Diagnostics")));
 
@@ -2899,6 +2923,83 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
 
     // ---------------- 权限 ----------------
 
+    /** 刷新权限状态行：逐项列出现在有/没有。 */
+    private void refreshPermLabel() {
+        if (permLabel == null) return;
+        StringBuilder sb = new StringBuilder();
+        sb.append(L.s("这些权限影响扫描、判定与免 Root 连接：",
+                "These permissions affect scanning, verdicts and root-free connect:")).append('\n');
+        sb.append(permLine(android.Manifest.permission.ACCESS_FINE_LOCATION,
+                L.s("定位（Android 12 及以下扫描、读取 SSID 必需）",
+                        "Location (needed to scan / read SSID on Android 12-)")));
+        if (Build.VERSION.SDK_INT >= 33) {
+            sb.append('\n').append(permLine("android.permission.NEARBY_WIFI_DEVICES",
+                    L.s("附近设备（Android 13+ 扫描必需）",
+                            "Nearby devices (needed to scan on Android 13+)")));
+        }
+        sb.append('\n').append(L.s("提示：系统「定位总开关」也要打开，否则 WiFi 相关接口会失败。",
+                "Note: the system location toggle must also be ON, or Wi-Fi APIs will fail."));
+        permLabel.setText(sb.toString());
+    }
+
+    private String permLine(String perm, String label) {
+        boolean ok;
+        try {
+            ok = checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            ok = false;
+        }
+        return (ok ? "✓ " : "✗ ") + label;
+    }
+
+    /** 强制申请一遍（无论之前问没问过）。 */
+    private void requestPermsForce() {
+        List<String> ask = new ArrayList<>();
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            ask.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.NEARBY_WIFI_DEVICES")
+                != PackageManager.PERMISSION_GRANTED) {
+            ask.add("android.permission.NEARBY_WIFI_DEVICES");
+        }
+        if (ask.isEmpty()) {
+            Toast.makeText(this, L.s("权限已齐全", "All permissions granted"),
+                    Toast.LENGTH_SHORT).show();
+            refreshPermLabel();
+            return;
+        }
+        // 如果用户已经勾过「不再询问」，系统会直接回调拒绝 —— 此时引导去设置页
+        boolean shouldShow;
+        try {
+            shouldShow = shouldShowRequestPermissionRationale(ask.get(0));
+        } catch (Throwable t) {
+            shouldShow = false;
+        }
+        requestPermissions(ask.toArray(new String[0]), 1003);
+        if (!shouldShow) {
+            // 提示用户：如果这次也没弹窗，就去系统设置里手动开
+            Toast.makeText(this,
+                    L.s("若没有弹出授权框，请点下面「打开系统应用信息页」手动开启",
+                            "If no dialog appears, use \"Open system app settings\" below"),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 跳到系统「应用信息」页，手动开权限。 */
+    private void openAppSettings() {
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            i.setData(android.net.Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+        } catch (Throwable t) {
+            Toast.makeText(this, L.s("无法打开系统设置页", "Cannot open app settings"),
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void requestPermsIfNeeded() {
         List<String> need = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 33) {
@@ -2919,6 +3020,10 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
+        // 权限请求返回后刷新设置页那行状态
+        if (code == 1001 || code == 1003) {
+            if (permLabel != null) refreshPermLabel();
+        }
         if (code == REQ_SHIZUKU) {
             boolean granted = results.length > 0
                     && results[0] == PackageManager.PERMISSION_GRANTED;
@@ -2939,6 +3044,11 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
             if (radar != null) radar.startSpin();
             if (scanner != null) scanner.start();
         }
+        // 每次回到前台都复查权限：
+        //   1. 用户可能刚从系统设置里把权限打开
+        //   2. onCreate 里申请过一次不代表成功（有些 ROM 在前台未就绪时会丢弃请求）
+        if (permLabel != null) refreshPermLabel();
+        requestPermsIfNeeded();
     }
 
     @Override

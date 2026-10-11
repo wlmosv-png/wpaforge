@@ -4,9 +4,13 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%2026%2B-green.svg)]()
-[![Version](https://img.shields.io/badge/version-0.6.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-0.9.5-orange.svg)]()
 
 **中文** | [English](README_EN.md)
+
+> **代码审阅者请看 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md)** ——
+> 那里只讲设计取舍和踩过的坑（配置复用假阳性、判定时序、`finally` 覆盖结果等），
+> 比本文件更适合评估实现质量。
 
 ---
 
@@ -34,27 +38,84 @@ WPAForge 通过系统的 `cmd wifi` 接口逐条尝试连接目标网络，用�
 
 ## 技术亮点
 
-### 1. 为什么用 `cmd wifi` 而不是 `WifiNetworkSpecifier`
+### 1. 三种执行通道，一套判定
 
-Android 10+ 的 `WifiNetworkSpecifier.requestNetwork()` 会**强制弹出系统确认框**，普通应用无法静默连接。这意味着用它跑字典，每一条都要用户手点一次——500 条要点 500 次。
-
-实测错误：
-
-```
-ForegroundServiceStartNotAllowedException:
-Service.startForeground() not allowed due to mAllowStartForeground false
-```
-
-`cmd wifi connect-network` 是 shell 权限的命令，不受这条限制。root 可以调用，**不弹窗、结果可读**。
-
-实测行为：
+所有模式共用一个 **`CrackEngine`**。通道只负责"把一条候选发出去"，
+判定完全在引擎里做。
 
 ```
-正确密码 → 约 12 秒后  Wifi is connected to "<SSID>"
-错误密码 → 约 3 秒后   Wifi is not connected
+                    ┌──────────────────┐
+   三种执行模式 ───→ │   CrackEngine    │ ←── 唯一判定入口
+   (Root/Shizuku/   │  （引擎，判定）   │
+    免root)         └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              ▼              ▼              ▼
+        ShellChannel   ShellChannel   requestNetwork
+        (Root/su)      (Shizuku)      (系统精确连接)
 ```
 
-**一个必须处理的坑**：如果系统里存着目标网络的旧配置，`connect-network` 会复用旧凭据，导致**假成功**。所以每条尝试前必须先 `forget-network` 清掉。
+| 通道 | 命令 | 每条耗时 | 弹窗 |
+|---|---|---|---|
+| Root | `su -c "cmd wifi ..."` | ~1 秒 | 无 |
+| Shizuku | shell 身份执行同一条命令 | ~1 秒 | 无 |
+| 免 root | `WifiNetworkSpecifier` + `requestNetwork` | 7~15 秒 | **每条一次** |
+
+**为什么免 root 用 `requestNetwork`**：这是 Android 10+ 唯一能让普通应用
+**精确控制单次连接**的接口 —— 你指定 SSID + 密码，系统立刻去连，
+成功失败通过 `onAvailable` / `onUnavailable` 明确回调。
+
+不用 `WifiNetworkSuggestion` 的原因：它是**白名单**，提交后由系统自己挑时间连，
+应用无法知道它到底试没试，判定只能靠猜。
+
+**免 root 的弹窗无法避免** —— 那是 Android 的安全边界，不是实现缺陷。
+所以它定位是兜底方案；真要用请上 Shizuku（一次 ADB 激活，之后和 root 同速）。
+
+### 1.1 多信号综合判定
+
+任何单一信号都不可靠：
+
+| 信号 | 单独使用的问题 |
+|---|---|
+| `cmd wifi status` 文本 | Shizuku 通道可能被截断；格式随 ROM 变化 |
+| `onAvailable` 回调 | 某些 ROM 会因为**别的网络**触发 |
+| `WifiInfo.getSSID()` | Android 10+ 受限，更新有延迟 |
+
+引擎同时看三个，任一确认即成功，并把**是哪个信号确认的**写进结果 ——
+日志里能直接区分"假阳性"和"真实成功"。
+
+实测时序（真机，OnePlus PJX110 / Android 15）：
+
+```
+正确密码 → T+1 秒       连上
+错误密码 → T+1~6 秒     not connected
+           T+7 秒       回退到别的 AP
+```
+
+所以判定有一条硬规则：**前 3.5 秒绝不判负**。
+早期版本 400ms 就判负，导致正确密码被误杀 —— 用户看到的现象就是
+"密码明明对却识别不到"。
+
+### 1.2 两个必须处理的坑
+
+**坑一：配置复用导致假阳性**
+
+`cmd wifi connect-network` 对同名网络会**复用已保存的配置**。
+目标之前连过的话，不论传什么密码，系统都拿旧配置去连 → 连上了 → 报成功。
+实测密码填 `00000000` 也能"命中"。
+
+处理：每条之前删配置，**删完回读校验**（最多 3 轮），
+并且开跑前若已连着目标，先断开以建立干净基线。
+
+**坑二：命中被覆盖成未命中**
+
+`finally` 块在 `return` 之后仍会执行，导致收尾回调发两次，
+第二次密码为 `null`，把 `DONE_HIT` 覆盖成 `DONE_MISS`。
+
+处理：加 `finished` 标志。
+
+> 这两个 bug 原本在**两条通道里各有一份**，因为判定逻辑有两份代码。
+> 这是把所有通道收敛到一个引擎的直接原因。
 
 ### 2. 目标派生：往字典里补它没有的
 
@@ -134,15 +195,21 @@ MIC = HMAC-SHA1(KCK, EAPOL_frame_with_MIC_zeroed)[0..16)
 | PBKDF2-HMAC-SHA1 | RFC 6070 | ✅ 3/3 |
 | PMK | Wi-Fi 联盟公开向量 | ✅ 1/1 |
 
-全部测试（102 项）：
+全部测试（141 项，全部通过）：
 
 ```
-SelfTest        36 / 36   加密算法（RFC 向量）
+SelfTest        36 / 36   加密算法（SHA-1 / HMAC-SHA1 / PBKDF2，RFC 向量）
+PrivScanTest    21 / 21   特权扫描输出解析（中文 SSID、含空格、隐藏网络）
 RuleTest        25 / 25   规则字典解析与展开
-E2ETest         10 / 10   握手比对端到端
 SortTest        14 / 14   智能排序
 TargetDictTest  17 / 17   目标派生
+E2ETest         10 / 10   握手比对端到端
+PersistTest      5 /  5   候选生成 → 落盘 → 读回一致性
+SpecifierTest   13 / 13   判定语义（超时 / SSID 不匹配**绝不**判成功）
 ```
+
+`SpecifierTest` 是防回归的关键 —— 它把判定语义写死成测试，
+确保"超时不能算成功"这类规则不会被后续改动破坏。
 
 ---
 

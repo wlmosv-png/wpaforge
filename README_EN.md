@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%2026%2B-green.svg)]()
-[![Version](https://img.shields.io/badge/version-0.6.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-0.9.5-orange.svg)]()
 
 [中文](README.md) | **English**
 

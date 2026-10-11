@@ -2066,22 +2066,25 @@ public class MainActivity extends Activity {
         dlg.show();
     }
 
-    /** 后台跑一次真实连接 + 逐层判定，把过程写到日志和候选流。 */
-    private void runConnTest(String ssid, String pass) {
+    /**
+     * 分步连接自测：把整条链路拆成 6 步，每步给结论。
+     *
+     * 用户报障时最需要的是「卡在哪一步」，而不是一个笼统的成败。
+     * 这个实现不做任何推断，只如实报告每一步命令的输出。
+     */
+    private void runConnTest(final String ssid, final String pass) {
         final int m = Prefs.mode(this);
-        android.widget.Toast.makeText(this,
-                        L.s("测试中…稍后弹出结果", "Testing… result will pop up"),
-                        android.widget.Toast.LENGTH_SHORT).show();
         new Thread(() -> {
-            StringBuilder sb = new StringBuilder();
-            sb.append("══════ 连接自测 ══════\n");
-            sb.append("目标: ").append(ssid).append("  模式: ").append(modeName(m)).append('\n');
+            final StringBuilder sb = new StringBuilder();
+            sb.append("目标: ").append(ssid).append("\n");
+            sb.append("模式: ").append(modeName(m)).append("\n");
+            sb.append("密码长度: ").append(pass.length()).append("\n\n");
 
-            io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
-                    new io.github.wlmosv_png.wpaforge.audit.CrackEngine(this, m);
+            // 构造 shell 通道
             final boolean useShizuku = m == Prefs.MODE_SHIZUKU;
+            io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel sh = null;
             if (m != Prefs.MODE_NO_ROOT) {
-                eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                sh = new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
                     @Override public String exec(String cmd, long timeoutMs) {
                         if (useShizuku) {
                             return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
@@ -2089,41 +2092,135 @@ public class MainActivity extends Activity {
                         return io.github.wlmosv_png.wpaforge.audit.RootProber
                                 .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
                     }
-                    @Override public void forgetTarget(String s) { }
+                    @Override public void forgetTarget(String s2) { }
                     @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
-                });
+                };
             }
 
-            // 环境
-            try {
-                io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.Report r =
-                        io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.run(
-                                this, m, eng.getShellChannelForDiag());
-                sb.append(r.text).append('\n');
-            } catch (Throwable t) {
-                sb.append("环境诊断失败: ").append(t.getClass().getSimpleName()).append('\n');
+            // ── 步骤 1：权限 ──
+            sb.append(L.s("【1/6】权限检查\n", "[1/6] Permissions\n"));
+            boolean fl = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED;
+            sb.append("  定位: ").append(fl ? "✓" : "✗（会影响扫描与 SSID 读取）").append('\n');
+            if (Build.VERSION.SDK_INT >= 33) {
+                boolean nw = checkSelfPermission("android.permission.NEARBY_WIFI_DEVICES")
+                        == PackageManager.PERMISSION_GRANTED;
+                sb.append("  附近设备: ").append(nw ? "✓" : "✗（Android 13+ 扫描必需）").append('\n');
             }
 
-            // 真实尝试一条
-            try {
-                io.github.wlmosv_png.wpaforge.audit.CrackEngine.Attempt a =
-                        eng.tryOneForTest(ssid, pass, 12_000L);
-                sb.append("── 判定结果 ──\n");
-                sb.append("verdict: ").append(a.verdict).append('\n');
-                sb.append("依据: ").append(a.confirmedBy).append('\n');
-                sb.append("耗时: ").append(a.elapsedMs).append("ms\n");
-                sb.append("详情: ").append(a.detail).append('\n');
-            } catch (Throwable t) {
-                sb.append("尝试失败: ").append(t).append('\n');
+            // ── 步骤 2：通道 ──
+            sb.append(L.s("\n【2/6】执行通道\n", "\n[2/6] Channel\n"));
+            if (sh == null) {
+                sb.append(L.s("  免 Root 模式：本机无法做字典遍历式判定，建议改用 Shizuku。\n",
+                        "  Root-free mode: cannot do per-candidate verdicts here; use Shizuku.\n"));
+            } else {
+                String probe = null;
+                try { probe = sh.exec("cmd wifi status", 8000); } catch (Throwable t) {
+                    sb.append("  ✗ exec 异常: ").append(t.getClass().getSimpleName()).append('\n');
+                }
+                if (probe == null || probe.trim().isEmpty()) {
+                    sb.append(L.s("  ✗ cmd wifi status 无输出 —— 通道没通，后面必然失败。\n",
+                            "  x cmd wifi status returned nothing - channel is dead.\n"));
+                    sb.append(L.s("     请检查 Shizuku 服务是否运行、本应用是否已授权。\n",
+                            "     Check Shizuku service and that this app is authorised.\n"));
+                } else {
+                    sb.append("  ✓ cmd wifi status 可用\n");
+                }
+            }
+
+            if (sh != null) {
+                // ── 步骤 3：清配置 ──
+                sb.append(L.s("\n【3/6】清除目标旧配置\n", "\n[3/6] Clear stale config\n"));
+                String before = null;
+                try { before = sh.exec("cmd wifi list-networks", 5000); } catch (Throwable ignored) {}
+                long staleId = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser
+                        .findNetId(before, ssid);
+                sb.append(L.s("  清除前: ", "  before: "))
+                        .append(staleId >= 0 ? ("netId=" + staleId) : L.s("无旧配置", "none")).append('\n');
+                if (staleId >= 0) {
+                    try { sh.exec("cmd wifi forget-network " + staleId, 4000); } catch (Throwable ignored) {}
+                    try { Thread.sleep(700); } catch (InterruptedException ignored) {}
+                    String after = null;
+                    try { after = sh.exec("cmd wifi list-networks", 5000); } catch (Throwable ignored) {}
+                    long still = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser
+                            .findNetId(after, ssid);
+                    sb.append(L.s("  清除后: ", "  after: "))
+                            .append(still < 0 ? "✓ 已清干净" : ("✗ 仍然存在 netId=" + still)).append('\n');
+                }
+
+                // ── 步骤 4：断开当前 ──
+                sb.append(L.s("\n【4/6】断开当前连接\n", "\n[4/6] Drop current link\n"));
+                String st0 = null;
+                try { st0 = sh.exec("cmd wifi status", 6000); } catch (Throwable ignored) {}
+                String cur = io.github.wlmosv_png.wpaforge.audit.StatusParser.currentSsid(st0);
+                sb.append(L.s("  当前连着: ", "  now connected to: "))
+                        .append(cur == null ? L.s("（无）", "(none)") : cur).append('\n');
+                if (ssid.equals(cur)) {
+                    sb.append(L.s("  目标 = 当前连接，先断开…\n", "  target == current link, dropping...\n"));
+                    try { sh.exec("cmd wifi set-wifi-enabled disabled", 8000); } catch (Throwable ignored) {}
+                    try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                    try { sh.exec("cmd wifi set-wifi-enabled enabled", 8000); } catch (Throwable ignored) {}
+                    try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
+                    String st1 = null;
+                    try { st1 = sh.exec("cmd wifi status", 6000); } catch (Throwable ignored) {}
+                    String cur1 = io.github.wlmosv_png.wpaforge.audit.StatusParser.currentSsid(st1);
+                    sb.append(L.s("  断开后: ", "  after drop: "))
+                            .append(cur1 == null ? L.s("（无）", "(none)") : cur1).append('\n');
+                }
+
+                // ── 步骤 5：发命令 ──
+                sb.append(L.s("\n【5/6】发起连接\n", "\n[5/6] Connect\n"));
+                String cmdOut = null;
+                try {
+                    cmdOut = sh.exec("cmd wifi connect-network " + ssid + " wpa2 " + pass, 15000);
+                } catch (Throwable t) {
+                    sb.append("  ✗ 命令异常: ").append(t.getClass().getSimpleName()).append('\n');
+                }
+                sb.append(L.s("  命令输出: ", "  output: "))
+                        .append(cmdOut == null || cmdOut.trim().isEmpty() ? L.s("（无输出，正常）", "(none, normal)") : cmdOut.trim())
+                        .append('\n');
+                long newId = -1;
+                try {
+                    String ln = sh.exec("cmd wifi list-networks", 5000);
+                    newId = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser.findNetId(ln, ssid);
+                } catch (Throwable ignored) {}
+                sb.append(L.s("  新建配置 netId: ", "  new netId: ")).append(newId).append('\n');
+
+                // ── 步骤 6：观察 15 秒 ──
+                sb.append(L.s("\n【6/6】观察 15 秒\n", "\n[6/6] Watching 15s\n"));
+                boolean hit = false;
+                for (int i = 0; i < 30; i++) {
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                    String st = null;
+                    try { st = sh.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
+                    if (st == null) continue;
+                    io.github.wlmosv_png.wpaforge.audit.SupplicantParser.Info info =
+                            io.github.wlmosv_png.wpaforge.audit.SupplicantParser.parse(st);
+                    if (info.raw && (i % 4 == 0 || info.isTargetConnected(ssid))) {
+                        sb.append("  t=").append((i * 500) / 1000.0).append("s  ")
+                                .append(info.ssid == null ? "-" : info.ssid)
+                                .append(" / ").append(info.state == null ? "-" : info.state)
+                                .append(" / ").append(info.ip == null ? "-" : info.ip)
+                                .append(" / netId=").append(info.netId).append('\n');
+                    }
+                    if (info.isTargetConnected(ssid)) { hit = true; break; }
+                }
+                sb.append('\n');
+                if (hit) {
+                    sb.append(L.s("结论: ✓ 握手完成并拿到 IP —— 这个密码是对的，判定没问题。\n",
+                            "Result: handshake completed and IP obtained - passphrase is correct.\n"));
+                } else {
+                    sb.append(L.s("结论: ✗ 15 秒内目标从未「握手完成 + 拿到 IP」。\n",
+                            "Result: target never reached handshake-complete within 15s.\n"));
+                    sb.append(L.s("  这说明系统确实没连上（密码不符 / 信号太弱 / 安全类型不匹配）。\n",
+                            "  The system genuinely failed to connect (wrong passphrase / weak signal / security mismatch).\n"));
+                }
             }
 
             final String body = sb.toString();
-            ui.post(() -> {
-                NetDialog d = new NetDialog(MainActivity.this,
-                        L.s("连接自测结果", "Connection test result"), body);
-                d.setPositive(L.s("知道了", "Got it"), null);
-                d.show();
-            });
+            ui.post(() -> new NetDialog(MainActivity.this,
+                    L.s("连接自测结果", "Connection test result"), body)
+                    .setPositive(L.s("知道了", "Got it"), null).show());
         }, "wpaforge-conntest").start();
     }
 

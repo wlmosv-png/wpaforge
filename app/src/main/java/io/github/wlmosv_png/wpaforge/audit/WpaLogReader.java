@@ -122,6 +122,14 @@ public final class WpaLogReader {
         return false;
     }
 
+    /** 有没有出现过关联被拒（密码错/AP 拒绝时的典型信号） */
+    public static boolean sawAssocReject(String logcatOutput) {
+        for (LogEvent e : parse(logcatOutput)) {
+            if ("assoc_reject".equals(e.kind)) return true;
+        }
+        return false;
+    }
+
     /** 有没有出现过协商完成（密码正确的直接证据，本机 ROM 通常没有） */
     public static boolean sawNegotiated(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {

@@ -946,6 +946,7 @@ public final class CrackEngine {
         String lastStatusSsid = null;
         // 分层证据记录（结束时不命中就逐层打印，让用户看清卡在哪一层）
         int logRounds = 0, statusRounds = 0, watcherHits = 0;
+        int logRound = 0;
         // 本轮 `cmd wifi status` 读到的 netId（供判据 C/D 复用，避免重复起 shell）
         long roundNetId = -1;
 
@@ -997,17 +998,67 @@ public final class CrackEngine {
                 }
 
                 if (info.isTargetConnected(target.ssid)) {
-                    // netId 归因：必须是本条候选新建的那个配置
-                    if (targetNetId > 0 && info.netId == targetNetId) {
+                    // **不再强制 netId 必须等于「命令后 400ms 取到的那个值」。**
+                    //
+                    // 那个值是时序敏感的：系统若还没把配置建好，取到 -1，
+                    // 就会让**所有**候选永远判不成功（实机现象：密码正确
+                    // 但 12 秒超时、status 读了 33 轮一次不命中）。
+                    //
+                    // 归因改由两道**前置**闸门保证（都在命令之前完成）：
+                    //   ① forgetTargetByShell 已确认目标配置被删净
+                    //   ② 若命令前已连着目标，已强制断开并确认断开
+                    // 因此命令之后出现的「目标 + 握手完成 + 有 IP」
+                    // 只可能来自这一条候选。
+                    //
+                    // netId 只在拿得到时作为**加分确认**记录，不作阻断。
+                    long ms = SystemClock.uptimeMillis() - t0;
+                    android.util.Log.i(TAG, "命中: " + info
+                            + " (targetNetId=" + targetNetId + ")");
+                    return new Attempt(password, Verdict.SUCCESS, ms,
+                            L.s("握手完成且已获取 IP（确认连上）",
+                                "handshake completed and IP obtained"),
+                            "supplicant");
+                }
+            }
+
+            // ---------- 判据 B：wpa_supplicant 握手日志（参考 bszapp 的做法） ----------
+            //
+            // 那套实现判定成功的依据就是日志里的
+            //   wlan0: Trying to associate with SSID 'X'
+            //   WPA: Key negotiation completed with ...
+            // 前者给出「这次在试哪个网络」，后者是「握手完成」——
+            // 两行合起来就是密码正确的直接证据，比轮询状态更早。
+            //
+            // 失败也有明确信号：
+            //   WPA: 4-Way Handshake failed - pre-shared key may be incorrect
+            //   CTRL-EVENT-ASSOC-REJECT
+            // 见到就直接判密码错，不用傻等超时。
+            //
+            // 前提：命令发出前已 logcat -c，所以这里读到的都是本次的行。
+            if (logReadable && (logRound++ % 3 == 0)) {
+                String wlog = WpaLogReader.read(shell, 400);
+                if (wlog != null && !wlog.isEmpty()) {
+                    logRounds++;
+                    boolean tried = WpaLogReader.sawAssociateFor(wlog, target.ssid);
+                    if (tried) sawAttempt = true;
+
+                    if (tried && WpaLogReader.sawNegotiated(wlog)) {
                         long ms = SystemClock.uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "命中: " + info);
+                        android.util.Log.i(TAG, "命中(日志): 关联目标后完成协商");
                         return new Attempt(password, Verdict.SUCCESS, ms,
-                                L.s("握手完成且已获取 IP（确认连上）",
-                                    "handshake completed and IP obtained"),
-                                "supplicant");
+                                L.s("日志确认握手完成（Key negotiation completed）",
+                                    "log confirms handshake completed"),
+                                "wpalog");
                     }
-                    // SSID 和握手都对，但 netId 不是本次的 —— 可能是旧连接/回连
-                    android.util.Log.i(TAG, "命中候选但 netId 不符，继续等: " + info);
+                    if (tried && (WpaLogReader.sawHandshakeFailure(wlog)
+                            || WpaLogReader.sawAssocReject(wlog))) {
+                        long ms = SystemClock.uptimeMillis() - t0;
+                        android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
+                        return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                L.s("日志显示握手失败（密码错误）",
+                                    "log shows handshake failure (wrong passphrase)"),
+                                "wpalog");
+                    }
                 }
             }
         }

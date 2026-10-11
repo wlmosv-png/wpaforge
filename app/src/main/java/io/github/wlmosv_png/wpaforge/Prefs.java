@@ -29,8 +29,59 @@ public final class Prefs {
 
     // ---------------- 破解模式 ----------------
 
+    /** -1 表示「还没设过」，交给自动探测 */
+    private static final int MODE_UNSET = -1;
+
+    /** 自动探测结果缓存。0/1/2 为已定；MODE_UNSET 表示还没探测。 */
+    private static int autoCache = MODE_UNSET;
+
     public static int mode(Context ctx) {
-        return sp(ctx).getInt(K_MODE, MODE_ROOT);
+        int v = sp(ctx).getInt(K_MODE, MODE_UNSET);
+        if (v >= 0) return v;
+        return autoMode(ctx);
+    }
+
+    /**
+     * 自动挑一个**当前设备真正可用**的模式。
+     *
+     * 为什么需要它：以前默认值是 Root 模式。没 root 的手机（比如用 Shizuku
+     * 或者干脆免 Root 的那台）一装上就是「Root 模式」，用户点开始必然失败，
+     * 还会以为「密码不对」——这就是最典型的低级错误。
+     *
+     * 顺序：Root 可用 → Root；否则 Shizuku 就绪 → Shizuku；否则免 Root。
+     */
+    public static int autoMode(Context ctx) {
+        if (autoCache != MODE_UNSET) return autoCache;
+        int pick;
+        try {
+            if (io.github.wlmosv_png.wpaforge.audit.RootProber.check(ctx).ok) {
+                pick = MODE_ROOT;
+            } else if (io.github.wlmosv_png.wpaforge.audit.RootProber.checkShizuku(ctx).ok) {
+                pick = MODE_SHIZUKU;
+            } else {
+                pick = MODE_NO_ROOT;
+            }
+        } catch (Throwable t) {
+            pick = MODE_NO_ROOT;
+        }
+        autoCache = pick;
+        return pick;
+    }
+
+    /** 后台探测一次并落盘，让后续读取不再卡。 */
+    public static void warmUp(final Context ctx) {
+        new Thread(() -> {
+            int m = autoMode(ctx);
+            if (sp(ctx).getInt(K_MODE, MODE_UNSET) < 0) {
+                sp(ctx).edit().putInt(K_MODE, m).apply();
+            }
+            android.util.Log.i("WPAForgePrefs", "auto mode = " + m);
+        }, "wpaforge-modeprobe").start();
+    }
+
+    /** 用户是否手动指定过模式（用于界面提示） */
+    public static boolean modeIsManual(Context ctx) {
+        return sp(ctx).getInt(K_MODE, MODE_UNSET) >= 0;
     }
 
     public static void setMode(Context ctx, int mode) {

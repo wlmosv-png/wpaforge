@@ -47,6 +47,9 @@ public class App extends Application {
         disableSuiSafely();
         registerShizukuEarly();
         probeShizukuChannel();
+        // 后台自动探测一次可用模式（没设过的话就按探测结果落盘），
+        // 避免默认值把「没 root 的手机」定成 Root 模式
+        Prefs.warmUp(this);
 
         final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {

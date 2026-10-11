@@ -4,6 +4,54 @@
 
 ---
 
+## [1.4.0] - 2026-10-11
+
+**这版的目标：让一个普通用户装上去就能用，不再需要懂 root / Shizuku。**
+
+### 1. 执行模式自动选择（修「没 root 的手机默认 Root 模式」）
+
+以前默认值是 Root 模式，没 root 的手机一装上就是错的模式，点开始必失败，
+还以为是密码不对。现在**首次启动自动探测**，按可用性排序：
+
+   Root 可用 → Root；否则 Shizuku 就绪 → Shizuku；否则免 Root
+
+用户手动选过才尊重手动选择，不再有「默认值害人」。
+
+### 2. 判定：去掉时序敏感的 netId 阻断
+
+上一版要求「连接的 netId == 命令后 400ms 取到的 netId」，那个值取不到时
+是 -1，会让**所有**候选永远判不成功（实机：密码正确但 12 秒超时）。
+现在归因改由两道前置闸门保证（命令前配置已删净 + 命令前未连着目标），
+netId 只作加分记录，不再阻断。
+
+### 3. 恢复参考项目（bszapp）验证过的日志判据
+
+- 成功加速：日志出现「Trying to associate with SSID 'X'」且随后
+  「WPA: Key negotiation completed」→ 命中
+- 失败加速：日志出现「4-Way Handshake failed」或「CTRL-EVENT-ASSOC-REJECT」
+  → 直接判密码错，不用傻等超时
+
+前提：命令发出前 `logcat -c`，读到的都是本次的行。
+
+### 4. 连接自测改成「分 6 步报告」
+
+设置页的「连接自测」现在逐步输出：权限 → 通道 → 清配置 → 断开 →
+发命令 → 观察 15 秒（每秒 status 摘要），最后给结论。
+用户报障时一眼看到卡在哪一步，不再只有一句笼统的成败。
+
+### 判据汇总（双保险）
+
+| 层 | 条件 |
+|---|---|
+| 主：status | SSID==目标 && Supplicant state: COMPLETED && IP 有效 |
+| 辅：日志 | 目标 associate 之后 Key negotiation completed |
+
+失败信号：4-Way Handshake failed / CTRL-EVENT-ASSOC-REJECT。
+
+测试 275 项全过（16 个测试类）。
+
+---
+
 ## [1.3.0] - 2026-10-11
 
 **判定链推倒重来：只剩一条硬判据 —— 4-Way Handshake 完成。**

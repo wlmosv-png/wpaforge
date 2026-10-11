@@ -330,8 +330,24 @@ public final class CrackEngine {
         return new long[]{r.onTarget ? 1 : 0, r.netId};
     }
 
-    /** 当前连接的 netId（本地 API，拿不到返回 -1）。 */
+    /**
+     * 当前连接的 netId。
+     *
+     * **优先走 shell 的 `cmd wifi status`**：App 侧的
+     * `WifiInfo.getNetworkId()` 在「正在连接」状态下会返回 -1 或过期的值，
+     * 而判定恰恰最需要在那一刻拿到真实 netId（用来确认是不是本次新建的配置）。
+     * shell 拿不到时才退回本地 API。
+     */
     private long currentNetId() {
+        if (shell != null) {
+            try {
+                String st = shell.exec("cmd wifi status", 5000);
+                if (st != null && !st.trim().isEmpty()) {
+                    long id = StatusParser.parse(st, null).netId;
+                    if (id >= 0) return id;
+                }
+            } catch (Throwable ignored) {}
+        }
         try {
             if (wifi == null) return -1;
             android.net.wifi.WifiInfo info = wifi.getConnectionInfo();
@@ -866,6 +882,8 @@ public final class CrackEngine {
         String lastStatusSsid = null;
         // 分层证据记录（结束时不命中就逐层打印，让用户看清卡在哪一层）
         int logRounds = 0, statusRounds = 0, watcherHits = 0;
+        // 本轮 `cmd wifi status` 读到的 netId（供判据 C/D 复用，避免重复起 shell）
+        long roundNetId = -1;
 
         // 日志判据是否可用：root 通道能读 logcat，Shizuku(shell) 读不到。
         // 探测一次（读一小段），失败就只走 status/netId 判据。
@@ -936,6 +954,7 @@ public final class CrackEngine {
                 channelAlive = true;
                 statusRounds++;
                 lastStatusSsid = StatusParser.currentSsid(st);
+                roundNetId = StatusParser.parse(st, null).netId;
                 long[] r = parseStatusFor(st, target.ssid);
                 boolean onTarget = r[0] == 1;
                 long nowNetId = r[1];
@@ -972,23 +991,42 @@ public final class CrackEngine {
             }
 
             // ---------- 判据 C：NetworkWatcher 事件 ----------
+            // 同样必须过 netId 校验：系统回连已保存的网络也会触发事件。
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
             if (at > 0) {
                 watcherHits++;
-                long ms = SystemClock.uptimeMillis() - t0;
-                android.util.Log.i(TAG, "命中(watcher): 事件在命令后 " + (at - commandAt) + "ms");
-                return new Attempt(password, Verdict.SUCCESS, ms,
-                        L.s("系统报告已连上", "system reported connected"), "watcher");
+                long wid = roundNetId;
+                if (targetNetId > 0 && wid == targetNetId) {
+                    long ms = SystemClock.uptimeMillis() - t0;
+                    android.util.Log.i(TAG, "命中(watcher+netId): 事件在命令后 "
+                            + (at - commandAt) + "ms netId=" + wid);
+                    return new Attempt(password, Verdict.SUCCESS, ms,
+                            L.s("系统确认已连上（新配置）", "confirmed connected (fresh config)"),
+                            "watcher");
+                }
             }
 
             // ---------- 判据 D：WifiInfo 本地 API ----------
+            //
+            // **必须和 status 判据同等严格**。
+            //
+            // 实机出现过：系统弹「无法连接到 WLAN 网络 BTWIFL_0923」，
+            // 但 WifiManager.getConnectionInfo().getSSID() 短暂返回了目标名，
+            // 于是这条弱判据把失败判成了成功（依据: wifiinfo）。
+            //
+            // 连接过程中 SSID 字段会瞬时指向正在尝试的网络，这并不代表连上了。
+            // 只有 netId 对得上（= 本条新建的配置）才是硬证据。
             String nowSsid = snapshotSsid();
             if (target.ssid.equals(nowSsid) && !target.ssid.equals(ssidBefore)) {
-                long ms = SystemClock.uptimeMillis() - t0;
-                android.util.Log.i(TAG, "命中(WifiInfo): 当前连着目标且与命令前不同");
-                return new Attempt(password, Verdict.SUCCESS, ms,
-                        L.s("已连上目标网络", "connected to target"), "wifiinfo");
+                long did = roundNetId;
+                if (targetNetId > 0 && did == targetNetId) {
+                    long ms = SystemClock.uptimeMillis() - t0;
+                    android.util.Log.i(TAG, "命中(WifiInfo+netId): netId=" + did);
+                    return new Attempt(password, Verdict.SUCCESS, ms,
+                            L.s("系统确认已连上（新配置）", "confirmed connected (fresh config)"),
+                            "wifiinfo");
+                }
             }
         }
 

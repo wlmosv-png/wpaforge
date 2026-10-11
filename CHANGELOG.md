@@ -4,6 +4,55 @@
 
 ---
 
+## [1.2.3] - 2026-10-11
+
+**堵住最后两条弱判据：watcher 与 wifiinfo 现在也必须过 netId 校验。**
+
+用户新截图里关键一行：
+
+   候选 password 已连上（依据: wifiinfo）
+
+而系统弹窗明明白白写着「无法连接到 WLAN 网络 BTWIFL_0923」——
+系统说连不上，App 却判了成功。问题出在判据 D（WifiInfo 本地 API）：
+
+    WifiManager.getConnectionInfo().getSSID() 在「正在连接」时会瞬时
+    指向目标网络名，这并不代表连上了。
+
+它当时只看「当前 SSID == 目标 且 与命令前不同」，没有 netId 约束，
+于是把一次失败的连接读成了成功。
+
+### 改动
+
+- **判据 D（wifiinfo）**：增加 `targetNetId > 0 && roundNetId == targetNetId`
+- **判据 C（watcher）**：同上
+- **`currentNetId()` 改为优先读 `cmd wifi status` 的 Net ID** —
+  App 侧 `WifiInfo.getNetworkId()` 在连接中会返回 -1 或过期值，
+  而判定最需要在那一刻拿到真实 netId
+- 同一轮 `cmd wifi status` 的结果缓存复用（判据 B 读一次，C/D 直接用），
+  避免每轮多起两次 shell
+
+### 现在的四条判据，全部带 netId 硬校验
+
+| 判据 | 条件 |
+|---|---|
+| A 状态机日志 | 日志出现目标 L2ConnectedState **且** status 的 Net ID == 本次 netId |
+| B status | connected to 目标 **且** Net ID == 本次 netId |
+| C watcher | 事件出现 **且** 本轮 Net ID == 本次 netId |
+| D WifiInfo | 当前 SSID 是目标 **且** 本轮 Net ID == 本次 netId |
+
+### 实机验证（B209 错误密码 00000000）
+
+```
+t=1..5s  Wifi is not connected        （status 里连 connected to 都没有）
+t=6s     connected to "B214" / Net ID 631   （回连别的网络，≠ 目标 netId 635）
+```
+
+→ 四条判据全部无法成立 → 正确判为「未连上」。
+
+测试 234 项全过。
+
+---
+
 ## [1.2.2] - 2026-10-11
 
 **修掉「4 个不同网络都在第 1 条 password 就判成功」的假阳性。**

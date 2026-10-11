@@ -20,7 +20,7 @@ D8_JAR="${WP_D8_JAR:-$TOOLS/libs/android-16/lib/d8.jar}"
 APKSIGNER_JAR="${WP_APKSIGNER_JAR:-$TOOLS/libs/android-16/lib/apksigner.jar}"
 
 # Shizuku 的 API 与 Provider（本地 jar，不走 Maven）
-SHIZUKU_LIBS="$PROJ/app/libs/shizuku-api.jar:$PROJ/app/libs/shizuku-provider.jar"
+SHIZUKU_LIBS="$PROJ/app/libs/shizuku-api.jar:$PROJ/app/libs/shizuku-provider.jar:$PROJ/app/libs/shizuku-aidl.jar"
 # ---------------------------------------------------------------------------
 # 签名材料通过环境变量传入，**不要把密码写进脚本**。
 #
@@ -81,7 +81,8 @@ java -cp "$D8_JAR" com.android.tools.r8.D8 \
   --output "$DEX" \
   $(find "$OUT/classes" -name "*.class") \
   "$PROJ/app/libs/shizuku-api.jar" \
-  "$PROJ/app/libs/shizuku-provider.jar"
+  "$PROJ/app/libs/shizuku-provider.jar" \
+  "$PROJ/app/libs/shizuku-aidl.jar"
 
 echo "==> 组装未签名 APK"
 STAGE=$OUT/stage

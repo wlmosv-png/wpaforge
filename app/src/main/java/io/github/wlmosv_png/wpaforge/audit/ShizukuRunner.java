@@ -118,6 +118,80 @@ public final class ShizukuRunner {
         }
     }
 
+    // ======================= 监听器 =======================
+    //
+    // 这是之前最大的坑：**Shizuku 的 binder 是异步推给客户端的**。
+    // 应用启动那一刻如果 Shizuku 服务还没起来（或刚重启过），
+    // pingBinder() 会一直返回 false，而它**不会自己重试** ——
+    // 于是界面上永远显示「服务未运行」，哪怕用户在 Shizuku 里
+    // 明明看到 WPAForge 的开关是打开的。
+    //
+    // 正解是注册 sticky 监听：注册时若 binder 已经就绪会立即回调，
+    // 之后每次服务重启也会再回调一次。
+
+    private static boolean listenersRegistered = false;
+
+    /** 外部（UI）挂的回调：binder 就绪 / 掉线时会被通知 */
+    public interface StateListener {
+        void onBinderReady();
+        void onBinderDead();
+    }
+
+    private static final java.util.List<StateListener> stateListeners = new java.util.ArrayList<>();
+
+    public static void addStateListener(StateListener l) {
+        if (l != null && !stateListeners.contains(l)) stateListeners.add(l);
+    }
+
+    public static void removeStateListener(StateListener l) {
+        stateListeners.remove(l);
+    }
+
+    private static final Shizuku.OnBinderReceivedListener BINDER_RECEIVED =
+            () -> {
+                android.util.Log.i(TAG, "binder 已就绪");
+                for (StateListener l : new java.util.ArrayList<>(stateListeners)) {
+                    try { l.onBinderReady(); } catch (Throwable ignored) {}
+                }
+            };
+
+    private static final Shizuku.OnBinderDeadListener BINDER_DEAD =
+            () -> {
+                android.util.Log.i(TAG, "binder 已断开");
+                for (StateListener l : new java.util.ArrayList<>(stateListeners)) {
+                    try { l.onBinderDead(); } catch (Throwable ignored) {}
+                }
+            };
+
+    private static final Shizuku.OnRequestPermissionResultListener PERM_RESULT =
+            (requestCode, grantResult) -> {
+                android.util.Log.i(TAG, "授权结果 req=" + requestCode + " grant=" + grantResult);
+                for (StateListener l : new java.util.ArrayList<>(stateListeners)) {
+                    try { l.onBinderReady(); } catch (Throwable ignored) {}
+                }
+            };
+
+    /**
+     * 注册三个监听器。幂等，重复调用不会重复注册。
+     *
+     * 必须尽早调用（Application.onCreate 或 Activity.onCreate）。
+     * 用 sticky 版本：binder 已经就绪时会**立即**触发一次回调，
+     * 这样即使用户是先启动 Shizuku 再打开本应用，也能第一时间反映出来。
+     */
+    public static void registerListeners() {
+        if (listenersRegistered) return;
+        try {
+            Shizuku.addBinderReceivedListenerSticky(BINDER_RECEIVED);
+            Shizuku.addBinderDeadListener(BINDER_DEAD);
+            // 授权结果走这个 listener，**不是** Activity.onRequestPermissionsResult
+            Shizuku.addRequestPermissionResultListener(PERM_RESULT);
+            listenersRegistered = true;
+            android.util.Log.i(TAG, "监听器已注册");
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "registerListeners 失败: " + t);
+        }
+    }
+
     // ---------------- 执行 ----------------
 
     /** 缓存反射到的方法，避免每次调用都查找 */

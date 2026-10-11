@@ -144,6 +144,7 @@ public class MainActivity extends Activity {
         buildUi();
         requestPermsIfNeeded();
         scanner = new Scanner(this, scanListener);
+        registerShizukuWatcher();
         bindCrackService();
         requestNotifPermission();
     }
@@ -2180,6 +2181,37 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                 Toast.LENGTH_SHORT).show();
     }
 
+    /**
+     * 盯着 Shizuku 的 binder。
+     *
+     * **这是之前「明明开着却显示服务未运行」的根因**：
+     * Shizuku 的 binder 是异步推过来的，应用启动那一刻服务没起来
+     * （或者服务重启过），pingBinder() 就一直 false，而且不会自己重试。
+     * 注册 sticky 监听后：binder 一到就立刻刷新界面状态。
+     */
+    private final io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.StateListener shizukuWatcher =
+            new io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.StateListener() {
+        @Override
+        public void onBinderReady() {
+            ui.post(() -> {
+                refreshModeReady();
+                updateConnectMode();
+            });
+        }
+
+        @Override
+        public void onBinderDead() {
+            ui.post(() -> refreshModeReady());
+        }
+    };
+
+    private void registerShizukuWatcher() {
+        try {
+            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.registerListeners();
+            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.addStateListener(shizukuWatcher);
+        } catch (Throwable ignored) {}
+    }
+
     /** 真正弹 Shizuku 的授权框 */
     private void requestShizukuPermission() {
         try {
@@ -2202,8 +2234,14 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     private void refreshModeReady() {
         if (modeReadyLabel == null) return;
         final int m = Prefs.mode(this);
+        // 前缀带上模式名：之前只有一句结论，
+        // 切模式的瞬间会出现“卡片写 Root、状态行说免 Root”的矛盾。
+        // 现在每次连模式名一起刷新，不会误读。
         modeReadyLabel.setTextColor(TEXT_DIM);
-        modeReadyLabel.setText(L.s("正在检测…", "Checking…"));
+        modeReadyLabel.setText(modeName(m) + L.s("：正在检测…", ": checking\u2026"));
+        // 点一下可以重新检测（Shizuku 服务刚起来时很有用）
+        modeReadyLabel.setOnClickListener(v -> refreshModeReady());
+
         new Thread(() -> {
             String text;
             boolean ok;
@@ -2211,22 +2249,23 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                 io.github.wlmosv_png.wpaforge.audit.RootProber.CheckResult r =
                         io.github.wlmosv_png.wpaforge.audit.RootProber.checkShizuku(getApplicationContext());
                 ok = r.ok;
-                text = ok ? L.s("✓ Shizuku 通道已就绪", "✓ Shizuku channel ready")
-                          : L.s("✗ ", "✗ ") + r.title;
+                text = ok ? L.s("✓ 已就绪", "\u2713 ready")
+                          : L.s("\u2717 ", "\u2717 ") + r.title;
             } else if (m == Prefs.MODE_NO_ROOT) {
                 io.github.wlmosv_png.wpaforge.audit.SuggestionProber.CheckResult r =
                         io.github.wlmosv_png.wpaforge.audit.SuggestionProber.check(getApplicationContext());
                 ok = r.ok;
-                text = ok ? L.s("✓ 系统接口可用（速度较慢）", "✓ System API available (slower)")
-                          : L.s("✗ ", "✗ ") + r.title;
+                text = ok ? L.s("✓ 可用（速度较慢）", "\u2713 available (slower)")
+                          : L.s("\u2717 ", "\u2717 ") + r.title;
             } else {
                 io.github.wlmosv_png.wpaforge.audit.RootProber.CheckResult r =
                         io.github.wlmosv_png.wpaforge.audit.RootProber.check(getApplicationContext());
                 ok = r.ok;
-                text = ok ? L.s("✓ Root 通道已就绪", "✓ Root channel ready")
-                          : L.s("✗ ", "✗ ") + r.title;
+                text = ok ? L.s("✓ 已就绪", "\u2713 ready")
+                          : L.s("\u2717 ", "\u2717 ") + r.title;
             }
-            final String ft = text;
+            final String ft = modeName(m) + L.s("\uff1a", ": ") + text
+                    + L.s("\uff08\u70b9\u6b64\u91cd\u6d4b\uff09", " (tap to re-check)");
             final boolean fok = ok;
             ui.post(() -> {
                 if (modeReadyLabel == null) return;
@@ -2234,6 +2273,13 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                 modeReadyLabel.setTextColor(fok ? OK_GREEN : DANGER);
             });
         }, "wpaforge-modecheck").start();
+    }
+
+    /** 模式名（不带“模式”后缀，用于状态行前缀） */
+    private String modeName(int m) {
+        if (m == Prefs.MODE_SHIZUKU) return "Shizuku";
+        if (m == Prefs.MODE_NO_ROOT) return L.s("免 Root", "Root-free");
+        return "Root";
     }
 
     /** 圆角背景 */
@@ -2475,6 +2521,9 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        try {
+            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.removeStateListener(shizukuWatcher);
+        } catch (Throwable ignored) {}
         if (scanner != null) scanner.stop();
         if (engine != null) engine.cancel();
         if (prober != null) prober.cancel();

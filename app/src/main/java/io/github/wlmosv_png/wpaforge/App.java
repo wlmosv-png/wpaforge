@@ -45,6 +45,8 @@ public class App extends Application {
         super.onCreate();
 
         disableSuiSafely();
+        registerShizukuEarly();
+        probeShizukuChannel();
 
         final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
@@ -134,6 +136,7 @@ public class App extends Application {
                         sb.append("  Shizuku 授权: ").append(shizukuGranted ? "已授权" : "未授权").append('\n');
                         sb.append("  Shizuku 版本: ")
                                 .append(io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.version()).append('\n');
+                        sb.append("  Shizuku 通道实测: ").append(shizukuProbeResult).append('\n');
                     }
                 } catch (Throwable t) {
                     sb.append("  Shizuku 查询失败: ").append(t.getClass().getSimpleName()).append('\n');
@@ -173,6 +176,74 @@ public class App extends Application {
      * 用 try-catch 包住：如果 Shizuku 的类不可用（没集成、被裁剪），
      * 也不该影响应用启动。低版本 Android 上跳过。
      */
+    /**
+     * 尽早在进程启动时注册 Shizuku 的 binder 监听。
+     *
+     * 为什么必须在 Application 里做：
+     *   Shizuku 的 binder 是**异步推**给客户端的。如果等到用户点进
+     *   设置页才注册，那么「服务已经跑起来、binder 也已经推过」的
+     *   情况就完全错过了 —— pingBinder() 永远 false，界面永远显示
+     *   「服务未运行」，哪怕用户在 Shizuku 里看到开关是开的。
+     *
+     *   sticky 版本在注册时会立刻检查一次当前 binder 状态，
+     *   所以早注册等于不会丢事件。
+     */
+    private void registerShizukuEarly() {
+        try {
+            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.registerListeners();
+        } catch (Throwable t) {
+            Log.i(TAG, "Shizuku 监听注册跳过: " + t.getClass().getSimpleName());
+        }
+    }
+
+    /** 自测结果（写进启动自检，用户不用连电脑就能看到） */
+    private static volatile String shizukuProbeResult = "尚未检测";
+
+    public static String shizukuProbe() {
+        return shizukuProbeResult;
+    }
+
+    /**
+     * 等 binder 就绪后真跑一条 cmd wifi，确认通道可用。
+     *
+     * 为什么要自测：
+     *   “能 ping 到 binder”与“能执行命令”是两回事。
+     *   之前只看 pingBinder()，结果 binder 就绪了但命令还是可能跑不通，
+     *   用户只能在点开始后才发现。现在启动就把结果落盘。
+     */
+    private void probeShizukuChannel() {
+        new Thread(() -> {
+            try {
+                // 等一等，binder 是异步推过来的
+                for (int i = 0; i < 40; i++) {
+                    if (io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isAvailable()) break;
+                    Thread.sleep(250);
+                }
+                if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isAvailable()) {
+                    shizukuProbeResult = "服务未就绪（binder 拿不到）";
+                    return;
+                }
+                if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isGranted()) {
+                    shizukuProbeResult = "服务在，但未授权本应用";
+                    return;
+                }
+                String out = io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec("cmd wifi help", 8000);
+                if (out == null) {
+                    shizukuProbeResult = "已授权，但命令执行失败";
+                } else if (out.contains("connect-network")) {
+                    shizukuProbeResult = "可用（cmd wifi connect-network 已确认）";
+                } else if (out.trim().isEmpty()) {
+                    shizukuProbeResult = "命令返回空";
+                } else {
+                    shizukuProbeResult = "部分可用（cmd wifi 有响应，但未见 connect-network）";
+                }
+            } catch (Throwable t) {
+                shizukuProbeResult = "自测异常: " + t.getClass().getSimpleName();
+            }
+            writeStartupLog();
+        }, "wpaforge-shizuku-probe").start();
+    }
+
     private void disableSuiSafely() {
         if (Build.VERSION.SDK_INT < 26) return;
         try {

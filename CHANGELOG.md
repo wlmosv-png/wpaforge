@@ -4,6 +4,58 @@
 
 ---
 
+## [1.1.1] - 2026-10-11
+
+**判定换血：不再依赖系统回调，改用 WiFi 状态机日志作为主判据。**
+
+读透了参考项目（bszapp/android-wifi-pojie v3.x）的实现后做的架构调整。
+参考项目用 wpa_supplicant 的 `WPA: Key negotiation completed` 判成功，但实测
+本机（Color OS 15 / Android 15）**不输出这一行**，所以换用本机确实存在的证据。
+
+### 新增
+
+- **`WifiStateLog`**：解析 `WifiClientModeImpl` 状态机日志。
+  - `ClientModeImpl$L2ConnectedState ... "SSID" AA:BB:CC:...` → **已连上该 AP**（成功判据）
+  - `ClientModeImpl$ConnectableState ... "SSID"` → **正在尝试**（区分「没试」和「试了失败」）
+  - 关键设计：失败后系统**回连别的已保存网络**时，`L2ConnectedState` 那行**不带 SSID**。
+    只有 SSID 明确的连接才算命中，从根上排除「连上了别的网络」造成的假阳性。
+
+### 修复（判定链）
+
+- **主判据换成状态机日志**：`tryOneShell` 每轮读一次 `WifiClientModeImpl`，
+  发现目标 SSID 的 `L2ConnectedState` 即判成功。之前依赖 `NetworkCallback`，
+  而本机回调经常不触发或拿不到 SSID，导致**密码正确也判不出**。
+- **三重印证**：状态机日志 / NetworkWatcher 事件 / `WifiInfo` 当前 SSID 任一确认即成功。
+- **归因加固**：记录命令前的 SSID，只有当“当前连着目标且与命令前不同”才算命中，
+  避免把命令前就存在的连接算到本条候选头上。
+- **归类修正**：结束时「见过尝试但没连上」判 `AUTH_FAIL`；
+  **「连尝试都没见到」判 `UNKNOWN`** 而不是 AUTH_FAIL —— 那是通道问题，
+  不该把正确密码误报成密码错误。
+
+### 实测验证（真机，非推测）
+
+```
+正确密码 12345678 → ConnectableState "B209" → L2ConnectedState ... "B209" 28:93:7d:...  ✓ 命中
+错误密码 00000000 → ConnectableState "B209" → 无 B209 的 L2ConnectedState，回连 211    ✓ 不误判
+```
+
+### 测试
+
+- 新增 `WifiStateLogTest` 15 项（含真机日志样本、回连场景、含空格 SSID）。
+- 全部 13 个测试类共 **214 项** 全通过。
+
+---
+
+## [1.1.0] - 2026-10-11
+
+- 去掉 `tryOneShell` 中 `MIN_HIT_MS` 时间门槛。用户日志证明目标已产生可用事件，
+  却因「间隔 < 1.5 秒」被拒 → 误判 UNKNOWN，导致正确密码被跳过。
+  归因已由 `firstAvailableAfter(ssid, commandAt)` 保证，门槛多余且有害。
+
+## [1.0.4] - 2026-10-11
+
+- 修 `tryOneShell` 里事件时间戳固定导致永远超时判 AUTH_FAIL 的 bug。
+
 ## [0.6.0] - 2026-10-11
 
 **Shizuku 模式真正可用了。** 之前它显示「服务未运行」，而 Shizuku 应用里

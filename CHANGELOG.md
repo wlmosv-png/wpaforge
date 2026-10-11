@@ -4,6 +4,57 @@
 
 ---
 
+## [0.6.0] - 2026-10-11
+
+**Shizuku 模式真正可用了。** 之前它显示「服务未运行」，而 Shizuku 应用里
+明明显示 WPAForge 的开关是打开的 —— 根因是依赖不完整，不是权限问题。
+
+### 修复（根因）
+
+- **缺 `shizuku-aidl.jar`**：`rikka.shizuku.Shizuku` 的静态初始化块里有一句
+  `SHIZUKU_APPLICATION = new IShizukuApplication(){...}`，而
+  `moe.shizuku.server.IShizukuApplication` 这一系列 AIDL 类**不在 `shizuku-api.jar` 里**
+  （官方把它拆成独立的 `dev.rikka.shizuku:aidl` 构件）。
+  结果：`Shizuku` 类 `<clinit>` 直接 `NoClassDefFoundError`，
+  **每一次 `pingBinder()` 都在类加载阶段就失败**，被 catch 后返回 false，
+  界面只能显示「服务未运行」。
+  现在补上 `aidl-13.1.5` 的 16 个类（`IShizukuApplication` / `IShizukuService` /
+  `IRemoteProcess` / `IShizukuServiceConnection` 及其 Stub）。
+- **binder 是异步推来的，却只在需要时查一次**：Shizuku 的 binder 通过
+  ContentProvider 异步交给客户端。应用启动时服务还没起来（或刚重启过），
+  `pingBinder()` 就一直 false 且**不会自己重试**。
+  现在在 `Application.onCreate` 就注册 `addBinderReceivedListenerSticky`
+  —— sticky 版在注册时若 binder 已就绪会**立即回调**，之后服务重启还会再回调。
+- **授权结果回调走错了 API**：Shizuku 的授权结果是
+  `addRequestPermissionResultListener`，不是 `Activity.onRequestPermissionsResult`。
+  上一版接错了地方，授权状态永远不会刷新。
+- **补全授权流程**：切到 Shizuku 模式现在会走完整链路 ——
+  没装 → 给下载指引；装了没启动 → 一键跳 Shizuku 应用；没授权 → 直接弹授权框。
+
+### 新增
+
+- **Shizuku 通道自测**：启动时等 binder 就绪后真跑一条 `cmd wifi help`，
+  结果写进启动自检。现在那份文件里会直接写着
+  `Shizuku 通道实测: 可用（cmd wifi connect-network 已确认）` ——
+  「能 ping 到 binder」和「能执行命令」是两回事，自测把后者也验了。
+- **设置页模式状态可点击重测**，并带上模式名前缀，不会再出现
+  「卡片写 Root、状态行说免 Root」的误读。
+
+### 验证
+
+本机（OnePlus PJX110 / Android 15 / Shizuku 13.6.0）实测输出：
+
+```
+-- 特权通道 --
+  Shizuku 服务: 在
+  Shizuku 授权: 已授权
+  Shizuku 版本: 13
+  Shizuku 通道实测: 可用（cmd wifi connect-network 已确认）
+  特权扫描通道可用: 是
+```
+
+---
+
 ## [0.5.7] - 2026-10-11
 
 ### 修复（三种执行模式）

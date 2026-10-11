@@ -485,7 +485,8 @@ public class CrackService extends Service {
         if (hitPassword != null && !hitPassword.isEmpty()) {
             ft.hitPassword = hitPassword;
             ft.state = TaskQueue.State.DONE_HIT;
-            log(L.f("★ 命中！%s = %s", "★ HIT! %s = %s", ft.ssid, hitPassword));
+            log(L.f("任务结束: %s 已命中（试了 %d 条）",
+                    "Task finished: %s hit (%d tried)", ft.ssid, tested));
             // 记录实测速度
             if (tested > 0) {
                 Prefs.recordRate(this, System.currentTimeMillis() - taskStartAt, tested);
@@ -553,7 +554,8 @@ public class CrackService extends Service {
                 if (hitPassword != null && !hitPassword.isEmpty()) {
                     ft.hitPassword = hitPassword;
                     ft.state = TaskQueue.State.DONE_HIT;
-                    log(L.s("★ 命中！", "★ HIT!") + ft.ssid + " = " + hitPassword);
+                    log(L.f("任务结束: %s 已命中（试了 %d 条）",
+                            "Task finished: %s hit (%d tried)", ft.ssid, tested));
                 } else if (outcome == RootProber.Outcome.PAUSED) {
                     ft.state = TaskQueue.State.PAUSED;
                     log(L.s("已暂停，进度 ", "Paused at progress ") + offset + "/" + ft.dictSize);

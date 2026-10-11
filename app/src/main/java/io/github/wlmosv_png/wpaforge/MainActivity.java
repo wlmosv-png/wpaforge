@@ -1413,6 +1413,16 @@ public class MainActivity extends Activity {
 
         if (queueCache.isEmpty()) {
             // 没任务时不占位置 —— 空的时候放一块提示反而乱
+            //
+            // 同时把顶部进度条一并收起来。
+            // 否则用户把任务全删了，那三根条还挂在那里，
+            // 看起来像还在跑 **且进度不动** —— 很像死机。
+            if (connectProgress != null) {
+                connectProgress.setDone(false);
+                connectProgress.setStages(new java.util.ArrayList<>());
+                connectProgress.setText("", "");
+                connectProgress.setVisibility(View.GONE);
+            }
             syncButtons();
             restoreScroll(keepY);
             return;

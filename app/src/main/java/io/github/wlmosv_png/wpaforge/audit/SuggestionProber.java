@@ -75,7 +75,16 @@ public final class SuggestionProber {
     /** 一批提交多少个候选。太多系统不保证按序尝试，太少则效率低。 */
     private static final int BATCH_SIZE = 8;
     /** 每批最多等多久（毫秒）。系统尝试连接需要时间。 */
-    private static final long BATCH_TIMEOUT_MS = 35_000L;
+    private static final long BATCH_TIMEOUT_MS = 60_000L;
+
+    /**
+     * 单条候选的最短等待。
+     *
+     * 系统收到建议后**不会立刻尝试** —— 它要排队、扫频、再发起关联。
+     * 之前按 4 秒判负，往往系统还没轮到这条就已经被记成「未连上」，
+     * 用户看到的就是「密码明明对，却说不对」。
+     */
+    private static final long MIN_WAIT_PER_CANDIDATE_MS = 7_000L;
     /** 轮询间隔 */
     private static final long POLL_MS = 700L;
 
@@ -192,6 +201,9 @@ public final class SuggestionProber {
         int start = Math.max(0, Math.min(startOffset, total));
         int cursor = start;
         long beginAt = SystemClock.uptimeMillis();
+        // 命中时已发过一次带密码的 onFinished，finally 里不能再发
+        // 不带密码的一次，否则结果会被覆盖成未命中。
+        boolean finished = false;
 
         try {
             // 清掉上一次可能残留的建议
@@ -217,6 +229,7 @@ public final class SuggestionProber {
                     String hit = lastHitPassword;
                     l.onHit(target.displayName(), hit);
                     cursor = batchEnd;
+                    finished = true;
                     l.onFinished(Outcome.NORMAL, cursor - start, cursor, hit);
                     return;
                 }
@@ -239,10 +252,12 @@ public final class SuggestionProber {
         } finally {
             unregisterNetCallback();
             clearSuggestions();
-            Outcome oc = cancelFlag.get() ? Outcome.STOPPED
-                    : pauseFlag.get() ? Outcome.PAUSED
-                    : Outcome.NORMAL;
-            l.onFinished(oc, cursor - start, cursor, null);
+            if (!finished) {
+                Outcome oc = cancelFlag.get() ? Outcome.STOPPED
+                        : pauseFlag.get() ? Outcome.PAUSED
+                        : Outcome.NORMAL;
+                l.onFinished(oc, cursor - start, cursor, null);
+            }
         }
     }
 
@@ -341,7 +356,9 @@ public final class SuggestionProber {
             }
             activeAddCount++;
 
-            long deadline = SystemClock.uptimeMillis() + (BATCH_TIMEOUT_MS / Math.max(1, to - from));
+            long perItem = Math.max(MIN_WAIT_PER_CANDIDATE_MS,
+                    BATCH_TIMEOUT_MS / Math.max(1, to - from));
+            long deadline = SystemClock.uptimeMillis() + perItem;
             while (SystemClock.uptimeMillis() < deadline) {
                 if (cancelFlag.get() || pauseFlag.get()) return Verdict.BATCH_TIMEOUT;
                 interruptibleSleep(POLL_MS);

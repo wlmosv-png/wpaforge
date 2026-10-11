@@ -341,6 +341,11 @@ public final class RootProber {
         int cursor = startIdx;                // 绝对位置
         long start = System.currentTimeMillis();
         String sec = securityArg(target);
+        // 命中时已经发过一次 onFinished（带密码），
+        // finally 里不能再发一次不带密码的 —— 否则服务端
+        // 第二次收到 null 会把结果覆盖成「未命中」。
+        // 这就是用户看到的「命中了却说失败」。
+        boolean finished = false;
 
         try {
             // 开跑前先刷一次扫描并确认目标在范围内。
@@ -373,6 +378,7 @@ public final class RootProber {
 
                 if (a.verdict == Verdict.SUCCESS) {
                     l.onHit(target.displayName(), c.password);
+                    finished = true;
                     l.onFinished(Outcome.NORMAL, tested, cursor, c.password);
                     return;
                 }
@@ -388,10 +394,12 @@ public final class RootProber {
             }
         } finally {
             activeProc = null;
-            Outcome oc = cancelFlag.get() ? Outcome.STOPPED
-                    : pauseFlag.get() ? Outcome.PAUSED
-                    : Outcome.NORMAL;
-            l.onFinished(oc, tested, cursor, null);
+            if (!finished) {
+                Outcome oc = cancelFlag.get() ? Outcome.STOPPED
+                        : pauseFlag.get() ? Outcome.PAUSED
+                        : Outcome.NORMAL;
+                l.onFinished(oc, tested, cursor, null);
+            }
         }
     }
 
@@ -448,7 +456,7 @@ public final class RootProber {
             String st = status();
             if (st == null) continue;
 
-            if (isConnectedTo(st, target.ssid)) {
+            if (hitNow(target, st)) {
                 return new Attempt(password, Verdict.SUCCESS,
                         System.currentTimeMillis() - t0, L.s("已连上", "Connected"));
             }
@@ -465,6 +473,11 @@ public final class RootProber {
             }
         }
 
+        // 超时前最后再确认一次，避免刚好在最后一瞬连上
+        if (connectedByLocalApi(target.ssid)) {
+            return new Attempt(password, Verdict.SUCCESS,
+                    System.currentTimeMillis() - t0, L.s("已连上", "Connected"));
+        }
         String detail = sawTarget
                 ? L.s("未连上（已尝试）", "Not connected (attempted)")
                 : L.s("未连上", "Not connected");
@@ -505,6 +518,38 @@ public final class RootProber {
     /** 向外层报一句可读的提示（UI 会打印） */
     public void warnTargetNotVisible(Listener l, NetRecord target) {
         l.onFinished(Outcome.NORMAL, 0, 0, null);
+    }
+
+    /**
+     * 二次确认：直接问系统当前连的是不是目标 SSID。
+     *
+     * 为什么不能只看 cmd wifi status：
+     *   它输出很长且格式随版本变化。Shizuku 通道下
+     *   还可能因为读取缓冲区而截断，导致 "connected to \"X\""
+     *   这句压根没进来 —— 用户看到的就是已经连上了却判超时。
+     *   WifiManager 是本地接口，不经过命令行，作为交叉验证最合适。
+     */
+    private boolean connectedByLocalApi(String ssid) {
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    appCtx.getSystemService(Context.WIFI_SERVICE);
+            if (wm == null) return false;
+            android.net.wifi.WifiInfo info = wm.getConnectionInfo();
+            if (info == null) return false;
+            String cur = info.getSSID();
+            if (cur == null) return false;
+            if (cur.startsWith("\"") && cur.endsWith("\"") && cur.length() >= 2) {
+                cur = cur.substring(1, cur.length() - 1);
+            }
+            return ssid.equals(cur);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 一次判定：命中路径都过一遍 */
+    private boolean hitNow(NetRecord target, String statusOut) {
+        return isConnectedTo(statusOut, target.ssid) || connectedByLocalApi(target.ssid);
     }
 
     private String status() {

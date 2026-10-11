@@ -135,17 +135,39 @@ public final class DictStore {
         return cachedDir;
     }
 
-    /** 目录是否真的可写（写一个探针文件验证，不只看 mkdir 返回值） */
+    /**
+     * 目录是否真的可用。
+     *
+     * 必须**同时**满足三件事，缺一不可：
+     *   1. 是目录
+     *   2. 能写（写探针再删）
+     *   3. **能列目录**（listFiles 返回非 null）
+     *
+     * 第 3 条是后加的。之前只看前两条，结果在无 root 机的 scoped storage 下
+     * 出现过一个很怪的现象：程序以为目录可用，把内置字典「跳过」了
+     * （说明 exists() 返回了 true），但界面列表里一个都扫不出来，
+     * 因为 listFiles() 被系统拒绝返回 null。
+     * 用户看到的就是「释放 0 个，跳过 8 个」+「目录里还没有字典」。
+     */
     private static boolean ensureWritable(File dir) {
         try {
             if (!dir.exists() && !dir.mkdirs()) return false;
             if (!dir.isDirectory()) return false;
+
+            // 能写
             File probe = new File(dir, ".wprobe");
             try (java.io.FileOutputStream f = new java.io.FileOutputStream(probe)) {
                 f.write(1);
+            } catch (Exception e) {
+                return false;
             }
             //noinspection ResultOfMethodCallIgnored
             probe.delete();
+
+            // 能列目录
+            File[] probeList = dir.listFiles();
+            if (probeList == null) return false;
+
             return true;
         } catch (Exception e) {
             return false;

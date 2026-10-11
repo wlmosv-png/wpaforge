@@ -314,9 +314,14 @@ public final class RootProber {
      * @param startOffset 从第几条开始（0 起）
      */
     public void run(NetRecord target, List<Candidate> candidates, int startOffset, Listener l) {
-        String rootIssue = checkRoot();
-        if (!rootIssue.isEmpty()) {
-            l.onBlocked(rootIssue);
+        // 按**当前通道**选检查器。
+        //
+        // 这里之前无条件调 checkRoot()，而 Shizuku 模式本来就没有 root，
+        // 于是每次点开始都在这里被拦下来 —— 用户看到的就是
+        // 「刚开始就秒完成、显示已停止」。
+        CheckResult pre = useShizuku ? checkShizuku(appCtx) : check(appCtx);
+        if (!pre.ok) {
+            l.onBlocked(pre.title);
             return;
         }
         if (target == null || target.ssid.isEmpty()) {

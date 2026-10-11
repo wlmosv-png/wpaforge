@@ -981,8 +981,11 @@ public class MainActivity extends Activity {
         connectStreamView.setPadding(px(16), px(14), px(16), px(14));
         connectStreamView.setTextIsSelectable(true);
         connectStreamView.setLineSpacing(px(5), 1f);
+        // **不要用 weight**：pageConnect 在 ScrollView 里，
+        // ScrollView 的测量方式让 weight 失效，height=0 会直接塌成看不见。
+        // 用固定高度：展开时约 240dp，收起时 5 行。
         streamParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+                ViewGroup.LayoutParams.MATCH_PARENT, px(240));
         pageConnect.addView(connectStreamView, streamParams);
 
         // 空状态提示（浮在候选流上层的简单做法：先放一行说明）
@@ -990,7 +993,7 @@ public class MainActivity extends Activity {
         connectEmptyHint.setTextSize(12.5f);
         connectEmptyHint.setTextColor(TEXT_DIM);
         connectEmptyHint.setGravity(Gravity.CENTER);
-        connectEmptyHint.setPadding(px(20), px(40), px(20), px(40));
+        connectEmptyHint.setPadding(px(20), px(18), px(20), px(18));
         connectEmptyHint.setBackground(roundBg(Color.parseColor("#14141A"), 16));
         pageConnect.addView(connectEmptyHint);
         updateEmptyHint();
@@ -1875,14 +1878,15 @@ public class MainActivity extends Activity {
     private void applyStreamHeight() {
         if (connectStreamView == null || streamParams == null) return;
         if (streamCollapsed) {
-            streamParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            // 收起：约 5 行高
+            streamParams.height = px(108);
             streamParams.weight = 0f;
             connectStreamView.setMaxLines(5);
-            connectStreamView.setSingleLine(false);
             connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else {
-            streamParams.height = 0;
-            streamParams.weight = 1f;
+            // 展开：固定约 240dp，不靠 weight
+            streamParams.height = px(240);
+            streamParams.weight = 0f;
             connectStreamView.setMaxLines(Integer.MAX_VALUE);
             connectStreamView.setEllipsize(null);
         }
@@ -2125,8 +2129,12 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
      */
     private void pickMode(int mode) {
         if (Prefs.mode(this) == mode) {
-            Toast.makeText(this, L.s("已经是这个模式了", "Already using this mode"),
-                    Toast.LENGTH_SHORT).show();
+            // 已经是这个模式也不能就此结束 ——
+            // 用户可能正好想重新走一遍授权（Shizuku 重启后就需要）。
+            Toast.makeText(this, L.f("当前已是: %s", "Already on: %s",
+                    Prefs.modeLabel(this)), Toast.LENGTH_SHORT).show();
+            refreshModeReady();
+            if (mode == Prefs.MODE_SHIZUKU) ensureShizukuPermission();
             return;
         }
         Prefs.setMode(this, mode);
@@ -2308,8 +2316,15 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         // 现在每次连模式名一起刷新，不会误读。
         modeReadyLabel.setTextColor(TEXT_DIM);
         modeReadyLabel.setText(modeName(m) + L.s("：正在检测…", ": checking…"));
-        // 点一下可以重新检测（Shizuku 服务刚起来时很有用）
-        modeReadyLabel.setOnClickListener(v -> refreshModeReady());
+        // 点一下重新检测。
+        // 如果当前是 Shizuku 模式，还要走一遍完整引导（包括弹授权框），
+        // 否则用户在设置里找不到任何可以触发授权的入口。
+        modeReadyLabel.setOnClickListener(v -> {
+            refreshModeReady();
+            if (Prefs.mode(this) == Prefs.MODE_SHIZUKU) {
+                ensureShizukuPermission();
+            }
+        });
 
         new Thread(() -> {
             String text;

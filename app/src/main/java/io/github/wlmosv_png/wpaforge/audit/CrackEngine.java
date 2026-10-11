@@ -788,6 +788,24 @@ public final class CrackEngine {
         // 每条之前删净旧配置（配置复用会让任何密码都"成功"）
         try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
 
+        // **净检：确认目标配置真的没了**。
+        //
+        // 这是防「假阳性」的第一道闸。实机出现过 4 个不同网络都在第 1 条
+        // password 就"已破解"——根因就是旧配置没清掉，系统拿已保存的
+        // 正确密码（或 PMKSA 缓存）连上了，跟候选本身毫无关系。
+        //
+        // 做法：回读 list-networks，目标只要还挂着 netId，本条就不可能有
+        // 可信结论 —— 直接判 UNKNOWN，不让它污染结果。
+        long staleNetId = netIdOfTarget(target.ssid);
+        if (staleNetId >= 0) {
+            return new Attempt(password, Verdict.UNKNOWN,
+                    SystemClock.uptimeMillis() - t0,
+                    L.s("旧配置未清除（netId=" + staleNetId + "），本条结果不可信",
+                        "stale config not cleared (netId=" + staleNetId
+                                + "); this attempt is unreliable"),
+                    "");
+        }
+
         // **如果上一条已经连上了目标，必须先真正断开**。
         //
         // 不做这一步会出假阳性：上一条（比如正确密码）连上目标后，配置虽然被
@@ -828,9 +846,8 @@ public final class CrackEngine {
             try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
         }, "wpaforge-engine-conn").start();
 
-        // 命令后目标会得到一个新 netId（配置已在此之前删净）。
+        // 命令后目标会得到一个新 netId（配置已在此之前删净并回读确认）。
         // 用它和 status 里的 Net ID 比对，把「连上了目标」严格归因到这条候选。
-        // 取不到（-1）时退化为只靠 SSID + ssidBefore 判定。
         sleep(400);
         final long targetNetId = netIdOfTarget(target.ssid);
 
@@ -880,11 +897,29 @@ public final class CrackEngine {
                         sawAttempt = true;
                     }
                     if (WifiStateLog.sawConnectedFor(stateLog, target.ssid)) {
-                        long ms = SystemClock.uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "命中(状态机日志): " + target.ssid + " L2ConnectedState");
-                        return new Attempt(password, Verdict.SUCCESS, ms,
-                                L.s("系统状态机确认已连上", "confirmed by wifi state machine log"),
-                                "wifistate");
+                        // **必须交叉验证，不能只凭日志就判成功。**
+                        //
+                        // 实机教训：4 个不同网络都在第 1 条就"已破解"——系统
+                        // 用旧配置/缓存凭据连上时，日志里同样会出现目标的
+                        // L2ConnectedState，光看它分不出是谁的功劳。
+                        //
+                        // 硬条件：本次 netId 必须已被分配（targetNetId > 0），
+                        // 且 status 里的 Net ID 必须等于它 —— 这才是「本条候选
+                        // 新建的配置连上了」的正面证据。
+                        String xst = null;
+                        try { xst = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
+                        if (xst != null && StatusParser.connectedTo(xst, target.ssid)) {
+                            long xid = StatusParser.parse(xst, target.ssid).netId;
+                            if (targetNetId > 0 && xid == targetNetId) {
+                                long ms = SystemClock.uptimeMillis() - t0;
+                                android.util.Log.i(TAG, "命中(状态机日志+netId): " + target.ssid
+                                        + " netId=" + xid);
+                                return new Attempt(password, Verdict.SUCCESS, ms,
+                                        L.s("系统确认已连上（新配置）",
+                                            "confirmed connected (fresh config)"),
+                                        "wifistate");
+                            }
+                        }
                     }
                 }
             }
@@ -918,9 +953,11 @@ public final class CrackEngine {
                     }
                 }
                 if (onTarget && isNewLink) {
-                    // 归因加强：若拿到了本次 netId，要求 status 的 Net ID 与之一致，
-                    // 确保连上的是这条候选建的配置，不是别的同名/旧配置。
-                    boolean netOk = targetNetId < 0 || nowNetId < 0 || nowNetId == targetNetId;
+                    // **收紧**：必须拿到本次新建的 netId，且 status 的 Net ID 与之一致。
+                    //
+                    // 旧写法 `targetNetId < 0 || nowNetId < 0 || ...` 太宽松 ——
+                    // 两个值任一拿不到就放行，等于没校验。这正是假阳性的口子。
+                    boolean netOk = targetNetId > 0 && nowNetId == targetNetId;
                     if (netOk) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "命中(status): connected to " + target.ssid
@@ -969,10 +1006,15 @@ public final class CrackEngine {
         String detail;
         Verdict verdict;
         if (currentOnTarget) {
-            // 最后时刻才连上 / 命令前就连着且没断开
-            detail = L.s("当前连着目标，但未捕获到本次连接证据",
-                    "on target now, but no fresh connect evidence captured");
-            verdict = Verdict.SUCCESS;
+            // **不能因为「现在连着目标」就判成功**。
+            //
+            // 这正是那批假阳性的来源：系统回连、旧连接残留、缓存凭据……
+            // 都会让这里为真，而它们跟当前这条候选没有关系。
+            // 没有「本次新建立」的正面证据（新 netId / 本次日志），就只能存疑。
+            detail = L.s("当前连着目标，但没有本次连接的证据（可能是原有连接或缓存凭据）",
+                    "on target now, but no evidence of a fresh connection "
+                            + "(possibly pre-existing or cached credentials)");
+            verdict = Verdict.UNKNOWN;
         } else if (!sawAttempt && !channelAlive) {
             // 既没看到尝试、通道又完全不响应 —— 是通道/命令问题，不是密码错。
             // 归 UNKNOWN，避免把正确密码误报成错误。

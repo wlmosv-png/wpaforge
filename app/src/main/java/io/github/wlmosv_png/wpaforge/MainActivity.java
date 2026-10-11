@@ -157,6 +157,140 @@ public class MainActivity extends Activity {
         registerShizukuWatcher();
         bindCrackService();
         requestNotifPermission();
+        if (Prefs.pinEnabled(this)) setupPinGate();
+    }
+
+    /** PIN 锁遮挡层：设了 PIN 就先解锁才能用 */
+    private android.widget.FrameLayout pinGate = null;
+
+    private void setupPinGate() {
+        android.widget.FrameLayout root = (android.widget.FrameLayout)
+                ((android.view.ViewGroup) getWindow().getDecorView()
+                        .findViewById(android.R.id.content));
+        if (root == null) return;
+        pinGate = new android.widget.FrameLayout(this);
+        pinGate.setBackgroundColor(0xF0101014);
+        pinGate.setClickable(true);
+        pinGate.setFocusable(true);
+
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        android.widget.FrameLayout.LayoutParams bp = new android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.setMargins(px(48), 0, px(48), 0);
+        bp.gravity = android.view.Gravity.CENTER;
+        box.setPadding(0, 0, 0, 0);
+
+        android.widget.TextView t = new android.widget.TextView(this);
+        t.setText(L.s("WPAForge 已锁定\n输入 PIN 解锁",
+                "WPAForge locked\nEnter PIN to unlock"));
+        t.setTextSize(16);
+        t.setTextColor(0xFFFFFFFF);
+        t.setGravity(android.view.Gravity.CENTER);
+        t.setPadding(0, 0, 0, px(20));
+        box.addView(t);
+
+        final android.widget.EditText pin = new android.widget.EditText(this);
+        pin.setHint(L.s("PIN", "PIN"));
+        pin.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        pin.setTextSize(18);
+        pin.setGravity(android.view.Gravity.CENTER);
+        box.addView(pin);
+
+        android.widget.Button ok = new android.widget.Button(this);
+        ok.setText(L.s("解锁", "Unlock"));
+        ok.setOnClickListener(v -> {
+            if (Prefs.checkPin(this, pin.getText().toString())) {
+                root.removeView(pinGate);
+                pinGate = null;
+            } else {
+                pin.setText("");
+                pin.setHint(L.s("PIN 错误", "Wrong PIN"));
+                android.widget.Toast.makeText(this,
+                        L.s("PIN 错误", "Wrong PIN"), android.widget.Toast.LENGTH_SHORT).show();
+            }
+        });
+        box.addView(ok, new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        pinGate.addView(box, bp);
+        root.addView(pinGate, new android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    /** PIN 设置对话框（设置页调用）：新 PIN 两遍确认 */
+    private void showPinSetup() {
+        if (Prefs.pinEnabled(this)) {
+            // 已设置 → 先验证旧 PIN
+            final android.widget.EditText old = new android.widget.EditText(this);
+            old.setHint(L.s("当前 PIN", "Current PIN"));
+            old.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                    | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle(L.s("修改 PIN", "Change PIN"))
+                    .setView(old)
+                    .setPositiveButton(L.s("下一步", "Next"), (d, w) -> {
+                        if (Prefs.checkPin(this, old.getText().toString())) {
+                            askNewPin();
+                        } else {
+                            Toast.makeText(this, L.s("当前 PIN 错误", "Wrong current PIN"),
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    })
+                    .setNegativeButton(L.s("取消", "Cancel"), null)
+                    .show();
+            return;
+        }
+        askNewPin();
+    }
+
+    private void askNewPin() {
+        final android.widget.EditText p1 = new android.widget.EditText(this);
+        p1.setHint(L.s("新 PIN（数字）", "New PIN (digits)"));
+        p1.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("设置 PIN", "Set PIN"))
+                .setView(p1)
+                .setPositiveButton(L.s("确定", "OK"), (d, w) -> {
+                    String v = p1.getText().toString().trim();
+                    if (v.length() < 4) {
+                        Toast.makeText(this, L.s("PIN 至少 4 位", "PIN needs at least 4 digits"),
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    Prefs.setPin(this, v);
+                    Toast.makeText(this, L.s("PIN 已设置", "PIN set"),
+                            Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
+    }
+
+    private void confirmClearPin() {
+        final android.widget.EditText p = new android.widget.EditText(this);
+        p.setHint(L.s("当前 PIN", "Current PIN"));
+        p.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("清除 PIN", "Remove PIN"))
+                .setView(p)
+                .setPositiveButton(L.s("清除", "Remove"), (d, w) -> {
+                    if (Prefs.checkPin(this, p.getText().toString())) {
+                        Prefs.clearPin(this);
+                        Toast.makeText(this, L.s("PIN 已清除", "PIN removed"),
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(this, L.s("PIN 错误", "Wrong PIN"),
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
     }
 
     private void requestNotifPermission() {
@@ -810,15 +944,15 @@ public class MainActivity extends Activity {
             labels[i] = e.name + "   " + e.sizeLabel()
                     + (e.isRule ? L.s("  [规则]", "  [rule]") : "");
         }
-        NetDialog dlg = new NetDialog(this, "选择字典",
-                L.s("共 ", "Total ") + entries.size() + " 个。规则字典按规则实时展开，不占空间。");
-        for (int i = 0; i < entries.size(); i++) {
-            final io.github.wlmosv_png.wpaforge.audit.DictStore.Entry e = entries.get(i);
-            String tag = e.isRule ? L.s("规则", "Rule") : L.s("普通", "Plain");
-            dlg.addItem(e.name + "   " + e.sizeLabel() + " · " + tag, d -> loadDictFile(e));
-        }
-        dlg.setNegative(L.s("取消", "Cancel"), null);
-        dlg.show();
+        // 用系统 AlertDialog：NetDialog 在切 Tab 后偶发不显示（层级问题），
+        // 系统弹窗永远在最上层，不会出现「点了没反应」。
+        final io.github.wlmosv_png.wpaforge.audit.DictStore.Entry[] arr =
+                entries.toArray(new io.github.wlmosv_png.wpaforge.audit.DictStore.Entry[0]);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("选择字典（共 " + entries.size() + " 个）")
+                .setItems(labels, (d, which) -> loadDictFile(arr[which]))
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
     }
 
     private void loadDictFile(io.github.wlmosv_png.wpaforge.audit.DictStore.Entry e) {
@@ -1193,40 +1327,17 @@ public class MainActivity extends Activity {
         refreshQueue();
     }
 
-    /** 执行方式选择 */
+    /** 执行方式：仅 Root，点击只弹提示 */
     private void showModePicker() {
-        NetDialog d = new NetDialog(this, L.s("执行方式", "Execution mode"),
-                L.s("三种方式跑的是同一条系统命令，区别只在拿权限的途径。",
-                        "All three run the same system command — only the way of obtaining permission differs."));
-
-        int cur = Prefs.mode(this);
-
-        d.addItem(L.s("Root 模式", "Root mode")
-                        + "\n" + L.s("su 执行 · 约 1 秒/条 · 需要 root",
-                                "via su · ~1s each · requires root")
-                        + (cur == Prefs.MODE_ROOT ? "\n✓ " + L.s("当前", "current") : ""),
-                dd -> pickMode(Prefs.MODE_ROOT));
-
-        d.addItem(L.s("Shizuku 模式", "Shizuku mode")
-                        + "\n" + L.s("shell 身份执行 · 同样约 1 秒/条 · 不需要 root",
-                                "as shell user · also ~1s each · no root needed")
-                        + (cur == Prefs.MODE_SHIZUKU ? "\n✓ " + L.s("当前", "current") : ""),
-                dd -> pickMode(Prefs.MODE_SHIZUKU));
-
-        d.addItem(L.s("普通模式", "Normal mode")
-                        + "\n" + L.s("系统接口 · 每条需手动确认 · 很慢",
-                                "system API · manual confirmation per attempt · slow")
-                        + (cur == Prefs.MODE_NO_ROOT ? "\n✓ " + L.s("当前", "current") : ""),
-                dd -> pickMode(Prefs.MODE_NO_ROOT));
-
-        d.addHint(L.s("Shizuku 是目前免 root 的最佳方案：\n"
-                        + "先在 Shizuku 应用里激活一次（用 ADB 或 root），\n"
-                        + "然后回到这里授权即可。重启手机后需要重新激活。",
-                "Shizuku is the best root-free option:\n"
-                        + "activate it once in the Shizuku app (via ADB or root),\n"
-                        + "then grant permission here. Re-activation is needed after a reboot."));
-        d.setNegative(L.s("取消", "Cancel"), null);
-        d.show();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("执行方式", "Execution mode"))
+                .setMessage(L.s(
+                        "本版本仅支持 Root 模式（su + cmd wifi）。\n\n"
+                                + "设备需要已 root，并在 root 管理器里给本应用授权。",
+                        "This build supports Root mode only (su + cmd wifi).\n\n"
+                                + "The device must be rooted, and this app must be granted root."))
+                .setPositiveButton(L.s("知道了", "Got it"), null)
+                .show();
     }
 
     /** 空状态提示 */
@@ -1292,7 +1403,7 @@ public class MainActivity extends Activity {
             label = L.s("Root", "Root");
             color = ACCENT;
         }
-        connectModeView.setText(L.f("执行方式: %s   ·   实测 %s 条/秒   ·   点此更改",
+        connectModeView.setText(L.f("执行方式: %s   ·   实测 %s 条/秒",
                 "Mode: %s   ·   %s/s   ·   tap to change",
                 label, Prefs.avgRateLabel(this)));
         connectModeView.setTextColor(color);
@@ -1783,18 +1894,17 @@ public class MainActivity extends Activity {
             Toast.makeText(this, L.s("扫描结果里没有加密网络", "No secured networks in the scan results"), Toast.LENGTH_SHORT).show();
             return;
         }
-        NetDialog dlg = new NetDialog(this, L.s("选择目标网络", "Select target network"),
-                L.s("共 ", "Total ") + selectable.size() + " 个加密网络，按信号强弱排列。");
-        for (int i = 0; i < selectable.size(); i++) {
-            final NetRecord nr = selectable.get(i);
-            String secl = securityLabel(nr.security);
-            dlg.addItem(nr.displayName() + "   " + nr.rssi + "dBm · " + secl, d -> {
-                targetNet = nr;
-                updateTargetLabel();
-            });
-        }
-        dlg.setNegative(L.s("取消", "Cancel"), null);
-        dlg.show();
+        // 系统 AlertDialog（层级永远正确，不出现「点了没反应」）
+        final NetRecord[] arr = selectable.toArray(new NetRecord[0]);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("选择目标网络（共 " + selectable.size() + " 个加密网络）",
+                        "Select target (" + selectable.size() + " secured networks)"))
+                .setItems(labels.toArray(new String[0]), (d, which) -> {
+                    targetNet = arr[which];
+                    updateTargetLabel();
+                })
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
     }
 
     /** 破解开始前记下的原网络 SSID，结束后尝试连回 */
@@ -2312,19 +2422,21 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         // 三个模式全部给出来。之前这里只有 Root 和免 Root
         // 两个按钮，Shizuku 只能从破解页的“执行方式”里换，
         // 导致用户在设置里根本找不到第三个模式。
-        LinearLayout modeRow = new LinearLayout(this);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
-        modeRow.setPadding(0, px(10), 0, 0);
-        Button rootMode = secondaryButton(L.s("Root 模式", "Root mode"), ACCENT);
-        rootMode.setOnClickListener(v -> pickMode(Prefs.MODE_ROOT));
-        modeRow.addView(rootMode, thirdColParams(8));
-        Button shizukuMode = secondaryButton(L.s("Shizuku", "Shizuku"), Color.parseColor("#64B5F6"));
-        shizukuMode.setOnClickListener(v -> pickMode(Prefs.MODE_SHIZUKU));
-        modeRow.addView(shizukuMode, thirdColParams(8));
-        Button noRootMode = secondaryButton(L.s("免 Root", "Root-free"), OK_GREEN);
-        noRootMode.setOnClickListener(v -> pickMode(Prefs.MODE_NO_ROOT));
-        modeRow.addView(noRootMode, thirdColParams(0));
-        pageSettings.addView(modeRow);
+        // 只保留 Root 模式（1.5.0 起）。不再提供 Shizuku / 免 Root 按钮，
+        // 免得普通用户选错模式又踩坑。
+        TextView rootOnly = new TextView(this);
+        rootOnly.setText(L.s("本版本仅支持 Root 模式。\n"
+                        + "设备需要已 root（Magisk / KernelSU / APatch），"
+                        + "并在 root 管理器里给本应用授权。",
+                "This build supports Root mode only.\n"
+                        + "The device must be rooted (Magisk / KernelSU / APatch),"
+                        + " and this app must be granted root in your root manager."));
+        rootOnly.setTextSize(11.5f);
+        rootOnly.setTextColor(TEXT_DIM);
+        rootOnly.setLineSpacing(px(4), 1f);
+        rootOnly.setBackground(roundBg(SURFACE, 18));
+        rootOnly.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(rootOnly);
 
         // 当前模式的实际可用性（实时检测）：一眼看到能不能用
         modeReadyLabel = new TextView(this);
@@ -2395,6 +2507,39 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                 "Export log to Download"), Color.parseColor("#2A2A36"));
         exportLog.setOnClickListener(v -> exportLog());
         pageSettings.addView(exportLog);
+
+        // ---------------- 应用锁 ----------------
+        pageSettings.addView(sectionLabel(L.s("应用锁", "App lock")));
+
+        Button pinBtn = makeButton(L.s("PIN 锁", "PIN lock"), Color.parseColor("#2A2A36"));
+        pinBtn.setOnClickListener(v -> {
+            if (Prefs.pinEnabled(this)) {
+                // 已设置 → 提供修改 / 清除
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle(L.s("PIN 锁已开启", "PIN lock is on"))
+                        .setItems(new String[]{
+                                L.s("修改 PIN", "Change PIN"),
+                                L.s("清除 PIN", "Remove PIN")}, (d, w) -> {
+                            if (w == 0) showPinSetup();
+                            else confirmClearPin();
+                        })
+                        .setNegativeButton(L.s("取消", "Cancel"), null)
+                        .show();
+            } else {
+                showPinSetup();
+            }
+        });
+        pageSettings.addView(pinBtn);
+
+        TextView pinHint = new TextView(this);
+        pinHint.setText(L.s("设置后每次打开应用都要先输入 PIN 才能进入。",
+                "Once set, the PIN must be entered each time the app is opened."));
+        pinHint.setTextSize(11.5f);
+        pinHint.setTextColor(TEXT_DIM);
+        pinHint.setLineSpacing(px(4), 1f);
+        pinHint.setBackground(roundBg(SURFACE, 18));
+        pinHint.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(pinHint);
 
                 pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));
 

@@ -18,6 +18,7 @@ public final class Prefs {
     public static final int MODE_SHIZUKU = 2;      // Shizuku + cmd wifi（免 root，快）
 
     private static final String K_MODE = "crack_mode";
+    private static final String K_PIN = "app_pin_sha256";   // 空表示未设 PIN
     private static final String K_RATE = "avg_rate_ms";     // 平均每条耗时（毫秒）
     private static final String K_RATE_N = "rate_samples";  // 样本数
 
@@ -82,6 +83,47 @@ public final class Prefs {
     /** 用户是否手动指定过模式（用于界面提示） */
     public static boolean modeIsManual(Context ctx) {
         return sp(ctx).getInt(K_MODE, MODE_UNSET) >= 0;
+    }
+
+    // ---------------- 应用 PIN 锁 ----------------
+
+    /** 已设置的 PIN 的 SHA-256；空串 = 未设置 */
+    public static String pinHash(Context ctx) {
+        return sp(ctx).getString(K_PIN, "");
+    }
+
+    public static boolean pinEnabled(Context ctx) {
+        return !pinHash(ctx).isEmpty();
+    }
+
+    /** 设置或修改 PIN（明文进来，存 SHA-256） */
+    public static void setPin(Context ctx, String plain) {
+        String h = plain == null ? "" : sha256(plain.trim());
+        sp(ctx).edit().putString(K_PIN, h).apply();
+    }
+
+    /** 清除 PIN */
+    public static void clearPin(Context ctx) {
+        sp(ctx).edit().remove(K_PIN).apply();
+    }
+
+    /** 校验 PIN */
+    public static boolean checkPin(Context ctx, String plain) {
+        String h = pinHash(ctx);
+        return h != null && !h.isEmpty() && h.equals(sha256(plain == null ? "" : plain.trim()));
+    }
+
+    private static String sha256(String s) {
+        try {
+            java.security.MessageDigest md =
+                    java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(s.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     public static void setMode(Context ctx, int mode) {

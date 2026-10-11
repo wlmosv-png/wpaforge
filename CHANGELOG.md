@@ -4,6 +4,27 @@
 
 ---
 
+## [1.5.0] - 2026-10-11
+
+**只保留 Root 模式，去掉 Shizuku 与免 Root。**
+
+Shizuku 通道的 `cmd wifi` 字符串命令不稳定（会被 shell 转义/ROM 差异吞掉，
+导致 netId 建不出来）、免 Root 在 Android 13+ 基本不可用。与其让普通用户
+在三者之间踩坑，不如只留一条验证过能用的路：**Root + cmd wifi**。
+
+### 改动
+
+- `Prefs.mode()` 恒返回 Root 模式
+- 设置页移除三个模式按钮，改成一行「本版本仅支持 Root 模式」说明
+- 连接动作统一走 `cmd wifi connect-network`（Root 下本机实测可用）
+
+判定不变：status「SSID + COMPLETED + IP」为主，日志「associate 之后
+Key negotiation completed」为辅。
+
+测试 275 项全过。
+
+---
+
 ## [1.4.1] - 2026-10-11
 
 **Shizuku 模式改用 binder 直调，绕开 `cmd wifi` 字符串命令。**

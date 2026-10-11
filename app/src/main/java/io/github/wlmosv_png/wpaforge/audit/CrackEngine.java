@@ -290,6 +290,27 @@ public final class CrackEngine {
 
     /** 当前 SSID（已去引号） */
     private String currentSsid() {
+        // **优先走 shell 的 `cmd wifi status`。**
+        //
+        // 缺定位权限时，App 侧的 `WifiInfo.getSSID()` 永远返回
+        // `<unknown ssid>`。而这里的返回值被大量判定与防护逻辑用到：
+        //   · 基线断开确认（disconnectAndVerify）
+        //   · 命令前 SSID（ssidBefore）
+        //   · 判据 D
+        // 一旦恒为 null，这些防护会**静默失效**（例如「命令前不是目标」
+        // 会被判成成立），假阳性就从这里漏出来。
+        // shell 侧不受定位权限影响，读得到就读它。
+        if (shell != null) {
+            try {
+                String st = shell.exec("cmd wifi status", 5000);
+                if (st != null && !st.trim().isEmpty()) {
+                    String cur = StatusParser.currentSsid(st);
+                    if (cur != null && !"<unknown ssid>".equals(cur)) return cur;
+                    // status 明确说没连，就直接返回 null，不要再退回 App API
+                    if (st.contains("Wifi is not connected")) return null;
+                }
+            } catch (Throwable ignored) {}
+        }
         try {
             if (wifi == null) return null;
             WifiInfo info = wifi.getConnectionInfo();
@@ -360,6 +381,38 @@ public final class CrackEngine {
     }
 
     /**
+     * 引擎自带的「删净目标配置」实现。
+     *
+     * 不依赖外部传入的 {@link ShellChannel#forgetTarget} —— 那个实现在
+     * 不同调用方（前台服务 / 自检 / 连接自测）里有的做了回读校验、
+     * 有的干脆是空实现，行为不一致。判定依赖「配置确实被清掉」，
+     * 所以统一收在这里，谁调都一样。
+     *
+     * @return true = 确认已清干净
+     */
+    private boolean forgetTargetByShell(String ssid) {
+        if (shell == null || ssid == null) return false;
+        for (int round = 0; round < 3; round++) {
+            long leftover = -1;
+            try {
+                String out = shell.exec("cmd wifi list-networks", 5000);
+                if (out == null) return false;
+                for (String line : out.split("\n")) {
+                    Long id = parseNetIdLine(line, ssid);
+                    if (id != null) { leftover = id; break; }
+                }
+            } catch (Throwable ignored) {
+                return false;
+            }
+            if (leftover < 0) return true;
+            try { shell.exec("cmd wifi forget-network " + leftover, 4000); }
+            catch (Throwable ignored) {}
+            sleep(400);
+        }
+        return netIdOfTarget(ssid) < 0;
+    }
+
+    /**
      * 查目标是本次新建网络的 netId（命令后用）。
      *
      * `cmd wifi connect-network` 会把目标写进已保存列表，
@@ -367,20 +420,24 @@ public final class CrackEngine {
      * 用它和 status 里的 Net ID 比对，就能把「连上了目标」归因到「这条候选」。
      */
     private long netIdOfTarget(String ssid) {
-        if (shell == null) return -1;
+        if (shell == null || ssid == null || ssid.isEmpty()) return -1;
         try {
             String out = shell.exec("cmd wifi list-networks", 5000);
             if (out == null) return -1;
             for (String line : out.split("\n")) {
-                String t = line.trim();
-                String[] parts = t.split("\\s+");
-                if (parts.length < 2) continue;
-                if (parts[1].equals(ssid)) {
-                    try { return Long.parseLong(parts[0]); } catch (Throwable ignored) { return -1; }
-                }
+                Long id = parseNetIdLine(line, ssid);
+                if (id != null) return id;
             }
         } catch (Throwable ignored) {}
         return -1;
+    }
+
+    /**
+     * 从 `cmd wifi list-networks` 的一行里解析出 netId。
+     * 实现已抽到 {@link ListNetworksParser}（纯逻辑，可离线测试）。
+     */
+    public static Long parseNetIdLine(String line, String ssid) {
+        return ListNetworksParser.netIdOfLine(line, ssid);
     }
 
     /**
@@ -801,8 +858,15 @@ public final class CrackEngine {
                     SystemClock.uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
         }
 
-        // 每条之前删净旧配置（配置复用会让任何密码都"成功"）
-        try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
+        // 每条之前删净旧配置（配置复用会让任何密码都"成功"）。
+        // 走引擎自带实现，保证各调用方行为一致。
+        if (!forgetTargetByShell(target.ssid)) {
+            return new Attempt(password, Verdict.UNKNOWN,
+                    SystemClock.uptimeMillis() - t0,
+                    L.s("无法清除旧配置，本条结果不可信",
+                        "could not clear stale config; this attempt is unreliable"),
+                    "");
+        }
 
         // **净检：确认目标配置真的没了**。
         //
@@ -1415,6 +1479,31 @@ public final class CrackEngine {
             }
         } catch (Throwable t) {
             l.onLog("环境诊断执行失败: " + t.getClass().getSimpleName());
+        }
+
+        // ---- 清缓存：重启一次 WiFi ----
+        //
+        // 为什么要这一步：WPA2 有 PMKSA 缓存（快速重连用的密钥缓存）。
+        // 即便 forget 了配置，wpa_supplicant 仍可能在短时间内用缓存密钥
+        // 连回同一个 AP —— 此时**用错误密码也会连上**，判定就成了假阳性。
+        // 实机复现：正确密码跑成功后，紧接着用错误密码再跑，仍显示「已连上」。
+        //
+        // 重启 WiFi（off -> on）会强制 wpa_supplicant 重来，缓存被清掉。
+        // 只在任务开始时做一次，不影响逐条速度。
+        if (shell != null) {
+            l.onLog(L.s("重置 WiFi（清掉密钥缓存，避免用缓存的旧密码误判）…",
+                    "Resetting Wi-Fi (clearing key cache to avoid stale-credential false positives)..."));
+            try { shell.exec("cmd wifi set-wifi-enabled disabled", 8000); } catch (Throwable ignored) {}
+            sleep(1500);
+            try { shell.exec("cmd wifi set-wifi-enabled enabled", 8000); } catch (Throwable ignored) {}
+            // 等它起来
+            for (int i = 0; i < 20; i++) {
+                sleep(500);
+                String wprobe = null;
+                try { wprobe = shell.exec("cmd wifi status", 4000); } catch (Throwable ignored) {}
+                if (wprobe != null && wprobe.contains("Wifi is enabled")) break;
+            }
+            l.onLog(L.s("WiFi 已重置", "Wi-Fi reset done"));
         }
 
         // ---- 建立基线 ----

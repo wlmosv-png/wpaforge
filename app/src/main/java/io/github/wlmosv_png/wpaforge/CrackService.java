@@ -413,23 +413,21 @@ public class CrackService extends Service {
                 @Override
                 public void forgetTarget(String ssid) {
                     // 删净旧配置 + 回读校验
+                    //
+                    // 解析统一走 CrackEngine.parseNetIdLine：**不能**再用
+                    // split("\s+") 取 parts[1] 当 SSID —— SSID 含空格
+                    // （"My Net 5G"）会匹配失败，配置删不掉，
+                    // 系统随后拿已保存的旧密码连上，判定就成了假阳性。
                     for (int round = 0; round < 3; round++) {
                         String list = exec("cmd wifi list-networks", 4000);
                         if (list == null) return;
-                        String leftover = null;
-                        boolean found = false;
+                        long leftover = -1;
                         for (String line : list.split("\n")) {
-                            String t = line.trim();
-                            if (!t.matches("^\\d+\\s+.*")) continue;
-                            String[] parts = t.split("\\s+");
-                            if (parts.length < 3) continue;
-                            if (parts[1].equals(ssid)) {
-                                found = true;
-                                leftover = parts[0];
-                                break;
-                            }
+                            Long id = io.github.wlmosv_png.wpaforge.audit.CrackEngine
+                                    .parseNetIdLine(line, ssid);
+                            if (id != null) { leftover = id; break; }
                         }
-                        if (!found) {
+                        if (leftover < 0) {
                             log(L.f("配置已清干净: %s", "config cleared: %s", ssid));
                             return;
                         }

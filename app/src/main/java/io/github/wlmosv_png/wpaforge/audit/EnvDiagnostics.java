@@ -83,8 +83,18 @@ public final class EnvDiagnostics {
             r.line("    API: " + Build.VERSION.SDK_INT
                     + (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? " （支持）" : " （不支持，需 10+）"));
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) r.failCritical();
+            // 系统定位开关 —— Android 用 WiFi 连接 API 的硬性前提，最常被忽略
+            boolean locOn = false;
+            try {
+                android.location.LocationManager lm = (android.location.LocationManager)
+                        ctx.getSystemService(Context.LOCATION_SERVICE);
+                locOn = lm != null && lm.isLocationEnabled();
+            } catch (Throwable ignored) {}
+            r.line("    " + (locOn ? "✓" : "✗") + " 系统定位开关: "
+                    + (locOn ? "开" : "关（必须打开！WiFi 连接 API 依赖它）"));
+            if (!locOn) r.failCritical();
             r.line("    说明: 免 Root 会弹系统确认框，且无法做字典遍历的精确判定");
-            r.line("    建议: 有条件请用 Shizuku 或 Root 模式");
+            r.line("    建议: 有条件请用 Shizuku（不需 root）或 Root 模式");
         } else if (mode == Prefs.MODE_SHIZUKU) {
             r.line("  · Shizuku 模式");
             boolean installed = ShizukuRunner.isInstalled(ctx);

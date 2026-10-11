@@ -614,6 +614,60 @@ public final class CrackEngine {
         }
     }
 
+    /**
+     * 把 requestNetwork 的异常翻译成「怎么办」。
+     *
+     * Android 13+ 用 WifiNetworkSpecifier 连 WiFi 有一堆前置条件，缺任何一条
+     * 都抛 SecurityException，光看类型根本不知道差什么。这里逐项查一遍。
+     */
+    private String describeRequestNetworkFailure(Throwable t) {
+        StringBuilder sb = new StringBuilder();
+        String cls = t.getClass().getSimpleName();
+        sb.append(L.s("发起请求失败: ", "requestNetwork failed: ")).append(cls);
+
+        if (t instanceof SecurityException) {
+            sb.append('\n').append(L.s("原因排查:", "Possible causes:"));
+            // 目标 SDK 越高，系统检查越严
+            sb.append('\n').append("  · targetSdk=").append(appCtx.getApplicationInfo().targetSdkVersion);
+            sb.append("  · Android ").append(Build.VERSION.RELEASE)
+              .append(" (API ").append(Build.VERSION.SDK_INT).append(')');
+
+            // 定位权限
+            boolean fine = appCtx.checkSelfPermission(
+                    android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            sb.append('\n').append("  · 定位权限: ").append(fine ? "有" : "缺（必须授予）");
+
+            // 附近设备权限（API 33+）
+            if (Build.VERSION.SDK_INT >= 33) {
+                boolean nearby = appCtx.checkSelfPermission(
+                        "android.permission.NEARBY_WIFI_DEVICES")
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                sb.append('\n').append("  · 附近设备权限: ").append(nearby ? "有" : "缺（必须授予）");
+            }
+
+            // 系统定位开关 —— 这是最常被忽略的一条
+            boolean locOn = false;
+            try {
+                android.location.LocationManager lm = (android.location.LocationManager)
+                        appCtx.getSystemService(Context.LOCATION_SERVICE);
+                locOn = lm != null && lm.isLocationEnabled();
+            } catch (Throwable ignored) {}
+            sb.append('\n').append("  · 系统定位开关: ")
+              .append(locOn ? "开" : "**关**（Android 要求打开定位才能用 WiFi 连接 API）");
+
+            sb.append('\n').append(L.s(
+                    "  → 免 Root 模式在 Android 13+ 限制极多（必须前台、定位开启、"
+                            + "且每次连接都会弹系统确认框，无法做字典遍历）。",
+                    "  -> root-free mode is heavily restricted on Android 13+."));
+            sb.append('\n').append(L.s(
+                    "  → 强烈建议改用 Shizuku 模式（装 Shizuku 应用并启动服务，"
+                            + "不需要 root），或 Root 模式。",
+                    "  -> strongly recommend Shizuku mode instead."));
+        }
+        return sb.toString();
+    }
+
     /** 免 Root：requestNetwork + 回调 */
     private Attempt tryOnePrecise(NetRecord target, String password, long timeoutMs, long t0) {
         final CountDownLatch latch = new CountDownLatch(1);
@@ -673,7 +727,7 @@ public final class CrackEngine {
         } catch (Throwable t) {
             return new Attempt(password, Verdict.ERROR,
                     SystemClock.uptimeMillis() - t0,
-                    L.s("发起请求失败: ", "requestNetwork failed: ") + t.getClass().getSimpleName(), "");
+                    describeRequestNetworkFailure(t), "");
         }
 
         try {

@@ -2313,6 +2313,16 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
             StringBuilder sb = new StringBuilder();
             if (m == Prefs.MODE_NO_ROOT) {
                 sb.append(L.s("当前: 免 Root 模式", "Current: root-free mode")).append("\n\n");
+                // 如实告知弹窗：这是 Android 强制的，我们关不掉。
+                // 不告知就是骗用户。
+                sb.append(L.s(
+                        "⚠ 系统会对每一条候选弹一次确认框。\n"
+                        + "这是 Android 的安全设计，应用无法关闭。\n\n"
+                        + "想不被打扰：用 Shizuku 模式（和 Root 一样快，无弹窗）。\n\n",
+                        "⚠ Android shows a confirmation dialog for every candidate.\n"
+                        + "This is a platform security requirement; apps cannot disable it.\n\n"
+                        + "To avoid the interruptions, use Shizuku mode "
+                        + "(as fast as root, no dialogs).\n\n"));
                 sb.append(L.s(
                         "通过系统的「网络建议」接口提交候选，系统自己去连。\n"
                         + "优点：不需要 root。\n"

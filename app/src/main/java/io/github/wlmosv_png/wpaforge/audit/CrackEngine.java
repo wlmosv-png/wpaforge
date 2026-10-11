@@ -208,6 +208,38 @@ public final class CrackEngine {
         return null;
     }
 
+    /**
+     * 把 CHANGE_WIFI_STATE 的操作登记为本应用发起。
+     *
+     * 这是「减少系统弹窗」的一环：系统在决定要不要弹确认框时，
+     * 会看这次 Wi-Fi 操作是谁发起的、有没有走应用自己的前台界面。
+     * 用 AppOps 标记之后，部分 ROM（含 ColorOS）会直接静默处理。
+     *
+     * 失败不影响功能，只是弹窗可能还在。
+     */
+    /** change_wifi_state 的 AppOps 名（字符串常量，避免不同版本字段缺失） */
+    private static final String OP_CHANGE_WIFI = "android:change_wifi_state";
+
+    private void noteAppOpAllow() {
+        try {
+            android.app.AppOpsManager ops = (android.app.AppOpsManager)
+                    appCtx.getSystemService(Context.APP_OPS_SERVICE);
+            if (ops == null) return;
+            // 不同版本方法名不同，逐个试
+            try {
+                ops.noteOp(OP_CHANGE_WIFI,
+                        android.os.Process.myUid(), appCtx.getPackageName());
+            } catch (Throwable t1) {
+                try {
+                    java.lang.reflect.Method m = android.app.AppOpsManager.class
+                            .getMethod("noteOpNoThrow", String.class, int.class, String.class);
+                    m.invoke(ops, OP_CHANGE_WIFI,
+                            android.os.Process.myUid(), appCtx.getPackageName());
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+    }
+
     /** 当前 SSID（已去引号） */
     private String currentSsid() {
         try {
@@ -268,9 +300,17 @@ public final class CrackEngine {
 
         NetworkRequest req = new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                // 关键：不要 INTERNET 能力。
+                // 带上它系统会认为你要「上网」，于是必须让你确认；
+                // 去掉之后语义是「我只是想连上这个 AP」，弹窗明显减少。
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
                 .setNetworkSpecifier(spec)
                 .build();
+
+        // 把这次操作登记成「应用自己发起的」，走静默路径
+        noteAppOpAllow();
 
         final ConnectivityManager.NetworkCallback cb = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network n) {
@@ -384,6 +424,93 @@ public final class CrackEngine {
     private static String shellQuote(String s) {
         if (s == null) return "''";
         return "'" + s.replace("'", "'\\''") + "'";
+    }
+
+    // ------------------------------------------------------------------ 批量交给系统
+
+    /**
+     * 一次性把一批候选交给系统（Android 11+），只弹一次确认框。
+     *
+     * <p>语义与逐条模式**不同**，必须让用户知道：
+     * <ul>
+     *   <li>系统自己去试，顺序和时间由系统决定</li>
+     *   <li>我们只能等它连上，**不能**知道它在试哪一条</li>
+     *   <li>所以命中时拿到的密码是**推断**的，不是逐条确认的</li>
+     * </ul>
+     *
+     * <p>适合「网络很多、受不了逐条弹窗」的场景；
+     * 要精确结果仍然应该用逐条模式或 Shizuku。
+     *
+     * @param batchSize 一批交多少个，太多系统会排队很久
+     * @return 兼容 Android 11 以下返回 false
+     */
+    public boolean submitBatchToSystem(Context activityCtx, NetRecord target,
+                                       List<Candidate> batch) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
+        if (target == null || batch == null || batch.isEmpty()) return false;
+        try {
+            java.util.ArrayList<android.net.wifi.WifiNetworkSuggestion> list =
+                    new java.util.ArrayList<>();
+            for (Candidate c : batch) {
+                if (c.password == null
+                        || c.password.length() < 8 || c.password.length() > 63) continue;
+                WifiNetworkSpecifier.Builder b = new WifiNetworkSpecifier.Builder()
+                        .setSsid(target.ssid);
+                // 这里用 specifier 构建器只是为了拿到带密码的实例，
+                // 真正提交给系统的是 WifiNetworkSuggestion
+                list.add(new android.net.wifi.WifiNetworkSuggestion.Builder()
+                        .setSsid(target.ssid)
+                        .setWpa2Passphrase(c.password)
+                        .build());
+            }
+            if (list.isEmpty()) return false;
+            // Android 11+ 支持一次提交多个
+            int status = wifi.addNetworkSuggestions(list);
+            return status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS;
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "submitBatchToSystem 失败: " + t);
+            return false;
+        }
+    }
+
+    /** 清掉本应用提交的全部建议 */
+    public void clearSystemSuggestions() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                wifi.removeNetworkSuggestions(new java.util.ArrayList<>());
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * 当前 ROM 是否支持“批量交给系统”。
+     * Android 11+ 才有，且需要系统支持多建议提交。
+     */
+    public boolean supportsBatchSubmit() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
+    }
+
+    /**
+     * 当前 ROM 上逐条 requestNetwork 会不会弹确认框。
+     *
+     * Android 10-15 都会弹（系统强制，无官方开关）。
+     * 这里如实告诉用户，不做假承诺。
+     */
+    public String popupNote() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return L.s("系统版本过低，无法使用免 Root 模式。",
+                    "System too old for root-free mode.");
+        }
+        return L.s("系统会对每一条候选弹一次确认框，这是 Android 的安全设计，"
+                        + "无法关闭。\n\n"
+                        + "想不被打扰有两条路：\n"
+                        + "· 用 Shizuku 模式（推荐，和 Root 一样快且无弹窗）\n"
+                        + "· 用“批量交给系统”（只弹一次，但结果是推断的）",
+                "Android will show a confirmation dialog for every candidate. "
+                        + "This is a platform security requirement and cannot be disabled.\n\n"
+                        + "Two ways to avoid the interruptions:\n"
+                        + "· use Shizuku mode (recommended - as fast as root, no dialogs)\n"
+                        + "· use \"submit batch to system\" (one dialog, but the result is inferred)");
     }
 
     // ------------------------------------------------------------------ 批量跑

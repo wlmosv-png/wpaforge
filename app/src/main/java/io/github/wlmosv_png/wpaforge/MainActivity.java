@@ -2030,9 +2030,159 @@ public class MainActivity extends Activity {
 
     // ---------------- 设置页 ----------------
 
+    /**
+     * 连接自测：真的发一次连接命令，把每一层判据的结果都打出来。
+     *
+     * 用户反馈「正确密码连不上 / 判不出」时，光看结果分不清是
+     * 「命令没发出去」「连上了但没识别到」还是「根本没连上」。
+     * 这里逐层报告，一次就能定位。
+     */
+    private void showConnTestDialog() {
+        final NetDialog dlg = new NetDialog(this,
+                L.s("连接自测", "Connection test"),
+                L.s("输入一个你能确认密码的 WiFi，点测试。\n"
+                        + "会真的发起一次连接（会短暂切换网络）。",
+                        "Enter a Wi-Fi whose passphrase you know.\n"
+                                + "It will really connect once (briefly switching networks)."));
+        final android.widget.EditText ssidIn = dlg.addField(
+                L.s("SSID（网络名）", "SSID"), "");
+        final android.widget.EditText pwIn = dlg.addField(
+                L.s("密码", "Passphrase"), "");
+        dlg.setPositive(L.s("开始测试", "Test"), (d) -> {
+            String ssid = ssidIn.getText().toString().trim();
+            String pw = pwIn.getText().toString();
+            if (ssid.isEmpty() || pw.length() < 8) {
+                android.widget.Toast.makeText(this,
+                        L.s("请填写正确的 SSID 和密码（8-63 位）",
+                                "Enter a valid SSID and passphrase (8-63 chars)"),
+                        android.widget.Toast.LENGTH_SHORT).show();
+                return;
+            }
+            runConnTest(ssid, pw);
+        });
+        dlg.setNegative(L.s("取消", "Cancel"), null);
+        dlg.show();
+    }
+
+    /** 后台跑一次真实连接 + 逐层判定，把过程写到日志和候选流。 */
+    private void runConnTest(String ssid, String pass) {
+        final int m = Prefs.mode(this);
+        android.widget.Toast.makeText(this,
+                        L.s("测试中…稍后弹出结果", "Testing… result will pop up"),
+                        android.widget.Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            StringBuilder sb = new StringBuilder();
+            sb.append("══════ 连接自测 ══════\n");
+            sb.append("目标: ").append(ssid).append("  模式: ").append(modeName(m)).append('\n');
+
+            io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
+                    new io.github.wlmosv_png.wpaforge.audit.CrackEngine(this, m);
+            final boolean useShizuku = m == Prefs.MODE_SHIZUKU;
+            if (m != Prefs.MODE_NO_ROOT) {
+                eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                    @Override public String exec(String cmd, long timeoutMs) {
+                        if (useShizuku) {
+                            return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
+                        }
+                        return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                    }
+                    @Override public void forgetTarget(String s) { }
+                    @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
+                });
+            }
+
+            // 环境
+            try {
+                io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.Report r =
+                        io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.run(
+                                this, m, eng.getShellChannelForDiag());
+                sb.append(r.text).append('\n');
+            } catch (Throwable t) {
+                sb.append("环境诊断失败: ").append(t.getClass().getSimpleName()).append('\n');
+            }
+
+            // 真实尝试一条
+            try {
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.Attempt a =
+                        eng.tryOneForTest(ssid, pass, 12_000L);
+                sb.append("── 判定结果 ──\n");
+                sb.append("verdict: ").append(a.verdict).append('\n');
+                sb.append("依据: ").append(a.confirmedBy).append('\n');
+                sb.append("耗时: ").append(a.elapsedMs).append("ms\n");
+                sb.append("详情: ").append(a.detail).append('\n');
+            } catch (Throwable t) {
+                sb.append("尝试失败: ").append(t).append('\n');
+            }
+
+            final String body = sb.toString();
+            ui.post(() -> {
+                NetDialog d = new NetDialog(MainActivity.this,
+                        L.s("连接自测结果", "Connection test result"), body);
+                d.setPositive(L.s("知道了", "Got it"), null);
+                d.show();
+            });
+        }, "wpaforge-conntest").start();
+    }
+
+    /** 把日志复制到 Download 目录（应用私有目录不好进）。 */
+    private void exportLog() {
+        new Thread(() -> {
+            java.io.File f = null;
+            try {
+                android.content.Intent it = new android.content.Intent(this,
+                        io.github.wlmosv_png.wpaforge.CrackService.class);
+                it.setAction("io.github.wlmosv_png.wpaforge.EXPORT_LOG");
+                startService(it);
+            } catch (Throwable ignored) {}
+            // 直接也自己复制一份（不依赖服务活着）
+            try {
+                java.io.File dir = getExternalFilesDir("logs");
+                java.io.File[] all = dir == null ? null : dir.listFiles();
+                if (all != null && all.length > 0) {
+                    java.io.File newest = null;
+                    for (java.io.File x : all) {
+                        if (!x.getName().startsWith("WPAForge-log-")) continue;
+                        if (newest == null || x.lastModified() > newest.lastModified()) newest = x;
+                    }
+                    if (newest != null) {
+                        java.io.File out = new java.io.File(
+                                android.os.Environment.getExternalStoragePublicDirectory(
+                                        android.os.Environment.DIRECTORY_DOWNLOADS),
+                                newest.getName());
+                        java.io.FileInputStream in = new java.io.FileInputStream(newest);
+                        java.io.FileOutputStream os = new java.io.FileOutputStream(out);
+                        byte[] b = new byte[8192];
+                        int n;
+                        while ((n = in.read(b)) > 0) os.write(b, 0, n);
+                        in.close();
+                        os.close();
+                        f = out;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            final java.io.File res = f;
+            final String privPath = getExternalFilesDir("logs") == null
+                    ? "（私有目录不可用）" : getExternalFilesDir("logs").getAbsolutePath();
+            ui.post(() -> {
+                String msg;
+                if (res != null) {
+                    msg = L.s("已导出:\n" + res.getAbsolutePath()
+                                    + "\n\n全部日志在:\n" + privPath,
+                            "Exported to:\n" + res.getAbsolutePath()
+                                    + "\n\nAll logs in:\n" + privPath);
+                } else {
+                    msg = L.s("导出失败（可能没有存储权限）。\n\n日志目录:\n" + privPath,
+                            "Export failed (no storage permission?).\n\nLog dir:\n" + privPath);
+                }
+                new NetDialog(MainActivity.this, L.s("导出日志", "Export log"), msg)
+                        .setPositive(L.s("知道了", "Got it"), null).show();
+            });
+        }, "wpaforge-exportlog").start();
+    }
+
     private void buildSettingsTab() {
         if (radar != null) radar.stopSpin();
-
 pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
 
         modeInfo = new TextView(this);
@@ -2075,6 +2225,37 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                 L.modeLabel(this)), Color.parseColor("#2A2A36"));
         languageBtn.setOnClickListener(v -> showLanguagePicker());
         pageSettings.addView(languageBtn);
+
+        // ---------------- 诊断 ----------------
+        pageSettings.addView(sectionLabel(L.s("诊断", "Diagnostics")));
+
+        TextView diagHint = new TextView(this);
+        diagHint.setText(L.s(
+                "连不上 / 判不出时，先用这里定位：\n"
+                + "· 完整自检（长按上面那行「执行方式」）看环境\n"
+                + "· 连接自测：真发一次连接命令，逐层报告判定过程\n"
+                + "· 导出日志：把运行日志复制到 Download 目录，直接发出来",
+                "When it fails, locate the cause here:\n"
+                + "· Self-check (long-press the execution-mode line above)\n"
+                + "· Connection test: really send one connect command and report layer by layer\n"
+                + "· Export log: copy the run log to Download for sharing"));
+        diagHint.setTextSize(11.5f);
+        diagHint.setTextColor(TEXT_DIM);
+        diagHint.setLineSpacing(px(4), 1f);
+        diagHint.setBackground(roundBg(SURFACE, 18));
+        diagHint.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(diagHint);
+
+        Button connTest = makeButton(L.s("连接自测（发一次真实连接命令）",
+                "Connection test (send one real connect)"),
+                Color.parseColor("#2A2A36"));
+        connTest.setOnClickListener(v -> showConnTestDialog());
+        pageSettings.addView(connTest);
+
+        Button exportLog = makeButton(L.s("导出日志到 Download",
+                "Export log to Download"), Color.parseColor("#2A2A36"));
+        exportLog.setOnClickListener(v -> exportLog());
+        pageSettings.addView(exportLog);
 
                 pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));
 

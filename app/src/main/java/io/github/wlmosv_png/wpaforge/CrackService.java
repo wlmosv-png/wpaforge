@@ -825,6 +825,32 @@ public class CrackService extends Service {
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * 把日志复制到公共 Download 目录，方便用户直接取出发送。
+     * 应用私有目录普通文件管理器不好进，这里主动导一份。
+     */
+    public java.io.File exportLogToDownload() {
+        try {
+            ensureFileLog();
+            if (logFile == null || !logFile.exists()) return null;
+            java.io.File dir = android.os.Environment
+                    .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+            if (dir == null) return null;
+            if (!dir.exists()) dir.mkdirs();
+            java.io.File out = new java.io.File(dir, logFile.getName());
+            java.io.FileInputStream in = new java.io.FileInputStream(logFile);
+            java.io.FileOutputStream os = new java.io.FileOutputStream(out);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            in.close();
+            os.close();
+            return out;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private void appendFileLog(String line) {
         try {
             ensureFileLog();

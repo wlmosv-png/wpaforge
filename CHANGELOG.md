@@ -4,6 +4,33 @@
 
 ---
 
+## [1.2.0] - 2026-10-11
+
+**新增「连接自测」与「导出日志」——一键定位卡在哪一层。**
+
+用户反馈「诊断看着都正常，但正确密码仍判不成功」。光看结论分不清是
+「命令没发出去」「连上了没识别到」还是「根本没连上」。这次给两个工具。
+
+### 设置页新增两个按钮
+
+- **连接自测**：填 SSID + 密码，真的发一次连接命令，然后输出：
+  完整环境诊断、`verdict`（SUCCESS / AUTH_FAIL / UNKNOWN / ERROR）、
+  **依据**（wifistate / status / watcher / wifiinfo）、耗时与详情
+  （详情里带 `[层: 日志N/可读 · statusN/通 · 事件N]`）。
+- **导出日志**：把最近一次运行日志复制到 Download 目录，直接可分享。
+
+### 日志位置
+
+`/sdcard/Android/data/io.github.wlmosv_png.wpaforge/files/logs/WPAForge-log-*.txt`
+
+### 澄清
+
+**Shamiko 是隐藏 root 的模块，与 WiFi 连接判定无关。** 没 root 的设备
+只能用 Shizuku 或免 Root；Shizuku 服务未启动/未授权时通道就是不通的，
+环境诊断会在「③ 执行通道」直接指出。
+
+---
+
 ## [1.1.9] - 2026-10-11
 
 **加了完整环境诊断，一眼看出卡在哪一层。**

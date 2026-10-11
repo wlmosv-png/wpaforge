@@ -175,6 +175,20 @@ public final class CrackEngine {
         this.shell = ch;
     }
 
+    /**
+     * 供「连接自测」用：对指定 SSID+密码跑一次完整判定。
+     *
+     * 与正式破解走同一条路径（tryOne），只是 SSID 和密码由界面直接给出。
+     */
+    public Attempt tryOneForTest(String ssid, String password, long timeoutMs) {
+        io.github.wlmosv_png.wpaforge.core.NetRecord t =
+                new io.github.wlmosv_png.wpaforge.core.NetRecord(
+                        ssid, "", 0, 2437,
+                        io.github.wlmosv_png.wpaforge.core.NetRecord.Security.WPA2,
+                        false, "");
+        return tryOne(t, "wpa2", password, timeoutMs);
+    }
+
     /** 供界面做环境诊断时取当前通道（可能为 null）。 */
     public ShellChannel getShellChannelForDiag() {
         return shell;

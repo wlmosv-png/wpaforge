@@ -8,6 +8,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,7 +42,8 @@ public final class LanProbeExecutor {
     }
 
     private static final int PING_TIMEOUT_MS = 1500;   // ping -W 毫秒
-    private static final int NC_TIMEOUT_MS   = 1200;   // nc -z 毫秒
+    /** 单个端口的 TCP connect 超时 */
+    private static final int PORT_TIMEOUT_MS = 700;
     private static final int BATCH_SIZE      = 40;     // 每波并发 ping 数
 
     private LanProbeExecutor() {}
@@ -138,6 +140,20 @@ public final class LanProbeExecutor {
                     "[*] 扫描 %s...  %d%% ", ipPrefix(ip), pct) + "\u2588".repeat(Math.max(0, pct / 10)));
         }
 
+        // ping 完等一小会儿再读 ARP 表。
+        //
+        // 为什么：ping 通过后内核才把 (IP -> MAC) 写进 ARP 表，
+        // 立刻读会拿到空的 HW address —— 真机实测过，手动 ping 后
+        // 稍等再读就有了。少了厂商识别，这个功能就废了一半。
+        // 轮询读 ARP，直到网络里出现带 MAC 的表项（最多 3 轮 ×400ms）。
+        //
+        // 为什么轮询而不是固定 sleep：ping 通过后内核才把 (IP→MAC)
+        // 写进 ARP 表，时间不确定；固定等 600ms 实测仍经常读到空值。
+        for (int r = 0; r < 3; r++) {
+            try { Thread.sleep(400); } catch (InterruptedException ignored) {}
+            if (arpHasMac()) break;
+        }
+
         // 汇总：网关 + 本机 + 存活主机，各自构建 Host
         String gwMac = macOf(gateway);
         String myMac = macOf(ip);
@@ -183,6 +199,25 @@ public final class LanProbeExecutor {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    /** ARP 表里是否已经有带 MAC 的表项 */
+    private static boolean arpHasMac() {
+        try {
+            BufferedReader r = new BufferedReader(new InputStreamReader(
+                    new java.io.FileInputStream("/proc/net/arp"), StandardCharsets.UTF_8));
+            String line;
+            while ((line = r.readLine()) != null) {
+                String[] t = line.trim().split("\\s+");
+                if (t.length >= 4 && !"00:00:00:00:00:00".equals(t[3])
+                        && !"HW".equals(t[0])) {
+                    r.close();
+                    return true;
+                }
+            }
+            r.close();
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     private static String macOf(String ip) {
@@ -233,16 +268,99 @@ public final class LanProbeExecutor {
         return open;
     }
 
-    private static boolean ncCheck(String ip, int port) {
+    /**
+     * 抓取服务 banner（第一行）。拿不到返回空串。
+     *
+     * 两种模式：
+     *   · 被动：很多服务（SSH/SMTP/FTP）连上就主动打招呼，直接读
+     *   · 主动：HTTP/HTTPS 需要先发一个请求，否则永远等不到响应
+     * 这里对 80/8080 发 HEAD，对 443/8443 不发（TLS 握手太复杂，跳过）。
+     */
+    public static String grabBanner(String ip, int port) {
+        java.net.Socket sock = null;
         try {
-            Process p = new ProcessBuilder("nc", "-z", "-w", "1", ip, String.valueOf(port))
-                    .redirectErrorStream(true).start();
-            boolean done = p.waitFor(NC_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (done) return p.exitValue() == 0;
-            p.destroy();
-            return false;
-        } catch (Throwable ignored) {
-            return false;
+            sock = new java.net.Socket();
+            sock.connect(new java.net.InetSocketAddress(ip, port), 1200);
+            sock.setSoTimeout(1200);
+
+            // HTTP 类：先问一句，否则服务不会主动说话
+            if (port == 80 || port == 8080) {
+                try {
+                    OutputStream os = sock.getOutputStream();
+                    os.write(("HEAD / HTTP/1.0" + "\r\n" + "Host: " + ip + "\r\n\r\n")
+                            .getBytes(StandardCharsets.US_ASCII));
+                    os.flush();
+                } catch (Throwable ignored) {}
+            } else if (port == 443 || port == 8443) {
+                // TLS 端口不抓：握手要证书交换，超时又没意义
+                return "";
+            }
+
+            BufferedReader r = new BufferedReader(new InputStreamReader(
+                    sock.getInputStream(), StandardCharsets.ISO_8859_1));
+            String line = r.readLine();
+            if (line == null) return "";
+            line = line.trim();
+            if (line.length() > 60) line = line.substring(0, 60);
+            return line;
+        } catch (Throwable t) {
+            return "";
+        } finally {
+            if (sock != null) try { sock.close(); } catch (Throwable ignored) {}
         }
     }
+
+    /**
+     * 网络是否对任意目标都回 SYN-ACK（端口结果不可信）。
+     *
+     * 拿两个**确定不该有服务**的靶子试探：
+     *   ① 本网段的空地址（+250）
+     *   ② RFC 5737 保留地址 203.0.113.99（公网概念上不存在）
+     * 任一报 open，就说明这个网络对任何目标都「答是」，端口扫描没有意义。
+     *
+     * @return true = 网络可信（端口结果可用）；false = 不可信，别展示端口
+     */
+    public static boolean portsAreTrustworthy(String selfIp) {
+        // 靶子一：本网段空地址
+        String probe1 = emptyAddrInSubnet(selfIp);
+        if (probe1 != null && ncCheck(probe1, 80)) return false;
+        if (probe1 != null && ncCheck(probe1, 9999)) return false;
+        // 靶子二：RFC 5737 保留地址
+        if (ncCheck("203.0.113.99", 80)) return false;
+        return true;
+    }
+
+    /** 本网段里一个正常不会被分配的地址（+250） */
+    private static String emptyAddrInSubnet(String selfIp) {
+        String a = LanProbe.ipOnly(selfIp);
+        if (a == null) return null;
+        int dot = a.lastIndexOf('.');
+        if (dot <= 0) return null;
+        return a.substring(0, dot + 1) + "250";
+    }
+
+    /** 端口是否开放（public，供 UI 复用）。内部就是 nc -z。 */
+    public static boolean portOpen(String ip, int port) {
+        return ncCheck(ip, port);
+    }
+
+    /**
+     * 端口是否开放。用 Java Socket 做真实 TCP connect。
+     *
+     * 不用 busybox `nc -z`：真机实测它对不存在的主机和端口
+     * 同样报 open（nc -z 192.168.1.250 22 → OPEN，而这台主机不存在），
+     * 结果完全不可信。Socket.connect 是内核 TCP 握手，连不上就抛异常。
+     */
+    private static boolean ncCheck(String ip, int port) {
+        java.net.Socket sock = new java.net.Socket();
+        try {
+            sock.connect(new java.net.InetSocketAddress(ip, port), PORT_TIMEOUT_MS);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            try { sock.close(); } catch (Throwable ignored) {}
+        }
+    }
+
 }

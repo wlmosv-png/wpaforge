@@ -578,6 +578,21 @@ public class MainActivity extends Activity {
         observeNotice.setVisibility(View.GONE);
         pageObserve.addView(observeNotice);
 
+        // 网络侦察入口: 终端式局域网设备探测(需 root)。
+        Button lanProbe = btnSecondary(L.s("网络侦察 ▸ 探测当前 WiFi 设备",
+                "LAN recon ▸ probe devices on WiFi"));
+        lanProbe.setOnClickListener(v -> {
+            try {
+                startActivity(new android.content.Intent(this,
+                        io.github.wlmosv_png.wpaforge.ui.LanProbeActivity.class));
+            } catch (Throwable t) {
+                Toast.makeText(this, "无法打开: " + t.getMessage(),
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        pageObserve.addView(lanProbe);
+
+
         pageObserve.addView(sectionLabel(L.s("信号分布", "Signal distribution")));
 
         bars = new SignalBars(this);

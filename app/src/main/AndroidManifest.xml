@@ -75,6 +75,12 @@
             android:label="字典管理" />
 
         <activity
+            android:name=".ui.LanProbeActivity"
+            android:exported="false"
+            android:label="局域网设备探测"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden">

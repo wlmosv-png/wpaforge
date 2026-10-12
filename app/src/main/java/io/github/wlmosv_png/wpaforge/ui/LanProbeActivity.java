@@ -20,6 +20,7 @@ import android.widget.Toast;
 import java.util.List;
 
 import io.github.wlmosv_png.wpaforge.L;
+import io.github.wlmosv_png.wpaforge.scan.Evidence;
 import io.github.wlmosv_png.wpaforge.scan.LanProbe;
 import io.github.wlmosv_png.wpaforge.scan.LanProbeExecutor;
 import io.github.wlmosv_png.wpaforge.scan.ProbeHistory;
@@ -419,8 +420,14 @@ public class LanProbeActivity extends Activity {
         if (!portsTrustworthy) {
             TextView nt = new TextView(this);
             nt.setText(L.s(
-                    "⚠ 本网络对任意目标都回 SYN，端口扫描结果不可信，已隐藏。",
-                    "⚠ This network answers SYN for any target; port results hidden."));
+                    "⚠ 端口结果不可信，已隐藏。\n"
+                            + "常见原因：本机开了代理/VPN（如 Clash 的 TUN 模式）—— "
+                            + "它会替任何目标代答 SYN-ACK，扫到的都是它的假响应。\n"
+                            + "关闭代理后重试即可看到真实端口。也可能是所在网络对任意目标回 SYN。",
+                    "⚠ Port results unreliable and hidden.\n"
+                            + "Common cause: a local proxy/VPN (e.g. Clash TUN) answers SYN-ACK"
+                            + " for every target, so what you scanned is the proxy, not the device.\n"
+                            + "Turn the proxy off and rescan. Some networks may behave the same."));
             nt.setTextSize(11.5f);
             nt.setTextColor(WARN);
             nt.setLineSpacing(dp(3), 1f);
@@ -510,6 +517,33 @@ public class LanProbeActivity extends Activity {
         t.setLetterSpacing(0.12f);
         t.setPadding(dp(4), dp(14), 0, dp(8));
         return t;
+    }
+
+    /**
+     * 弹出这台设备的证据链。
+     *
+     * 结论下面逐条列出实际读到的值（ARP 表、OUI 查询、ICMP 回应…），
+     * 让判断可复现、可反驳 —— 而不是只给一个厂商名让人盲信。
+     */
+    private void showEvidence(LanProbe.Host h) {
+        io.github.wlmosv_png.wpaforge.scan.Evidence.Claim c =
+                LanProbeExecutor.claimFor(this, h);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("[").append(c.confidenceLabel()).append("]  ")
+          .append(c.statement).append('\n').append('\n');
+        for (io.github.wlmosv_png.wpaforge.scan.Evidence.Item it : c.items) {
+            sb.append(it.decisive ? "● " : "○ ")
+              .append(it.source).append('\n')
+              .append("    ").append(it.detail).append('\n').append('\n');
+        }
+        sb.append(L.s("● 决定性证据   ○ 辅助信息",
+                       "● decisive   ○ supporting"));
+
+        new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                L.s("判断依据", "Evidence"), sb.toString())
+                .setPositive(L.s("关闭", "Close"), null)
+                .show();
     }
 
     /** 设备卡 */
@@ -615,6 +649,15 @@ public class LanProbeActivity extends Activity {
             }
             card.addView(pr);
         }
+
+        // 依据入口：这一台的结论怎么来的，点开可看
+        TextView why = new TextView(this);
+        why.setText(L.s("查看判断依据 ▸", "Why this verdict ▸"));
+        why.setTextSize(11f);
+        why.setTextColor(ACCENT_DIM);
+        why.setPadding(0, dp(10), 0, 0);
+        why.setOnClickListener(v -> showEvidence(h));
+        card.addView(why);
 
         return card;
     }

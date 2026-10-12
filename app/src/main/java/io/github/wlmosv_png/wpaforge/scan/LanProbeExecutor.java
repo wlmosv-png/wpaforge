@@ -252,6 +252,48 @@ public final class LanProbeExecutor {
     }
 
     /**
+     * 为一台已发现的主机构建证据链。
+     *
+     * 结论 = 「这台设备是什么」，依据 = 我们实际读到了什么。
+     * 用户点开就能看到判断是怎么来的 —— 而不是只给一个厂商名。
+     */
+    public static io.github.wlmosv_png.wpaforge.scan.Evidence.Claim
+            claimFor(Context ctx, LanProbe.Host h) {
+        io.github.wlmosv_png.wpaforge.scan.Evidence.Claim c =
+                new io.github.wlmosv_png.wpaforge.scan.Evidence.Claim(
+                        h.ip + "  " + h.displayVendor());
+
+        // IP 层：内核邻居表（最硬的证据，说明这个地址确实被回应过）
+        if (!h.mac.isEmpty()) {
+            c.add(io.github.wlmosv_png.wpaforge.scan.Evidence.arpEntry(h.ip, h.mac));
+        } else {
+            c.add("/proc/net/arp", h.ip + " 无 MAC 记录（ICMP 有回应但邻居表未落项）", false);
+        }
+
+        // 厂商：OUI 查询 or 随机化判定。两者互斥且都有明确依据。
+        if (!h.mac.isEmpty()) {
+            if (io.github.wlmosv_png.wpaforge.scan.OuiLookup.isRandomized(h.mac)) {
+                c.add(io.github.wlmosv_png.wpaforge.scan.Evidence.randomizedMac(h.mac));
+            }
+            if (!h.vendor.isEmpty()) {
+                c.add(io.github.wlmosv_png.wpaforge.scan.Evidence.ouiHit(h.mac, h.vendor));
+            } else if (!io.github.wlmosv_png.wpaforge.scan.OuiLookup.isRandomized(h.mac)) {
+                c.add(io.github.wlmosv_png.wpaforge.scan.Evidence.ouiMissing(h.mac));
+            }
+        }
+
+        if (h.isGateway) {
+            c.add("路由表", "ip route 的 default 网关指向本地址", true);
+        }
+        if (h.isSelf) {
+            c.add("本机", "WifiManager 上报的本机 IP 与本条一致", true);
+        }
+        c.add("ICMP", h.ip + " 对 ping 有回应", true);
+
+        return c;
+    }
+
+    /**
      * 对一个 IP 的常用端口做 nc 探测。逐行回调结果。
      * 返回开放端口列表。
      */

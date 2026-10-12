@@ -1535,7 +1535,7 @@ public final class CrackEngine {
         // 重启 WiFi（off -> on）会强制 wpa_supplicant 重来，缓存被清掉。
         // 只在任务开始时做一次，不影响逐条速度。
         if (shell != null) {
-            l.onLog(L.s("重置 WiFi（清掉密钥缓存，避免用缓存的旧密码误判）…",
+            l.onLog(L.s("清空凭据缓存（防止缓存的旧密钥污染判定）…",
                     "Resetting Wi-Fi (clearing key cache to avoid stale-credential false positives)..."));
             try { shell.exec("cmd wifi set-wifi-enabled disabled", 8000); } catch (Throwable ignored) {}
             sleep(1500);
@@ -1547,7 +1547,7 @@ public final class CrackEngine {
                 try { wprobe = shell.exec("cmd wifi status", 4000); } catch (Throwable ignored) {}
                 if (wprobe != null && wprobe.contains("Wifi is enabled")) break;
             }
-            l.onLog(L.s("WiFi 已重置", "Wi-Fi reset done"));
+            l.onLog(L.s("缓存已清空，信道重挂完成", "Wi-Fi reset done"));
         }
 
         // ---- 建立基线 ----
@@ -1561,14 +1561,14 @@ public final class CrackEngine {
         // 之后任何“连上了”才是这条候选的功劳。
         String baseline = snapshotSsid();
         if (target.ssid.equals(baseline)) {
-            l.onLog(L.f("建立基线：当前连着目标 %s，先断开…",
+            l.onLog(L.f("锚点校正：当前仍挂在目标 %s，先行脱离…",
                     "Baseline: already connected to %s, disconnecting first...", target.ssid));
             boolean ok = disconnectAndVerify(target.ssid);
             if (ok) {
-                l.onLog(L.s("✓ 基线已清空（当前未连接目标）",
+                l.onLog(L.s("✓ 锚点已固定（当前脱离目标网）",
                         "baseline cleared (not connected to target)"));
             } else {
-                l.onLog(L.s("⚠ 无法断开目标连接。",
+                l.onLog(L.s("⚠ 脱离失败。",
                         "could not disconnect from the target."));
                 l.onLog(L.s("  此时任何密码都会看到「已经连着目标」，",
                         "  Any passphrase would then see already-connected,"));
@@ -1576,7 +1576,7 @@ public final class CrackEngine {
                         "  and results will be marked UNKNOWN instead of success."));
             }
         } else {
-            l.onLog(L.f("基线：当前连接 = %s（不是目标，可以直接开始）",
+            l.onLog(L.f("锚点：当前挂载 = %s（非目标，可直接开火）",
                     "Baseline: currently on %s (not the target, ready to start)",
                     baseline == null ? L.s("无", "none") : baseline));
         }
@@ -1598,7 +1598,7 @@ public final class CrackEngine {
         // 摊进「每条耗时」会让预估值被严重高估。
         long pureTryMs = 0L;
 
-        l.onLog(L.f("引擎启动：%s，共 %d 条，单条最长 %.1f 秒",
+        l.onLog(L.f("引擎点火：%s 通道 · 弹药 %d 发 · 单发时限 %.1f 秒",
                 "Engine: %s, %d candidates, up to %.1fs each",
                 channelName(), total, perItem / 1000.0));
 
@@ -1638,7 +1638,7 @@ public final class CrackEngine {
                 //   综上：收益小、副作用大、还会造成假失败，直接去掉。
                 boolean reported = false;
                 if (a.isSuccess()) {
-                    l.onLog(L.f("候选 %s 已连上（依据: %s）",
+                    l.onLog(L.f("⚡ 密钥命中：%s（证据: %s）",
                             "candidate %s connected (via %s)",
                             c.password, a.confirmedBy));
                     l.onAttemptResult(a);

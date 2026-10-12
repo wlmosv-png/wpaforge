@@ -1129,7 +1129,7 @@ public class MainActivity extends Activity {
             return;
         }
         final String ssid = targetNet.ssid;
-        appendStream(L.f("正在按 SSID「%s」派生候选...",
+        appendStream(L.f("正在按 SSID「%s」生成定向载荷...",
                 "Deriving candidates from SSID \"%s\"...", ssid));
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
@@ -1138,7 +1138,7 @@ public class MainActivity extends Activity {
             final String path = saveDictToFile(r.candidates, nm);
             ui.post(() -> {
                 applyDict(r.candidates, nm, path);
-                appendStream(L.f("派生完成: %d 条", "Derived %d candidates", r.candidates.size()));
+                appendStream(L.f("定向载荷就绪: %d 发", "Derived %d candidates", r.candidates.size()));
                 appendStream(r.explanation);
             });
         }).start();
@@ -1146,7 +1146,7 @@ public class MainActivity extends Activity {
 
     /** 内置生成器（通用词法），同样先落盘 */
     private void buildGenericDict() {
-        appendStream(L.s("正在生成内置字典...", "Building built-in dictionary..."));
+        appendStream(L.s("正在编排通用载荷...", "Building built-in dictionary..."));
         new Thread(() -> {
             io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
                     new io.github.wlmosv_png.wpaforge.audit.DictGenerator(200000)
@@ -1158,7 +1158,7 @@ public class MainActivity extends Activity {
             final String stats = renderStats(g.stats());
             ui.post(() -> {
                 applyDict(list, nm, path);
-                appendStream(L.f("已生成 %d 条", "Generated %d entries", list.size()));
+                appendStream(L.f("载荷编排完成: %d 发", "Generated %d entries", list.size()));
                 appendStream(stats);
             });
         }).start();
@@ -1471,7 +1471,7 @@ public class MainActivity extends Activity {
         flowLabel.setTextSize(11.5f);
         flowLabel.setTextColor(TEXT_DIM);
         flowLabel.setLetterSpacing(0.12f);
-        flowLabel.setText(L.s("候选流", "CANDIDATES"));
+        flowLabel.setText(L.s("攻击流", "CANDIDATES"));
         LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         flp.leftMargin = px(6);
@@ -1500,7 +1500,7 @@ public class MainActivity extends Activity {
             updateFlowHeader();
             updateJumpLatest();
             updateEmptyHint();
-            Toast.makeText(this, L.s("日志已清空", "Log cleared"),
+            Toast.makeText(this, L.s("现场已清空", "Log cleared"),
                     Toast.LENGTH_SHORT).show();
         });
         // 防止点清空时触发到头部的折叠
@@ -1541,7 +1541,11 @@ public class MainActivity extends Activity {
         connectStreamView.setTextColor(TEXT_DIM);
         connectStreamView.setTypeface(Typeface.MONOSPACE);
         connectStreamView.setPadding(px(16), px(14), px(16), px(14));
-        connectStreamView.setTextIsSelectable(true);
+        // 不要开 setTextIsSelectable：
+        // 可选模式的 TextView 会把滑动手势吃掉（它要处理文本选择），
+        // 表现就是「日志滚不动」。
+        // 需要复制时用「导出日志」，比在界面上拖选更实用。
+        connectStreamView.setTextIsSelectable(false);
         connectStreamView.setLineSpacing(px(4), 1f);
         connectStreamView.setHorizontallyScrolling(false);
 
@@ -1565,15 +1569,22 @@ public class MainActivity extends Activity {
         // 否则新日志一来就把他拽回底部，历史根本看不了。
         streamScroll.setOnTouchListener((v, e) -> {
             if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                // 破解页外层还有个 ScrollView。手指落在日志区时，
+                // 要明确告诉外层「这段手势归我」，否则外层会把滑动截走，
+                // 表现就是日志区滚不动、只能拖整页。
+                v.getParent().requestDisallowInterceptTouchEvent(true);
                 streamAutoScroll = false;
                 updateJumpLatest();
-            } else if (e.getAction() == android.view.MotionEvent.ACTION_UP) {
+            } else if (e.getAction() == android.view.MotionEvent.ACTION_UP
+                    || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                v.getParent().requestDisallowInterceptTouchEvent(false);
                 android.view.View child = streamScroll.getChildAt(0);
                 if (child != null
                         && streamScroll.getScrollY() + streamScroll.getHeight()
                            >= child.getMeasuredHeight() - px(24)) {
                     streamAutoScroll = true;
                 }
+                updateJumpLatest();
             }
             return false;
         });
@@ -1705,7 +1716,7 @@ public class MainActivity extends Activity {
         }
         if (pausedTask != null && runningTask == null) {
             resumeTask(pausedTask);
-            appendStreamColored(L.s("▶ 继续执行…", "▶ Resuming…"), OK_GREEN);
+            appendStreamColored(L.s("▶ 恢复执行…", "▶ Resuming…"), OK_GREEN);
         } else if (runningTask != null) {
             CrackService svc = liveService();
             if (svc != null) svc.pause();
@@ -1751,7 +1762,7 @@ public class MainActivity extends Activity {
         }
         CrackService st = CrackService.get();
         if (st != null && st != svc) st.stopAll();
-        appendStreamColored(L.s("■ 正在停止…", "■ Stopping…"), DANGER);
+        appendStreamColored(L.s("■ 正在中止…", "■ Stopping…"), DANGER);
         refreshQueue();
     }
 
@@ -1817,9 +1828,13 @@ public class MainActivity extends Activity {
      */
     private void updateConnectMode() {
         if (connectModeView == null) return;
-        connectModeView.setText(L.f("Root 通道   ·   实测 %s 条/秒",
-                "Root channel   ·   %s/s",
-                Prefs.avgRateLabel(this)));
+        // 用「每条约 X 秒」而不是「X 条/秒」。
+        // 0.1 条/秒看着像「没在动」，换算成「每条约 10 秒」
+        // 用户才知道该等多久 —— 后者才是他真正关心的信息。
+        long ms = Prefs.avgMsPerItem(this);
+        connectModeView.setText(L.f("Root 通道   ·   每条约 %.1f 秒",
+                "Root channel   ·   ~%.1fs per attempt",
+                ms / 1000.0));
         connectModeView.setTextColor(ACCENT);
     }
 
@@ -1851,22 +1866,17 @@ public class MainActivity extends Activity {
 
         @Override
         public void onAttempt(int index, int total, String candidate) {
+            // 只更新「当前候选」那一行文字。
+            //
+            // 进度条本身**不在这里画** —— onAttempt 用的 index 与
+            // onProgress 用的 tested 是两套计数，交替刷新会让进度条来回跳。
+            // 统一由 onProgress 负责，这里只报当前在试什么。
             ui.post(() -> {
                 if (connectProgress == null) return;
                 connectProgress.setVisibility(View.VISIBLE);
-                java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
-                        new java.util.ArrayList<>();
-                float outer = total > 0 ? (index - 1f) / total : 0f;
-                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        outer, L.f("整个字典 %.0f%%", "whole %.0f%%", outer * 100)));
-                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        outer, L.f("当前位置 %d / %d", "at %d / %d", index, total)));
-                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(outer, ""));
-                connectProgress.setStages(st);
-                connectProgress.setDone(false);
                 connectProgress.setText(
-                        L.f("正在尝试 %d / %d", "Trying %d / %d", index, total),
-                        L.f("当前候选: %s", "Current: %s", candidate));
+                        L.f("运行中 %d / %d", "Trying %d / %d", index, total),
+                        L.f("当前载荷: %s", "Current: %s", candidate));
             });
         }
 
@@ -1906,7 +1916,7 @@ public class MainActivity extends Activity {
         public void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome) {
             ui.post(() -> {
                 if ("DONE_HIT".equals(outcome)) {
-                    appendStreamColored(L.s("★ 命中！", "★ HIT!") + task.ssid + " = " + hitPassword, OK_GREEN);
+                    appendStreamColored(L.s("⚡ 密钥命中 ", "★ HIT!") + task.ssid + " = " + hitPassword, OK_GREEN);
                     Toast.makeText(MainActivity.this,
                             L.s("破解成功: ", "Cracked: ") + task.ssid, Toast.LENGTH_LONG).show();
                     // 记一笔历史
@@ -1915,10 +1925,10 @@ public class MainActivity extends Activity {
                             task.dictName, task.dictSize, task.testedThisRun,
                             task.elapsedMs, true, hitPassword));
                 } else if ("PAUSED".equals(outcome)) {
-                    appendStreamColored(L.s("已暂停（进度 ", "Paused (progress ") + task.offset + "/" + task.dictSize
+                    appendStreamColored(L.s("已挂起（现场 ", "Paused (progress ") + task.offset + "/" + task.dictSize
                             + L.s("，可继续）", ", resumable)"), ACCENT);
                 } else if ("STOPPED".equals(outcome)) {
-                    appendStreamColored(L.s("已停止（进度 ", "Stopped (progress ") + task.offset + "/" + task.dictSize + "）", DANGER);
+                    appendStreamColored(L.s("已中止（现场 ", "Stopped (progress ") + task.offset + "/" + task.dictSize + "）", DANGER);
                     restoreWifiAfterRun();
                 } else {
                     appendStream(L.s("任务结束: ", "Task finished: ") + task.ssid + " 未命中");

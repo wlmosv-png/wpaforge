@@ -29,10 +29,16 @@ public final class BuiltinDicts {
             {"rule_8digit.txt",  L.s("90 规则-8位数字.txt", "90 Rule-8digit.txt")},
             {"rule_10digit.txt", L.s("91 规则-10位数字.txt", "91 Rule-10digit.txt")},
             {"rule_date.txt",    L.s("92 规则-日期区间.txt", "92 Rule-date range.txt")},
+            // 下面三份是真实弱口令排行榜（去重、只留 8-63 位，即 WPA 合法长度）。
+            // 放在数字前缀之后：它们是「跨设备通用」的高命中表，
+            // 排在算法生成的大表前面，先跑更可能中的。
+            {"wpa_top447.txt",   L.s("06 WPA 高频真实口令 TOP 447.txt", "06 Real-world WPA top 447.txt")},
+            {"xato_top.txt",     L.s("07 通用口令榜 TOP 3336.txt", "07 Common passwords top 3336.txt")},
+            {"top2025.txt",      L.s("08 年度高频口令 TOP 146.txt", "08 Yearly top 146.txt")},
     };
 
     /** 释放版本。改动内置内容时把这个数字加一，下次启动会重新释放。 */
-    private static final int RELEASE_VERSION = 1;
+    private static final int RELEASE_VERSION = 2;   // 2: 新增三份真实弱口令榜
     private static final String MARK = ".builtin_v";
 
     private BuiltinDicts() {}

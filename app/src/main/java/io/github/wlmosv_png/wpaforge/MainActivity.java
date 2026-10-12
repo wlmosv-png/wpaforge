@@ -63,6 +63,14 @@ public class MainActivity extends Activity {
     private static final int DANGER    = Color.parseColor("#FF5252");
     private static final int OK_GREEN  = Color.parseColor("#4CAF50");
 
+    /* ---------- 按钮色板（只有这四档，别再加第五种） ---------- */
+    /** 次操作底：暗面，比 SURFACE 亮一点点，够区分但不抢眼 */
+    private static final int BTN_2ND_BG   = Color.parseColor("#212129");
+    /** 次操作描边：极淡的白，靠它把暗底从背景里托起来 */
+    private static final int BTN_2ND_EDGE = Color.parseColor("#33FFFFFF");
+    /** 主操作文字色（琥珀底上必须用深色，白字对比度不够） */
+    private static final int ON_ACCENT    = Color.parseColor("#14141A");
+
     private LinearLayout root;
     private LinearLayout content;          // 外层（竖直排列 4 个 page）
     private LinearLayout pageObserve;      // 观测页容器（建一次）
@@ -144,6 +152,8 @@ public class MainActivity extends Activity {
     private LinearLayout queueBox;
     /** 设置页里的权限状态行（授权后要刷新） */
     private TextView permLabel;
+    /** 「去系统设置里允许」按钮；权限齐全时隐藏 */
+    private Button permFixBtn;
 
     private static final int REQ_SHIZUKU = 3001;
 
@@ -491,9 +501,16 @@ public class MainActivity extends Activity {
         int onText  = Color.parseColor("#14141A");
         for (int i = 0; i < tabs.length; i++) {
             boolean on = (i == index);
-            tabs[i].setBackground(roundBg(on ? ACCENT : chipOff, 18));
-            tabs[i].setTextColor(on ? onText : TEXT_DIM);
-            tabs[i].setTypeface(on ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            // 选中：实心琥珀 + 深字 + 加粗；未选中：暗底 + 灰字 + 常规。
+            // 三处同时变（底、字色、字重），扫一眼就能定位当前页，
+            // 不再需要凑近看哪块底色是黄的。
+            tabs[i].setBackground(roundBgStroked(
+                    on ? ACCENT : chipOff,
+                    on ? ACCENT : BTN_2ND_EDGE, 18, 0.8f));
+            tabs[i].setTextColor(on ? onText : Color.parseColor("#9A9AA6"));
+            tabs[i].setTypeface(on
+                    ? Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    : Typeface.DEFAULT);
         }
 
         LinearLayout[] pages = {pageObserve, pageAudit, pageConnect, pageSettings};
@@ -634,7 +651,8 @@ public class MainActivity extends Activity {
         t.setTextSize(12);
         t.setTextColor(TEXT_DIM);
         t.setPadding(px(14), px(8), px(14), px(8));
-        t.setBackground(roundBg(Color.parseColor("#1A1A22"), 16));
+        t.setBackground(roundBgStroked(Color.parseColor("#1A1A22"),
+                BTN_2ND_EDGE, 16, 0.8f));
         t.setOnClickListener(v -> {
             netFilter = mode;
             renderRecords(lastRecords);
@@ -985,16 +1003,16 @@ public class MainActivity extends Activity {
         updateDictStatus();
         pageAudit.addView(dictStatus);
 
-        Button manage = makeButton(L.s("打开字典管理", "Manage dictionaries"), ACCENT);
+        Button manage = btnPrimary(L.s("打开字典管理", "Manage dictionaries"));
         manage.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, DictActivity.class)));
         pageAudit.addView(manage);
 
-        Button load = makeButton(L.s("加载字典文件", "Load dictionary file"), Color.parseColor("#4CAF50"));
+        Button load = btnSecondary(L.s("加载字典文件", "Load dictionary file"));
         load.setOnClickListener(v -> showDictPicker());
         pageAudit.addView(load);
 
-        Button gen = makeButton(L.s("内置生成器（快速）", "Built-in generator (quick)"), Color.parseColor("#5A5A66"));
+        Button gen = btnSecondary(L.s("内置生成器（快速）", "Built-in generator (quick)"));
         gen.setOnClickListener(v -> {
             new Thread(() -> {
                 DictGenerator g = new DictGenerator(100000)
@@ -1006,11 +1024,19 @@ public class MainActivity extends Activity {
                     currentDictPath = "";
                     updateDictStatus();
                     appendLog(L.s("已生成 ", "Generated ") + currentDict.size() + L.s(" 条候选", " candidates"));
-                    appendLog(L.s("构成: ", "Breakdown: ") + g.stats());
+                    appendLog(L.s("构成: ", "Breakdown: ") + renderStats(g.stats()));
                 });
             }).start();
         });
         pageAudit.addView(gen);
+
+        // 按 SSID 派生：审计页以前只能「加载文件」和「内置生成器」，
+        // 想按目标网络现场造候选必须跑到破解页 —— 两个页面本是一件事。
+        // 这里补上入口，派生结果直接成为当前字典。
+        Button derive = btnSecondary(L.s("按 SSID 派生（选目标）",
+                "Derive from SSID (pick a target)"));
+        derive.setOnClickListener(v -> pickTargetForDerive());
+        pageAudit.addView(derive);
 
         pageAudit.addView(sectionLabel(L.s("口令强度检查", "Passphrase strength check")));
 
@@ -1023,7 +1049,7 @@ public class MainActivity extends Activity {
         input.setPadding(px(16), px(14), px(16), px(14));
         pageAudit.addView(input);
 
-        Button check = makeButton("评估", ACCENT);
+        Button check = btnPrimary("评估");
         check.setOnClickListener(v -> {
             String pw = input.getText().toString().trim();
             if (pw.isEmpty()) {
@@ -1059,6 +1085,124 @@ public class MainActivity extends Activity {
         if (dictStatus == null) return;
         int n = currentDict == null ? 0 : currentDict.size();
         dictStatus.setText(L.s("当前字典: ", "Current dictionary: ") + n + L.s(" 条", " entries") + (n == 0 ? L.s("（未选择）", "(none selected)") : ""));
+    }
+
+    /**
+     * 破解页的「字典来源」三选一。
+     *
+     * 不再只给「选文件」：内置生成器与按 SSID 派生本来在审计页，
+     * 用户切来切去还会遇到「切回来没刷新」。全部收到这一处，
+     * 选完立即生效并刷新破解页那行显示。
+     */
+    private void showDictSource() {
+        String[] items = {
+                L.s("选择字典文件", "Pick a dictionary file"),
+                L.s("按目标 SSID 派生", "Derive from target SSID"),
+                L.s("内置生成器（通用）", "Built-in generator (generic)")
+        };
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("字典来源", "Dictionary source"))
+                .setItems(items, (d, w) -> {
+                    if (w == 0) showDictPicker();
+                    else if (w == 1) deriveFromTarget();
+                    else buildGenericDict();
+                })
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
+    }
+
+    /**
+     * 按目标 SSID 现场派生候选。
+     *
+     * 先落盘再设为当前字典 —— 服务进程只认 dictPath，
+     * 不落地会出现「候选显示正常但一跑就秒结束」。
+     */
+    private void deriveFromTarget() {
+        if (targetNet == null) {
+            Toast.makeText(this, L.s("请先选择目标网络",
+                    "Select a target network first"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String ssid = targetNet.ssid;
+        appendStream(L.f("正在按 SSID「%s」派生候选...",
+                "Deriving candidates from SSID \"%s\"...", ssid));
+        new Thread(() -> {
+            final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
+                    io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet, 20000);
+            final String nm = L.s("SSID 派生 · ", "SSID-derived · ") + ssid;
+            final String path = saveDictToFile(r.candidates, nm);
+            ui.post(() -> {
+                applyDict(r.candidates, nm, path);
+                appendStream(L.f("派生完成: %d 条", "Derived %d candidates", r.candidates.size()));
+                appendStream(r.explanation);
+            });
+        }).start();
+    }
+
+    /** 内置生成器（通用词法），同样先落盘 */
+    private void buildGenericDict() {
+        appendStream(L.s("正在生成内置字典...", "Building built-in dictionary..."));
+        new Thread(() -> {
+            io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
+                    new io.github.wlmosv_png.wpaforge.audit.DictGenerator(200000)
+                            .classic().numericPatterns().phoneSegments()
+                            .wordVariants().wordDigits();
+            final java.util.List<Candidate> list = g.build();
+            final String nm = L.s("内置生成器", "Built-in generator");
+            final String path = saveDictToFile(list, nm);
+            final String stats = renderStats(g.stats());
+            ui.post(() -> {
+                applyDict(list, nm, path);
+                appendStream(L.f("已生成 %d 条", "Generated %d entries", list.size()));
+                appendStream(stats);
+            });
+        }).start();
+    }
+
+    /** 把 origin->count 渲染成一行可读文本 */
+    private static String renderStats(java.util.Map<String, Integer> m) {
+        if (m == null || m.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (java.util.Map.Entry<String, Integer> e : m.entrySet()) {
+            if (sb.length() > 0) sb.append("  ·  ");
+            sb.append(e.getKey()).append('=').append(e.getValue());
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 把候选写进 DictStore 目录，返回绝对路径。
+     * 目录不可用或写入失败返回空串。
+     */
+    private String saveDictToFile(java.util.List<Candidate> list, String baseName) {
+        if (list == null || list.isEmpty()) return "";
+        File dir = io.github.wlmosv_png.wpaforge.audit.DictStore.defaultDir(this);
+        if (dir == null) return "";
+        if (!dir.exists() && !dir.mkdirs()) return "";
+        String safe = baseName.replaceAll(FNAME_BAD, "_");
+        File out = new File(dir, safe + ".txt");
+        try (java.io.BufferedWriter w = new java.io.BufferedWriter(
+                new java.io.OutputStreamWriter(new java.io.FileOutputStream(out), "UTF-8"))) {
+            for (Candidate c : list) {
+                w.write(c.password);
+                w.write("\n");
+            }
+        } catch (Exception e) {
+            android.util.Log.w("WPAForge", "saveDictToFile 失败: " + e);
+            return "";
+        }
+        return out.getAbsolutePath();
+    }
+
+    /** 统一入口：设为当前字典 + 刷新界面显示 */
+    private void applyDict(java.util.List<Candidate> list, String name, String path) {
+        currentDict = list;
+        currentDictName = name;
+        currentDictPath = path == null ? "" : path;
+        updateDictStatus();
+        updateConnectDict();
+        Toast.makeText(this, L.f("已应用 %d 条", "Applied %d entries",
+                list == null ? 0 : list.size()), Toast.LENGTH_SHORT).show();
     }
 
     /** 从字典文件里挑一个加载 */
@@ -1103,6 +1247,64 @@ public class MainActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    /**
+     * 审计页的「按 SSID 派生」：先要一个目标。
+     *
+     * 已有目标（破解页选过）就直接用，否则让用户现场挑一个。
+     * 挑完调 deriveFromTarget() —— 与破解页共用同一条实现，
+     * 不复制逻辑，避免两边行为漂移。
+     */
+    private void pickTargetForDerive() {
+        if (targetNet != null) {
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle(L.s("按 SSID 派生", "Derive from SSID"))
+                    .setMessage(L.f("当前目标: %s\n\n直接用它派生，还是重新选一个？",
+                            "Current target: %s\n\nUse it, or pick another?",
+                            targetNet.displayName()))
+                    .setPositiveButton(L.s("就用这个", "Use this"),
+                            (d, w) -> deriveFromTarget())
+                    .setNeutralButton(L.s("重新选", "Pick another"),
+                            (d, w) -> chooseTargetThenDerive())
+                    .setNegativeButton(L.s("取消", "Cancel"), null)
+                    .show();
+        } else {
+            chooseTargetThenDerive();
+        }
+    }
+
+    /** 选一个加密目标，选完立即派生 */
+    private void chooseTargetThenDerive() {
+        if (lastRecords.isEmpty()) {
+            Toast.makeText(this, L.s("还没有扫描结果，请先去观测页",
+                    "No scan results yet. Go to the Observe tab first."),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<String> labels = new ArrayList<>();
+        final List<NetRecord> sel = new ArrayList<>();
+        for (NetRecord r : lastRecords) {
+            if (r.security == NetRecord.Security.OPEN) continue;
+            labels.add(r.displayName() + "  (" + r.rssi + "dBm)");
+            sel.add(r);
+        }
+        if (sel.isEmpty()) {
+            Toast.makeText(this, L.s("扫描结果里没有加密网络",
+                    "No secured networks in the scan results"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final NetRecord[] arr = sel.toArray(new NetRecord[0]);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("选择要派生的目标", "Pick a target to derive from"))
+                .setItems(labels.toArray(new String[0]), (d, which) -> {
+                    targetNet = arr[which];
+                    updateTargetLabel();
+                    deriveFromTarget();
+                })
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
     }
 
     private void appendLog(String line) {
@@ -1156,7 +1358,7 @@ public class MainActivity extends Activity {
         connectDictView.setTextSize(12.5f);
         connectDictView.setTextColor(TEXT_DIM);
         connectDictView.setPadding(0, px(9), 0, 0);
-        connectDictView.setOnClickListener(v -> showDictPicker());
+        connectDictView.setOnClickListener(v -> showDictSource());
         head.addView(connectDictView);
 
         head.addView(divider());
@@ -1760,6 +1962,8 @@ public class MainActivity extends Activity {
         return t;
     }
 
+    /** 文件名里不允许出现的字符（SSID 可能带这些） */
+    private static final String FNAME_BAD = "[\\\\/:*?\"<>|]";
     private static final int AMBER = Color.parseColor("#FFA726");
     private static final int PAUSE_BG = Color.parseColor("#2A2318");
 
@@ -2551,24 +2755,6 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         modeInfo.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(modeInfo);
 
-        // 三个模式全部给出来。之前这里只有 Root 和免 Root
-        // 两个按钮，Shizuku 只能从破解页的“执行方式”里换，
-        // 导致用户在设置里根本找不到第三个模式。
-        // 只保留 Root 模式（1.5.0 起）。不再提供 Shizuku / 免 Root 按钮，
-        // 免得普通用户选错模式又踩坑。
-        TextView rootOnly = new TextView(this);
-        rootOnly.setText(L.s("本版本仅支持 Root 模式。\n"
-                        + "设备需要已 root（Magisk / KernelSU / APatch），"
-                        + "并在 root 管理器里给本应用授权。",
-                "This build supports Root mode only.\n"
-                        + "The device must be rooted (Magisk / KernelSU / APatch),"
-                        + " and this app must be granted root in your root manager."));
-        rootOnly.setTextSize(11.5f);
-        rootOnly.setTextColor(TEXT_DIM);
-        rootOnly.setLineSpacing(px(4), 1f);
-        rootOnly.setBackground(roundBg(SURFACE, 18));
-        rootOnly.setPadding(px(18), px(16), px(18), px(16));
-        pageSettings.addView(rootOnly);
 
         // 当前模式的实际可用性（实时检测）：一眼看到能不能用
         modeReadyLabel = new TextView(this);
@@ -2576,14 +2762,24 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         modeReadyLabel.setTextColor(TEXT_DIM);
         modeReadyLabel.setPadding(px(4), px(8), 0, 0);
         pageSettings.addView(modeReadyLabel);
+
+        // 点一下重测 / 长按看证据 —— 这两个交互以前完全不可发现，
+        // 用户根本不知道那行文字能点。这里直接写出来。
+        TextView modeHint = new TextView(this);
+        modeHint.setText(L.s("点一下重新检测 · 长按看完整检测证据",
+                "Tap to re-check · long-press for full evidence"));
+        modeHint.setTextSize(10.5f);
+        modeHint.setTextColor(Color.parseColor("#6E6E78"));
+        modeHint.setPadding(px(4), px(2), 0, px(6));
+        pageSettings.addView(modeHint);
         refreshModeReady();
 
         fillModeInfo();
 
         pageSettings.addView(sectionLabel(L.s("语言", "Language")));
 
-        languageBtn = makeButton(L.f("语言: %s", "Language: %s",
-                L.modeLabel(this)), Color.parseColor("#2A2A36"));
+        languageBtn = btnSecondary(L.f("语言: %s", "Language: %s",
+                L.modeLabel(this)));
         languageBtn.setOnClickListener(v -> showLanguagePicker());
         pageSettings.addView(languageBtn);
 
@@ -2599,15 +2795,13 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         pageSettings.addView(permLabel);
         refreshPermLabel();
 
-        Button askPerm = makeButton(L.s("申请缺失的权限", "Request missing permissions"),
-                Color.parseColor("#7A5CFF"));
-        askPerm.setOnClickListener(v -> requestPermsForce());
-        pageSettings.addView(askPerm);
-
-        Button goAppSettings = makeButton(L.s("打开系统「应用信息」页",
-                "Open system app settings"), Color.parseColor("#2A2A36"));
-        goAppSettings.setOnClickListener(v -> openAppSettings());
-        pageSettings.addView(goAppSettings);
+        // 权限在启动时已自动申请过，这里不再放手动申请按钮 ——
+        // 放一个「申请缺失的权限」会让人以为不点就不给。
+        // 只有「已被永久拒绝」（系统不再弹窗）时才给一个去处。
+        permFixBtn = btnSecondary(L.s("去系统设置里允许", "Allow in system settings"));
+        permFixBtn.setOnClickListener(v -> openAppSettings());
+        permFixBtn.setVisibility(View.GONE);
+        pageSettings.addView(permFixBtn);
 
         // ---------------- 诊断 ----------------
         pageSettings.addView(sectionLabel(L.s("诊断", "Diagnostics")));
@@ -2629,21 +2823,20 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         diagHint.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(diagHint);
 
-        Button connTest = makeButton(L.s("连接自测（发一次真实连接命令）",
-                "Connection test (send one real connect)"),
-                Color.parseColor("#2A2A36"));
+        Button connTest = btnSecondary(L.s("连接自测（发一次真实连接命令）",
+                "Connection test (send one real connect)"));
         connTest.setOnClickListener(v -> showConnTestDialog());
         pageSettings.addView(connTest);
 
-        Button exportLog = makeButton(L.s("导出日志到 Download",
-                "Export log to Download"), Color.parseColor("#2A2A36"));
+        Button exportLog = btnSecondary(L.s("导出日志到 Download",
+                "Export log to Download"));
         exportLog.setOnClickListener(v -> exportLog());
         pageSettings.addView(exportLog);
 
         // ---------------- 应用锁 ----------------
         pageSettings.addView(sectionLabel(L.s("应用锁", "App lock")));
 
-        Button pinBtn = makeButton(L.s("PIN 锁", "PIN lock"), Color.parseColor("#2A2A36"));
+        Button pinBtn = btnSecondary(L.s("PIN 锁", "PIN lock"));
         pinBtn.setOnClickListener(v -> {
             if (Prefs.pinEnabled(this)) {
                 // 已设置 → 提供修改 / 清除
@@ -2688,22 +2881,22 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         speedInfo.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(speedInfo);
 
-        Button toAuthor = makeButton(L.s("关于我 / 我的其它项目", "About me / my other projects"), ACCENT);
+        Button toAuthor = btnPrimary(L.s("关于我 / 我的其它项目", "About me / my other projects"));
         toAuthor.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, AboutActivity.class)));
         pageSettings.addView(toAuthor);
 
         pageSettings.addView(sectionLabel(L.s("工具", "Tools")));
 
-        Button saved = makeButton(L.s("本机已存 WiFi 自查", "Inspect saved Wi-Fi"), Color.parseColor("#4CAF50"));
+        Button saved = btnSecondary(L.s("本机已存 WiFi 自查", "Inspect saved Wi-Fi"));
         saved.setOnClickListener(v -> showSavedWifi());
         pageSettings.addView(saved);
 
-        Button hist = makeButton(L.s("破解记录", "Crack history"), ACCENT);
+        Button hist = btnPrimary(L.s("破解记录", "Crack history"));
         hist.setOnClickListener(v -> showHistory());
         pageSettings.addView(hist);
 
-        Button exp = makeButton(L.s("导出记录", "Export records"), Color.parseColor("#5A5A66"));
+        Button exp = btnSecondary(L.s("导出记录", "Export records"));
         exp.setOnClickListener(v -> doExport());
         pageSettings.addView(exp);
 
@@ -2743,6 +2936,36 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         lp.topMargin = px(5);
         lp.bottomMargin = px(11);
         b.setLayoutParams(lp);
+        return b;
+    }
+
+    /**
+     * 主操作按钮：实心琥珀，深色字。
+     * 一屏里只该出现一个。
+     */
+    private Button btnPrimary(String label) {
+        Button b = btnPrimary(label);
+        b.setTextColor(ON_ACCENT);
+        return b;
+    }
+
+    /**
+     * 次操作按钮：暗底 + 淡描边，浅色字。
+     * 设置页那一串都用这个，视觉上让位给主操作。
+     */
+    private Button btnSecondary(String label) {
+        Button b = makeButton(label, BTN_2ND_BG);
+        b.setTextColor(TEXT);
+        b.setBackground(roundBgStroked(BTN_2ND_BG, BTN_2ND_EDGE, 26, 0.8f));
+        return b;
+    }
+
+    /** 危险按钮：暗底 + 红字。只给「会丢东西」的动作。 */
+    private Button btnDanger(String label) {
+        Button b = btnSecondary(label);
+        b.setTextColor(DANGER);
+        b.setBackground(roundBgStroked(Color.parseColor("#241A1A"),
+                Color.parseColor("#44FF5252"), 26, 0.8f));
         return b;
     }
 
@@ -3139,6 +3362,24 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         return g;
     }
 
+    /**
+     * 带描边的圆角底。
+     *
+     * 为什么需要：纯暗底按钮在近黑背景上边界糊掉，
+     * 加一条 1dp 的淡白边就能把「这是一块可点的东西」说清楚，
+     * 又不像实心主色那样抢注意力。
+     */
+    private android.graphics.drawable.Drawable roundBgStroked(
+            int fill, int edge, float radiusDp, float strokeDp) {
+        android.graphics.drawable.GradientDrawable g =
+                new android.graphics.drawable.GradientDrawable();
+        g.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        g.setColor(fill);
+        g.setCornerRadius(dp(radiusDp));
+        g.setStroke(Math.max(1, px(strokeDp)), edge);
+        return g;
+    }
+
     private void openUrl(String url) {
         try {
             startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
@@ -3316,22 +3557,54 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     // ---------------- 权限 ----------------
 
     /** 刷新权限状态行：逐项列出现在有/没有。 */
+    /**
+     * 权限状态展示。
+     *
+     * 启动时已自动申请过，所以这里只做两件事：
+     *   1. 告诉用户「齐了」还是「缺什么」
+     *   2. 只有确实缺、且系统不会再弹（被永久拒绝）时，
+     *      才露出「去系统设置里允许」按钮
+     *
+     * 齐全时不显示按钮 —— 没缺东西还给个申请入口是纯噪音。
+     */
     private void refreshPermLabel() {
         if (permLabel == null) return;
+        boolean loc = grantedOrFalse(android.Manifest.permission.ACCESS_FINE_LOCATION);
+        boolean near = Build.VERSION.SDK_INT < 33
+                || grantedOrFalse("android.permission.NEARBY_WIFI_DEVICES");
+        boolean allOk = loc && near;
+
         StringBuilder sb = new StringBuilder();
-        sb.append(L.s("这些权限影响扫描、判定与免 Root 连接：",
-                "These permissions affect scanning, verdicts and root-free connect:")).append('\n');
         sb.append(permLine(android.Manifest.permission.ACCESS_FINE_LOCATION,
-                L.s("定位（Android 12 及以下扫描、读取 SSID 必需）",
-                        "Location (needed to scan / read SSID on Android 12-)")));
+                L.s("定位（读取 SSID / 扫描）", "Location (read SSID / scan)")));
         if (Build.VERSION.SDK_INT >= 33) {
             sb.append('\n').append(permLine("android.permission.NEARBY_WIFI_DEVICES",
-                    L.s("附近设备（Android 13+ 扫描必需）",
-                            "Nearby devices (needed to scan on Android 13+)")));
+                    L.s("附近设备（扫描）", "Nearby devices (scan)")));
         }
-        sb.append('\n').append(L.s("提示：系统「定位总开关」也要打开，否则 WiFi 相关接口会失败。",
-                "Note: the system location toggle must also be ON, or Wi-Fi APIs will fail."));
+        sb.append('\n');
+        if (allOk) {
+            sb.append(L.s("已就绪，无需操作。", "All set — nothing to do."));
+        } else {
+            sb.append(L.s("缺少上面标 ✗ 的权限，扫描会拿不到数据。\n"
+                            + "若点了没反应，说明系统已不再弹窗，请用下方按钮去设置里允许。",
+                    "Missing the ✗ items above; scanning will return no data.\n"
+                            + "If nothing pops up, the system stopped asking — "
+                            + "use the button below to allow it in Settings."));
+        }
         permLabel.setText(sb.toString());
+
+        if (permFixBtn != null) {
+            permFixBtn.setVisibility(allOk ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    /** 权限是否已授予；异常一律当未授予 */
+    private boolean grantedOrFalse(String perm) {
+        try {
+            return checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private String permLine(String perm, String label) {
@@ -3342,41 +3615,6 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
             ok = false;
         }
         return (ok ? "✓ " : "✗ ") + label;
-    }
-
-    /** 强制申请一遍（无论之前问没问过）。 */
-    private void requestPermsForce() {
-        List<String> ask = new ArrayList<>();
-        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            ask.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
-        }
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission("android.permission.NEARBY_WIFI_DEVICES")
-                != PackageManager.PERMISSION_GRANTED) {
-            ask.add("android.permission.NEARBY_WIFI_DEVICES");
-        }
-        if (ask.isEmpty()) {
-            Toast.makeText(this, L.s("权限已齐全", "All permissions granted"),
-                    Toast.LENGTH_SHORT).show();
-            refreshPermLabel();
-            return;
-        }
-        // 如果用户已经勾过「不再询问」，系统会直接回调拒绝 —— 此时引导去设置页
-        boolean shouldShow;
-        try {
-            shouldShow = shouldShowRequestPermissionRationale(ask.get(0));
-        } catch (Throwable t) {
-            shouldShow = false;
-        }
-        requestPermissions(ask.toArray(new String[0]), 1003);
-        if (!shouldShow) {
-            // 提示用户：如果这次也没弹窗，就去系统设置里手动开
-            Toast.makeText(this,
-                    L.s("若没有弹出授权框，请点下面「打开系统应用信息页」手动开启",
-                            "If no dialog appears, use \"Open system app settings\" below"),
-                    Toast.LENGTH_LONG).show();
-        }
     }
 
     /** 跳到系统「应用信息」页，手动开权限。 */

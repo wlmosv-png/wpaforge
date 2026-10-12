@@ -1,6 +1,6 @@
 # WPAForge
 
-> Android WPA 口令自查工具 —— 逐条真实关联，带目标派生、智能排序、断点续跑与后台队列。
+> Android WPA 密码破解工具 —— 逐条真实关联，带目标派生、智能排序、断点续跑与后台队列。
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%2026%2B-green.svg)]()

@@ -1,6 +1,6 @@
 # WPAForge
 
-> Android WPA passphrase auditor — real sequential association attempts, with target-derived candidates, smart ranking, resumable runs, and a background queue.
+> Android WPA passphrase cracker — real sequential association attempts, with target-derived candidates, smart ranking, resumable runs, and a background queue.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%2026%2B-green.svg)]()

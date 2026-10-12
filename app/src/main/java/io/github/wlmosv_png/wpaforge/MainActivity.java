@@ -135,6 +135,8 @@ public class MainActivity extends Activity {
     private android.widget.ScrollView streamScroll;
     /** 是否自动跟随到底部（用户上滑后关闭） */
     private boolean streamAutoScroll = true;
+    /** 日志区的「回到最新」浮标：用户上滑看历史时出现 */
+    private TextView jumpLatestBtn;
     private LinearLayout.LayoutParams streamParams;
     private boolean streamCollapsed = false;
     private ConnectionProber prober;
@@ -544,7 +546,9 @@ public class MainActivity extends Activity {
         if (index == 2) {
             refreshQueue();
             if (connectStreamView != null && streamBuffer.length() > 0) {
-                connectStreamView.setText(streamBuffer.toString().trim());
+                // 用 Spannable 版重设，否则切回来颜色全丢。
+                connectStreamView.setText(streamBuffer,
+                        android.widget.TextView.BufferType.SPANNABLE);
             }
             updateConnectDict();
             updateConnectMode();
@@ -1423,7 +1427,10 @@ public class MainActivity extends Activity {
         connectModeView.setTextColor(TEXT_DIM);
         connectModeView.setPadding(0, px(9), 0, 0);
         connectModeView.setLineSpacing(px(3), 1f);
-        connectModeView.setOnClickListener(v -> showModePicker());
+        // 不可点。只有一种执行方式，点开弹「仅支持 Root 模式」是噪音。
+        // 可用性状态由上面那行的实时检测负责，这一行只报当前模式。
+        connectModeView.setClickable(false);
+        connectModeView.setFocusable(false);
         head.addView(connectModeView);
 
         // 进度条（整合了 已试/总数/速度/剩余）
@@ -1487,9 +1494,11 @@ public class MainActivity extends Activity {
         flowClear.setPadding(px(10), px(4), px(10), px(4));
         flowClear.setBackground(roundBg(Color.parseColor("#2A2020"), 10));
         flowClear.setOnClickListener(v -> {
-            streamBuffer.setLength(0);
+            streamBuffer.clear();          // SpannableStringBuilder 用 clear()
+            streamBuffer.clearSpans();     // 一起清掉残留的颜色 span
             if (connectStreamView != null) connectStreamView.setText("");
             updateFlowHeader();
+            updateJumpLatest();
             updateEmptyHint();
             Toast.makeText(this, L.s("日志已清空", "Log cleared"),
                     Toast.LENGTH_SHORT).show();
@@ -1501,6 +1510,31 @@ public class MainActivity extends Activity {
 
         flowHeader.setOnClickListener(v -> toggleStream());
         pageConnect.addView(flowHeader);
+
+        // 「回到最新」浮标。用户上滑看历史时，新日志还在往底部追加，
+        // 没有这个入口就得自己一路滑到底 —— 期间还看不清新内容。
+        jumpLatestBtn = new TextView(this);
+        jumpLatestBtn.setText(L.s("↓ 回到最新", "↓ Back to latest"));
+        jumpLatestBtn.setTextSize(11.5f);
+        jumpLatestBtn.setTextColor(ON_ACCENT);
+        jumpLatestBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        jumpLatestBtn.setPadding(px(14), px(8), px(14), px(8));
+        jumpLatestBtn.setBackground(roundBg(ACCENT, 18));
+        jumpLatestBtn.setVisibility(View.GONE);
+        jumpLatestBtn.setOnClickListener(v -> {
+            streamAutoScroll = true;
+            if (streamScroll != null) {
+                streamScroll.post(() ->
+                        streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+            }
+            updateJumpLatest();
+        });
+        LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        jlp.gravity = Gravity.END;
+        jlp.rightMargin = px(8);
+        jlp.topMargin = px(-18);   // 轻微上提，贴着日志区下沿
+        pageConnect.addView(jumpLatestBtn, jlp);
 
         connectStreamView = new TextView(this);
         connectStreamView.setTextSize(12);
@@ -1517,6 +1551,11 @@ public class MainActivity extends Activity {
         streamScroll = new android.widget.ScrollView(this);
         streamScroll.setBackground(roundBg(Color.parseColor("#14141A"), 16));
         streamScroll.setFillViewport(true);
+        // 常显竖滚动条：默认 ScrollView 不显示，用户不知道上面还有内容。
+        streamScroll.setVerticalScrollBarEnabled(true);
+        streamScroll.setScrollBarStyle(android.view.View.SCROLLBARS_INSIDE_INSET);
+        streamScroll.setScrollbarFadingEnabled(false);   // 不淡出，始终可见
+        streamScroll.setOverScrollMode(android.view.View.OVER_SCROLL_ALWAYS);
         // 不要自己 new LayoutParams —— ScrollView 内部按自己的规则处理子 View，
         // 传错类型会 ClassCastException（LinearLayout$LayoutParams → FrameLayout）。
         // 直接让它自己生成即可。
@@ -1527,6 +1566,7 @@ public class MainActivity extends Activity {
         streamScroll.setOnTouchListener((v, e) -> {
             if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
                 streamAutoScroll = false;
+                updateJumpLatest();
             } else if (e.getAction() == android.view.MotionEvent.ACTION_UP) {
                 android.view.View child = streamScroll.getChildAt(0);
                 if (child != null
@@ -1716,22 +1756,11 @@ public class MainActivity extends Activity {
     }
 
     /** 执行方式：仅 Root，点击只弹提示 */
-    private void showModePicker() {
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("执行方式", "Execution mode"))
-                .setMessage(L.s(
-                        "本版本仅支持 Root 模式（su + cmd wifi）。\n\n"
-                                + "设备需要已 root，并在 root 管理器里给本应用授权。",
-                        "This build supports Root mode only (su + cmd wifi).\n\n"
-                                + "The device must be rooted, and this app must be granted root."))
-                .setPositiveButton(L.s("知道了", "Got it"), null)
-                .show();
-    }
-
     /** 空状态提示 */
     private void updateEmptyHint() {
         if (connectEmptyHint == null) return;
         boolean empty = streamBuffer.length() == 0;
+        // （SpannableStringBuilder 同样有 length()，无需改动语义）
         connectEmptyHint.setVisibility(empty ? View.VISIBLE : View.GONE);
         if (empty) {
             boolean ready = targetNet != null && currentDict != null && !currentDict.isEmpty();
@@ -1776,25 +1805,22 @@ public class MainActivity extends Activity {
     }
 
     /** 破解页显示当前模式 */
+    /**
+     * 破解页那一行「通道 · 速度」。
+     *
+     * 只有一种通道了，所以不再写「执行方式:」暗示可切换，
+     * 也不再枚举 Shizuku / 免 Root 分支 —— 那两个分支永远走不到，
+     * 留着只会让后来人以为还有别的通道。
+     *
+     * 这一行不可点。可用性由上面的设置页实时检测负责，
+     * 这里只报「用什么通道 + 实测多快」。
+     */
     private void updateConnectMode() {
         if (connectModeView == null) return;
-        int mode = Prefs.mode(this);
-        String label;
-        int color;
-        if (mode == Prefs.MODE_SHIZUKU) {
-            label = L.s("Shizuku", "Shizuku");
-            color = Color.parseColor("#64B5F6");
-        } else if (mode == Prefs.MODE_NO_ROOT) {
-            label = L.s("普通（手动确认）", "Normal (manual)");
-            color = AMBER;
-        } else {
-            label = L.s("Root", "Root");
-            color = ACCENT;
-        }
-        connectModeView.setText(L.f("执行方式: %s   ·   实测 %s 条/秒",
-                "Mode: %s   ·   %s/s   ·   tap to change",
-                label, Prefs.avgRateLabel(this)));
-        connectModeView.setTextColor(color);
+        connectModeView.setText(L.f("Root 通道   ·   实测 %s 条/秒",
+                "Root channel   ·   %s/s",
+                Prefs.avgRateLabel(this)));
+        connectModeView.setTextColor(ACCENT);
     }
 
     /** 破解页显示当前选中的字典 */
@@ -1933,7 +1959,13 @@ public class MainActivity extends Activity {
     };
 
     /** 破解页的候选流日志。切页签会重建界面，所以文本要留在字段里。 */
-    private final StringBuilder streamBuffer = new StringBuilder();
+    /**
+     * 日志缓冲。用 SpannableStringBuilder 而不是 StringBuilder ——
+     * 每行要带自己的颜色，不能靠 TextView.setTextColor 统一着色
+     * （那样最后一行的颜色会覆盖整个日志区，历史行颜色全被抹掉）。
+     */
+    private final android.text.SpannableStringBuilder streamBuffer =
+            new android.text.SpannableStringBuilder();
 
     /** 渲染队列。会保留主滚动位置，避免列表更新后页面乱跳。 */
     private void renderQueue() {
@@ -2286,15 +2318,21 @@ public class MainActivity extends Activity {
         }
         // 系统 AlertDialog（层级永远正确，不出现「点了没反应」）
         final NetRecord[] arr = selectable.toArray(new NetRecord[0]);
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("选择目标网络（共 " + selectable.size() + " 个加密网络）",
-                        "Select target (" + selectable.size() + " secured networks)"))
-                .setItems(labels.toArray(new String[0]), (d, which) -> {
-                    targetNet = arr[which];
-                    updateTargetLabel();
-                })
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+        // 用自研 NetDialog（暗色圆角），跟 App 其它弹窗统一。
+        // 这里原来是系统 AlertDialog，白底 Material 风格，很跳。
+        io.github.wlmosv_png.wpaforge.ui.NetDialog td =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.f("选择目标（%d 个加密网络）", "Select target (%d secured)",
+                                selectable.size()), null);
+        for (int i = 0; i < arr.length; i++) {
+            final int idx = i;
+            td.addItem(labels.get(i), dd -> {
+                targetNet = arr[idx];
+                updateTargetLabel();
+            });
+        }
+        td.setNegative(L.s("取消", "Cancel"), null);
+        td.show();
     }
 
     /** 破解开始前记下的原网络 SSID，结束后尝试连回 */
@@ -2471,12 +2509,12 @@ public class MainActivity extends Activity {
     private void applyStreamHeight() {
         if (connectStreamView == null || streamParams == null) return;
         if (streamCollapsed) {
-            streamParams.height = px(108);
+            streamParams.height = px(160);   // 折叠态也多给几行
             streamParams.weight = 0f;
             connectStreamView.setMaxLines(5);
             connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else {
-            streamParams.height = px(240);
+            streamParams.height = px(340);   // 展开态：一屏能看到更多历史
             streamParams.weight = 0f;
             connectStreamView.setMaxLines(Integer.MAX_VALUE);
             connectStreamView.setEllipsize(null);
@@ -2485,6 +2523,26 @@ public class MainActivity extends Activity {
         // 之前这里对 connectStreamView 调 setLayoutParams ——
         // 那是 ScrollView 的子 View，拿到 LinearLayout 的 params 会 ClassCastException。
         if (streamScroll != null) streamScroll.setLayoutParams(streamParams);
+    }
+
+    /**
+     * 刷新「回到最新」按钮的可见性。
+     *
+     * 只在「用户在翻历史」且「底部确实有新内容」时露出。
+     * 已经在底部就不显示 —— 没用的按钮只会挡视线。
+     */
+    private void updateJumpLatest() {
+        if (jumpLatestBtn == null || streamScroll == null) return;
+        android.view.View child = streamScroll.getChildAt(0);
+        if (child == null) {
+            jumpLatestBtn.setVisibility(View.GONE);
+            return;
+        }
+        int bottom = streamScroll.getScrollY() + streamScroll.getHeight();
+        boolean atBottom = bottom >= child.getMeasuredHeight() - px(24);
+        // 自动跟随开着的时候也不需要它
+        boolean show = !atBottom && !streamAutoScroll;
+        jumpLatestBtn.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     /** 刷新头部箭头与行数 */
@@ -2505,29 +2563,75 @@ public class MainActivity extends Activity {
         appendStreamColored(line, TEXT_DIM);
     }
 
+    /**
+     * 往日志区追加一行。**每行带自己的颜色**。
+     *
+     * 旧实现是 streamBuffer.append(line) 之后
+     * connectStreamView.setTextColor(最后一行颜色) —— 而那个 TextView
+     * 承载整段文本，等于每次追加都把**整个日志区**染成最后一行的颜色。
+     * 用户看到的「显示不好」就是这个（历史行的颜色不停被抹掉）。
+     *
+     * 现在每行 append 时打上自己的 ForegroundColorSpan，互不干扰。
+     *
+     * @param line  行内容（null 直接忽略）
+     * @param color 这一行的颜色；为 0 时用默认灰
+     */
     private void appendStreamColored(String line, int color) {
         if (line == null) return;
+        int c = (color == 0) ? TEXT_DIM : color;
+
+        int start = streamBuffer.length();
         streamBuffer.append(line).append('\n');
-        // 只保留最近 200 行，避免无限增长
-        int lines = 0;
-        for (int i = 0; i < streamBuffer.length(); i++) {
-            if (streamBuffer.charAt(i) == '\n') lines++;
-        }
-        if (lines > 200) {
-            int cut = streamBuffer.indexOf("\n", streamBuffer.length() / 2);
-            if (cut > 0) streamBuffer.delete(0, cut + 1);
-        }
-        if (connectStreamView != null) {
-            connectStreamView.setText(streamBuffer.toString().trim());
-            connectStreamView.setTextColor(color);
-            updateFlowHeader();
-            if (streamAutoScroll && streamScroll != null) {
-                streamScroll.post(() -> streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+        streamBuffer.setSpan(
+                new android.text.style.ForegroundColorSpan(c),
+                start, streamBuffer.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+
+        // 只保留最近 400 行，避免无限增长。
+        // 上限从 200 提到 400：用户反馈「看不到前面的日志」，
+        // 而 400 行的 Spannable 内存开销可忽略（每行 span 几十字节）。
+        int lines = countLines(streamBuffer);
+        if (lines > MAX_LOG_LINES) {
+            // SpannableStringBuilder 没有 indexOf(String,int)。
+            // 用纯文本副本定位，再把偏移映射回来 —— 到这一步还没删过任何
+            // 字符，两者长度一致，偏移可以直接用。
+            String plain = streamBuffer.toString();
+            int from1 = plain.length() / 3;
+            int cut = plain.indexOf('\n', from1);
+            if (cut > 0) {
+                // 同时要清掉被裁掉那段的 span，否则 span 会错位。
+                android.text.style.ForegroundColorSpan[] old =
+                        streamBuffer.getSpans(0, cut,
+                                android.text.style.ForegroundColorSpan.class);
+                for (android.text.style.ForegroundColorSpan sp : old) {
+                    streamBuffer.removeSpan(sp);
+                }
+                streamBuffer.delete(0, cut + 1);
             }
-            // 注意：不要在这里做 fullScroll，那会把整个页面的滚动位置带跑，
-            // 表现就是"切个页签回来内容全空了"。候选流本身是自适应的，
-            // 让用户自己滑。
         }
+
+        if (connectStreamView != null) {
+            // 用 Spannable 版本 setText，TextView 直接吃 span。
+            connectStreamView.setText(streamBuffer, android.widget.TextView.BufferType.SPANNABLE);
+            updateFlowHeader();
+            updateJumpLatest();
+            if (streamAutoScroll && streamScroll != null) {
+                streamScroll.post(() ->
+                        streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+            }
+        }
+    }
+
+    /** 最多保留的日志行数 */
+    private static final int MAX_LOG_LINES = 400;
+
+    /** 数一下当前有多少行（按 \n 计） */
+    private static int countLines(CharSequence s) {
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == '\n') n++;
+        }
+        return n;
     }
 
     // ---------------- 设置页 ----------------

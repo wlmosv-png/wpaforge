@@ -294,6 +294,33 @@ AttributionTest      归因（哪一层确认了结果）
 
 ---
 
+## 界面预览
+
+> 截图取自已安装的 1.9.0（OnePlus PJX110 / Android 15），裁去状态栏与手势条。
+
+<p align="center">
+  <img src="docs/screenshots/shot02.jpg" width="24%">
+  <img src="docs/screenshots/shot03.jpg" width="24%">
+  <img src="docs/screenshots/shot04.jpg" width="24%">
+  <img src="docs/screenshots/shot05.jpg" width="24%">
+  <img src="docs/screenshots/shot06.jpg" width="24%">
+  <img src="docs/screenshots/shot07.jpg" width="24%">
+  <img src="docs/screenshots/shot08.jpg" width="24%">
+  <img src="docs/screenshots/shot01.jpg" width="24%">
+</p>
+
+<p align="center"><sub>依次：
+　1. 观测页 · 雷达扫描与信号分布
+<br>　2. 观测页 · 厂商识别、随机化 MAC 标注、同 SSID 多 AP 聚合
+<br>　3. 观测页 · 信道占用与换信道建议
+<br>　4. 审计页 · 字典来源与口令强度检查
+<br>　5. 字典管理 · 列表与统计
+<br>　6. 破解页 · 三层进度条与攻击流日志
+<br>　7. 破解页 · 队列与任务状态
+<br>　8. 设置页 · 通道状态与诊断入口</sub></p>
+
+---
+
 ## 构建
 
 本项目**不依赖 Gradle**。构建链是手工两段式——因为 `aapt2` 与 `d8` 在 Android 上是 arm64 原生二进制，桌面侧跑不了；而桌面侧有 javac。

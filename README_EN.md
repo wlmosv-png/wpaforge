@@ -313,6 +313,33 @@ immediately. After the process is reclaimed, a run resumes from where it stopped
 
 ---
 
+## Screenshots
+
+> Captured from an installed 1.9.0 (OnePlus PJX110 / Android 15), with the status bar and gesture bar cropped out.
+
+<p align="center">
+  <img src="docs/screenshots/shot02.jpg" width="24%">
+  <img src="docs/screenshots/shot03.jpg" width="24%">
+  <img src="docs/screenshots/shot04.jpg" width="24%">
+  <img src="docs/screenshots/shot05.jpg" width="24%">
+  <img src="docs/screenshots/shot06.jpg" width="24%">
+  <img src="docs/screenshots/shot07.jpg" width="24%">
+  <img src="docs/screenshots/shot08.jpg" width="24%">
+  <img src="docs/screenshots/shot01.jpg" width="24%">
+</p>
+
+<p align="center"><sub>In order:
+&nbsp;&nbsp;1. Observe · radar sweep and signal distribution
+<br>&nbsp;&nbsp;2. Observe · vendor ID, randomised-MAC tag, multi-AP aggregation
+<br>&nbsp;&nbsp;3. Observe · channel load and channel advice
+<br>&nbsp;&nbsp;4. Audit · dictionary source and passphrase strength check
+<br>&nbsp;&nbsp;5. Dictionary manager · list and stats
+<br>&nbsp;&nbsp;6. Crack · three-layer progress bar and attack stream
+<br>&nbsp;&nbsp;7. Crack · queue and task state
+<br>&nbsp;&nbsp;8. Settings · channel status and diagnostics entry</sub></p>
+
+---
+
 ## Building
 
 This project **does not use Gradle**. The build chain is a manual two-stage process — because `aapt2` and `d8` ship as arm64 native binaries on Android and cannot run on the desktop, while the desktop has `javac`.

@@ -133,6 +133,11 @@ public class MainActivity extends Activity {
     private TextView flowClear;
     /** 日志区的滚动容器：可滚动 + 自动跟随 */
     private android.widget.ScrollView streamScroll;
+    /** 日志区的外层容器（FrameLayout）。高度控制在这里 ——
+     *  streamScroll 在里面是 MATCH_PARENT，不直接设 params。
+     *  直接给 streamScroll 设 LinearLayout 的 params 会在 FrameLayout
+     *  测量时抛 ClassCastException。 */
+    private android.widget.FrameLayout streamWrapView;
     /** 是否自动跟随到底部（用户上滑后关闭） */
     private boolean streamAutoScroll = true;
     /** 日志区的「回到最新」浮标：用户上滑看历史时出现 */
@@ -629,6 +634,9 @@ public class MainActivity extends Activity {
         fb.addView(filterChip(L.s("加密", "Secured"), FILTER_SECURE));
         fb.addView(filterChip(L.s("开放", "Open"), FILTER_OPEN));
         fb.addView(filterChip(L.s("隐藏 SSID", "Hidden SSID"), FILTER_HIDDEN));
+        // WPS 专项：wpsSupported 一直在解析但从没展示过。
+        // 这个筛选把开了 WPS 的 AP 单独列出来。
+        fb.addView(filterChip("WPS", FILTER_WPS));
         filterBar.addView(fb);
         pageObserve.addView(filterBar);
 
@@ -645,7 +653,7 @@ public class MainActivity extends Activity {
     }
 
     private static final int FILTER_ALL = 0, FILTER_SECURE = 1,
-            FILTER_OPEN = 2, FILTER_HIDDEN = 3;
+            FILTER_OPEN = 2, FILTER_HIDDEN = 3, FILTER_WPS = 4;
     private int netFilter = FILTER_ALL;
     private LinearLayout filterRow;
 
@@ -670,6 +678,8 @@ public class MainActivity extends Activity {
 
     private boolean passFilter(NetRecord r) {
         switch (netFilter) {
+            case FILTER_WPS:
+                return r.wpsSupported;
             case FILTER_SECURE:
                 return r.security != NetRecord.Security.OPEN
                         && r.security != NetRecord.Security.WEP;
@@ -916,9 +926,23 @@ public class MainActivity extends Activity {
         left.addView(name);
 
         TextView detail = new TextView(this);
+        // 厂商名：IEEE OUI 表查询。查不到就不显示这一段。
+        //
+        // 随机化 MAC（首字节 bit1 = 1）查表必然落空，但原因和
+        // 「厂商未收录」完全不同 —— 前者是手机自己生成的地址，
+        // 后者是数据缺失。必须分开说，否则用户会以为是数据有问题。
+        String vendor = null;
+        if (io.github.wlmosv_png.wpaforge.scan.OuiLookup.isRandomized(r.bssid)) {
+            vendor = L.s("随机 MAC", "random MAC");
+        } else {
+            vendor = io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, r.bssid);
+        }
         detail.setText(r.bssid + "  ·  ch" + r.channel
                 + (r.is5Ghz ? " (5G)" : " (2.4G)")
                 + "  ·  " + securityLabel(r.security)
+                + (r.wpsSupported ? "  ·  WPS" : "")
+                + (vendor != null && !vendor.isEmpty()
+                    ? "  ·  " + vendor : "")
                 + (!r.isHidden() && r.estimatedDistanceMeters() > 0
                     ? "  ·  ≈" + r.estimatedDistanceMeters() + "m" : ""));
         detail.setTextSize(10);
@@ -1511,30 +1535,6 @@ public class MainActivity extends Activity {
         flowHeader.setOnClickListener(v -> toggleStream());
         pageConnect.addView(flowHeader);
 
-        // 「回到最新」浮标。用户上滑看历史时，新日志还在往底部追加，
-        // 没有这个入口就得自己一路滑到底 —— 期间还看不清新内容。
-        jumpLatestBtn = new TextView(this);
-        jumpLatestBtn.setText(L.s("↓ 回到最新", "↓ Back to latest"));
-        jumpLatestBtn.setTextSize(11.5f);
-        jumpLatestBtn.setTextColor(ON_ACCENT);
-        jumpLatestBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        jumpLatestBtn.setPadding(px(14), px(8), px(14), px(8));
-        jumpLatestBtn.setBackground(roundBg(ACCENT, 18));
-        jumpLatestBtn.setVisibility(View.GONE);
-        jumpLatestBtn.setOnClickListener(v -> {
-            streamAutoScroll = true;
-            if (streamScroll != null) {
-                streamScroll.post(() ->
-                        streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
-            }
-            updateJumpLatest();
-        });
-        LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        jlp.gravity = Gravity.END;
-        jlp.rightMargin = px(8);
-        jlp.topMargin = px(-18);   // 轻微上提，贴着日志区下沿
-        pageConnect.addView(jumpLatestBtn, jlp);
 
         connectStreamView = new TextView(this);
         connectStreamView.setTextSize(12);
@@ -1590,8 +1590,46 @@ public class MainActivity extends Activity {
         });
 
         streamParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(240));
-        pageConnect.addView(streamScroll, streamParams);
+                ViewGroup.LayoutParams.MATCH_PARENT, px(340));
+
+        // 用 FrameLayout 把日志区与「回到最新」浮标叠在一起，
+        // 浮标固定在**日志区右下角内侧**。
+        //
+        // 原来浮标挂在 flowHeader 之后、gravity=END + topMargin=-18，
+        // 结果正好压在标题行右侧的「清空」按钮上 —— 既点不到清空，
+        // 浮标本身也浮在日志区外面，看着很怪。
+        android.widget.FrameLayout streamWrap = new android.widget.FrameLayout(this);
+        streamWrapView = streamWrap;
+        streamWrap.addView(streamScroll, new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
+
+        jumpLatestBtn = new TextView(this);
+        jumpLatestBtn.setText(L.s("↓ 最新", "↓ Latest"));
+        jumpLatestBtn.setTextSize(11f);
+        jumpLatestBtn.setTextColor(ON_ACCENT);
+        jumpLatestBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        jumpLatestBtn.setPadding(px(12), px(6), px(12), px(6));
+        jumpLatestBtn.setBackground(roundBg(ACCENT, 16));
+        jumpLatestBtn.setVisibility(View.GONE);
+        jumpLatestBtn.setOnClickListener(v -> {
+            streamAutoScroll = true;
+            if (streamScroll != null) {
+                streamScroll.post(() ->
+                        streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+            }
+            updateJumpLatest();
+        });
+        android.widget.FrameLayout.LayoutParams jflp =
+                new android.widget.FrameLayout.LayoutParams(
+                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
+        jflp.gravity = Gravity.BOTTOM | Gravity.END;
+        jflp.rightMargin = px(14);
+        jflp.bottomMargin = px(14);
+        streamWrap.addView(jumpLatestBtn, jflp);
+
+        pageConnect.addView(streamWrap, streamParams);
 
         // 空状态提示（浮在候选流上层的简单做法：先放一行说明）
         connectEmptyHint = new TextView(this);
@@ -1874,6 +1912,23 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 if (connectProgress == null) return;
                 connectProgress.setVisibility(View.VISIBLE);
+                // 这里必须也设一次 stages。
+                //
+                // 以前只 setText —— 而 stages 为空时 onMeasure 只给
+                // dp(20) 的高度，三条轨道画不全（被裁掉），看起来就是
+                // 「第一条候选没有进度条，第二条才出来」。原因在于
+                // 首次 onProgress 要等引擎跑完一轮（约 0.3 秒）才回调。
+                // 用 index/total 立刻给个形，与 onProgress 同口径。
+                float p = total > 0 ? (float) (index - 1) / total : 0f;
+                java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> s0 =
+                        new java.util.ArrayList<>();
+                s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        p, L.f("整个字典 %.1f%%", "whole %.1f%%", p * 100f)));
+                s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                        p, L.f("已试 %d / %d", "tried %d / %d", index - 1, total)));
+                s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(p, ""));
+                connectProgress.setStages(s0);
+                connectProgress.setDone(false);
                 connectProgress.setText(
                         L.f("运行中 %d / %d", "Trying %d / %d", index, total),
                         L.f("当前载荷: %s", "Current: %s", candidate));
@@ -2529,10 +2584,12 @@ public class MainActivity extends Activity {
             connectStreamView.setMaxLines(Integer.MAX_VALUE);
             connectStreamView.setEllipsize(null);
         }
-        // 高度加在滚动容器上。
-        // 之前这里对 connectStreamView 调 setLayoutParams ——
-        // 那是 ScrollView 的子 View，拿到 LinearLayout 的 params 会 ClassCastException。
-        if (streamScroll != null) streamScroll.setLayoutParams(streamParams);
+        // 高度加在**外层 wrap** 上（它挂在 LinearLayout 里，用 LinearLayout 参数），
+        // streamScroll 在 FrameLayout 里始终 MATCH_PARENT 铺满。
+        //
+        // 踩过的坑：直接给 streamScroll 设 LinearLayout 参数，会因为
+        // 它此刻的父容器是 FrameLayout 而抛 ClassCastException（测量期崩）。
+        if (streamWrapView != null) streamWrapView.setLayoutParams(streamParams);
     }
 
     /**

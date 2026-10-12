@@ -1032,7 +1032,9 @@ public final class CrackEngine {
                 return new Attempt(password, Verdict.ABORTED,
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
-            sleep(300);
+            // 200ms：status 本身要 ~100ms，合成每轮约 300ms。
+            // 再密只是空转 shell，再疏就拖慢失败识别。
+            sleep(200);
 
             String st = null;
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
@@ -1110,7 +1112,12 @@ public final class CrackEngine {
             // 见到就直接判密码错，不用傻等超时。
             //
             // 前提：命令发出前已 logcat -c，所以这里读到的都是本次的行。
-            if (logReadable && (logRound++ % 3 == 0)) {
+            // 每轮都读日志。原来这里是 `logRound++ % 3 == 0` ——
+            // 每 3 轮（约 1.2 秒）才读一次，而「握手失败 / 关联被拒」
+            // 恰恰是**最快**的失败信号。等 1.2 秒才看一眼，
+            // 相当于每条候选白白多等一个轮询周期。
+            // 一次 logcat 读只要 239ms（真机实测），付得起。
+            if (logReadable) {
                 String wlog = WpaLogReader.read(shell, 400);
                 if (wlog != null && !wlog.isEmpty()) {
                     logRounds++;

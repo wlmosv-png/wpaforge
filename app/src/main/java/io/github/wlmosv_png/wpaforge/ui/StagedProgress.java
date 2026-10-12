@@ -61,6 +61,79 @@ public class StagedProgress extends View {
 
     private boolean done = false;
 
+    /* ---------- 动画状态 ---------- */
+    /** 当前**显示**的进度（0..1），逐帧向 stages 里的目标值逼近 */
+    private final float[] shown = new float[]{0f, 0f, 0f};
+    /** 流光位置（0..1 从左到右循环） */
+    private float sweep = 0f;
+    /** 动画是否在跑（不可见就停，不空转） */
+    private boolean animating = false;
+    /** 流光用的 Paint */
+    private final Paint pGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    /** 每帧把显示值向目标值靠近的系数（越小越慢越顺） */
+    private static final float EASE = 0.18f;
+    /** 流光扫过一整条轨道要多少帧 */
+    private static final float SWEEP_STEP = 0.012f;
+
+    /** 自驱帧循环 */
+    private final Runnable tick = new Runnable() {
+        @Override public void run() {
+            if (!animating) return;
+            boolean moving = false;
+
+            // 显示值指数逼近目标值
+            for (int i = 0; i < 3; i++) {
+                float target = i < stages.size() ? stages.get(i).value : 0f;
+                float d = target - shown[i];
+                if (Math.abs(d) > 0.002f) {
+                    shown[i] += d * EASE;
+                    moving = true;
+                } else {
+                    shown[i] = target;
+                }
+            }
+
+            // 流光推进（只在未完成时循环）
+            if (!done) {
+                sweep += SWEEP_STEP;
+                if (sweep > 1f) sweep = 0f;
+                moving = true;
+            }
+
+            invalidate();
+            // 值已到位且已完成 → 停，避免无意义重绘
+            if (!moving) { animating = false; return; }
+            postOnAnimation(this);
+        }
+    };
+
+    private void ensureAnimating() {
+        if (animating) return;
+        if (getWindowVisibility() != VISIBLE || !isShown()) return;
+        animating = true;
+        postOnAnimation(tick);
+    }
+
+    @Override
+    protected void onVisibilityChanged(View changed, int vis) {
+        super.onVisibilityChanged(changed, vis);
+        if (vis == VISIBLE) ensureAnimating();
+        else animating = false;   // 不可见立刻停，不空转耗电
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        ensureAnimating();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        animating = false;
+    }
+
     public StagedProgress(Context c) { this(c, null); }
 
     public StagedProgress(Context c, AttributeSet a) {
@@ -94,13 +167,25 @@ public class StagedProgress extends View {
                 if (list.get(i) != null) stages.add(list.get(i));
             }
         }
+        // requestLayout 与 invalidate 缺一不可：
+        //   · onMeasure 按 stages.size() 算高度（每段 dp(9)+dp(6)）
+        //   · invalidate 只重绘，不会重新测量
+        // 只调 invalidate 的话，高度会永远停在首次测量的结果 ——
+        // 首次进来 stages 是空的（高度仅 dp(20)），之后加了 3 段也画不全，
+        // 表现就是「三段进度条只剩一条细线」。
+        requestLayout();
+        ensureAnimating();
         invalidate();
     }
 
     /** 顶部一行粗体说明 + 底部一行补充 */
     public void setText(String headline, String footnote) {
+        boolean hChanged = !this.headline.equals(headline == null ? "" : headline);
         this.headline = headline == null ? "" : headline;
         this.footnote = footnote == null ? "" : footnote;
+        // headline / footnote 的有无也会影响高度（各 dp(20) / dp(16)），
+        // 所以同样要 requestLayout。只有内容变化时才申请，避免每帧重排。
+        if (hChanged) requestLayout();
         invalidate();
     }
 
@@ -154,11 +239,30 @@ public class StagedProgress extends View {
             RectF r = new RectF(0, top, w, top + barH);
             cv.drawRoundRect(r, radius, radius, pTrack);
 
-            // 填充
-            if (st.value > 0.001f) {
-                float fw = Math.max(barH, w * st.value);
+            // 填充：用动画后的显示值，而不是直接跳目标值
+            float v = i < 3 ? shown[i] : st.value;
+            if (v > 0.001f) {
+                float fw = Math.max(barH, w * v);
                 RectF f = new RectF(0, top, fw, top + barH);
                 cv.drawRoundRect(f, radius, radius, pFill[Math.min(i, pFill.length - 1)]);
+
+                // 流光：在内层条上叠一道更亮的窄带，持续左→右扫。
+                // 表达「正在推进」—— 静止的进度条看起来像卡住了。
+                // 只画在最外层（i==0）那条上，避免三条各扫一道显得杂乱。
+                if (i == 0 && !done && v > 0.02f) {
+                    float glowW = Math.max(dp(28), w * 0.10f);
+                    float cx = (w + glowW) * sweep - glowW * 0.5f;
+                    float l = Math.max(0, cx - glowW * 0.5f);
+                    float r2 = Math.min(fw, cx + glowW * 0.5f);
+                    if (r2 > l) {
+                        // 呼吸：透明度做正弦脉动，避免死板
+                        double phase = (System.currentTimeMillis() % 1600) / 1600.0;
+                        int a = (int) (46 + 40 * Math.sin(phase * Math.PI * 2));
+                        pGlow.setColor(Color.argb(Math.max(0, Math.min(120, a)), 255, 236, 179));
+                        RectF g = new RectF(l, top, r2, top + barH);
+                        cv.drawRoundRect(g, radius, radius, pGlow);
+                    }
+                }
             }
 
             // 行尾标签（第几层 / 百分比）

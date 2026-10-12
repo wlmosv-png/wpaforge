@@ -152,8 +152,15 @@ public final class Prefs {
     public static void recordRate(Context ctx, long totalMs, int count) {
         if (count <= 0 || totalMs <= 0) return;
         long perItem = totalMs / count;
-        // 过滤掉明显异常的值（太快或太慢都不可信）
-        if (perItem < 200 || perItem > 60000) return;
+        // 过滤异常样本。
+        //
+        // 上限从 60000 收到 20000：真机实测单条成本在 0.6~5 秒量级
+        // （forget+list 209ms + status 100ms + connect 87ms + logcat 239ms，
+        // 密码错时系统再花几秒放弃）。超过 20 秒的样本基本是
+        // 「等满超时兜底结束」的那几条，不代表真实速度，不该进平均。
+        // 之前 60000 的上限把这类样本全放进来了，均值被抬到 8 秒以上，
+        // 用户看到「每条约 8.8 秒」与体感不符。
+        if (perItem < 200 || perItem > 20000) return;
 
         SharedPreferences p = sp(ctx);
         long old = p.getLong(K_RATE, 0);
@@ -162,8 +169,10 @@ public final class Prefs {
         if (old <= 0 || n <= 0) {
             merged = perItem;
         } else {
-            // 指数滑动平均，新样本权重 0.4
-            merged = (long) (old * 0.6 + perItem * 0.4);
+            // 指数滑动平均，新旧各半。
+            // 原来 0.6/0.4 偏向旧值：一个偏高的历史值要好几轮才被拉回来。
+            // 改成 0.5/0.5，让真值更快纠偏。
+            merged = (long) (old * 0.5 + perItem * 0.5);
         }
         p.edit().putLong(K_RATE, merged).putInt(K_RATE_N, Math.min(n + 1, 50)).apply();
     }

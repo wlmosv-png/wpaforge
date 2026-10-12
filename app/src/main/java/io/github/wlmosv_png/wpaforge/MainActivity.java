@@ -1095,20 +1095,21 @@ public class MainActivity extends Activity {
      * 选完立即生效并刷新破解页那行显示。
      */
     private void showDictSource() {
-        String[] items = {
-                L.s("选择字典文件", "Pick a dictionary file"),
-                L.s("按目标 SSID 派生", "Derive from target SSID"),
-                L.s("内置生成器（通用）", "Built-in generator (generic)")
-        };
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("字典来源", "Dictionary source"))
-                .setItems(items, (d, w) -> {
-                    if (w == 0) showDictPicker();
-                    else if (w == 1) deriveFromTarget();
-                    else buildGenericDict();
-                })
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+        // 用自研 NetDialog，不用系统 AlertDialog。
+        // 系统弹窗是 Material 白底风格，跟字典管理页里的暗色圆角
+        // 弹窗完全两套语言，同一个 App 里跳得很。NetDialog 已经
+        // 支持 addItem 的一行式条目，正好拿来代替 setItems。
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.s("字典来源", "Dictionary source"), null);
+        d.addItem(L.s("选择字典文件", "Pick a dictionary file"),
+                dd -> showDictPicker());
+        d.addItem(L.s("按目标 SSID 派生", "Derive from target SSID"),
+                dd -> deriveFromTarget());
+        d.addItem(L.s("内置生成器（通用）", "Built-in generator (generic)"),
+                dd -> buildGenericDict());
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
     }
 
     /**
@@ -1224,11 +1225,16 @@ public class MainActivity extends Activity {
         // 系统弹窗永远在最上层，不会出现「点了没反应」。
         final io.github.wlmosv_png.wpaforge.audit.DictStore.Entry[] arr =
                 entries.toArray(new io.github.wlmosv_png.wpaforge.audit.DictStore.Entry[0]);
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("选择字典（共 " + entries.size() + " 个）")
-                .setItems(labels, (d, which) -> loadDictFile(arr[which]))
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.f("选择字典（共 %d 个）", "Pick a dictionary (%d)", entries.size()),
+                        null);
+        for (int i = 0; i < arr.length; i++) {
+            final int idx = i;
+            dlg.addItem(labels[i], dd -> loadDictFile(arr[idx]));
+        }
+        dlg.setNegative(L.s("取消", "Cancel"), null);
+        dlg.show();
     }
 
     /**

@@ -84,6 +84,10 @@ public class CrackService extends Service {
     private TaskQueue.Task currentTask;
     private List<Candidate> currentDict = new ArrayList<>();
     private long taskStartAt;
+    /** 上次把 offset 写盘的时刻（节流用） */
+    private long lastOffsetSaveAt = 0L;
+    /** 上次写盘时的 offset（节流用，避免无变化也写） */
+    private int lastSavedOffset = -1;
 
     public class LocalBinder extends Binder {
         public CrackService service() { return CrackService.this; }
@@ -375,6 +379,8 @@ public class CrackService extends Service {
         }
 
         taskStartAt = System.currentTimeMillis();
+        lastOffsetSaveAt = 0L;
+        lastSavedOffset = -1;
         final int startOffset = task.offset;
         if (startOffset > 0) {
             log(L.s("从第 ", "Resuming from ") + startOffset + L.s(" 条继续", " entries"));
@@ -475,6 +481,9 @@ public class CrackService extends Service {
 
             @Override
             public void onProgress(int tested, int total, double rate, long etaMs) {
+                // 断点续跑的关键：把「已试到哪」定期写盘。
+                // 引擎每条都会回调这里，tested 即当前游标位置。
+                saveProgress(ft, tested, false);
                 for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
             }
 
@@ -600,6 +609,48 @@ public class CrackService extends Service {
     }
 
     /** 统一收尾 */
+    /**
+     * 记录速率时该用哪个耗时。
+     *
+     * 优先用引擎报的净尝试耗时（只含逐条尝试）；拿不到才退回墙钟。
+     * 墙钟会把 WiFi 重置、基线断开、通道自检都摊进来，
+     * 导致 perItem 被高估、开始前的预估偏慢。
+     */
+    private long rateSampleMs(int tested) {
+        try {
+            CrackEngine e = engineRef;
+            if (e != null) {
+                long pure = e.lastPureTryMs();
+                if (pure > 0) return pure;
+            }
+        } catch (Throwable ignored) {}
+        return System.currentTimeMillis() - taskStartAt;
+    }
+
+    /**
+     * 把当前进度写盘（断点续跑的依据）。
+     *
+     * 为什么需要：offset 以前只在任务开始与结束时写。跑到第 3000 条
+     * 被系统回收，磁盘上记的还是 0 —— 用户看到的就是「进度没记录」。
+     *
+     * 为什么节流：每条都全量重写 JSON 会产生密集 IO。
+     * 按「≥2 秒 或 ≥20 条」落一次，可靠性与开销兼顾。
+     * 命中时由 finishTask 立即落盘，不走这里。
+     */
+    private void saveProgress(TaskQueue.Task ft, int offset, boolean force) {
+        if (ft == null || offset <= 0) return;
+        long now = System.currentTimeMillis();
+        boolean changed = offset != lastSavedOffset;
+        boolean due = (now - lastOffsetSaveAt >= 2000L)
+                || (offset - lastSavedOffset >= 20);
+        if (!force && (!changed || !due)) return;
+        ft.offset = offset;
+        ft.elapsedMs = now - taskStartAt;
+        TaskQueue.update(this, ft);
+        lastOffsetSaveAt = now;
+        lastSavedOffset = offset;
+    }
+
     private void finishTask(TaskQueue.Task ft, String outcomeName,
                             int tested, int offset, String hitPassword) {
         ft.offset = offset;
@@ -613,7 +664,7 @@ public class CrackService extends Service {
                     "Task finished: %s hit (%d tried)", ft.ssid, tested));
             // 记录实测速度
             if (tested > 0) {
-                Prefs.recordRate(this, System.currentTimeMillis() - taskStartAt, tested);
+                Prefs.recordRate(this, rateSampleMs(tested), tested);
             }
         } else if ("PAUSED".equals(outcomeName)) {
             ft.state = TaskQueue.State.PAUSED;
@@ -626,7 +677,7 @@ public class CrackService extends Service {
             log(L.f("任务完成，未命中（试了 %d 条）",
                     "Task complete, no match (%d tried)", tested));
             if (tested > 0) {
-                Prefs.recordRate(this, System.currentTimeMillis() - taskStartAt, tested);
+                Prefs.recordRate(this, rateSampleMs(tested), tested);
             }
         }
 

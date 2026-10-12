@@ -894,7 +894,25 @@ public final class CrackEngine {
         // 实测：B214 正确密码 12345678 连上后，紧接着的 88888888 被判「看起来连上了」。
         //
         // 只在「已经连着目标」时才断开，正常情况（连着别的网络）零开销。
-        if (target.ssid.equals(snapshotSsid())) {
+        /*
+         * 判断「命令前是否还连着目标」，不能只看 SSID。
+         *
+         * snapshotSsid() 走 shell 的 cmd wifi status，超时/抖动时返回 null。
+         * 只看 SSID 的话 null 会被当成「没连着目标」而放过 —— 但此刻
+         * 系统可能仍挂着目标配置，判据 A 下一轮就误判成功。
+         * 这是假阳性的直接入口。
+         *
+         * 兜底：SSID 读不到时看 netId。list-networks 里还有目标的条目，
+         * 同样说明配置没清干净，必须先断开。
+         */
+        String preSsid = snapshotSsid();
+        boolean linkedBySsid = target.ssid.equals(preSsid);
+        long preNetId = linkedBySsid ? -2L : netIdOfTarget(target.ssid);
+        boolean linkedByNetId = preNetId >= 0;
+        if (linkedBySsid || linkedByNetId) {
+            if (linkedByNetId && !linkedBySsid) {
+                android.util.Log.i(TAG,"SSID read failed but netId=" + preNetId + " still present; disconnecting");
+            }
             boolean off = disconnectAndVerify(target.ssid);
             if (!off) {
                 return new Attempt(password, Verdict.UNKNOWN,
@@ -969,6 +987,8 @@ public final class CrackEngine {
         final long deadline = t0 + timeoutMs;
 
         // 本轮是否见过目标「正在尝试」——用于区分「通道没生效」和「密码不对」
+        // 因 netId 不符而拒绝的连接次数（假阳性防线计数器）
+        int netIdRejects = 0;
         boolean sawAttempt = false;
         // shell 通道是否真的能执行命令（status 能读出内容）。
         // Shizuku 读不到 logcat，sawAttempt 恒为 false；有了这个标志就能把
@@ -1028,7 +1048,28 @@ public final class CrackEngine {
                     sawAttempt = true;
                 }
 
-                if (info.isTargetConnected(target.ssid)) {
+                /*
+                 * 判据 A 的 netId 绑定（宽松式）。
+                 *
+                 * 历史两头都踩过：
+                 *   · 完全不看 netId → 系统回连/残留配置被判成功（假阳性）
+                 *   · 硬要求 netId 等于命令后 400ms 取到的值 → 那个值常常是 -1，
+                 *     正确密码永远判不出来（假阴性，实机 12 秒全超时）
+                 *
+                 * 折中：**只在两侧都拿到有效 netId 时才强制相等**。
+                 *   任一侧为 -1 → 当作证据不足，退回原三条件判定。
+                 */
+                long statusNetId = info.netId;
+                boolean netIdMismatch = statusNetId >= 0
+                        && targetNetId >= 0
+                        && statusNetId != targetNetId;
+                if (netIdMismatch) {
+                    netIdRejects++;
+                    if (netIdRejects <= 3) {
+                        android.util.Log.i(TAG, "ignore link: netId mismatch status="
+                                + statusNetId + " this=" + targetNetId);
+                    }
+                } else if (info.isTargetConnected(target.ssid)) {
                     // **不再强制 netId 必须等于「命令后 400ms 取到的那个值」。**
                     //
                     // 那个值是时序敏感的：系统若还没把配置建好，取到 -1，
@@ -1045,10 +1086,13 @@ public final class CrackEngine {
                     long ms = SystemClock.uptimeMillis() - t0;
                     android.util.Log.i(TAG, "命中: " + info
                             + " (targetNetId=" + targetNetId + ")");
+                    String by = (statusNetId >= 0 && statusNetId == targetNetId)
+                            ? "supplicant+netId"   // netId 也吻合，证据最强
+                            : "supplicant";
                     return new Attempt(password, Verdict.SUCCESS, ms,
                             L.s("握手完成且已获取 IP（确认连上）",
                                 "handshake completed and IP obtained"),
-                            "supplicant");
+                            by);
                 }
             }
 
@@ -1547,6 +1591,12 @@ public final class CrackEngine {
         int cursor = start;
         String hit = null;
         long beginAt = SystemClock.uptimeMillis();
+        // 净尝试耗时：只累计每条候选从发命令到出结论的时间。
+        //
+        // 不用墙钟（beginAt 到结束）的原因：那段时间里还包含
+        // WiFi 重置、基线断开、通道自检这些一次性开销，
+        // 摊进「每条耗时」会让预估值被严重高估。
+        long pureTryMs = 0L;
 
         l.onLog(L.f("引擎启动：%s，共 %d 条，单条最长 %.1f 秒",
                 "Engine: %s, %d candidates, up to %.1fs each",
@@ -1561,7 +1611,9 @@ public final class CrackEngine {
                 cursor = i + 1;
                 l.onAttemptStart(cursor, total, c.password);
 
+                long itemT0 = SystemClock.uptimeMillis();
                 Attempt a = tryOne(target, security, c.password, perItem);
+                pureTryMs += SystemClock.uptimeMillis() - itemT0;
 
                 // 命中即命中 —— 复验只作为**附加信息**，不再一票否决。
                 //
@@ -1632,13 +1684,15 @@ public final class CrackEngine {
                 }
 
 
-                double elapsed = Math.max(0.001,
-                        (SystemClock.uptimeMillis() - beginAt) / 1000.0);
+                // 用净尝试耗时算速率，界面上的「条/秒」与剩余时间
+                // 才和用户实际感受到的一致。
+                double elapsed = Math.max(0.001, pureTryMs / 1000.0);
                 double rate = tested / elapsed;
                 long eta = rate > 0 ? (long) ((total - cursor) / rate * 1000) : -1;
                 l.onProgress(cursor, total, rate, eta);
             }
         } finally {
+            lastPureTryMs = pureTryMs;
             if (watcher != null) watcher.stop();
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
@@ -1647,6 +1701,20 @@ public final class CrackEngine {
             else outcome = "DONE_MISS";
             l.onFinished(tested, cursor, hit, outcome);
         }
+    }
+
+    /**
+     * 上一轮 run() 的净尝试耗时（毫秒）。
+     *
+     * 只累计每条候选从发命令到出结论的时间，不含 WiFi 重置、
+     * 基线断开、通道自检等一次性开销。
+     * 供服务层记录实测速率 —— 用墙钟会让预估严重偏高。
+     */
+    private volatile long lastPureTryMs = 0L;
+
+    /** 上一轮净尝试耗时（毫秒）；没跑过返回 0。 */
+    public long lastPureTryMs() {
+        return lastPureTryMs;
     }
 
     private String channelName() {

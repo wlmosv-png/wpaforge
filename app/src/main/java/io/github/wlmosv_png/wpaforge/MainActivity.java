@@ -1231,19 +1231,67 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /**
+     * 加载一个字典文件为当前字典。
+     *
+     * 两处刻意的选择：
+     *
+     * 1. **捕获 Throwable 而不是 Exception。**
+     *    大字典（如 48 万行的号码变形表）读满上限时会造出几十万个
+     *    Candidate 对象，ColorOS 上会抛 OutOfMemoryError。
+     *    Error 不是 Exception，catch(Exception) 拦不住 —— 它会直接
+     *    杀掉进程，用户看到的就是「选了字典就闪退」。
+     *
+     * 2. **上限 120000，且被截断时如实告知。**
+     *    按实测约 1 秒/条，20 万条要跑 55 小时，本身就不可用。
+     *    宁可明说「已截断」，也不要静默吃掉后半截。
+     */
+    private static final int DICT_LOAD_LIMIT = 120000;
+
     private void loadDictFile(io.github.wlmosv_png.wpaforge.audit.DictStore.Entry e) {
         appendLog(L.f("正在读取 %s ...", "Reading %s ...", e.name));
         new Thread(() -> {
-            java.util.List<Candidate> list = io.github.wlmosv_png.wpaforge.audit.DictStore.load(e, 200000);
+            java.util.List<Candidate> list = null;
+            String err = null;
+            try {
+                list = io.github.wlmosv_png.wpaforge.audit.DictStore.load(e, DICT_LOAD_LIMIT);
+            } catch (Throwable t) {
+                err = t.getClass().getSimpleName()
+                        + (t.getMessage() == null ? "" : ": " + t.getMessage());
+            }
+            final java.util.List<Candidate> rl = list;
+            final String re = err;
             ui.post(() -> {
-                currentDict = list;
+                if (re != null) {
+                    appendLog(L.f("读取失败: %s", "Failed to read: %s", re));
+                    new android.app.AlertDialog.Builder(this)
+                            .setTitle(L.s("字典太大，读不进来", "Dictionary too large"))
+                            .setMessage(L.s(
+                                    "这个字典超出本机可用内存。\n\n"
+                                            + "建议改用内置的 TOP 榜（几百到几千条），\n"
+                                            + "或先用「按 SSID 派生」生成针对性候选 ——\n"
+                                            + "几十条就覆盖最常见的场景，而且快得多。",
+                                    "This dictionary exceeds available memory.\n\n"
+                                            + "Use a built-in TOP list (hundreds to thousands)\n"
+                                            + "or derive candidates from the SSID — a few dozen\n"
+                                            + "entries cover the common cases and run far faster."))
+                            .setPositiveButton(L.s("知道了", "Got it"), null)
+                            .show();
+                    return;
+                }
+                currentDict = rl;
                 currentDictName = e.name;
                 currentDictPath = e.file.getAbsolutePath();
                 updateDictStatus();
-                appendLog("已加载 " + e.name + " -> " + list.size() + L.s(" 条", " entries"));
-                if (list.size() > 300) {
+                updateConnectDict();
+                appendLog("已加载 " + e.name + " -> " + rl.size() + L.s(" 条", " entries"));
+                if (rl.size() >= DICT_LOAD_LIMIT) {
+                    appendLog(L.f("注意: 已达上限 %d 条，后面的没读进来",
+                            "Note: hit the %d limit — the rest was not loaded", DICT_LOAD_LIMIT));
+                }
+                if (rl.size() > 300) {
                     appendLog(L.f("提示: 约 %s 跑完（实测约 1 秒/条）",
-                        "About %s to finish (~1s per attempt)", humanTime(list.size())));
+                        "About %s to finish (~1s per attempt)", humanTime(rl.size())));
                 }
             });
         }).start();
@@ -2944,7 +2992,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
      * 一屏里只该出现一个。
      */
     private Button btnPrimary(String label) {
-        Button b = btnPrimary(label);
+        Button b = makeButton(label, ACCENT);
         b.setTextColor(ON_ACCENT);
         return b;
     }

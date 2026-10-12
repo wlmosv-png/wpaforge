@@ -761,7 +761,13 @@ public class DictActivity extends Activity {
     private void showStats(DictStore.Entry e) {
         new Thread(() -> {
             long n = DictStore.count(e.file);
-            List<Candidate> sample = DictStore.load(e, 100000);
+            // 只抽样，不读全量。
+            //
+            // 原来这里是 100000：对 48 万行的号码变形表会一次
+            // 造出十几 MB 的 Candidate 对象，ColorOS 上直接 OOM，
+            // 用户点「统计」就闪退。统计本身是抽样语义，
+            // 2000 条足够代表长度分布与字符构成。
+            List<Candidate> sample = DictStore.load(e, 2000);
             int minLen = 99, maxLen = 0;
             long digits = 0, letters = 0, mixed = 0;
             for (Candidate c : sample) {

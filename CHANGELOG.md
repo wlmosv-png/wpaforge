@@ -4,6 +4,75 @@
 
 ---
 
+## [1.7.0] - 2026-10-12
+
+**观测页加了三样东西，判定链一行没动。**
+
+### 1. 同一 SSID 的多 AP 不再被丢掉
+
+旧行为是「同名 SSID 只保留信号最强的一条」。单 AP 环境没问题，
+但 Mesh / 宿舍多基站场景会把关键信息直接抹掉：
+
+```
+CMCC-密码   ch1    -84dBm     <- 旧逻辑只留 -55 那条
+CMCC-密码   ch36   -55dBm
+CMCC-密码   ch149  -61dBm
+```
+
+用户看不到「这网其实有三个 AP、5G 那条特别强」，而这恰恰是决定
+该连哪个的依据。
+
+现在 `Scanner` 全量保留，展示层由 `SsidGroup` 聚合：组头显示
+「N 个 AP · 跨 M 个信道 · 信号差 X dB」，组内按信号降序。
+单 AP 场景退化成原来的平铺列表，不多一个字。
+
+判定链不受影响：它处理的始终是单个 `NetRecord`，只是候选变多了。
+
+### 2. 带宽 / Wi-Fi 代际上界面
+
+`ScanResult` 里的 `getWifiStandard()`（11n/ac/ax/be）与
+`getChannelWidth()`（20/40/80/160/320MHz）以前全部丢弃，
+列表上只留一个 `ch11` —— 用户看不出 20MHz 和 160MHz 的差别。
+
+新增 `ScanDetail` 承载这些**纯展示**字段，按 BSSID 旁挂在 `Scanner` 上，
+**刻意不塞进 `NetRecord`**：`NetRecord` 是判定链的载体，每多一个字段
+就多一处可能出错的地方，展示字段不能污染判定。
+
+API 30+ 才有的方法走反射 + 静默降级，拿不到就显示空，不猜、不崩。
+
+### 3. 信道建议终于有字了
+
+`ChannelAnalyzer` 早就算出 `recommended24` / `recommended5`，但结果
+只喂给 `ChannelBars` 画图 —— 图上那条绿色高亮没有任何文字说明，
+用户得自己悟「绿的是最空的」。
+
+现在图下方直接给结论：换哪条信道、当前那条有几个 AP 占着。
+某频段没有数据就不显示对应行，不用「无数据」占位。
+
+### 回归防线：诱饵行测试（`DecoyLineTest`）
+
+今天实拉 `cmd wifi status` 时抓到一条**每台机器每次都会出现**的诱饵行：
+
+```
+WifiInfo: SSID: "B212", ..., Supplicant state: COMPLETED, IP: /192.168.1.2, ..., Net ID: 666
+NetworkCapabilities: [ ... TransportInfo: <SSID: <unknown ssid>, ..., IP: /192.168.1.2,
+                       Supplicant state: COMPLETED, ..., Net ID: -1 ...> ... SSID: "B212" ...]
+```
+
+第二条是 `NetworkCapabilities` 内嵌的 `TransportInfo`，SSID 显示为
+`<unknown ssid>`、Net ID 是 -1，**但它同样带 COMPLETED 和有效 IP**。
+任何「扫全文找关键词」的判定都会被它骗到。历史上真出过事故
+（系统弹「无法连接到 BTWIFL_0923」，App 却报「已连上」）。
+
+新增 10 项测试钉死这个行为：诱饵行在前 / 在后 / 只有诱饵行 /
+把 `<unknown ssid>` 当目标，四种情况 + null/空串安全。
+
+### 测试
+
+`273 -> 307` 项全过（新增 `DecoyLineTest` 10 项、`SsidGroupTest` 24 项）。
+
+---
+
 ## [1.6.0] - 2026-10-11
 
 ## [1.5.0] - 2026-10-11

@@ -38,7 +38,9 @@ import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
 import io.github.wlmosv_png.wpaforge.scan.ChannelAnalyzer;
+import io.github.wlmosv_png.wpaforge.scan.ScanDetail;
 import io.github.wlmosv_png.wpaforge.scan.Scanner;
+import io.github.wlmosv_png.wpaforge.scan.SsidGroup;
 import io.github.wlmosv_png.wpaforge.ui.ChannelBars;
 import io.github.wlmosv_png.wpaforge.ui.RadarSweep;
 import io.github.wlmosv_png.wpaforge.ui.AuthorCard;
@@ -83,6 +85,8 @@ public class MainActivity extends Activity {
     private int savedWifiTotal = -1;
     private int savedWifiWeak = -1;
     private TextView observeNotice;
+    /** 信道建议卡（观测页，信道占用图下方） */
+    private TextView adviceCard;
     private List<NetRecord> lastRecords = new ArrayList<>();
 
     // 审计页组件
@@ -564,6 +568,19 @@ public class MainActivity extends Activity {
         cbp.bottomMargin = px(16);
         pageObserve.addView(channelBars, cbp);
 
+        adviceCard = new TextView(this);
+        adviceCard.setTextSize(12);
+        adviceCard.setTextColor(TEXT);
+        adviceCard.setLineSpacing(px(4), 1f);
+        adviceCard.setBackground(roundBg(SURFACE, 16));
+        adviceCard.setPadding(px(16), px(14), px(16), px(14));
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        alp.bottomMargin = px(16);
+        adviceCard.setLayoutParams(alp);
+        adviceCard.setVisibility(View.GONE);
+        pageObserve.addView(adviceCard);
+
         pageObserve.addView(sectionLabel(L.s("本机已存 WiFi", "Saved Wi-Fi on this device")));
         savedWifiCard = new TextView(this);
         savedWifiCard.setTextSize(12.5f);
@@ -696,8 +713,19 @@ public class MainActivity extends Activity {
         radar.setBlips(blips);
 
         netList.removeAllViews();
-        for (NetRecord r : visible) {
-            netList.addView(netRow(r));
+        /*
+         * 列表按 SSID 聚合展示。
+         *
+         * Scanner 现在返回全量 AP（同一 SSID 可能有多个 BSSID），
+         * 这里把同 SSID 的合成一组，组头带 AP 个数，组内按信号降序。
+         * 单 AP 场景退化成原来的平铺样子，不多一个字。
+         */
+        List<SsidGroup.Group> groups = SsidGroup.group(visible);
+        for (SsidGroup.Group g : groups) {
+            netList.addView(groupHeader(g));
+            for (NetRecord r : g.members) {
+                netList.addView(netRow(r));
+            }
         }
         if (visible.isEmpty()) {
             TextView empty = new TextView(this);
@@ -715,6 +743,99 @@ public class MainActivity extends Activity {
         // 信道占用图：横向条比纯文字更直观，直接替换掉原来的文字建议
         ChannelAnalyzer.Report rep = ChannelAnalyzer.analyze(records);
         if (channelBars != null) channelBars.setReport(rep);
+        renderChannelAdvice(rep);
+    }
+
+    /**
+     * 信道建议卡。
+     *
+     * ChannelAnalyzer 早就算出 recommended24 / recommended5，但结果只喂给了
+     * ChannelBars 画图 —— 图上那条绿色高亮没有任何文字说明，用户得自己悟
+     * "绿的是最空的"。这里把结论直白讲出来：换哪条、当前那条有多挤。
+     *
+     * 某频段一个 AP 都没有时不显示对应行，不用"无数据"占位。
+     */
+    private void renderChannelAdvice(ChannelAnalyzer.Report rep) {
+        if (adviceCard == null) return;
+        if (rep == null) {
+            adviceCard.setVisibility(View.GONE);
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(L.s("信道建议", "Channel advice")).append('\n');
+
+        int shown = 0;
+        if (rep.recommended24 > 0) {
+            sb.append(L.s("2.4G 建议 ", "2.4G -> "))
+              .append("ch").append(rep.recommended24)
+              .append("  ").append(loadHint(rep.stats24, rep.recommended24))
+              .append('\n');
+            shown++;
+        }
+        if (rep.recommended5 > 0) {
+            sb.append(L.s("5G 建议 ", "5G -> "))
+              .append("ch").append(rep.recommended5)
+              .append("  ").append(loadHint(rep.stats5, rep.recommended5))
+              .append('\n');
+            shown++;
+        }
+
+        if (shown == 0) {
+            adviceCard.setVisibility(View.GONE);
+            return;
+        }
+
+        sb.append(L.s("(改路由器信道后重扫，占用会变)",
+                "(Rescan after changing your router channel)"));
+
+        adviceCard.setText(sb.toString().trim());
+        adviceCard.setVisibility(View.VISIBLE);
+    }
+
+    /** 某信道的拥挤度描述 */
+    private String loadHint(List<ChannelAnalyzer.ChannelStat> stats, int channel) {
+        if (stats == null) return "";
+        for (ChannelAnalyzer.ChannelStat st : stats) {
+            if (st.channel == channel) {
+                if (st.apCount <= 0) return L.s("无占用", "empty");
+                return L.f("%d 个 AP", "%d APs", st.apCount);
+            }
+        }
+        return "";
+    }
+
+    /**
+     * SSID 组头。只有一个 AP 时返回零高度空 View（退化成原平铺列表）；
+     * 多 AP 时显示 "名称 · N 个 AP · 跨 M 个信道 · 信号差 X dB"。
+     */
+    private View groupHeader(SsidGroup.Group g) {
+        if (!g.isMesh()) return new TextView(this);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.topMargin = px(10);
+        bp.bottomMargin = px(4);
+        box.setLayoutParams(bp);
+
+        TextView t = new TextView(this);
+        StringBuilder sb = new StringBuilder(g.ssid);
+        sb.append("  ").append(L.f("%d 个 AP", "%d APs", g.size()));
+        if (g.distinctChannels() > 1) {
+            sb.append(" · ").append(L.f("跨 %d 个信道", "%d channels", g.distinctChannels()));
+        }
+        int spread = g.best.rssi - g.worstRssi();
+        if (spread >= 10) {
+            sb.append(" · ").append(L.f("信号差 %d dB", "delta %d dB", spread));
+        }
+        t.setText(sb.toString());
+        t.setTextSize(12);
+        t.setTextColor(ACCENT);
+        t.setPadding(px(4), 0, 0, 0);
+        box.addView(t);
+        return box;
     }
 
     /**
@@ -781,6 +902,17 @@ public class MainActivity extends Activity {
         detail.setTextSize(10);
         detail.setTextColor(TEXT_DIM);
         left.addView(detail);
+
+        // 第二行细节：带宽 / Wi-Fi 代际。拿不到就不加这一行，不占位。
+        ScanDetail sd = scanner == null ? ScanDetail.UNKNOWN : scanner.detailOf(r);
+        if (!sd.isEmpty()) {
+            TextView phy = new TextView(this);
+            phy.setText(sd.label());
+            phy.setTextSize(10);
+            phy.setTextColor(ACCENT);
+            phy.setPadding(0, px(2), 0, 0);
+            left.addView(phy);
+        }
 
         row.addView(left, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));

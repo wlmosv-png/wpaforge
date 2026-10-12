@@ -59,6 +59,17 @@ public final class Scanner {
     /** 上次特权通道失败的原因，供诊断展示 */
     private volatile String privDiag = "";
 
+    /**
+     * BSSID -> 物理层细节（带宽 / 代际）。
+     *
+     * 为什么不塞进 NetRecord：NetRecord 是判定链的载体，每多一个字段
+     * 就多一处可能出错的地方。这些字段纯粹给人看，不能污染判定。
+     * 所以按 BSSID 旁挂在这里，界面按需取，取不到就是空。
+     *
+     * 每次普通 API 解析成功后整体替换，不留陈旧条目。
+     */
+    private volatile Map<String, ScanDetail> details = new LinkedHashMap<>();
+
     public Scanner(Context ctx, Listener listener) {
         this.appCtx = ctx.getApplicationContext();
         this.wifi = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
@@ -230,8 +241,17 @@ public final class Scanner {
         }
         lastDiag = "OK(" + raw.size() + ")";
 
-        // 同名 SSID 只保留信号最强的一条
-        Map<String, NetRecord> best = new LinkedHashMap<>();
+        /*
+         * 注意：这里**不再**按 SSID 去重。
+         *
+         * 旧行为是「同名 SSID 只保留信号最强的一条」，单 AP 环境没问题，
+         * 但 Mesh / 宿舍多基站场景会把「这网其实有三个 AP、5G 那条特别强」
+         * 这类关键信息抹掉，而用户恰恰要靠它决定连哪个。
+         *
+         * 现在全量保留，由 SsidGroup 在展示层聚合。判定链不受影响：
+         * 它处理的始终是单个 NetRecord，只是候选变多了。
+         */
+        Map<String, ScanDetail> fresh = new LinkedHashMap<>();
         for (ScanResult sr : raw) {
             if (sr == null) continue;
             String caps = sr.capabilities == null ? "" : sr.capabilities;
@@ -243,15 +263,22 @@ public final class Scanner {
                     NetRecord.parseSecurity(caps),
                     NetRecord.parseWps(caps),
                     caps);
-            String key = rec.isHidden() ? rec.bssid : rec.ssid;
-            NetRecord prev = best.get(key);
-            if (prev == null || rec.rssi > prev.rssi) {
-                best.put(key, rec);
-            }
+            out.add(rec);
+            fresh.put(rec.bssid, ScanDetail.from(sr));
         }
-        out.addAll(best.values());
+        details = fresh;
         Collections.sort(out, (a, b) -> Integer.compare(b.rssi, a.rssi));
         return out;
+    }
+
+    /**
+     * 取某条记录的物理层细节（带宽 / 代际）。
+     * 拿不到返回 {@link ScanDetail#UNKNOWN}，调用方不必判空。
+     */
+    public ScanDetail detailOf(NetRecord r) {
+        if (r == null) return ScanDetail.UNKNOWN;
+        ScanDetail d = details.get(r.bssid);
+        return d == null ? ScanDetail.UNKNOWN : d;
     }
 
     /**

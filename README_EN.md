@@ -51,14 +51,12 @@ No root, no luck — detection relies on `su + cmd wifi`; the Shizuku and rootle
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/shot03.jpg" width="49%">
-  <img src="docs/screenshots/shot04.jpg" width="49%">
+  <img src="docs/screenshots/shot04.jpg" width="88%">
   <br>
-  <img src="docs/screenshots/shot05.jpg" width="49%">
-  <img src="docs/screenshots/shot06.jpg" width="49%">
+  <img src="docs/screenshots/shot06.jpg" width="88%">
 </p>
 
-Network list · Audit · Dictionary · Crack — each page does one job, follows the system language.
+Audit · Crack — the rest you'll see once you install it.
 
 ## Building
 

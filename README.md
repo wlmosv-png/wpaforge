@@ -51,14 +51,12 @@
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/shot03.jpg" width="49%">
-  <img src="docs/screenshots/shot04.jpg" width="49%">
+  <img src="docs/screenshots/shot04.jpg" width="88%">
   <br>
-  <img src="docs/screenshots/shot05.jpg" width="49%">
-  <img src="docs/screenshots/shot06.jpg" width="49%">
+  <img src="docs/screenshots/shot06.jpg" width="88%">
 </p>
 
-观测列表 · 审计 · 字典 · 破解 —— 每页各司其职，自动跟随系统语言。
+审计 · 破解 —— 其余页面装上就知道。
 
 ## 构建
 

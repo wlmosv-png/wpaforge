@@ -13,7 +13,7 @@
 
 **English** · [中文](README.md)
 
-<img src="docs/screenshots/all.png" alt="WPAForge" width="720">
+<img src="docs/screenshots/shot01.jpg" alt="WPAForge" width="42%">
 
 </div>
 
@@ -51,13 +51,14 @@ No root, no luck — detection relies on `su + cmd wifi`; the Shizuku and rootle
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/shot01.jpg" width="23%">
-  <img src="docs/screenshots/shot02.jpg" width="23%">
-  <img src="docs/screenshots/shot03.jpg" width="23%">
-  <img src="docs/screenshots/shot04.jpg" width="23%">
+  <img src="docs/screenshots/shot03.jpg" width="49%">
+  <img src="docs/screenshots/shot04.jpg" width="49%">
+  <br>
+  <img src="docs/screenshots/shot05.jpg" width="49%">
+  <img src="docs/screenshots/shot06.jpg" width="49%">
 </p>
 
-Observe · Audit · Crack · Dictionary · Settings — five pages, follows the system language.
+Network list · Audit · Dictionary · Crack — each page does one job, follows the system language.
 
 ## Building
 

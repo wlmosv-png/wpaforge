@@ -13,7 +13,7 @@
 
 **中文** · [English](README_EN.md)
 
-<img src="docs/screenshots/all.png" alt="WPAForge" width="720">
+<img src="docs/screenshots/shot01.jpg" alt="WPAForge" width="42%">
 
 </div>
 
@@ -51,13 +51,14 @@
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/shot01.jpg" width="23%">
-  <img src="docs/screenshots/shot02.jpg" width="23%">
-  <img src="docs/screenshots/shot03.jpg" width="23%">
-  <img src="docs/screenshots/shot04.jpg" width="23%">
+  <img src="docs/screenshots/shot03.jpg" width="49%">
+  <img src="docs/screenshots/shot04.jpg" width="49%">
+  <br>
+  <img src="docs/screenshots/shot05.jpg" width="49%">
+  <img src="docs/screenshots/shot06.jpg" width="49%">
 </p>
 
-观测 · 审计 · 破解 · 字典 · 设置，五页齐全，自动跟随系统语言。
+观测列表 · 审计 · 字典 · 破解 —— 每页各司其职，自动跟随系统语言。
 
 ## 构建
 

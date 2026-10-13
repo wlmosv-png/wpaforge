@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%2026%2B-green.svg)]()
-[![Version](https://img.shields.io/badge/version-1.9.0%20(70)-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-1.9.7%20(77)-orange.svg)]()
 
 **中文** | [English](README_EN.md)
 
@@ -37,6 +37,12 @@ WPAForge 通过系统的 `cmd wifi` 接口逐条尝试连接目标网络，用�
 | **算法透明** | 加密实现自研，过 RFC 3174 / 2202 / 6070 三套标准向量 | 黑盒 |
 
 ---
+
+<p align="center">
+  <img src="docs/star-history.svg" alt="Star 历史" width="620">
+</p>
+
+<p align="center"><sub>Star 增长曲线（手动更新）</sub></p>
 
 ## 技术亮点
 
@@ -92,48 +98,18 @@ netId 建不出来，判定永远失败 —— 换 binder 直调能绕开，但�
 任一侧为 `-1` 视为证据不足，退回前三条件判定。命中时会把证据写进
 `confirmedBy`（`supplicant+netId` 表示 netId 也吻合，证据最强）。
 
-### 1.2 实测时序
+### 1.2 三个必须处理的陷阱
 
-真机（OnePlus PJX110 / Android 15）单条候选的时间分布：
+**配置复用** —— `connect-network` 对同名网络会复用已存配置，
+目标之前连过的话，传什么密码都能「连上」。每条之前必须删配置并回读校验。
 
-```
-正确密码 → T+1 秒      握手完成、拿到 IP
-错误密码 → T+1~6 秒    系统放弃尝试
-           T+7 秒      回退到别的已保存 AP
-```
+**PMKSA 缓存** —— 配置忘了，`wpa_supplicant` 仍可能用缓存密钥短时连回，
+错误密码也会「成功」。任务开始时重启一次 WiFi 强制清掉。
 
-这也是「密码错也必须等几秒」的物理原因 —— 不是实现慢，
-而是 AP 对错误密码的响应本身就要这个时间。
+**命中被覆盖** —— `finally` 在 `return` 后仍执行，收尾回调发两次，
+第二次密码为 `null` 把命中改成未命中。加 `finished` 标志。
 
-### 1.3 三个必须处理的坑
-
-**坑一：配置复用导致假阳性**
-
-`cmd wifi connect-network` 对同名网络会**复用已保存的配置**。
-目标之前连过的话，不论传什么密码，系统都拿旧配置去连 → 连上了 → 报成功。
-实测密码填 `00000000` 也能「命中」。
-
-处理：每条之前删配置，**删完回读校验**；并且开跑前若已连着目标，
-先断开以建立干净基线。
-
-**坑二：PMKSA 缓存**
-
-WPA2 有快速重连用的密钥缓存。即便配置被 forget，
-`wpa_supplicant` 仍可能在短时间内用缓存密钥连回同一个 AP ——
-此时**用错误密码也会连上**。
-
-处理：任务开始时重启一次 WiFi（off → on），强制 wpa_supplicant 重来。
-只在开跑时做一次，不影响逐条速度。
-
-**坑三：命中被覆盖成未命中**
-
-`finally` 块在 `return` 之后仍会执行，导致收尾回调发两次，
-第二次密码为 `null`，把 `DONE_HIT` 覆盖成 `DONE_MISS`。
-
-处理：加 `finished` 标志。
-
-> 前两个坑原本在**每条通道里各有一份**（因为判定逻辑有两份代码）。
-> 这是把所有通道收敛到一个引擎的直接原因。
+前两个坑原本在每条通道里各有一份 —— 这是把所有通道收敛到一个引擎的直接原因。
 
 ### 2. 目标派生：往字典里补它没有的
 
@@ -213,54 +189,21 @@ logcat 读取              239 ms
 
 ## 加密实现
 
-WPA 密钥派生按 **IEEE 802.11i** 规范手写实现，不依赖第三方加密库：
+WPA 密钥派生按 **IEEE 802.11i** 手写，不依赖第三方加密库：
 
 ```
 PMK = PBKDF2-HMAC-SHA1(passphrase, ssid, 4096, 256bit)
-PTK = PRF-512(PMK, "Pairwise key expansion",
-              min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) || max(ANonce,SNonce))
+PTK = PRF-512(PMK, "Pairwise key expansion", ...)
 MIC = HMAC-SHA1(KCK, EAPOL_frame_with_MIC_zeroed)[0..16)
 ```
 
-### 验证结果
+标准向量全部通过：SHA-1（RFC 3174）、HMAC-SHA1（RFC 2202）、
+PBKDF2（RFC 6070）、PMK（Wi-Fi 联盟公开向量）。
 
-| 组件 | 测试向量 | 结果 |
-|---|---|---|
-| SHA-1 | RFC 3174 / FIPS 180-1 | ✅ 3/3 |
-| HMAC-SHA1 | RFC 2202 | ✅ 3/3 |
-| PBKDF2-HMAC-SHA1 | RFC 6070 | ✅ 3/3 |
-| PMK | Wi-Fi 联盟公开向量 | ✅ 1/1 |
-
-全部测试（**346 项 / 20 个测试类**，全部通过）：
-
-```
-SelfTest             加密算法（SHA-1 / HMAC-SHA1 / PBKDF2，RFC 向量）
-SupplicantParserTest WifiInfo 行解析（COMPLETED / IP / netId）
-StatusParseTest      cmd wifi status 解析，含诱饵行
-DecoyLineTest        诱饵行回归（<unknown ssid> + COMPLETED + Net ID: -1）
-FalsePositiveTest    假阳性防线（回连别的网 / netId 不符 / 空输入）
-NetIdLineTest        list-networks 行解析（含空格 SSID）
-PrivScanTest         特权扫描输出解析（中文 SSID、含空格、隐藏网络）
-RuleTest             规则字典解析与展开
-SortTest             智能排序
-TargetDictTest       目标派生
-SsidGroupTest        同 SSID 多 AP 聚合
-OuiTest              OUI 厂商查询（随机化 MAC 判定、BSSID 写法归一）
-E2ETest              握手比对端到端
-VerdictFlowTest      判定流程
-WatcherLogicTest     事件判定
-WifiStateLogTest     状态机日志解析
-WpaLogTest           wpa_supplicant 日志解析
-SpecifierTest        判定语义（超时 / SSID 不匹配**绝不**判成功）
-PersistTest          候选生成 → 落盘 → 读回一致性
-AttributionTest      归因（哪一层确认了结果）
-```
-
-纯逻辑与 Android 解耦，**可在桌面 JVM 上直接跑**（javac + java，不需要模拟器）。
-
-`SpecifierTest` 与 `FalsePositiveTest` 是防回归的关键 —— 它们把判定语义
-写死成测试，确保「超时不算成功」「回连别的网不算命中」这类规则
-不会被后续改动破坏。
+全部 **443 项**测试（23 个类）通过，纯逻辑与 Android 解耦，
+**可直接在桌面 JVM 上跑**（javac + java，无需模拟器）。其中
+`SpecifierTest` 与 `FalsePositiveTest` 把「超时不算成功」「回连别的网不算命中」
+这类语义写死成测试，防止后续改动破坏判定。
 
 ---
 
@@ -323,74 +266,35 @@ AttributionTest      归因（哪一层确认了结果）
 
 ## 构建
 
-本项目**不依赖 Gradle**。构建链是手工两段式——因为 `aapt2` 与 `d8` 在 Android 上是 arm64 原生二进制，桌面侧跑不了；而桌面侧有 javac。
+**不用 Gradle**。构建链手工两段式 —— `aapt2` 与 `d8` 在 Android 上是 arm64
+原生二进制，桌面跑不了；而桌面有 `javac`。
 
 ```sh
-# 第一段：Android 侧（aapt2 编译资源 + link 出 base.apk）
-sh 1-aapt2.sh
-
-# 第二段：桌面侧（javac + d8 + 组装 + 签名）
-sh 2-build-dex.sh
+sh 1-aapt2.sh       # Android 侧：编译资源 + link 出 base.apk
+sh 2-build-dex.sh   # 桌面侧：javac + d8 + 组装 + 签名
 ```
 
-产物：`build/out/wpaforge-signed.apk`
-
-**为什么这么设计**：省去 SDK 下载与网络依赖，构建链完全显式可控。代价是要两段跑。
+产物：`build/out/wpaforge-signed.apk`。省去 SDK 下载与网络依赖，
+构建链完全显式可控。
 
 ### 目录结构
 
 ```
 app/src/main/
-├── AndroidManifest.xml
-├── assets/builtin/
-│   ├── *.txt                     内置弱口令表（首次启动释放到设备）
-│   └── oui.txt                   IEEE OUI 厂商表（15913 条，419 KB）
-├── res/                          图标、字符串
-└── java/io/github/wlmosv_png/wpaforge/
-    ├── MainActivity.java         主界面（四页签）
-    ├── DictActivity.java         字典管理
-    ├── AboutActivity.java        关于页
-    ├── CrackService.java         前台服务（队列执行、断点续跑）
-    ├── Prefs.java                设置与实测速率样本
-    ├── L.java                    双语文案层
-    ├── Ver.java                  版本号（唯一来源，从 PackageManager 读）
-    ├── core/NetRecord.java       网络模型
-    ├── scan/
-    │   ├── Scanner.java          扫描（广播 + 轮询双路）
-    │   ├── PrivScanReader.java   特权通道读系统扫描结果
-    │   ├── ChannelAnalyzer.java  信道占用与推荐
-    │   ├── SsidGroup.java        同 SSID 多 AP 聚合
-    │   ├── ScanDetail.java       带宽 / Wi-Fi 代际（反射降级）
-    │   └── OuiLookup.java        IEEE OUI 厂商查询
-    ├── audit/
-    │   ├── CrackEngine.java      判定引擎（唯一判定入口）
-    │   ├── NetworkWatcher.java   系统网络事件监听
-    │   ├── SupplicantParser.java WifiInfo 行解析
-    │   ├── StatusParser.java     cmd wifi status 解析
-    │   ├── ListNetworksParser.java  list-networks 行解析
-    │   ├── WifiStateLog.java     状态机日志读取
-    │   ├── WpaLogReader.java     wpa_supplicant 日志解析
-    │   ├── WpaCore.java          SHA-1 / HMAC-SHA1 / PBKDF2
-    │   ├── TargetDictBuilder.java 目标派生
-    │   ├── SmartSorter.java      智能排序
-    │   ├── DictGenerator.java    内置生成器
-    │   ├── DictStore.java        字典仓库
-    │   ├── DictRule.java         规则字典展开
-    │   ├── DictSources.java      在线字典源（SecLists 镜像）
-    │   ├── BuiltinDicts.java     内置字典释放
-    │   ├── TaskQueue.java        任务队列持久化
-    │   ├── HistStore.java        破解历史
-    │   ├── EnvDiagnostics.java   全链路环境诊断
-    │   └── RootProber.java       通道可用性探测
-    └── ui/
-        ├── RadarSweep.java       雷达扫描动画
-        ├── SignalBars.java       信号柱状图
-        ├── ChannelBars.java      信道占用条
-        ├── StagedProgress.java   三层进度条（缓动 + 流光）
-        ├── NetDialog.java        应用内弹窗（暗色圆角）
-        ├── AuthorCard.java       作者卡片
-        └── ThinProgress.java     细进度条
+├── assets/builtin/       内置弱口令表 + IEEE OUI 表（首启释放）
+├── res/                  图标与字符串
+└── java/.../wpaforge/
+    ├── MainActivity / DictActivity / AboutActivity / CrackService
+    ├── Prefs / L / Ver     设置、双语、版本
+    ├── core/NetRecord      网络模型
+    ├── scan/               扫描、信道分析、SSID 聚合、OUI 查询
+    │   └── LanProbe*       局域网探测（含证据链与报告）
+    ├── audit/              判定引擎、加密、字典、排序、队列
+    └── ui/                 自绘视图与弹窗
 ```
+
+> 想深入看实现取舍（判定时序、假阳性成因、并发设计），
+> 见 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md) —— 那里只讲踩过的坑。
 
 ---
 

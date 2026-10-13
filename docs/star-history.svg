@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="240" viewBox="0 0 720 240" role="img">
+<style>.bg{fill:#0d1117}.ax{stroke:#30363d;stroke-width:1}.gr{stroke:#21262d;stroke-width:1}.lb{fill:#8b949e;font:11px -apple-system,Segoe UI,sans-serif}.vl{fill:#c9d1d9;font:11px -apple-system,Segoe UI,sans-serif}.ln{fill:none;stroke:#2ea043;stroke-width:2.5;stroke-linejoin:round}.ar{fill:#2ea043;fill-opacity:.13}.dt{fill:#2ea043;stroke:#0d1117;stroke-width:2}</style>
+<rect class="bg" width="720" height="240" rx="8"/>
+<line class="gr" x1="46" y1="206.0" x2="700" y2="206.0"/>
+<text class="lb" x="38" y="210.0" text-anchor="end">0</text>
+<line class="gr" x1="46" y1="170.8" x2="700" y2="170.8"/>
+<text class="lb" x="38" y="174.8" text-anchor="end">10</text>
+<line class="gr" x1="46" y1="135.6" x2="700" y2="135.6"/>
+<text class="lb" x="38" y="139.6" text-anchor="end">20</text>
+<line class="gr" x1="46" y1="100.4" x2="700" y2="100.4"/>
+<text class="lb" x="38" y="104.4" text-anchor="end">30</text>
+<line class="gr" x1="46" y1="65.2" x2="700" y2="65.2"/>
+<text class="lb" x="38" y="69.2" text-anchor="end">40</text>
+<line class="gr" x1="46" y1="30.0" x2="700" y2="30.0"/>
+<text class="lb" x="38" y="34.0" text-anchor="end">50</text>
+<polygon class="ar" points="46,206 46.0,184.9 264.0,86.3 482.0,58.2 700.0,37.0 700,206"/>
+<polyline class="ln" points="46.0,184.9 264.0,86.3 482.0,58.2 700.0,37.0"/>
+<circle class="dt" cx="46.0" cy="184.9" r="4"/>
+<text class="vl" x="46.0" y="173.9" text-anchor="middle">6</text>
+<text class="lb" x="46.0" y="224" text-anchor="middle">10-10</text>
+<circle class="dt" cx="264.0" cy="86.3" r="4"/>
+<text class="vl" x="264.0" y="75.3" text-anchor="middle">34</text>
+<text class="lb" x="264.0" y="224" text-anchor="middle">10-11</text>
+<circle class="dt" cx="482.0" cy="58.2" r="4"/>
+<text class="vl" x="482.0" y="47.2" text-anchor="middle">42</text>
+<text class="lb" x="482.0" y="224" text-anchor="middle">10-12</text>
+<circle class="dt" cx="700.0" cy="37.0" r="4"/>
+<text class="vl" x="700.0" y="26.0" text-anchor="middle">48</text>
+<text class="lb" x="700.0" y="224" text-anchor="middle">10-13</text>
+<line class="ax" x1="46" y1="30" x2="46" y2="206"/>
+<line class="ax" x1="46" y1="206" x2="700" y2="206"/>
+<text class="lb" x="46" y="20" text-anchor="start">Star 累计</text>
+</svg>

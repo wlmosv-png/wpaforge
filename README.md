@@ -1,372 +1,93 @@
-# WPAForge
+<div align="center">
 
-> Android WPA 密码破解工具 —— 逐条真实关联，带目标派生、智能排序、断点续跑与后台队列。
+# WPAForge ⚡
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%2026%2B-green.svg)]()
-[![Version](https://img.shields.io/badge/version-1.9.7%20(77)-orange.svg)]()
+**在手机上，把附近那台路由器的 WPA 密码试出来。**
 
-**中文** | [English](README_EN.md)
+[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=yellow)](https://github.com/wlmosv-png/wpaforge/stargazers)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
+[![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-> **代码审阅者请看 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md)** ——
-> 那里只讲设计取舍和踩过的坑（配置复用假阳性、判定时序、`finally` 覆盖结果等），
-> 比本文件更适合评估实现质量。
+**中文** · [English](README_EN.md)
 
----
+<img src="docs/screenshots/all.png" alt="WPAForge" width="720">
 
-<p align="center">
-  <img src="docs/screenshots/all.png" alt="WPAForge 界面" width="100%">
-</p>
-
-## 这是什么
-
-WPAForge 通过系统的 `cmd wifi` 接口逐条尝试连接目标网络，用真实的关联结果判断密码是否正确。
-
-和其它同类工具的**关键区别**在于：
-
-| | WPAForge | 常见 WiFi 破解工具 |
-|---|---|---|
-| **目标派生** | 按 SSID / BSSID 现场生成候选，几百条覆盖常见场景 | 只能按字典行序盲试 |
-| **智能排序** | 按目标特征给候选打分重排，最可能的密码排最前 | 无 |
-| **断点续跑** | 进度实时存盘，中断后从原位置继续 | 中断即从头再来 |
-| **多目标队列** | 排队自动执行，每项可单独暂停/继续 | 一次只能一个 |
-| **后台运行** | 前台服务 + 通知栏进度，锁屏继续跑 | 部分支持 |
-| **在线字典** | 10 个公开来源一键下载，边下边过滤 | 需自行寻找 |
-| **网卡厂商识别** | 内置 IEEE OUI 表（15913 条），直接显示路由器品牌 | 无 |
-| **批量与聚合** | 同一 SSID 的多个 BSSID 自动归组 | 平铺重复项 |
-| **算法透明** | 加密实现自研，过 RFC 3174 / 2202 / 6070 三套标准向量 | 黑盒 |
+</div>
 
 ---
 
-<p align="center">
-  <img src="docs/star-history.svg" alt="Star 历史" width="620">
-</p>
+## 为什么是它
 
-<p align="center"><sub>Star 增长曲线（手动更新）</sub></p>
+常见的 WiFi 破解工具拿一本字典**从头盲试**。WPAForge 不一样——它盯着**你这台手机面前的这一个目标**，现场造最可能命中的密码。
 
-## 技术亮点
+- 🎯 **目标派生** — 按 SSID / BSSID 自动生成几百条「就这个路由器最可能」的候选，字典里没有的它也补上
+- ⚡ **智能排序** — 给候选打分重排，对的那条排进前几十位，而不是第五万位
+- 🔄 **断点续跑** — 进度实时落盘，锁屏继续跑，中断后从原处接着来
+- 🧵 **多目标队列** — 排队自动执行，每项可单独暂停 / 继续
+- 🏭 **厂商识别** — 内置 IEEE OUI 表，BSSID 直接显示路由器品牌
+- 🔒 **真关联判定** — 只用 4-Way Handshake 完成这一条信号，四条证据同源才算命中，不报假成功
 
-### 1. 单一通道，一套判定
+**一句话：字典的质量比体积重要一百倍，而 WPAForge 把「对的那一条」提前到最前面。**
 
-本版**只保留 Root 通道**（`su -c "cmd wifi ..."`）。
-Shizuku 与免 Root 已移除，原因写在下面。
+## 安装
 
-所有逻辑共用同一个 **`CrackEngine`**。通道只负责「把一条候选发出去」，
-判定完全在引擎里做 —— 这样判定规则只有一份，改一处就全生效。
+> **需要 Root** · Android 8.0+
 
+[**⬇️ 下载最新版 APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
+
+没有 Root 就别试了——判定依赖 `su + cmd wifi`，Shizuku 与免 Root 通道已移除（原因见 [TECHNICAL-NOTES.md](doc/TECHNICAL-NOTES.md)）。
+
+## 快速上手
+
+```text
+1. 打开「观测」页，扫描附近网络，选中你的目标
+2. 打开「破解」页，加载字典（或让它现场派生）
+3. 点开始，锁屏等结果 —— 命中的密码会直接标出来
 ```
-                     ┌──────────────────┐
-   Root 通道 ───────→ │   CrackEngine    │ ←── 唯一判定入口
-   (su + cmd wifi)   │  （引擎，判定）   │
-                     └────────┬─────────┘
-                              │
-                     ShellChannel (su)
-```
-
-**为什么砍掉另外两条通道**
-
-| 通道 | 砍掉的原因 |
-|---|---|
-| Shizuku | `cmd wifi` 的字符串命令会被 shell 转义与 ROM 差异吞掉，
-netId 建不出来，判定永远失败 —— 换 binder 直调能绕开，但那是第二条实现，维护成本翻倍 |
-| 免 Root | 走 `WifiNetworkSpecifier` **每一条候选都会弹一次系统确认框**。
-这是 Android 的安全边界，不是实现缺陷 —— 无法关闭，实用价值极低 |
-
-与其让用户在三者之间踩坑，不如只留一条**本机实测跑得通**的路。
-
-### 1.1 判定链：同源四条件 + netId 绑定
-
-任何单一信号都不可靠 —— 这是踩过一轮假阳性之后才定下来的。
-
-现行判据要求**四个条件同源于同一行 `WifiInfo`**：
-
-```
-① SSID            == 目标
-② Supplicant state == COMPLETED      ← 4-Way Handshake 完成
-③ IP              有效（排除 0.0.0.0）
-④ Net ID          == 本条命令新建出来的 netId
-```
-
-四条同行同源，是为了排除「系统回连别的网络」——
-别人的网、自己的旧网，都能满足其中任意两三条，但凑不齐四条。
-
-**关于第 ④ 条的一个折中**：`netId` 是系统分配的，但取值有时序敏感问题 ——
-命令刚发出时配置未必已建好，可能取到 `-1`。硬卡这一条会导致
-**正确密码永远判不出来**（实机出现过：密码正确但 12 秒超时、status 读了 33 轮一次不命中）。
-
-所以实现为**宽松式**：两侧都拿到有效 netId 时才强制相等；
-任一侧为 `-1` 视为证据不足，退回前三条件判定。命中时会把证据写进
-`confirmedBy`（`supplicant+netId` 表示 netId 也吻合，证据最强）。
-
-### 1.2 三个必须处理的陷阱
-
-**配置复用** —— `connect-network` 对同名网络会复用已存配置，
-目标之前连过的话，传什么密码都能「连上」。每条之前必须删配置并回读校验。
-
-**PMKSA 缓存** —— 配置忘了，`wpa_supplicant` 仍可能用缓存密钥短时连回，
-错误密码也会「成功」。任务开始时重启一次 WiFi 强制清掉。
-
-**命中被覆盖** —— `finally` 在 `return` 后仍执行，收尾回调发两次，
-第二次密码为 `null` 把命中改成未命中。加 `finished` 标志。
-
-前两个坑原本在每条通道里各有一份 —— 这是把所有通道收敛到一个引擎的直接原因。
-
-### 2. 目标派生：往字典里补它没有的
-
-智能排序只能**重排已有的**候选。如果字典里没有 `FAST_E972123` 这种派生密码，它永远排不出来。
-
-`TargetDictBuilder` 根据目标现场造：
-
-```
-输入:  SSID = FAST_E972
-       BSSID = AA:BB:CC:E9:72:11
-
-生成:  FAST_E972 / fast_e972 / FASTE972          ← 原文与变形
-       97297297 / 97297200 / 97297288            ← 数字重复族
-       e9721100 / e9721188 / E97211E9            ← BSSID 尾号族
-       e972123e / e9721230 / e97212345          ← 片段 + 数字
-       E972E972 / e972e972                       ← 片段重复
-```
-
-**关键设计**：WPA 强制密码至少 8 位，但用户想设的常是 6–7 位（`972888`、`209209`）。所以对不足 8 位的**自动补几种最可能的填法**，而不是丢弃。
-
-7 个类别按**轮流交错**合并，保证前几十条就覆盖所有类别。
-
-### 3. 智能排序：让对的那条更早出现
-
-不增删任何候选，只重排顺序。评分维度：
-
-| 维度 | 权重 |
-|---|---|
-| SSID 完全匹配 | +900 |
-| SSID 前缀匹配 | +400 |
-| SSID 内数字串 | +350 |
-| BSSID 尾号 | +320 |
-| 通用高频弱密码 | +260 |
-| 长度接近 8–11 位 | +60 |
-| 纯数字偏好 | +45 |
-
-实测（目标 `B209`，BSSID 尾号 `45DCED`）：
-
-```
-输入: aardvark, zzzzzzzzzz, B209123, randompass, 45dced, 12345678
-
-输出: B209123 → 45dced → 12345678 → zzzzzzzzzz → aardvark → randompass
-      ↑SSID    ↑MAC尾号  ↑高频弱密码        无关的沉底
-```
-
-### 4. 速度：为什么快不起来
-
-AP 对错误密码的响应速度是物理限制。手机一次只能连一个网络，**无法并行** ——
-这不是实现问题。
-
-单条候选的成本拆解（真机实测，Root 通道）：
-
-```
-forget + list-networks   209 ms
-cmd wifi status          100 ms
-connect-network 下发      87 ms
-logcat 读取              239 ms
---------------------------------
-一轮轮询                 ~300 ms
-```
-
-正确密码约 1.1 秒判定完成；错误密码要看系统多久放弃尝试，实测 **1~6 秒**。
-
-| 字典大小 | 耗时（按每条 1.2 秒估） |
-|---|---|
-| 500 | 约 10 分钟 |
-| 5,000 | 约 1.7 小时 |
-| 50,000 | 约 16.7 小时 |
-
-所以**字典的质量远比体积重要**。这也是目标派生 + 智能排序存在的原因 ——
-让命中的那一条尽量排在前几十位，而不是第五万位。
-
-> 界面上显示的是「每条约 X 秒」而不是「X 条/秒」：
-> 后者在 0.1 这种量级上看着像「没在动」，而前者才是用户真正关心的等待时长。
-
----
-
-## 加密实现
-
-WPA 密钥派生按 **IEEE 802.11i** 手写，不依赖第三方加密库：
-
-```
-PMK = PBKDF2-HMAC-SHA1(passphrase, ssid, 4096, 256bit)
-PTK = PRF-512(PMK, "Pairwise key expansion", ...)
-MIC = HMAC-SHA1(KCK, EAPOL_frame_with_MIC_zeroed)[0..16)
-```
-
-标准向量全部通过：SHA-1（RFC 3174）、HMAC-SHA1（RFC 2202）、
-PBKDF2（RFC 6070）、PMK（Wi-Fi 联盟公开向量）。
-
-全部 **443 项**测试（23 个类）通过，纯逻辑与 Android 解耦，
-**可直接在桌面 JVM 上跑**（javac + java，无需模拟器）。其中
-`SpecifierTest` 与 `FalsePositiveTest` 把「超时不算成功」「回连别的网不算命中」
-这类语义写死成测试，防止后续改动破坏判定。
-
----
-
-## 功能
-
-```
-观测页   扫描周边网络 · 筛选（全部/加密/开放/隐藏/WPS）· 雷达扫描
-         信号柱状图 · 信道占用与换信道建议 · 带宽与 Wi-Fi 代际
-         网卡厂商识别（IEEE OUI）· 同 SSID 多 AP 聚合 · 已存 WiFi 自查
-审计页   内置生成器 · 按 SSID 派生 · 加载字典 · 密码强度检查
-破解页   选目标 · 选字典 · 队列 · 三层进度条 · 逐行着色的攻击流日志
-         暂停/继续/停止 · 断点续跑 · 后台运行
-字典管理 新建(普通/规则) · 导入 · 在线下载 · 合并 · 查看 · 编辑 · 统计
-设置页   通道状态 · 权限 · 连接自测 · 导出日志 · 语言 · PIN 锁
-         长按通道行看完整检测证据
-关于页   项目介绍 · 作者链接 · 使用边界
-```
-
-**界面语言**：自动跟随系统（中文系统显示中文，其余显示英文），也可在设置里手动切换。
-
-**候选的三层策略**：
-
-```
-第 1 层  目标派生     ~500 条   按 SSID/BSSID 现场造候选
-第 2 层  智能排序     全量      按目标特征重排
-第 3 层  字典原序     全量      兜底
-```
-
-**进度与恢复**：`offset` 在每条候选出结论后落盘（按 ≥2 秒 或 ≥20 条节流），
-命中/暂停/停止则立即落盘。系统回收进程后可从原位置继续。
-
----
 
 ## 界面预览
 
-> 截图取自已安装的 1.9.0（OnePlus PJX110 / Android 15），裁去状态栏与手势条。
-
 <p align="center">
-  <img src="docs/screenshots/shot02.jpg" width="24%">
-  <img src="docs/screenshots/shot03.jpg" width="24%">
-  <img src="docs/screenshots/shot04.jpg" width="24%">
-  <img src="docs/screenshots/shot05.jpg" width="24%">
-  <img src="docs/screenshots/shot06.jpg" width="24%">
-  <img src="docs/screenshots/shot07.jpg" width="24%">
-  <img src="docs/screenshots/shot08.jpg" width="24%">
-  <img src="docs/screenshots/shot01.jpg" width="24%">
+  <img src="docs/screenshots/shot01.jpg" width="23%">
+  <img src="docs/screenshots/shot02.jpg" width="23%">
+  <img src="docs/screenshots/shot03.jpg" width="23%">
+  <img src="docs/screenshots/shot04.jpg" width="23%">
 </p>
 
-<p align="center"><sub>依次：
-　1. 观测页 · 雷达扫描与信号分布
-<br>　2. 观测页 · 厂商识别、随机化 MAC 标注、同 SSID 多 AP 聚合
-<br>　3. 观测页 · 信道占用与换信道建议
-<br>　4. 审计页 · 字典来源与口令强度检查
-<br>　5. 字典管理 · 列表与统计
-<br>　6. 破解页 · 三层进度条与攻击流日志
-<br>　7. 破解页 · 队列与任务状态
-<br>　8. 设置页 · 通道状态与诊断入口</sub></p>
-
----
+观测 · 审计 · 破解 · 字典 · 设置，五页齐全，自动跟随系统语言。
 
 ## 构建
 
-**不用 Gradle**。构建链手工两段式 —— `aapt2` 与 `d8` 在 Android 上是 arm64
-原生二进制，桌面跑不了；而桌面有 `javac`。
+不依赖 Gradle，两段式手工链：
 
 ```sh
-sh 1-aapt2.sh       # Android 侧：编译资源 + link 出 base.apk
-sh 2-build-dex.sh   # 桌面侧：javac + d8 + 组装 + 签名
+sh 1-aapt2.sh       # 设备侧：aapt2 编译资源
+sh 2-build-dex.sh   # 桌面侧：javac + d8 + 签名
 ```
 
-产物：`build/out/wpaforge-signed.apk`。省去 SDK 下载与网络依赖，
-构建链完全显式可控。
-
-### 目录结构
-
-```
-app/src/main/
-├── assets/builtin/       内置弱口令表 + IEEE OUI 表（首启释放）
-├── res/                  图标与字符串
-└── java/.../wpaforge/
-    ├── MainActivity / DictActivity / AboutActivity / CrackService
-    ├── Prefs / L / Ver     设置、双语、版本
-    ├── core/NetRecord      网络模型
-    ├── scan/               扫描、信道分析、SSID 聚合、OUI 查询
-    │   └── LanProbe*       局域网探测（含证据链与报告）
-    ├── audit/              判定引擎、加密、字典、排序、队列
-    └── ui/                 自绘视图与弹窗
-```
-
-> 想深入看实现取舍（判定时序、假阳性成因、并发设计），
-> 见 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md) —— 那里只讲踩过的坑。
-
----
-
-## 权限
-
-| 权限 | 用途 |
-|---|---|
-| `NEARBY_WIFI_DEVICES` | Android 13+ 读取扫描结果 |
-| `ACCESS_FINE_LOCATION` | Android 12 及以下读取扫描结果 |
-| `FOREGROUND_SERVICE` | 后台破解 |
-| `POST_NOTIFICATIONS` | 进度通知 |
-
-**root 权限**：破解功能必需。用于调用 `cmd wifi` 驱动连接。
-应用启动时会自动申请上述运行时权限；被永久拒绝时设置页会给出
-「去系统设置里允许」入口。
+产物 `build/out/wpaforge-signed.apk`，构建链完全显式可控。
 
 ---
 
 ## 使用边界
 
-**仅对自己拥有授权的网络使用**（自有路由器、实验室、授权渗透测试）。
-
-WPAForge 会向目标 AP 发起**真实的关联请求**。对自有网络是自查；对未授权网络：
-
-- 是违法行为
-- 路由器侧会记录失败尝试（含 MAC 与时间）
-- 长时间高频尝试可能造成 AP 连接表压力
-
-请自行确保对目标网络拥有明确授权。
+**仅对自己拥有授权的网络使用**（自有路由器、实验室、授权渗透测试）。对未授权网络发起关联尝试是违法行为，且路由器侧会记录你的 MAC 与时间。
 
 ---
 
-## 已知限制
-
-| 项 | 说明 |
-|---|---|
-| **仅 Root** | 执行通道固定为 `su + cmd wifi`，不支持 Shizuku 与免 Root |
-| **6GHz 未实机验证** | 代码里有频段判断路径，但测试机扫不到 6GHz 网络 |
-| **WPS 只看不连** | 只做识别与筛选，未实现 PIN 穷举 |
-| **厂商名依赖 IEEE 表** | 表中未收录的 OUI 显示空白，不做猜测 |
-| **随机化 MAC 无法溯源** | Android 10+ 默认对每个 SSID 生成随机 MAC，
-协议层面就不含厂商信息 |
-| **单通道串行** | 手机一次只能连一个网络，无法并行尝试 |
-
----
-
-## 内置字典来源
-
-`assets/builtin/` 中的基础字典来自**公开的弱密码统计数据集**与通用规律生成表（弱密码排行、数字规律、字母数字组合、常见英文词频）。这些是社区长期公开的安全研究数据，不是任何单一作品的原创内容。
-
-在线字典功能从 [SecLists](https://github.com/danielmiessler/SecLists)（MIT 许可）等公开项目下载，数据落于用户本机，本仓库不包含这些数据。
-
-`assets/builtin/oui.txt` 取自 **IEEE 官方 OUI 登记表**
-（[standards-oui.ieee.org](https://standards-oui.ieee.org/oui/oui.txt)，MA-L 段），
-按网络设备关键词裁剪为 15913 条，仅用于显示网卡厂商名。
-表中未收录的地址显示空白，不做推测。
-
----
-
-## 许可
+## License
 
 Apache License 2.0 — 见 [LICENSE](LICENSE)
 
-## 作者
+设计取舍与踩过的坑（配置复用假阳性、判定时序、`finally` 覆盖结果等）见 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md)。
 
-**wlmosv**
+---
 
-- GitHub: https://github.com/wlmosv-png
-- Telegram: [@wlmosv_bunny](https://t.me/wlmosv_bunny)
+<div align="center">
 
-### 其它项目
+由 [wlmosv](https://github.com/wlmosv-png) 用 ❤️ 打造
 
-**[TGAutoSign](https://github.com/wlmosv-png)** — Telegram 自动签到的 Xposed 模块。多账号槽位、群签到判定、定时计划、多主题界面。管理入口：任意聊天发 `/jmb`。
-
-**[apk-index](https://github.com/wlmosv-png)** — APK 静态索引与逆向检索工具。解 AXML、逐 dex 建索引、按字符串/签名/结构反查 hook 点。
+</div>

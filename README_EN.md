@@ -84,10 +84,9 @@ Apache License 2.0 — see [LICENSE](LICENSE)
 
 Design trade-offs and pitfalls (config-reuse false positives, detection timing, `finally` clobbering results) live in [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md).
 
----
+## My other projects
 
-<div align="center">
-
-Made with ❤️ by [wlmosv](https://github.com/wlmosv-png)
-
-</div>
+| Project | What it does |
+|---|---|
+| **[TGAutoSign](https://github.com/wlmosv-png/TGAutoSign)** | Xposed module for Telegram auto check-in — multi-account slots, group sign-in detection, scheduled plans, themed UI. Manage targets with `/jmb` in any chat. |
+| **[apk-index](https://github.com/wlmosv-png/apk-index)** | APK static indexing & reverse-engineering search — parses AXML, indexes each dex, finds hook points by string / signature / structure. MCP-ready. |

@@ -84,10 +84,9 @@ Apache License 2.0 — 见 [LICENSE](LICENSE)
 
 设计取舍与踩过的坑（配置复用假阳性、判定时序、`finally` 覆盖结果等）见 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md)。
 
----
+## 我的其它项目
 
-<div align="center">
-
-由 [wlmosv](https://github.com/wlmosv-png) 用 ❤️ 打造
-
-</div>
+| 项目 | 简介 |
+|---|---|
+| **[TGAutoSign](https://github.com/wlmosv-png/TGAutoSign)** | Telegram 自动签到的 Xposed 模块 —— 多账号槽位、群签到判定、定时计划、多主题界面。任意聊天发 `/jmb` 管理全部目标。 |
+| **[apk-index](https://github.com/wlmosv-png/apk-index)** | APK 静态索引与逆向检索工具 —— 解 AXML、逐 dex 建索引，按字符串 / 签名 / 结构反查 hook 点，MCP 接入。 |

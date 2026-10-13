@@ -13,7 +13,7 @@
 
 **English** · [中文](README.md)
 
-<img src="docs/screenshots/shot01.jpg" alt="WPAForge" width="42%">
+<img src="docs/banner.svg" alt="WPAForge" width="100%">
 
 </div>
 

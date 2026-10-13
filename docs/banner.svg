@@ -1,18 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" font-family="ui-monospace, 'Courier New', monospace">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#05070d"/>
-      <stop offset="1" stop-color="#0a1626"/>
+      <stop offset="0" stop-color="#070707"/>
+      <stop offset="1" stop-color="#141008"/>
     </linearGradient>
     <linearGradient id="txt" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#00e5ff"/>
-      <stop offset="0.5" stop-color="#7df9ff"/>
-      <stop offset="1" stop-color="#00b4d8"/>
+      <stop offset="0" stop-color="#ffcc00"/>
+      <stop offset="0.5" stop-color="#ffe066"/>
+      <stop offset="1" stop-color="#f5a623"/>
     </linearGradient>
     <radialGradient id="sweep" cx="50%" cy="50%" r="50%">
-      <stop offset="0" stop-color="#00e5ff" stop-opacity="0"/>
-      <stop offset="0.7" stop-color="#00e5ff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#00e5ff" stop-opacity="0.55"/>
+      <stop offset="0" stop-color="#ffcc00" stop-opacity="0"/>
+      <stop offset="0.7" stop-color="#ffcc00" stop-opacity="0"/>
+      <stop offset="1" stop-color="#ffcc00" stop-opacity="0.5"/>
     </radialGradient>
     <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
       <feGaussianBlur stdDeviation="8" result="b"/>
@@ -33,46 +33,45 @@
   <rect width="1200" height="320" fill="url(#bg)"/>
 
   <!-- 网格 -->
-  <g stroke="#0f2538" stroke-width="1" opacity="0.6">
+  <g stroke="#241d0e" stroke-width="1" opacity="0.7">
     <path d="M0 60 H1200 M0 120 H1200 M0 180 H1200 M0 240 H1200"/>
     <path d="M60 0 V320 M160 0 V320 M260 0 V320 M360 0 V320 M460 0 V320 M560 0 V320 M660 0 V320 M760 0 V320 M860 0 V320 M960 0 V320 M1060 0 V320 M1160 0 V320"/>
   </g>
 
   <!-- 雷达盘 -->
   <g transform="translate(850 245)">
-    <circle r="150" fill="none" stroke="#0f2538" stroke-width="1"/>
-    <circle r="110" fill="none" stroke="#123048" stroke-width="1"/>
-    <circle r="70" fill="none" stroke="#123048" stroke-width="1"/>
-    <circle r="30" fill="none" stroke="#00e5ff" stroke-width="1" opacity="0.5"/>
-    <path d="M-150 0 H150 M0 -150 V150" stroke="#0f2538" stroke-width="1"/>
-    <path d="M-106 -30 L-88 -30 M106 -30 L88 -30" stroke="#123048" stroke-width="1"/>
+    <circle r="150" fill="none" stroke="#2e250f" stroke-width="1"/>
+    <circle r="110" fill="none" stroke="#3d3113" stroke-width="1"/>
+    <circle r="70" fill="none" stroke="#3d3113" stroke-width="1"/>
+    <circle r="30" fill="none" stroke="#ffcc00" stroke-width="1" opacity="0.5"/>
+    <path d="M-150 0 H150 M0 -150 V150" stroke="#2e250f" stroke-width="1"/>
     <!-- 扫描扇形 -->
-    <path d="M0 0 L0 -150 A150 150 0 0 1 130 -75 Z" fill="url(#sweep)" opacity="0.5">
+    <path d="M0 0 L0 -150 A150 150 0 0 1 130 -75 Z" fill="url(#sweep)" opacity="0.55">
       <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="4s" repeatCount="indefinite"/>
     </path>
     <!-- 扫描线 -->
-    <line x1="0" y1="0" x2="0" y2="-150" stroke="#00e5ff" stroke-width="2" opacity="0.9">
+    <line x1="0" y1="0" x2="0" y2="-150" stroke="#ffcc00" stroke-width="2" opacity="0.9">
       <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="4s" repeatCount="indefinite"/>
     </line>
     <!-- 命中点 -->
-    <circle cx="-106" cy="-30" r="4" fill="#ffcc00" filter="url(#glow2)">
+    <circle cx="-106" cy="-30" r="4" fill="#ffffff" filter="url(#glow2)">
       <animate attributeName="opacity" values="1;0.2;1" dur="1.6s" repeatCount="indefinite"/>
     </circle>
-    <circle cx="88" cy="-30" r="4" fill="#ffcc00" filter="url(#glow2)">
+    <circle cx="88" cy="-30" r="4" fill="#ffffff" filter="url(#glow2)">
       <animate attributeName="opacity" values="0.2;1;0.2" dur="1.6s" repeatCount="indefinite"/>
     </circle>
   </g>
 
   <!-- 主标题 -->
   <g filter="url(#glow)">
-    <text x="70" y="168" font-size="92" font-weight="bold" fill="url(#txt)" stroke="#00b4d8" stroke-width="0.5">WPAForge</text>
+    <text x="70" y="168" font-size="92" font-weight="bold" fill="url(#txt)" stroke="#f5a623" stroke-width="0.5">WPAForge</text>
   </g>
 
   <!-- 副标题 -->
-  <text x="74" y="210" font-size="22" fill="#8ab8c8" letter-spacing="2">CRACK IT · RIGHT HERE · RIGHT NOW</text>
+  <text x="74" y="210" font-size="22" fill="#b8a878" letter-spacing="2">CRACK IT · RIGHT HERE · RIGHT NOW</text>
 
   <!-- 底部装饰线 -->
-  <rect x="70" y="250" width="320" height="3" fill="#00e5ff" opacity="0.8">
+  <rect x="70" y="250" width="320" height="3" fill="#ffcc00" opacity="0.85">
     <animate attributeName="width" values="320;80;320" dur="3s" repeatCount="indefinite"/>
   </rect>
 </svg>

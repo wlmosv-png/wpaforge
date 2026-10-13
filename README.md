@@ -84,6 +84,14 @@ Apache License 2.0 — 见 [LICENSE](LICENSE)
 
 设计取舍与踩过的坑（配置复用假阳性、判定时序、`finally` 覆盖结果等）见 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md)。
 
+## Star History
+
+<p align="center">
+  <a href="https://star-history.com/#wlmosv-png/wpaforge&Date">
+    <img src="https://api.star-history.com/svg?repos=wlmosv-png/wpaforge&type=Date" alt="Star History" width="100%">
+  </a>
+</p>
+
 ## 我的其它项目
 
 | 项目 | 简介 |

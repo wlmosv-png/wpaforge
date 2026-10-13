@@ -84,6 +84,14 @@ Apache License 2.0 — see [LICENSE](LICENSE)
 
 Design trade-offs and pitfalls (config-reuse false positives, detection timing, `finally` clobbering results) live in [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md).
 
+## Star History
+
+<p align="center">
+  <a href="https://star-history.com/#wlmosv-png/wpaforge&Date">
+    <img src="https://api.star-history.com/svg?repos=wlmosv-png/wpaforge&type=Date" alt="Star History" width="100%">
+  </a>
+</p>
+
 ## My other projects
 
 | Project | What it does |

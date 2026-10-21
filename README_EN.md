@@ -19,21 +19,44 @@
 
 ---
 
-## Why WPAForge
+## How it finds the password
 
-Typical WiFi crackers grind through a dictionary **top to bottom**. WPAForge is different — it builds the most likely passwords **for the one target right in front of you**.
+No dictionary grind. It guesses first — a few hundred candidates built from what this
+particular router is likely to have been set to, ranked, then tried top-down. The
+dictionary is the fallback, not the main act.
 
-- 🎯 **Target derivation** — generates hundreds of "most likely for this router" candidates from SSID / BSSID, filling what your dictionary lacks
-- ⚡ **Smart ranking** — scores and reorders candidates so the right one lands in the first few dozen, not the fifty-thousandth
-- 🔄 **Resume** — progress persisted continuously; runs with the screen locked (holding a WakeLock + WifiLock), resumes where it stopped
-- 🧵 **Multi-target queue** — runs queued jobs automatically, each pausable / resumable
-- 🏭 **Vendor & channel** — built-in IEEE OUI table shows the router brand; the channel-occupancy chart suggests a better channel, bandwidth and Wi-Fi generation are listed, APs filterable by WPS
-- 🛰 **LAN recon** — after associating, sweeps the subnet for live hosts and common ports, groups them by vendor via the same OUI table, and writes a report
-- 🧭 **Connection control** — pin a single AP with `-b` when several share one SSID; optionally rotate to a fresh random MAC per attempt to ease AP-side rate limiting
-- 🔐 **Self-audit** — reads the WiFi networks saved on this phone and ranks their passphrases against common-password lists
-- 🔒 **Real-association detection** — one signal only: a completed 4-Way Handshake, four same-source proofs, no false positives
+**The guesses have evidence behind them.** For an SSID like `FAST_E972` it builds
+`fast2026`, `FAST#2026`, `e972e972`, `fast@2026` on the spot — none of which exist in
+any ready-made list. The vendor name comes from the IEEE OUI registry (419 KB,
+15,913 entries shipped inside the APK); when a BSSID isn't in the table the field
+stays empty rather than showing a made-up brand.
 
-**In one line: dictionary quality beats dictionary size — WPAForge puts "the right one" first.**
+**Every candidate costs a real association attempt.** A fast AP answers in about a
+second, a slow one takes five or more. A phone can hold only one association at a
+time — an Android limit, not something to work around — which is exactly why
+candidate quality beats quantity: a hundred thousand blind attempts is measured in
+days, a few hundred targeted ones usually finish in minutes.
+
+**Success has exactly one definition: a completed 4-Way Handshake.** SSID, supplicant
+state, IP and netId must all come from the same line of output; miss one and it does
+not count. It would rather report "uncertain" than report a false hit — that rule came
+from an incident where the system popped "could not connect to BTWIFL_0923" while the
+app claimed it had connected.
+
+**Lock the screen and it keeps going; kill it and it resumes.** Progress is persisted
+continuously (throttled to at most one write per 20 attempts).
+
+## What else is in there
+
+- Multi-target queue: a list of targets runs in order, each pausable / resumable
+- LAN recon: after associating, sweeps the subnet for live hosts and common ports,
+  groups them by vendor, writes an exportable report
+- Observe tab: channel-occupancy chart with a suggested channel, bandwidth and Wi-Fi
+  generation, filterable by WPS
+- Connection control: pin one AP with `-b` when several share an SSID; optionally use
+  a fresh random MAC per attempt
+- Self-audit: reads the WiFi networks saved on the phone and ranks their passphrases
+  against common-password lists
 
 ## Install
 

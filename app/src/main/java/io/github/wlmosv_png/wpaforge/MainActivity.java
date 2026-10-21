@@ -148,6 +148,8 @@ public class MainActivity extends Activity {
     private RootProber rootProber;
     private volatile boolean rootProberRunning = false;
     private NetRecord targetNet;
+    /** 设置页两个连接开关（状态直接写在按钮文案上） */
+    private Button connPinBtn, connRotBtn;
     private Thread connectThread;
 
     // 服务绑定
@@ -2447,16 +2449,12 @@ public class MainActivity extends Activity {
                             new String[]{"su", "-c", "cmd wifi list-networks"}, 6000);
                 }
                 io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this, new String[]{"su", "-c",
-                        "cmd wifi connect-network " + shellQuote(want) + " wpa2"}, 8000);
+                        "cmd wifi connect-network " + io.github.wlmosv_png.wpaforge.audit.ConnectSpec.shellQuote(want) + " wpa2"}, 8000);
                 ui.post(() -> appendStream(L.s("已尝试连回原网络: ", "Reconnected to previous network: ") + want));
             } catch (Exception ignored) {}
         }).start();
     }
 
-    private static String shellQuote(String s) {
-        if (s == null) return "''";
-        return "'" + s.replace("'", "'\\''") + "'";
-    }
 
     private void startConnect() {
         if (targetNet == null) {
@@ -2984,6 +2982,17 @@ public class MainActivity extends Activity {
         }, "wpaforge-exportlog").start();
     }
 
+    /** 连接选项两个开关的文案刷新 */
+    private void refreshConnOptions() {
+        if (connPinBtn == null || connRotBtn == null) return;
+        connPinBtn.setText(Prefs.pinBssid(this)
+                ? L.s("锁定 AP：开（-b 指定 BSSID）", "Pin AP: on (-b BSSID)")
+                : L.s("锁定 AP：关（由系统选择 AP）", "Pin AP: off (system picks)"));
+        connRotBtn.setText(Prefs.macRotate(this)
+                ? L.s("更换随机 MAC：开（每次尝试换一个）", "Random MAC: on (new one per attempt)")
+                : L.s("更换随机 MAC：关（沿用系统策略）", "Random MAC: off (system default)"));
+    }
+
     private void buildSettingsTab() {
         if (radar != null) radar.stopSpin();
 pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
@@ -3106,7 +3115,40 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         pinHint.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(pinHint);
 
-                pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));
+                pageSettings.addView(sectionLabel(L.s("连接选项", "Connection options")));
+
+        connPinBtn = btnSecondary("");
+        connPinBtn.setOnClickListener(v -> {
+            Prefs.setPinBssid(this, !Prefs.pinBssid(this));
+            refreshConnOptions();
+            Toast.makeText(this, connPinBtn.getText(), Toast.LENGTH_SHORT).show();
+        });
+        pageSettings.addView(connPinBtn);
+
+        connRotBtn = btnSecondary("");
+        connRotBtn.setOnClickListener(v -> {
+            Prefs.setMacRotate(this, !Prefs.macRotate(this));
+            refreshConnOptions();
+            Toast.makeText(this, connRotBtn.getText(), Toast.LENGTH_SHORT).show();
+        });
+        pageSettings.addView(connRotBtn);
+
+        TextView connHint = new TextView(this);
+        connHint.setText(L.s(
+                "· 锁定 AP：同名 SSID 有多个 AP 时，只跟你在破解页选中的那一个打交道（默认交给系统挑）\n"
+                + "· 更换随机 MAC：每次尝试换一个新 MAC，缓解目标 AP 限流；目标若做了 MAC 白名单，开着会连不上",
+                "· Pin AP: when several APs share one SSID, talk only to the one you picked\n"
+                + "· Random MAC: a new MAC per attempt eases AP rate limiting; breaks MAC-allowlisted targets"));
+        connHint.setTextSize(11.5f);
+        connHint.setTextColor(TEXT_DIM);
+        connHint.setLineSpacing(px(4), 1f);
+        connHint.setBackground(roundBg(SURFACE, 18));
+        connHint.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(connHint);
+
+        refreshConnOptions();
+
+        pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));
 
         TextView speedInfo = new TextView(this);
         speedInfo.setText(L.s("破解速度由目标路由器决定，实测约 1 秒/条。",

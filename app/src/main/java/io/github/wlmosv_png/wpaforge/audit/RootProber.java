@@ -464,7 +464,7 @@ public final class RootProber {
             }, "wpaforge-shizuku-conn").start();
         } else {
             String cmd = "cmd wifi connect-network "
-                    + shellQuote(target.ssid) + " " + sec + " " + shellQuote(password);
+                    + ConnectSpec.shellQuote(target.ssid) + " " + sec + " " + ConnectSpec.shellQuote(password);
             execAsync(new String[]{"su", "-c", "timeout 20 " + cmd});
         }
 
@@ -734,10 +734,6 @@ public final class RootProber {
         }
     }
 
-    private static String shellQuote(String s) {
-        if (s == null) return "''";
-        return "'" + s.replace("'", "'\\''") + "'";
-    }
 
     /** 可被打断的等待：每 100ms 检查一次取消标志 */
     private void interruptibleSleep(long ms) {

@@ -21,11 +21,43 @@ public final class Prefs {
     private static final String K_PIN = "app_pin_sha256";   // 空表示未设 PIN
     private static final String K_RATE = "avg_rate_ms";     // 平均每条耗时（毫秒）
     private static final String K_RATE_N = "rate_samples";  // 样本数
+    private static final String K_PIN_BSSID = "pin_bssid";   // 连接锁定到选中的那个 AP
+    private static final String K_MAC_ROTATE = "mac_rotate";  // 每次尝试换随机 MAC
 
     private Prefs() {}
 
     private static SharedPreferences sp(Context ctx) {
         return ctx.getApplicationContext().getSharedPreferences(NAME, Context.MODE_PRIVATE);
+    }
+
+    // ---------------- 在线连接选项 ----------------
+
+    /**
+     * 是否把连接锁定到目标那一个 AP（命令行加 -b <bssid>）。
+     *
+     * 同名 SSID 有多个 AP 时，不锁定就等于把选择权交给系统 —— 它可能挑到
+     * 信号最差的那个。默认关闭，保持与旧版本一致的行为。
+     */
+    public static boolean pinBssid(Context ctx) {
+        return sp(ctx).getBoolean(K_PIN_BSSID, false);
+    }
+
+    public static void setPinBssid(Context ctx, boolean v) {
+        sp(ctx).edit().putBoolean(K_PIN_BSSID, v).apply();
+    }
+
+    /**
+     * 是否每次尝试都用新的随机 MAC（命令行加 -r non_persistent）。
+     *
+     * 用于缓解目标 AP 侧的限流/黑名单。默认关闭：目标若做了 MAC 白名单，
+     * 开着反而连不上。
+     */
+    public static boolean macRotate(Context ctx) {
+        return sp(ctx).getBoolean(K_MAC_ROTATE, false);
+    }
+
+    public static void setMacRotate(Context ctx, boolean v) {
+        sp(ctx).edit().putBoolean(K_MAC_ROTATE, v).apply();
     }
 
     // ---------------- 破解模式 ----------------

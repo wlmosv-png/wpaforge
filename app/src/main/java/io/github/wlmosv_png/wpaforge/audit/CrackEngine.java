@@ -122,6 +122,9 @@ public final class CrackEngine {
     private final WifiManager wifi;
     private final ConnectivityManager cm;
     private final int mode;
+    /** 连接选项（设置页两个开关），构造时读一次 */
+    private final boolean pinBssid;
+    private final boolean macRotate;
 
     /**
      * （已弃用）曾经用作"判为成功的最短耗时"。
@@ -160,6 +163,8 @@ public final class CrackEngine {
         this.wifi = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
         this.cm = (ConnectivityManager) appCtx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.mode = mode;
+        this.pinBssid = Prefs.pinBssid(appCtx);
+        this.macRotate = Prefs.macRotate(appCtx);
     }
 
     // ------------------------------------------------------------------ 通道
@@ -967,8 +972,8 @@ public final class CrackEngine {
                 }
             }, "wpaforge-engine-binder").start();
         } else {
-            final String cmd = "cmd wifi connect-network "
-                    + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
+            final String cmd = ConnectSpec.buildConnect(target.ssid, security, password,
+                    pinBssid ? target.bssid : null, macRotate);
             final ShellChannel sh = shell;
             new Thread(() -> {
                 try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
@@ -1218,10 +1223,6 @@ public final class CrackEngine {
         try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
     }
 
-    private static String shellQuote(String s) {
-        if (s == null) return "''";
-        return "'" + s.replace("'", "'\\''") + "'";
-    }
 
     // ------------------------------------------------------------------ 批量交给系统
 
@@ -1363,8 +1364,8 @@ public final class CrackEngine {
         try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
 
         // 3. 用同一密码再连一次
-        final String cmd = "cmd wifi connect-network "
-                + shellQuote(target.ssid) + " " + security + " " + shellQuote(password);
+        final String cmd = ConnectSpec.buildConnect(target.ssid, security, password,
+                pinBssid ? target.bssid : null, macRotate);
         final ShellChannel sh = shell;
         final long commandAt0 = SystemClock.uptimeMillis();
         new Thread(() -> {

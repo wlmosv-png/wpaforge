@@ -25,9 +25,12 @@
 
 - 🎯 **目标派生** — 按 SSID / BSSID 自动生成几百条「就这个路由器最可能」的候选，字典里没有的它也补上
 - ⚡ **智能排序** — 给候选打分重排，对的那条排进前几十位，而不是第五万位
-- 🔄 **断点续跑** — 进度实时落盘，锁屏继续跑，中断后从原处接着来
+- 🔄 **断点续跑** — 进度实时落盘，锁屏继续跑（手持 WakeLock + WifiLock），中断后从原处接着来
 - 🧵 **多目标队列** — 排队自动执行，每项可单独暂停 / 继续
-- 🏭 **厂商识别** — 内置 IEEE OUI 表，BSSID 直接显示路由器品牌
+- 🏭 **厂商与信道** — 内置 IEEE OUI 表直接显示路由器品牌；信道占用图给出换信道建议，带宽与 Wi-Fi 代际一并列出，可按 WPS 单独筛选
+- 🛰 **局域网侦察** — 连上后扫同网段存活主机与常见端口，复用 OUI 表做厂商归类，生成可回溯的报告
+- 🧭 **连接可控** — 同名 SSID 有多个 AP 时用 `-b` 锁定你选中的那一条；可开启每次尝试更换随机 MAC，缓解目标 AP 侧限流
+- 🔐 **本机自查** — 读本机已保存的 WiFi，给出弱口令位次（这条密码在常见口令表里排第几）
 - 🔒 **真关联判定** — 只用 4-Way Handshake 完成这一条信号，四条证据同源才算命中，不报假成功
 
 **一句话：字典的质量比体积重要一百倍，而 WPAForge 把「对的那一条」提前到最前面。**
@@ -38,7 +41,9 @@
 
 [**⬇️ 下载最新版 APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
 
-没有 Root 就别试了——判定依赖 `su + cmd wifi`，Shizuku 与免 Root 通道已移除（原因见 [TECHNICAL-NOTES.md](doc/TECHNICAL-NOTES.md)）。
+没有 Root 就别试了——判定依赖 `su + cmd wifi`。Shizuku 与免 Root 通道在 1.8.x 已移除：
+Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` 则每条候选都会弹一次系统
+确认框——两者都撑不起逐条字典遍历。
 
 ## 快速上手
 
@@ -63,11 +68,12 @@
 不依赖 Gradle，两段式手工链：
 
 ```sh
-sh 1-aapt2.sh       # 设备侧：aapt2 编译资源
-sh 2-build-dex.sh   # 桌面侧：javac + d8 + 签名
+WP_VERSION_CODE=79 WP_VERSION_NAME=1.9.9 sh 1-aapt2.sh   # 设备侧：aapt2 编译资源（版本号在这一步写入）
+sh 2-build-dex.sh                                       # 桌面侧：javac + d8 + 签名（需 WP_FORGE_KS* 变量）
 ```
 
-产物 `build/out/wpaforge-signed.apk`，构建链完全显式可控。
+产物 `build/out/wpaforge-signed.apk`，构建链完全显式可控。`1-aapt2.sh` 里的版本号默认值只作兜底，
+发布时必须显式传入，否则会打出与线上倒挂的版本号。
 
 ---
 

@@ -25,9 +25,12 @@ Typical WiFi crackers grind through a dictionary **top to bottom**. WPAForge is 
 
 - 🎯 **Target derivation** — generates hundreds of "most likely for this router" candidates from SSID / BSSID, filling what your dictionary lacks
 - ⚡ **Smart ranking** — scores and reorders candidates so the right one lands in the first few dozen, not the fifty-thousandth
-- 🔄 **Resume** — progress persisted continuously; runs with the screen locked, resumes where it stopped
+- 🔄 **Resume** — progress persisted continuously; runs with the screen locked (holding a WakeLock + WifiLock), resumes where it stopped
 - 🧵 **Multi-target queue** — runs queued jobs automatically, each pausable / resumable
-- 🏭 **Vendor lookup** — built-in IEEE OUI table shows the router brand from its BSSID
+- 🏭 **Vendor & channel** — built-in IEEE OUI table shows the router brand; the channel-occupancy chart suggests a better channel, bandwidth and Wi-Fi generation are listed, APs filterable by WPS
+- 🛰 **LAN recon** — after associating, sweeps the subnet for live hosts and common ports, groups them by vendor via the same OUI table, and writes a report
+- 🧭 **Connection control** — pin a single AP with `-b` when several share one SSID; optionally rotate to a fresh random MAC per attempt to ease AP-side rate limiting
+- 🔐 **Self-audit** — reads the WiFi networks saved on this phone and ranks their passphrases against common-password lists
 - 🔒 **Real-association detection** — one signal only: a completed 4-Way Handshake, four same-source proofs, no false positives
 
 **In one line: dictionary quality beats dictionary size — WPAForge puts "the right one" first.**
@@ -38,7 +41,9 @@ Typical WiFi crackers grind through a dictionary **top to bottom**. WPAForge is 
 
 [**⬇️ Download latest APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
 
-No root, no luck — detection relies on `su + cmd wifi`; the Shizuku and rootless channels were removed (why, see [TECHNICAL-NOTES.md](doc/TECHNICAL-NOTES.md)).
+No root, no luck — detection relies on `su + cmd wifi`. The Shizuku and rootless channels were removed
+in 1.8.x: Shizuku needs a binder call per association, and the rootless path (`WifiNetworkSpecifier`)
+pops a system dialog for every candidate — neither can carry a dictionary walk.
 
 ## Quick start
 
@@ -63,11 +68,13 @@ Audit · Crack — the rest you'll see once you install it.
 No Gradle, two manual stages:
 
 ```sh
-sh 1-aapt2.sh       # device: aapt2 resource compile
-sh 2-build-dex.sh   # desktop: javac + d8 + sign
+WP_VERSION_CODE=79 WP_VERSION_NAME=1.9.9 sh 1-aapt2.sh   # device: aapt2 resource compile (version set here)
+sh 2-build-dex.sh                                       # desktop: javac + d8 + sign (needs WP_FORGE_KS* vars)
 ```
 
-Output `build/out/wpaforge-signed.apk`, fully explicit build chain.
+Output `build/out/wpaforge-signed.apk`, fully explicit build chain. The defaults inside `1-aapt2.sh`
+are only a fallback — always pass the version explicitly for a release, or you will ship a lower version
+than what is already online.
 
 ---
 

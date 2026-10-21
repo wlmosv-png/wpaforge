@@ -187,6 +187,79 @@ public final class TargetDictBuilder {
         }
         if (!g2.isEmpty()) { buckets.add(g2); categories.add(L.s("片段组合", "segment combinations")); }
 
+        // H. 竞品级分级词元拆分与年份符号扩散 (Tokenize + Years + Symbol Matrix)
+        List<String> h = new ArrayList<>();
+        if (!ssid.isEmpty()) {
+            // 一级拆分：按连接符、wifi、net、5g、2.4g 切割
+            String[] l1 = ssid.split("[-_.\\s]+|(?i)@|(?i)wifi|(?i)wlan|(?i)net|(?i)5g|(?i)2\\.4g");
+            java.util.LinkedHashSet<String> tokens = new java.util.LinkedHashSet<>();
+            for (String p : l1) {
+                if (p == null) continue;
+                String pt = p.trim();
+                if (pt.isEmpty()) continue;
+                tokens.add(pt.toLowerCase());
+                if (pt.matches("^[a-zA-Z]+$")) {
+                    tokens.add(capitalize(pt.toLowerCase()));
+                }
+                // 二级拆分：按字母/数字交界分割
+                java.util.regex.Matcher m2 = java.util.regex.Pattern.compile("[a-zA-Z]+|\\d+").matcher(pt);
+                int count = 0;
+                List<String> sub = new ArrayList<>();
+                while (m2.find()) {
+                    sub.add(m2.group());
+                    count++;
+                }
+                if (count > 1) {
+                    for (String sp : sub) {
+                        tokens.add(sp.toLowerCase());
+                        if (sp.matches("^[a-zA-Z]+$")) {
+                            tokens.add(capitalize(sp.toLowerCase()));
+                        }
+                    }
+                }
+            }
+
+            int curYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR);
+            String[] yrList = new String[]{
+                String.valueOf(curYear), String.valueOf(curYear - 1),
+                String.valueOf(curYear - 2), String.valueOf(curYear - 3)
+            };
+
+            for (String tk : tokens) {
+                if (tk.isEmpty()) continue;
+                String tkLow = tk.toLowerCase();
+                String tkCap = capitalize(tkLow);
+                boolean isLetter = tk.matches("^[a-zA-Z]+$");
+                boolean isNum = tk.matches("^\\d+$");
+
+                // 短词元自重复
+                if (tk.length() <= 3) {
+                    h.add(tkLow + tkLow);
+                    if (isLetter) h.add(tkCap + tkLow);
+                }
+
+                // 词元 + 年份 / 符号年份
+                for (String yr : yrList) {
+                    h.add(tkLow + yr);
+                    if (isLetter) h.add(tkCap + yr);
+                    if (!isNum) {
+                        h.add(tkLow + "@" + yr);
+                        h.add(tkCap + "@" + yr);
+                        h.add(yr + "@" + tkLow);
+                        h.add(tkLow + "#" + yr);
+                        h.add(tkCap + "#" + yr);
+                    }
+                }
+
+                // 词元 + 高频后缀
+                for (String sf : NUM_SUFFIX) {
+                    h.add(tkLow + sf);
+                    if (isLetter) h.add(tkCap + sf);
+                }
+            }
+        }
+        if (!h.isEmpty()) { buckets.add(h); categories.add(L.s("智能词元扩散", "token matrix")); }
+
         // 轮转交错：每轮从每个桶取 3 条。
         // 每桶独立游标；只要还有任意一个桶没读完就继续（不能因为
         // 某一轮恰好全是重复项就提前收工 —— 那会丢掉大量候选）。

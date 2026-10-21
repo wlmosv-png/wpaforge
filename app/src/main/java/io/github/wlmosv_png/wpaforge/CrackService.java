@@ -82,6 +82,8 @@ public class CrackService extends Service {
     /** 统一引擎实例（取消/暂停走它） */
     private volatile CrackEngine engineRef;
     private TaskQueue.Task currentTask;
+    private android.os.PowerManager.WakeLock wakeLock;
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
     private List<Candidate> currentDict = new ArrayList<>();
     private long taskStartAt;
     /** 上次把 offset 写盘的时刻（节流用） */
@@ -151,6 +153,7 @@ public class CrackService extends Service {
 
     @Override
     public void onDestroy() {
+        releaseLocks();
         super.onDestroy();
         instance = null;
         running = false;
@@ -274,7 +277,49 @@ public class CrackService extends Service {
 
     // ---------------- 队列执行 ----------------
 
+    private void acquireLocks() {
+        try {
+            if (wakeLock == null) {
+                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "wpaforge:crack");
+                    wakeLock.setReferenceCounted(false);
+                }
+            }
+            if (wakeLock != null && !wakeLock.isHeld()) {
+                wakeLock.acquire(12 * 3600 * 1000L); // 最多保活 12 小时
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            if (wifiLock == null) {
+                android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wm != null) {
+                    wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "wpaforge:wifilock");
+                    wifiLock.setReferenceCounted(false);
+                }
+            }
+            if (wifiLock != null && !wifiLock.isHeld()) {
+                wifiLock.acquire();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void releaseLocks() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        } catch (Throwable ignored) {}
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) {
+                wifiLock.release();
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private void runQueue() {
+        acquireLocks();
         try {
             while (!stopRequested) {
                 if (Thread.currentThread().isInterrupted()) break;
@@ -290,6 +335,7 @@ public class CrackService extends Service {
         } catch (Exception e) {
             log(L.f("队列执行异常: %s", "Queue error: %s", String.valueOf(e)));
         } finally {
+            releaseLocks();
             running = false;
             currentTask = null;
             log(L.s("队列已结束", "Queue finished"));

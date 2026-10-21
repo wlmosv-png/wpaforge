@@ -37,6 +37,7 @@ public class TargetDictTest {
         ok("含数字重复族", has(r1.candidates, "97297297")||has(r1.candidates,"97297220")||has(r1.candidates,"97297200"), "查972972族");
         ok("含 SSID+数字族", has(r1.candidates,"e972123e")||has(r1.candidates,"E972123E")||has(r1.candidates,"e9721230"), "查e972123族");
         ok("含 BSSID 尾号族", has(r1.candidates,"e97211e9")||has(r1.candidates,"e9721100")||has(r1.candidates,"E9721100"), "查e97211族");
+        ok("含智能词元扩散(fast@2026/fast123)", has(r1.candidates, "fast@2026") || has(r1.candidates, "Fast@2026") || has(r1.candidates, "fast@2025") || has(r1.candidates, "fast123456"), "查智能词元扩散");
         ok("条数在合理范围 (<2000)", r1.candidates.size() < 2000, "" + r1.candidates.size());
 
         System.out.println("     前 12 条:");

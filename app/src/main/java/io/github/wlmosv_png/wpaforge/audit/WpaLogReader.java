@@ -60,6 +60,8 @@ public final class WpaLogReader {
             Pattern.compile("4-Way Handshake failed");
     private static final Pattern P_ASSOC_REJECT =
             Pattern.compile("CTRL-EVENT-ASSOC-REJECT");
+    private static final Pattern P_HANDSHAKE_M1 =
+            Pattern.compile("WPA: RX message 1 of 4-Way Handshake");
 
     private WpaLogReader() {}
 
@@ -95,6 +97,10 @@ public final class WpaLogReader {
             }
             if (P_ASSOC_REJECT.matcher(line).find()) {
                 out.add(new LogEvent(now, null, "assoc_reject", line));
+                continue;
+            }
+            if (P_HANDSHAKE_M1.matcher(line).find()) {
+                out.add(new LogEvent(now, null, "handshake_m1", line));
             }
         }
         return out;
@@ -131,6 +137,14 @@ public final class WpaLogReader {
     }
 
     /** 有没有出现过协商完成（密码正确的直接证据，本机 ROM 通常没有） */
+    /** 有没有出现过收到握手第 1 帧（说明 AP 已响应认证，可用于动态延长看门狗超时） */
+    public static boolean sawHandshakeM1(String logcatOutput) {
+        for (LogEvent e : parse(logcatOutput)) {
+            if ("handshake_m1".equals(e.kind)) return true;
+        }
+        return false;
+    }
+
     public static boolean sawNegotiated(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {
             if ("negotiated".equals(e.kind)) return true;

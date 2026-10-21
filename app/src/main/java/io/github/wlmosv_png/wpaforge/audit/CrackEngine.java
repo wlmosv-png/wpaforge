@@ -984,7 +984,9 @@ public final class CrackEngine {
                 + " pw=" + password.length() + " timeout=" + timeoutMs
                 + " ssidBefore=" + ssidBefore);
 
-        final long deadline = t0 + timeoutMs;
+        long deadline = t0 + timeoutMs;
+        // 捕获握手第 1 帧后可动态延长看门狗，只延长一次
+        boolean m1Extended = false;
 
         // 本轮是否见过目标「正在尝试」——用于区分「通道没生效」和「密码不对」
         // 因 netId 不符而拒绝的连接次数（假阳性防线计数器）
@@ -1123,6 +1125,13 @@ public final class CrackEngine {
                     logRounds++;
                     boolean tried = WpaLogReader.sawAssociateFor(wlog, target.ssid);
                     if (tried) sawAttempt = true;
+
+                    // 捕获握手第 1 帧 (RX message 1 of 4-Way Handshake) -> 动态延长看门狗，给握手完成留足时间
+                    if (tried && !m1Extended && WpaLogReader.sawHandshakeM1(wlog)) {
+                        deadline = Math.max(deadline, SystemClock.uptimeMillis() + 2500L);
+                        m1Extended = true;
+                        android.util.Log.i(TAG, "捕获握手第 1 帧，看门狗延长 2.5s");
+                    }
 
                     if (tried && WpaLogReader.sawNegotiated(wlog)) {
                         long ms = SystemClock.uptimeMillis() - t0;

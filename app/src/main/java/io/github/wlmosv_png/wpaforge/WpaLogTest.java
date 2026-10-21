@@ -78,6 +78,9 @@ public class WpaLogTest {
                 WpaLogReader.sawNegotiated(other));
         check("其它 ROM 的握手失败能识别",
                 WpaLogReader.sawHandshakeFailure(other));
+        String m1Sample = "I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:45:dc:ed\n";
+        check("握手第 1 帧 (M1) 能识别",
+                WpaLogReader.sawHandshakeM1(m1Sample));
 
         System.out.println("\n=== wpa 日志解析测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

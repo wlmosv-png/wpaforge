@@ -1025,8 +1025,8 @@ public class MainActivity extends Activity {
             case WEP: return L.s("WEP(已过时)", "WEP (deprecated)");
             case WPA: return "WPA";
             case WPA2: return "WPA2";
-            case WPA3: return "WPA3";
-            case WPA2_WPA3: return "WPA2/3";
+            case WPA3: return "WPA3(SAE)";
+            case WPA2_WPA3: return "WPA2/3(SAE)";
             case OWE: return "OWE";
             default: return L.s("未知", "Unknown");
         }

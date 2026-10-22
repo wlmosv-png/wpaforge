@@ -43,6 +43,11 @@
 
 **锁屏继续跑，中断能接上。** 进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。
 
+<p align="center">
+  <img src="docs/demo-live.gif" alt="真机录屏：破解 → 命中" width="44%">
+</p>
+<p align="center"><sub>真机录屏 · 破解 → 命中（12 秒片段，完整 36 秒演示见 <a href="https://wlmosv-png.github.io/wpaforge/">落地页</a>）</sub></p>
+
 ## 还有什么
 
 - 多目标队列：排好的一串目标依次执行，每个可单独暂停 / 继续

@@ -81,6 +81,13 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
   <figcaption>界面速览 —— 观测 → 审计 → 破解 → 命中 → 侦察（1080p 原画，非 GIF）</figcaption>
 </figure>
 
+<figure>
+  <video controls preload="none" playsinline poster="screenshots/shot07.png" style="width:100%;border-radius:18px;border:1px solid var(--line);box-shadow:0 24px 70px rgba(0,0,0,.55);display:block">
+    <source src="demo-live.mp4" type="video/mp4">
+  </video>
+  <figcaption>真机录屏 · 36 秒未剪辑：观测 27 个网络 → 选目标 → 选字典 → 破解 → <b>命中</b> → WPS 体检 → 网络侦察</figcaption>
+</figure>
+
 <h2 id="how">它怎么找密码</h2>
 <p><b>不翻大字典。先猜 —— 按你这台路由器可能被设成什么，造几百条，排好序，从上往下试。</b>字典是备用的，不是主力。</p>
 <p><b>猜，是有依据的。</b>SSID 叫 <code>FAST_E972</code>，它会现场造出 <code>fast2026</code>、<code>FAST#2026</code>、<code>e972e972</code>、<code>fast@2026</code> 这些，现成字典里没有。厂商名从 BSSID 查 IEEE 的 OUI 表得出（419 KB / 15913 条打进包里），查不到就留空，不编一个出来。</p>

@@ -157,6 +157,122 @@ public class DictActivity extends Activity {
     }
 
     /** 主操作弹窗：原来的六个入口都在这里 */
+    // ---------------- 字典内容搜索 ----------------
+
+    /** 搜索入口：先选一本字典 */
+    private void showSearchPicker() {
+        final List<DictStore.Entry> all = DictStore.scan(DictStore.defaultDir(this));
+        if (all.isEmpty()) {
+            Toast.makeText(this, L.s("还没有字典", "no dictionaries yet"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        NetDialog d = new NetDialog(this, L.s("搜索哪本字典？", "Search which dictionary?"), null);
+        for (DictStore.Entry e : all) {
+            final DictStore.Entry picked = e;
+            d.addItem(e.name + "   (" + e.sizeLabel() + ")", dd -> showSearchDialog(picked));
+        }
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
+    }
+
+    /** 搜索对话框：关键词 + 匹配方式（点一下轮换） */
+    private void showSearchDialog(final DictStore.Entry e) {
+        final NetDialog dlg = new NetDialog(this, L.s("搜索 ", "Search ") + e.name, null);
+        final EditText kw = dlg.addField(L.s("关键词", "Keyword"), "");
+        final int[] mode = {io.github.wlmosv_png.wpaforge.audit.DictSearch.MODE_CONTAINS};
+        final Button modeBtn = chip(
+                L.s("匹配方式：", "Match: ")
+                        + io.github.wlmosv_png.wpaforge.audit.DictSearch.modeLabel(mode[0]),
+                v -> {
+                    mode[0] = (mode[0] + 1) % 4;
+                    ((Button) v).setText(L.s("匹配方式：", "Match: ")
+                            + io.github.wlmosv_png.wpaforge.audit.DictSearch.modeLabel(mode[0]));
+                });
+        dlg.addView(modeBtn);
+        dlg.addHint(L.s("点上面的按钮切换：包含 / 前缀 / 后缀 / 正则。",
+                "Tap the button above to switch: contains / prefix / suffix / regex."));
+        dlg.setNegative(L.s("取消", "Cancel"), null);
+        dlg.setPositive(L.s("搜索", "Search"), d -> {
+            String k = kw.getText().toString().trim();
+            if (k.isEmpty()) {
+                Toast.makeText(this, L.s("请输入关键词", "enter a keyword"), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            dlg.dismiss();
+            runSearch(e, k, mode[0]);
+        });
+        dlg.show();
+    }
+
+    /** 执行搜索：读出内容 → 纯逻辑匹配（带条数上限） */
+    private void runSearch(final DictStore.Entry e, final String kw, final int mode) {
+        new Thread(() -> {
+            final List<String> lines = DictStore.readLines(e.file);
+            final List<io.github.wlmosv_png.wpaforge.audit.DictSearch.Match> hits =
+                    io.github.wlmosv_png.wpaforge.audit.DictSearch.search(
+                            lines, kw, mode, io.github.wlmosv_png.wpaforge.audit.DictSearch.DEFAULT_LIMIT);
+            final int total = lines.size();
+            ui.post(() -> showSearchResult(e, kw, mode, hits, total));
+        }, "wpaforge-dict-search").start();
+    }
+
+    /** 结果：行号 + 内容；点一条复制，也可只保留命中项生成新字典 */
+    private void showSearchResult(final DictStore.Entry e, String kw, int mode,
+                                  final List<io.github.wlmosv_png.wpaforge.audit.DictSearch.Match> hits,
+                                  int total) {
+        String head = L.s(
+                "在 " + total + " 条里按「" + io.github.wlmosv_png.wpaforge.audit.DictSearch.modeLabel(mode)
+                        + "」匹配「" + kw + "」，找到 " + hits.size() + " 条"
+                        + (hits.size() >= io.github.wlmosv_png.wpaforge.audit.DictSearch.DEFAULT_LIMIT
+                        ? "（已达显示上限）" : ""),
+                total + " entries, " + io.github.wlmosv_png.wpaforge.audit.DictSearch.modeLabel(mode)
+                        + " match for \"" + kw + "\": " + hits.size());
+        NetDialog d = new NetDialog(this, L.s("搜索结果", "Search results"), head);
+        if (hits.isEmpty()) {
+            d.setPositive(L.s("知道了", "Got it"), null);
+        } else {
+            for (final io.github.wlmosv_png.wpaforge.audit.DictSearch.Match m : hits) {
+                d.addItem(L.s("第 " + m.lineNo + " 行   ", "#" + m.lineNo + "   ") + m.text, dd -> {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                            getSystemService(CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("pw", m.text));
+                    }
+                    Toast.makeText(this, L.s("已复制该条", "copied"), Toast.LENGTH_SHORT).show();
+                });
+            }
+            d.setNegative(L.s("关闭", "Close"), null);
+            d.setPositive(L.s("只保留命中项", "Keep only hits"), dd -> keepOnlyHits(e, kw, mode));
+        }
+        d.show();
+    }
+
+    /** 把命中的行导出成一本新字典（原字典不动） */
+    private void keepOnlyHits(final DictStore.Entry e, final String kw, final int mode) {
+        new Thread(() -> {
+            List<String> lines = DictStore.readLines(e.file);
+            List<io.github.wlmosv_png.wpaforge.audit.DictSearch.Match> hits =
+                    io.github.wlmosv_png.wpaforge.audit.DictSearch.search(lines, kw, mode, 0);
+            List<String> out = new ArrayList<>();
+            for (io.github.wlmosv_png.wpaforge.audit.DictSearch.Match m : hits) out.add(m.text);
+            if (out.isEmpty()) {
+                ui.post(() -> Toast.makeText(this, L.s("没有命中项", "no hits"),
+                        Toast.LENGTH_SHORT).show());
+                return;
+            }
+            final File f = new File(DictStore.defaultDir(this), e.name + "-筛选.txt");
+            boolean ok = DictStore.save(f, out);
+            final int n = out.size();
+            ui.post(() -> {
+                Toast.makeText(this, ok
+                                ? L.s("已生成新字典，共 " + n + " 条", "created a new dictionary: " + n)
+                                : L.s("生成失败", "failed"),
+                        Toast.LENGTH_SHORT).show();
+                refresh();
+            });
+        }, "wpaforge-dict-filter").start();
+    }
+
     private void showActionSheet() {
         NetDialog d = new NetDialog(this, L.s("字典操作", "Dictionary actions"), null);
         d.addItem(L.s("新建字典（空白普通表）", "New dictionary (blank list)"),
@@ -167,6 +283,8 @@ public class DictActivity extends Activity {
                 dd -> pickFile());
         d.addItem(L.s("在线字典来源", "Online dictionary sources"),
                 dd -> showOnlineSources());
+        d.addItem(L.s("搜索字典内容", "Search inside a dictionary"),
+                dd -> showSearchPicker());
         d.addItem(L.s("合并所选（自动去重）", "Merge selected (de-duplicated)"),
                 dd -> doMerge());
         d.addItem(L.s("刷新列表", "Refresh list"), dd -> refresh());
@@ -356,6 +474,7 @@ public class DictActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = px(10);
         b.setLayoutParams(lp);
+        io.github.wlmosv_png.wpaforge.ui.UiKit.enableTapHaptic(b);
         return b;
     }
 
@@ -365,9 +484,49 @@ public class DictActivity extends Activity {
         File dir = DictStore.defaultDir(this);
         pathLabel.setText(L.s("目录: ", "Directory: ") + dir.getAbsolutePath());
         listBox.removeAllViews();
-        selected.clear();
 
         List<DictStore.Entry> entries = DictStore.scan(dir);
+
+        // 只丢弃「已经不在列表里」的选择（比如刚被删掉），**不整体清空** ——
+        // 原来这里无条件 selected.clear()，而每次切换选择都会 refresh，
+        // 结果就是「选一个、刷一下、没了」。
+        {
+            List<DictStore.Entry> keep = new ArrayList<>();
+            for (DictStore.Entry sel : selected) {
+                for (DictStore.Entry cur : entries) {
+                    if (cur.file.equals(sel.file)) { keep.add(cur); break; }
+                }
+            }
+            selected.clear();
+            selected.addAll(keep);
+        }
+
+        // 多选状态条：只在有选择时出现，把「已选多少 + 能做什么」直接摆出来
+        if (!selected.isEmpty()) {
+            LinearLayout bar = new LinearLayout(this);
+            bar.setOrientation(LinearLayout.HORIZONTAL);
+            bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            bar.setBackground(roundBg(Color.parseColor("#1E2230"), 16));
+            bar.setPadding(px(14), px(10), px(14), px(10));
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            blp.bottomMargin = px(10);
+            bar.setLayoutParams(blp);
+
+            TextView tv = new TextView(this);
+            tv.setText(L.s("已选 " + selected.size() + " 本", selected.size() + " selected"));
+            tv.setTextSize(12.5f);
+            tv.setTextColor(TEXT);
+            bar.addView(tv, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            bar.addView(chip(L.s("合并", "Merge"), v -> doMerge()));
+            bar.addView(chip(L.s("清除", "Clear"), v -> {
+                selected.clear();
+                refresh();
+            }));
+            listBox.addView(bar);
+        }
         if (entries.isEmpty()) {
             TextView empty = new TextView(this);
             empty.setText("目录里还没有字典。\n\n你可以：\n"
@@ -397,8 +556,16 @@ public class DictActivity extends Activity {
     private View row(DictStore.Entry e) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundBg(SURFACE, 18));
+        // 选中态给一个明显的底色，多选时一眼看得出选了哪几本
+        box.setBackground(roundBg(selected.contains(e)
+                ? Color.parseColor("#232B3A") : SURFACE, 18));
         box.setPadding(px(16), px(14), px(16), px(14));
+        // 长按进入多选（Android 标准交互）—— 这样就不必再占一个「选择」按钮，
+        // 那一行原本挤了 5 个按钮，本来就不好按。
+        box.setOnLongClickListener(v -> {
+            toggleSelect(e);
+            return true;
+        });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = px(8);
@@ -439,16 +606,29 @@ public class DictActivity extends Activity {
         ops.addView(smallBtn(L.s("查看", "View"), TEXT_DIM, v -> viewDict(e)));
         ops.addView(smallBtn(L.s("编辑", "Edit"), ACCENT, v -> editDict(e)));
         ops.addView(smallBtn(L.s("统计", "Stats"), OK_GREEN, v -> showStats(e)));
-        ops.addView(smallBtn(selected.contains(e) ? L.s("已选", "Selected") : L.s("选择", "Select"),
-                selected.contains(e) ? OK_GREEN : TEXT_DIM, v -> {
-                    if (selected.contains(e)) selected.remove(e);
-                    else selected.add(e);
-                    refresh();
-                }));
+
         ops.addView(smallBtn(L.s("删除", "Delete"), DANGER, v -> confirmDelete(e)));
+
+        if (!selected.isEmpty()) {
+            // 多选进行中：点整行也能切换，不必精准点到别处
+            box.setOnClickListener(v -> toggleSelect(e));
+        }
         box.addView(ops);
 
         return box;
+    }
+
+    /** 切换某本字典的选中状态（长按或多选态下点击整行触发） */
+    private void toggleSelect(DictStore.Entry e) {
+        boolean removed = false;
+        for (int i = 0; i < selected.size(); i++) {
+            if (selected.get(i).file.equals(e.file)) {
+                selected.remove(i);
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) selected.add(e);
     }
 
     private Button smallBtn(String label, int color, View.OnClickListener l) {
@@ -464,23 +644,21 @@ public class DictActivity extends Activity {
         b.setMinHeight(0);
         b.setMinimumHeight(0);
         b.setStateListAnimator(null);
-        b.setPadding(px(14), px(7), px(14), px(7));
+        // 内边距加大：原来纵向只有 7dp，行内按钮的可点区域偏小、不好按
+        b.setPadding(px(14), px(10), px(14), px(10));
         b.setOnClickListener(l);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = px(7);
         b.setLayoutParams(lp);
+        io.github.wlmosv_png.wpaforge.ui.UiKit.enableTapHaptic(b);
         return b;
     }
 
     /** 圆角背景 */
+    /** 圆角背景 —— 走 UiKit：可点元素自带水波纹与禁用态压暗 */
     private android.graphics.drawable.Drawable roundBg(int color, float radiusDp) {
-        android.graphics.drawable.GradientDrawable g =
-                new android.graphics.drawable.GradientDrawable();
-        g.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        g.setColor(color);
-        g.setCornerRadius(px(radiusDp));
-        return g;
+        return io.github.wlmosv_png.wpaforge.ui.UiKit.ripple(color, px(radiusDp));
     }
 
     // ---------------- 查看 ----------------
@@ -518,21 +696,41 @@ public class DictActivity extends Activity {
     // ---------------- 编辑 ----------------
 
     private void editDict(DictStore.Entry e) {
-        NetDialog dlg = new NetDialog(this, L.s("编辑 ", "Edit ") + e.name, null);
-        final EditText area = dlg.addTextArea(L.s("每行一个口令", "One passphrase per line"), "", 12);
-        dlg.addHint(L.s("只显示前 2000 条。保存会覆盖原文件，未显示的部分会丢失。", "Only the first 2000 lines are shown. Saving overwrites the file; hidden lines are lost."));
+        final NetDialog dlg = new NetDialog(this, L.s("编辑 ", "Edit ") + e.name, null);
+
+        final TextView countTv = new TextView(this);
+        countTv.setTextSize(11.5f);
+        countTv.setTextColor(TEXT_DIM);
+        countTv.setText(L.s("正在统计原有条数…", "counting existing entries…"));
+        dlg.addView(countTv);
+
+        final EditText area = dlg.addTextArea(
+                L.s("要新增的口令（每行一个）", "Passphrases to ADD (one per line)"), "", 8);
+        dlg.addHint(L.s(
+                "原有内容不会被改动。留空则什么都不做。",
+                "Existing entries are untouched. Leave it empty to do nothing."));
+
+        dlg.setDanger(L.s("替换全部…", "Replace all…"), d -> confirmReplaceAll(e, area));
         dlg.setNegative(L.s("取消", "Cancel"), null);
-        dlg.setPositive(L.s("保存", "Save"), d -> {
-            List<String> out = new ArrayList<>();
-            for (String l : area.getText().toString().split("\n")) {
-                String t = l.trim();
-                if (!t.isEmpty() && !t.startsWith("#")) out.add(t);
+        dlg.setPositive(L.s("追加", "Append"), d -> {
+            final List<String> add = splitClean(area.getText().toString());
+            if (add.isEmpty()) {
+                Toast.makeText(this, L.s("没有新增内容", "nothing to add"), Toast.LENGTH_SHORT).show();
+                return;
             }
+            dlg.dismiss();
             new Thread(() -> {
-                boolean ok = DictStore.save(e.file, out);
+                List<String> all = DictStore.readLines(e.file);
+                all.addAll(add);
+                boolean ok = DictStore.save(e.file, all);
+                final int total = all.size();
+                final int added = add.size();
                 ui.post(() -> {
-                    Toast.makeText(this, ok ? L.s("已保存 ", "Saved ") + out.size() + L.s(" 条", " entries")
-                            : L.s("保存失败", "Save failed"), Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, ok
+                                    ? L.s("已追加 " + added + " 条，共 " + total + " 条",
+                                          "added " + added + ", " + total + " total")
+                                    : L.s("保存失败", "Save failed"),
+                            Toast.LENGTH_SHORT).show();
                     refresh();
                 });
             }).start();
@@ -540,12 +738,59 @@ public class DictActivity extends Activity {
         dlg.show();
 
         new Thread(() -> {
-            List<String> lines = DictStore.readLines(e.file);
-            StringBuilder sb = new StringBuilder();
-            int cap = Math.min(lines.size(), 2000);
-            for (int i = 0; i < cap; i++) sb.append(lines.get(i)).append('\n');
-            final String text = sb.toString();
-            ui.post(() -> area.setText(text));
+            final int n = DictStore.readLines(e.file).size();
+            ui.post(() -> countTv.setText(L.s("原有 " + n + " 条", n + " existing entries")));
+        }).start();
+    }
+
+    /** 把文本切成干净的口令列表（去空行、去注释、去首尾空白） */
+    private static List<String> splitClean(String text) {
+        List<String> out = new ArrayList<>();
+        if (text == null) return out;
+        for (String l : text.split("\n")) {
+            String t = l.trim();
+            if (!t.isEmpty() && !t.startsWith("#")) out.add(t);
+        }
+        return out;
+    }
+
+    /**
+     * 整份替换：把输入框内容当作**全部**内容。
+     *
+     * 这是唯一会丢数据的动作，所以单独一个按钮 + 二次确认，并且把
+     * 「N 条 → M 条」写清楚。默认的编辑路径（追加）永远不会走到这里。
+     */
+    private void confirmReplaceAll(DictStore.Entry e, EditText area) {
+        final List<String> fresh = splitClean(area.getText().toString());
+        new Thread(() -> {
+            final int old = DictStore.readLines(e.file).size();
+            ui.post(() -> {
+                NetDialog c = new NetDialog(this, L.s("替换全部？", "Replace everything?"),
+                        L.s("将把 " + old + " 条整份替换为 " + fresh.size() + " 条，原内容不可恢复。",
+                            "Replace all " + old + " entries with " + fresh.size()
+                                    + " - this cannot be undone."));
+                c.setNegative(L.s("取消", "Cancel"), null);
+                c.setDanger(L.s("确认替换", "Replace"), d -> {
+                    c.dismiss();
+                    if (fresh.isEmpty()) {
+                        Toast.makeText(this, L.s("内容为空，已取消", "empty - cancelled"),
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    new Thread(() -> {
+                        boolean ok = DictStore.save(e.file, fresh);
+                        final int n = fresh.size();
+                        ui.post(() -> {
+                            Toast.makeText(this, ok ? L.s("已替换为 " + n + " 条",
+                                            "replaced with " + n)
+                                            : L.s("保存失败", "Save failed"),
+                                    Toast.LENGTH_SHORT).show();
+                            refresh();
+                        });
+                    }).start();
+                });
+                c.show();
+            });
         }).start();
     }
 

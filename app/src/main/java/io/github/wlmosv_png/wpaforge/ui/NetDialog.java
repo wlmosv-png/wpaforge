@@ -67,10 +67,19 @@ public final class NetDialog {
 
         body = new LinearLayout(ctx);
         body.setOrientation(LinearLayout.VERTICAL);
+        // 只有**内容区**滚动：标题与按钮都固定在弹窗里。
+        //
+        // 之前是整个 root 一起塞进 ScrollView，而多行输入框会吃掉滑动手势，
+        // 于是内容一高，底部的按钮就够不到了 —— 用户的原话是
+        // 「没办法正常编辑，都没有保存按钮」。按钮其实一直在，只是被顶出去了。
+        ScrollView bodyScroll = new ScrollView(ctx);
+        bodyScroll.setClipToPadding(false);
+        bodyScroll.addView(body, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         blp.topMargin = px(12);
-        root.addView(body, blp);
+        root.addView(bodyScroll, blp);
 
         if (message != null && !message.isEmpty()) {
             body.addView(textBlock(message));
@@ -84,14 +93,11 @@ public final class NetDialog {
         rlp.topMargin = px(16);
         root.addView(rowButtons, rlp);
 
-        // 滚动包裹（内容多时可滚）
-        ScrollView sc = new ScrollView(ctx);
-        sc.addView(root, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
+        // 不再整体再包一层 ScrollView：按钮已经由 bodyScroll 之外的 root 固定住了，
+        // 再包一层会出现双重滚动，手势归属也会打架。
         dialog = new Dialog(ctx);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        dialog.setContentView(sc);
+        dialog.setContentView(root);
         Window w = dialog.getWindow();
         if (w != null) {
             w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -174,6 +180,9 @@ public final class NetDialog {
         et.setTypeface(Typeface.MONOSPACE);
         et.setGravity(Gravity.TOP | Gravity.START);
         et.setMinLines(minLines);
+        // 上限 10 行：再多就让它自己内部滚，否则弹窗被撑满、按钮区被挤掉
+        et.setMaxLines(Math.max(minLines, 10));
+        et.setVerticalScrollBarEnabled(true);
         et.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         et.setBackground(round(FIELD_BG, 14));
@@ -294,18 +303,19 @@ public final class NetDialog {
         b.setStateListAnimator(null);
         b.setPadding(px(20), px(11), px(20), px(11));
         b.setBackground(round(bg, 20));
+        UiKit.enableTapHaptic(b);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         b.setLayoutParams(lp);
         return b;
     }
 
+    /**
+     * 圆角背景 —— 统一走 UiKit：可点元素自带水波纹，禁用态压暗。
+     * 之前这里返回静态 GradientDrawable，按下没有任何反馈。
+     */
     private Drawable round(int color, float radiusDp) {
-        GradientDrawable g = new GradientDrawable();
-        g.setShape(GradientDrawable.RECTANGLE);
-        g.setColor(color);
-        g.setCornerRadius(radiusDp * dp);
-        return g;
+        return UiKit.ripple(color, radiusDp * dp);
     }
 
     private int px(float v) { return Math.round(v * dp); }

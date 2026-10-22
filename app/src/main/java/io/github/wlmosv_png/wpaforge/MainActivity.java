@@ -3523,6 +3523,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         lp.topMargin = px(5);
         lp.bottomMargin = px(11);
         b.setLayoutParams(lp);
+        io.github.wlmosv_png.wpaforge.ui.UiKit.enableTapHaptic(b);
         return b;
     }
 
@@ -3940,13 +3941,14 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     }
 
     /** 圆角背景 */
+    /**
+     * 圆角背景 —— 统一走 UiKit。
+     *
+     * 之前这里返回静态 GradientDrawable，配合 setStateListAnimator(null)，
+     * 结果是「按下去什么都没变」。现在可点元素自带水波纹，禁用态压暗。
+     */
     private android.graphics.drawable.Drawable roundBg(int color, float radiusDp) {
-        android.graphics.drawable.GradientDrawable g =
-                new android.graphics.drawable.GradientDrawable();
-        g.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        g.setColor(color);
-        g.setCornerRadius(dp(radiusDp));
-        return g;
+        return io.github.wlmosv_png.wpaforge.ui.UiKit.ripple(color, dp(radiusDp));
     }
 
     /**
@@ -3958,13 +3960,8 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
      */
     private android.graphics.drawable.Drawable roundBgStroked(
             int fill, int edge, float radiusDp, float strokeDp) {
-        android.graphics.drawable.GradientDrawable g =
-                new android.graphics.drawable.GradientDrawable();
-        g.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-        g.setColor(fill);
-        g.setCornerRadius(dp(radiusDp));
-        g.setStroke(Math.max(1, px(strokeDp)), edge);
-        return g;
+        return io.github.wlmosv_png.wpaforge.ui.UiKit
+                .rippleStroked(fill, edge, dp(radiusDp), px(strokeDp));
     }
 
     private void openUrl(String url) {

@@ -48,6 +48,27 @@ public final class ConnectSpec {
     }
 
     /**
+     * 给日志用的一行描述：把这次连接**实际带了哪些参数**写清楚。
+     *
+     * <p>为什么需要：用户开了「锁定 AP」「更换随机 MAC」之后，无法从界面上确认
+     * 这两个开关到底生效没有 —— 日志里以前从来不打印参数。命令拼错或参数没带上，
+     * 表现都是「默默变慢 / 默默失败」，最难查。这一行让他一眼看到真相。
+     *
+     * <p>密码不出现在描述里（只标注它是哪个候选由调用方负责）。
+     */
+    public static String describe(String ssid, String security, String bssid, boolean macRotate) {
+        String sec = (security == null || security.isEmpty()) ? "wpa2" : security;
+        StringBuilder sb = new StringBuilder("connect-network '").append(ssid).append("' ").append(sec);
+        if (looksLikeMac(bssid)) {
+            sb.append(" -b ").append(bssid.toUpperCase(Locale.ROOT));
+        } else {
+            sb.append(" -b 未指定（由系统选 AP）");
+        }
+        sb.append(macRotate ? " -r non_persistent（每条换 MAC）" : " -r 未启用（沿用系统 MAC）");
+        return sb.toString();
+    }
+
+    /**
      * 拼一条 connect-network 命令。
      *
      * @param ssid      目标 SSID

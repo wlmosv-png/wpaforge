@@ -48,6 +48,21 @@ public class ConnectSpecTest {
         check("null 不算", !ConnectSpec.looksLikeMac(null));
         check("带空格不算", !ConnectSpec.looksLikeMac(" AA:BB:CC:DD:EE:FF"));
 
+        System.out.println("== describe（日志用，参数是否带上要看得见）==");
+        check("未指定 BSSID 时明确写出来",
+                ConnectSpec.describe("N", "wpa2", null, false).contains("未指定"));
+        check("指定 BSSID 时写出来",
+                ConnectSpec.describe("N", "wpa2", "aa:bb:cc:dd:ee:ff", false)
+                        .contains("-b AA:BB:CC:DD:EE:FF"));
+        check("脏 BSSID 视为未指定（不会写进日志冒充生效）",
+                ConnectSpec.describe("N", "wpa2", "not-a-mac", false).contains("未指定"));
+        check("MAC 轮换开启时写出来",
+                ConnectSpec.describe("N", "wpa2", null, true).contains("non_persistent"));
+        check("MAC 轮换关闭时写未启用",
+                ConnectSpec.describe("N", "wpa2", null, false).contains("未启用"));
+        check("describe 里不含密码占位以外的敏感内容",
+                !ConnectSpec.describe("N", "wpa2", null, false).contains("password"));
+
         System.out.println("== buildConnect 基础形态 ==");
         eq("不带可选参数",
                 ConnectSpec.buildConnect("B212", "wpa2", "12345678", null, false),

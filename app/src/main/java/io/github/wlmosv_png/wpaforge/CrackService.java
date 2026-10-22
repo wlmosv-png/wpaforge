@@ -564,6 +564,24 @@ public class CrackService extends Service {
     @android.annotation.SuppressLint("NewApi")
     /** 统一收尾 */
     /**
+     * 本次任务的实时速率（毫秒/条）；没有任务在跑时返回 0。
+     *
+     * <p>为什么不能用 Prefs 的历史值：那是跨任务累计的指数滑动平均，
+     * 新任务的真实速度会被历史样本压住。用户看到「每条约 1.2 秒」而实际每条 10 秒，
+     * 就是这么来的 —— 状态行必须显示**本次**的实测值。
+     */
+    public long currentRateMs() {
+        try {
+            CrackEngine e = engineRef;
+            if (e == null || !running) return 0;
+            int n = e.testedCount();
+            long pure = e.lastPureTryMs();
+            if (n > 0 && pure > 0) return pure / n;
+        } catch (Throwable ignored) {}
+        return 0;
+    }
+
+    /**
      * 记录速率时该用哪个耗时。
      *
      * 优先用引擎报的净尝试耗时（只含逐条尝试）；拿不到才退回墙钟。

@@ -2059,10 +2059,23 @@ public class MainActivity extends Activity {
         // 用「每条约 X 秒」而不是「X 条/秒」。
         // 0.1 条/秒看着像「没在动」，换算成「每条约 10 秒」
         // 用户才知道该等多久 —— 后者才是他真正关心的信息。
-        long ms = Prefs.avgMsPerItem(this);
-        connectModeView.setText(L.f("Root 通道   ·   每条约 %.1f 秒",
-                "Root channel   ·   ~%.1fs per attempt",
-                ms / 1000.0));
+        //
+        // 数字来源分两种，必须说清楚是哪种：
+        //   · 任务在跑 → **本次任务的实时实测值**（引擎的净尝试耗时 / 已试条数）
+        //   · 没在跑   → 上一次的滚动平均，标注「上次」，不再冒充本次
+        long live = 0;
+        CrackService svc = liveService();
+        if (svc != null) live = svc.currentRateMs();
+        if (live > 0) {
+            connectModeView.setText(L.f("Root 通道   ·   本次每条约 %.1f 秒",
+                    "Root channel   ·   %.1fs per attempt (this run)",
+                    live / 1000.0));
+        } else {
+            long ms = Prefs.avgMsPerItem(this);
+            connectModeView.setText(L.f("Root 通道   ·   上次每条约 %.1f 秒",
+                    "Root channel   ·   ~%.1fs per attempt (last run)",
+                    ms / 1000.0));
+        }
         connectModeView.setTextColor(ACCENT);
     }
 
@@ -2127,10 +2140,14 @@ public class MainActivity extends Activity {
 
         @Override
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail) {
-            ui.post(() -> appendStreamColored(
-                    (hit ? "✓ 成功" : "✗") + "  " + candidate
-                            + "  (" + ms + "ms " + detail + ")",
-                    hit ? OK_GREEN : TEXT_DIM));
+            ui.post(() -> {
+                appendStreamColored(
+                        (hit ? "✓ 成功" : "✗") + "  " + candidate
+                                + "  (" + ms + "ms " + detail + ")",
+                        hit ? OK_GREEN : TEXT_DIM);
+                // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
+                updateConnectMode();
+            });
         }
 
         @Override
@@ -2172,11 +2189,14 @@ public class MainActivity extends Activity {
                 } else if ("PAUSED".equals(outcome)) {
                     appendStreamColored(L.s("已挂起（现场 ", "Paused (progress ") + task.offset + "/" + task.dictSize
                             + L.s("，可继续）", ", resumable)"), ACCENT);
+                    // 暂停也不能让用户断网等着 —— 之前只有「中止」才恢复
+                    restoreWifiAfterRun();
                 } else if ("STOPPED".equals(outcome)) {
                     appendStreamColored(L.s("已中止（现场 ", "Stopped (progress ") + task.offset + "/" + task.dictSize + "）", DANGER);
                     restoreWifiAfterRun();
                 } else {
                     appendStream(L.s("任务结束: ", "Task finished: ") + task.ssid + " 未命中");
+                    restoreWifiAfterRun();
                     HistStore.append(MainActivity.this, new HistStore.Record(
                             System.currentTimeMillis(), task.ssid, task.bssid,
                             task.dictName, task.dictSize, task.testedThisRun,
@@ -2609,23 +2629,43 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    /** 破解结束后把 WiFi 连回原本的网络 */
+    /**
+     * 破解暂停 / 中止 / 结束之后，把 WiFi 恢复到可用状态。
+     *
+     * <p>旧实现用 {@code cmd wifi connect-network '<ssid>' wpa2} 去重连原网络 ——
+     * **那条命令根本没有密码参数**，系统不会认它。所以「恢复」从来没真正生效过，
+     * 用户看到的就是「暂停了 WiFi 还断着」。
+     *
+     * <p>现在的做法分两步，都不需要我们知道原网络密码：
+     * <ol>
+     *   <li>把最后一次候选在系统里留下的目标配置删掉 —— 否则系统会拿它再试一次错误密码</li>
+     *   <li>重启一次 WiFi，让系统按**已保存的凭据**自己回连</li>
+     * </ol>
+     */
     private void restoreWifiAfterRun() {
-        if (wifiBeforeRun.isEmpty()) return;
-        if (targetNet != null && wifiBeforeRun.equals(targetNet.ssid)) return; // 本来就是它，不用恢复
-        final String want = wifiBeforeRun;
+        final String targetSsid = targetNet == null ? "" : targetNet.ssid;
         new Thread(() -> {
             try {
-                // 目标网络的残留配置先清掉，避免它继续抢占
-                if (targetNet != null) {
-                    io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                if (!targetSsid.isEmpty()) {
+                    String list = io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
                             new String[]{"su", "-c", "cmd wifi list-networks"}, 6000);
+                    long id = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser
+                            .findNetId(list, targetSsid);
+                    if (id >= 0) {
+                        io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                                new String[]{"su", "-c", "cmd wifi forget-network " + id}, 5000);
+                    }
                 }
-                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this, new String[]{"su", "-c",
-                        "cmd wifi connect-network " + io.github.wlmosv_png.wpaforge.audit.ConnectSpec.shellQuote(want) + " wpa2"}, 8000);
-                ui.post(() -> appendStream(L.s("已尝试连回原网络: ", "Reconnected to previous network: ") + want));
-            } catch (Exception ignored) {}
-        }).start();
+                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                        new String[]{"su", "-c", "cmd wifi set-wifi-enabled disabled"}, 8000);
+                Thread.sleep(1200);
+                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                        new String[]{"su", "-c", "cmd wifi set-wifi-enabled enabled"}, 8000);
+                ui.post(() -> appendStream(L.s(
+                        "已恢复 WiFi（系统按已保存的凭据自动回连）",
+                        "WiFi restored (system reconnects with saved credentials)")));
+            } catch (Throwable ignored) {}
+        }, "wpaforge-restore-wifi").start();
     }
 
 

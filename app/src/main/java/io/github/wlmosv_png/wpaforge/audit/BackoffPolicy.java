@@ -57,6 +57,22 @@ public final class BackoffPolicy {
     }
 
     /**
+     * 这个结论算不算「AP 给了明确响应」—— 只有它才该进采样窗口。
+     *
+     * <p>排除掉的那些都不反映 AP 的响应速度：
+     * <ul>
+     *   <li>{@code TIMEOUT}：本地策略等满超时的固定值（本机 10 秒）。把它算进来，
+     *       「每条都超时」会被误读成「连续限流」，于是每条都插冷却 —— 反而更慢。</li>
+     *   <li>{@code UNKNOWN} / {@code ERROR}：通道异常，不是 AP 的问题。</li>
+     *   <li>{@code TARGET_GONE}：目标不在扫描范围，这条本来就没意义。</li>
+     *   <li>{@code ABORTED}：用户暂停/取消。</li>
+     * </ul>
+     */
+    public static boolean countable(CrackEngine.Verdict v) {
+        return v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.AUTH_FAIL;
+    }
+
+    /**
      * 建议的额外冷却时间；0 表示不需要退避。
      *
      * @param recent 按时间顺序的最近净耗时

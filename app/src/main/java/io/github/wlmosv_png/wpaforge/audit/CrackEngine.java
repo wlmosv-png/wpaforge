@@ -136,6 +136,7 @@ public final class CrackEngine {
     @Deprecated
     private static final long MIN_HIT_MS = 0L;
 
+
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
 
@@ -1013,6 +1014,8 @@ public final class CrackEngine {
         long deadline = t0 + timeoutMs;
         // 捕获握手第 1 帧后可动态延长看门狗，只延长一次
         boolean m1Extended = false;
+        // 是否已观察到「系统离开了命令前的那条连接」——回连判据的前置条件
+        boolean leftBaseline = false;
 
         // 本轮是否见过目标「正在尝试」——用于区分「通道没生效」和「密码不对」
         // 因 netId 不符而拒绝的连接次数（假阳性防线计数器）
@@ -1123,6 +1126,41 @@ public final class CrackEngine {
                             L.s("握手完成且已获取 IP（确认连上）",
                                 "handshake completed and IP obtained"),
                             by);
+                } else {
+                    /*
+                     * ---- 失败加速：系统已经回连到别的网络 ----
+                     *
+                     * 为什么需要它：本机（ColorOS 15）**不输出** wpa_supplicant 与
+                     * 状态机日志（实测 `-s wpa_supplicant` 0 行、`-e ClientModeImpl`
+                     * 只有 ContextImpl 噪音），所以 assoc_reject / handshake failed
+                     * 这类信号根本不存在 —— 错误密码只能干等 10 秒超时。
+                     *
+                     * 但有一条本地信号是可靠且免费的：**系统不会同时连两个网络**。
+                     * 它去连别的网络，就说明目标这次尝试已经结束、且没连上。
+                     * `cmd wifi status` 本来就每轮在读（18ms），零额外开销。
+                     *
+                     * 保守之处（宁可漏判，绝不误判）：
+                     *   · 必须先观察到「系统离开了命令前那条连接」才启用本判据 ——
+                     *     否则命令刚发出、status 还停留在原网络时就会被误判成失败
+                     *   · 再要求距命令 ≥ FAILOVER_MIN_MS
+                     *   · 只判 AUTH_FAIL，绝不判 SUCCESS
+                     */
+                    boolean onOtherNetwork = info.ssid != null && !info.ssid.isEmpty()
+                            && !target.ssid.equals(info.ssid)
+                            && info.state != null
+                            && "COMPLETED".equalsIgnoreCase(info.state);
+                    if (!onOtherNetwork) {
+                        leftBaseline = true;
+                    } else if (FailoverRule.looksLikeFailover(target.ssid, info.ssid, info.state,
+                            leftBaseline, SystemClock.uptimeMillis() - commandAt)) {
+                        long ms = SystemClock.uptimeMillis() - t0;
+                        android.util.Log.i(TAG, "快速失败(回连): 系统已连上 " + info.ssid);
+                        return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                L.f("系统已回连到其它网络 %s —— 目标这次没连上",
+                                    "system fell back to %s - the target did not connect",
+                                    info.ssid),
+                                "failover");
+                    }
                 }
             }
 
@@ -1642,12 +1680,20 @@ public final class CrackEngine {
                 "Engine: %s, %d candidates, up to %.1fs each",
                 channelName(), total, perItem / 1000.0));
 
+        // 把这一轮**实际会用到的连接参数**写出来。
+        // 用户开了「锁定 AP」「更换随机 MAC」却看不到效果时，这一行就是答案：
+        // 参数没带上、BSSID 形状不对、开关没生效，都能一眼看出。
+        l.onLog(L.s("连接参数: ", "Connect params: ")
+                + ConnectSpec.describe(target.ssid, security,
+                        pinBssid ? target.bssid : null, macRotate));
+
         try {
             for (int i = start; i < total; i++) {
                 if (cancelFlag.get() || pauseFlag.get()) break;
 
                 Candidate c = candidates.get(i);
                 tested++;
+                testedCount = tested;
                 cursor = i + 1;
                 l.onAttemptStart(cursor, total, c.password);
 
@@ -1656,13 +1702,16 @@ public final class CrackEngine {
                 long itemMs = SystemClock.uptimeMillis() - itemT0;
                 pureTryMs += itemMs;
 
-                // 退避检测：连续几条都明显变慢，说明目标在限流；
-                // 按原节奏继续只会得到一串无效尝试，插一小段随机冷却更划算。
-                backoff.record(itemMs);
+                // 退避检测：**只喂「AP 给了明确结论」的尝试**（见 BackoffPolicy.countable）。
+                // 等满超时是本地策略的固定值、通道异常与用户中断也都不是 AP 的响应特征 ——
+                // 把它们算进样本，会让「每条都超时」被误读成「连续限流」，越退越慢。
+                if (BackoffPolicy.countable(a.verdict)) {
+                    backoff.record(itemMs);
+                }
                 long cool = BackoffPolicy.suggestDelayMs(backoff.recent(), backoff.count());
                 if (cool > 0) {
-                    l.onLog(L.f("目标疑似限流（连续 %d 条偏慢），冷却 %.1f 秒",
-                            "target looks rate-limited (last %d slow), cooling %.1fs",
+                    l.onLog(L.f("目标响应明显变慢（连续 %d 条），冷却 %.1f 秒",
+                            "target responding slowly (%d in a row), cooling %.1fs",
                             BackoffPolicy.MIN_SAMPLES, cool / 1000.0));
                     sleep(cool);
                     backoff.reset();
@@ -1764,6 +1813,12 @@ public final class CrackEngine {
      * 供服务层记录实测速率 —— 用墙钟会让预估严重偏高。
      */
     private volatile long lastPureTryMs = 0L;
+    /** 本轮已试条数（供界面算实时速率） */
+    private volatile int testedCount = 0;
+
+    public int testedCount() {
+        return testedCount;
+    }
 
     /** 上一轮净尝试耗时（毫秒）；没跑过返回 0。 */
     public long lastPureTryMs() {

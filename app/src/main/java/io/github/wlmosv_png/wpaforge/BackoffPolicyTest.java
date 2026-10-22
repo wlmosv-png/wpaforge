@@ -1,6 +1,7 @@
 package io.github.wlmosv_png.wpaforge;
 
 import io.github.wlmosv_png.wpaforge.audit.BackoffPolicy;
+import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 
 /**
  * AP 侧退避策略测试。
@@ -43,6 +44,17 @@ public class BackoffPolicyTest {
                 BackoffPolicy.suggestDelayMs(new long[]{9000, 9000, 9000, 1000, 1100, 1200}, 6) == 0);
         ok("窗口只看最近 3 条（早先的慢已滚出）",
                 BackoffPolicy.suggestDelayMs(new long[]{9000, 9000, 9000, 500, 600, 700}, 6) == 0);
+
+        System.out.println("== 只有「AP 给了明确结论」的尝试才算样本 ==");
+        ok("AUTH_FAIL 可计数", BackoffPolicy.countable(CrackEngine.Verdict.AUTH_FAIL));
+        ok("SUCCESS 可计数", BackoffPolicy.countable(CrackEngine.Verdict.SUCCESS));
+        ok("TIMEOUT 不可计数（等满超时是本地固定值，不代表 AP 变慢）",
+                !BackoffPolicy.countable(CrackEngine.Verdict.TIMEOUT));
+        ok("UNKNOWN 不可计数（通道异常）",
+                !BackoffPolicy.countable(CrackEngine.Verdict.UNKNOWN));
+        ok("ERROR 不可计数", !BackoffPolicy.countable(CrackEngine.Verdict.ERROR));
+        ok("TARGET_GONE 不可计数",
+                !BackoffPolicy.countable(CrackEngine.Verdict.TARGET_GONE));
 
         System.out.println("== 环形窗口 ==");
         BackoffPolicy.Window w = new BackoffPolicy.Window();

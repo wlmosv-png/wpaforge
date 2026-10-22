@@ -1016,6 +1016,10 @@ public final class CrackEngine {
         boolean m1Extended = false;
         // 是否已观察到「系统离开了命令前的那条连接」——回连判据的前置条件
         boolean leftBaseline = false;
+        // 是否出现过「连着目标但 netId 对不上」——只用于收尾时把话说清楚，不作否决
+        boolean suspectNetIdConflict = false;
+        // 是否因「目标出现在 status」而延长过看门狗（只延一次）
+        boolean extendedForTargetSight = false;
 
         // 本轮是否见过目标「正在尝试」——用于区分「通道没生效」和「密码不对」
         // 因 netId 不符而拒绝的连接次数（假阳性防线计数器）
@@ -1082,6 +1086,16 @@ public final class CrackEngine {
                 if (!sawAttempt && target.ssid.equals(info.ssid)
                         && info.state != null && !info.state.isEmpty()) {
                     sawAttempt = true;
+                    // 目标出现在 status 里 = 这次尝试真的在推进（关联中/握手中/已连上）。
+                    // 给它多留 4 秒：实测某些 AP 从关联到完成握手要 5~9 秒
+                    // （-63dBm 那台实测 8.8 秒），窗口卡太紧会把**正确密码**切断成
+                    // 「没结论」—— 那就是漏判。只延一次，且只在看到目标时延，
+                    // 错误密码通常不会让目标出现在 status 里，所以不会拖慢整体。
+                    if (!extendedForTargetSight) {
+                        deadline = Math.max(deadline, SystemClock.uptimeMillis() + 4000L);
+                        extendedForTargetSight = true;
+                        android.util.Log.i(TAG, "目标出现在 status (" + info.state + ")，看门狗延长 4s");
+                    }
                 }
 
                 /*
@@ -1100,12 +1114,27 @@ public final class CrackEngine {
                         && targetNetId >= 0
                         && statusNetId != targetNetId;
                 if (netIdMismatch) {
+                    // netId 对不上只**记录**，不作否决。
+                    //
+                    // 为什么不能拿它否决：targetNetId 是「命令发出后取到的值」，
+                    // 本身时序敏感（取早了是 -1，取晚了可能已经是别的连接的）。
+                    // 历史事故：正确密码因为 netId 对不上被整段跳过成功判断，
+                    // 实机 12 秒全超时 —— 那就是典型的漏判。
+                    //
+                    // 归因本来就不靠它：命令之前有两道前置闸门
+                    //   ① forgetTargetByShell 已确认目标配置删净并回读校验
+                    //   ② 命令前若连着目标，已断开并确认断开
+                    // 所以命令之后出现的「目标 + 握手完成 + 有 IP」只可能来自本条候选。
                     netIdRejects++;
+                    suspectNetIdConflict = true;
                     if (netIdRejects <= 3) {
-                        android.util.Log.i(TAG, "ignore link: netId mismatch status="
+                        android.util.Log.i(TAG, "netId 对不上（仅记录，不否决）status="
                                 + statusNetId + " this=" + targetNetId);
                     }
-                } else if (info.isTargetConnected(target.ssid)) {
+                }
+                // 成功判定走唯一的纯逻辑入口（SuccessRule）—— netId 不参与，
+                // 避免它因时序问题否决一次真实的命中（漏判）。
+                if (SuccessRule.isSuccess(target.ssid, info.ssid, info.state, info.ip)) {
                     // **不再强制 netId 必须等于「命令后 400ms 取到的那个值」。**
                     //
                     // 那个值是时序敏感的：系统若还没把配置建好，取到 -1，
@@ -1122,9 +1151,7 @@ public final class CrackEngine {
                     long ms = SystemClock.uptimeMillis() - t0;
                     android.util.Log.i(TAG, "命中: " + info
                             + " (targetNetId=" + targetNetId + ")");
-                    String by = (statusNetId >= 0 && statusNetId == targetNetId)
-                            ? "supplicant+netId"   // netId 也吻合，证据最强
-                            : "supplicant";
+                    String by = SuccessRule.evidence(statusNetId, targetNetId);
                     return new Attempt(password, Verdict.SUCCESS, ms,
                             L.s("握手完成且已获取 IP（确认连上）",
                                 "handshake completed and IP obtained"),
@@ -1255,6 +1282,14 @@ public final class CrackEngine {
             detail = L.s("当前连着目标，但没有本次连接的证据（可能是原有连接或缓存凭据）",
                     "on target now, but no evidence of a fresh connection "
                             + "(possibly pre-existing or cached credentials)");
+            verdict = Verdict.UNKNOWN;
+        } else if (suspectNetIdConflict) {
+            // 出现过「目标 + COMPLETED + IP，但 netId 对不上」。
+            // 不判成功（可能是同名网络的回连或残留），但也不能当作「密码错」——
+            // 如实报成不确定，让用户自己复核，而不是悄悄丢掉一次可能的命中。
+            detail = L.s("出现过目标已连接的状态，但与本次新建配置的 netId 不符，无法确认归因",
+                    "target showed connected, but its netId differs from the one created "
+                            + "by this attempt - attribution unconfirmed");
             verdict = Verdict.UNKNOWN;
         } else if (!sawAttempt && !channelAlive) {
             // 既没看到尝试、通道又完全不响应 —— 是通道/命令问题，不是密码错。

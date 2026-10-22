@@ -15,7 +15,7 @@
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
-<img src="docs/demo-ui.gif" alt="WPAForge 界面速览：观测 → 选目标 → 字典 → 破解" width="88%">
+<img src="docs/demo-ui.gif" alt="WPAForge 界面速览" width="72%">
 
 <sub>界面速览 —— 观测 → 选目标 → 字典 → 破解，四步</sub>
 

@@ -245,6 +245,55 @@ public final class WpaLogReader {
         return false;
     }
 
+    /**
+     * 本次尝试里收到过几次「RX message 1 of 4-Way Handshake」。
+     *
+     * <h3>为什么需要计数（2026-10-23 真机实测定论）</h3>
+     * AP 没收到有效的 M2 时会**每隔约 1.0 秒重发一次 M1**。真机实测（ColorOS 15）：
+     * <pre>
+     *   M1#1  +0ms
+     *   M1#2  +962ms      ← 第一次握手已经失败
+     *   M1#3  +1007ms
+     *   4-Way Handshake failed  +1.0~2.1s（在 M1#3 之后才吐）
+     * </pre>
+     * 也就是说：等到 {@code Handshake failed} 会白等 2.0~3.1 秒，
+     * 而**看到第 2 次 M1 就已经确定密码错了** —— 正确密码在 M1#1 之后
+     * 约 200ms 内就会走到 M3/M4，不会出现重发的 M1。
+     *
+     * <p>语义与 {@link #sawHandshakeM1(String)} 完全一致，只是返回次数：
+     * 复用同一个解析器，避免出现「两个地方对同一行的判定不一致」。
+     */
+    public static int countHandshakeM1(String logcatOutput) {
+        int n = 0;
+        for (LogEvent e : parse(logcatOutput)) {
+            if ("handshake_m1".equals(e.kind)) n++;
+        }
+        return n;
+    }
+
+    /**
+     * 只数**属于指定 BSSID** 的 M1 次数。
+     *
+     * <h3>为什么必须按 BSSID 归属（2026-10-23 实测翻车）</h3>
+     * 早退判据原本用「本次见过目标 SSID 的关联行（Trying to associate）」做归属保护。
+     * 但真机上这一行**经常被 ColorOS 的日志配额丢掉**（老代码注释里就记着这件事：
+     * 「一旦关联行被日志配额丢掉，失败行即使读到了也不会被采纳」），
+     * 于是早退条件永不成立、回落到 6 秒/条的老路径。
+     *
+     * <p>而 M1 这一行自带 BSSID：{@code RX message 1 of 4-Way Handshake from <bssid>}，
+     * 用它做归属比关联行可靠得多，也不再受「关联行被丢」的影响。
+     */
+    public static int countHandshakeM1For(String logcatOutput, String bssid) {
+        if (bssid == null || bssid.isEmpty()) return 0;
+        String want = bssid.trim().toLowerCase();
+        int n = 0;
+        for (LogEvent e : parse(logcatOutput)) {
+            if (!"handshake_m1".equals(e.kind)) continue;
+            if (e.bssid != null && want.equalsIgnoreCase(e.bssid.trim())) n++;
+        }
+        return n;
+    }
+
     public static boolean sawNegotiated(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {
             if ("negotiated".equals(e.kind)) return true;

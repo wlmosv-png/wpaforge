@@ -154,11 +154,26 @@ public final class EnvDiagnostics {
             }
 
             // logcat 可读性（区分 Root / Shizuku 判定层）
+            //
+            // 一次性探测会误报：此刻系统可能刚好没有这个 tag 的新日志
+            // （实测：同一台机器上有时读到 300+ 行、有时读到 0 行，
+            //   系统对每个进程有日志配额；而 App 自己的通道自检曾据此打印过
+            //   「logcat 可读: 否」，误导排查方向）。
+            // 改成两步探测：先立即读一次，没内容就等 600ms 再读一次；
+            // 仍为空时说明「本刻未读到」而不是断言「不可读」。
             String log = WifiStateLog.read(shell, 50);
             boolean logOk = log != null && !log.trim().isEmpty();
-            r.line("    logcat 可读: " + yesNo(logOk)
-                    + (logOk ? "（判定可用「状态机日志」层）"
-                             : "（Shizuku/shell 身份读不到系统日志，将只能用 status+netId 层）"));
+            if (!logOk) {
+                try { Thread.sleep(600); } catch (InterruptedException ignored) {}
+                String log2 = WifiStateLog.read(shell, 50);
+                logOk = log2 != null && !log2.trim().isEmpty();
+            }
+            if (logOk) {
+                r.line("    logcat 可读: 是（判定可用「状态机日志」层）");
+            } else {
+                r.line("    logcat 可读: 本刻未读到内容（可能本刻无新日志，或系统日志配额丢弃）；"
+                        + "判定会自动回退到 status+netId 层，这不代表通道不可用");
+            }
 
             // list-networks（netId 归因需要）
             String nets = null;

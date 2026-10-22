@@ -7,7 +7,10 @@
 <meta name="description" content="WPAForge：Android 原生 WPA/WPA2 密码审计工具。不翻大字典，按 SSID 现场派生候选，逐条真实关联验证，只认 4-Way Handshake 完成。纯 Root，开源 Apache-2.0。">
 <meta property="og:title" content="WPAForge —— 手机上的 WPA 密码审计工具">
 <meta property="og:description" content="按 SSID 现场派生候选，只认 4-Way Handshake，纯 Root 开源。">
-<meta property="og:image" content="banner.svg">
+<meta property="og:image" content="og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="favicon.svg">
 <style>
 :root{--bg:#0d0d10;--card:#17171c;--line:#26262e;--fg:#e9e9ee;--dim:#9a9aa6;--acc:#ffc420}
@@ -41,10 +44,15 @@ code{background:#1e1e25;padding:2px 6px;border-radius:5px;font-size:14px}
 pre{background:#141419;border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;color:#cfcfd8}
 .q{font-weight:700;color:var(--fg);margin:18px 0 4px}
 .warn{background:#211a12;border-left:3px solid var(--acc);padding:14px 16px;border-radius:0 8px 8px 0;color:#e6d9bd}
+nav.top{position:sticky;top:0;z-index:9;display:flex;align-items:center;gap:16px;padding:11px 20px;background:rgba(13,13,16,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);font-size:15px}
+nav.top .brand{font-weight:700;color:var(--fg);margin-right:auto;letter-spacing:.5px}
+nav.top a{color:var(--dim)}nav.top a:hover{color:var(--fg)}
+nav.top .cta{background:var(--acc);color:#181400;padding:6px 14px;border-radius:8px;font-weight:700}
 footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-top:1px solid var(--line);padding-top:24px}
 </style>
 </head>
 <body>
+<nav class="top"><span class="brand">WPAForge ⚡</span><a href="#shots">界面</a><a href="#feat">能力</a><a href="#vs">对比</a><a href="#fail">限制</a><a href="#install">安装</a><a class="cta" href="https://github.com/wlmosv-png/wpaforge/releases/latest">下载</a></nav>
 <div class="wrap">
 
 <header>
@@ -66,18 +74,18 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
 </header>
 
 <figure>
-  <img src="demo-ui.gif" alt="WPAForge 界面速览" style="max-width:640px">
+  <img src="demo-ui.gif" alt="WPAForge 界面速览" style="width:100%">
   <figcaption>界面速览 —— 观测 → 审计 → 破解 → 命中 → 侦察</figcaption>
 </figure>
 
-<h2>它怎么找密码</h2>
+<h2 id="how">它怎么找密码</h2>
 <p><b>不翻大字典。先猜 —— 按你这台路由器可能被设成什么，造几百条，排好序，从上往下试。</b>字典是备用的，不是主力。</p>
 <p><b>猜，是有依据的。</b>SSID 叫 <code>FAST_E972</code>，它会现场造出 <code>fast2026</code>、<code>FAST#2026</code>、<code>e972e972</code>、<code>fast@2026</code> 这些，现成字典里没有。厂商名从 BSSID 查 IEEE 的 OUI 表得出（419 KB / 15913 条打进包里），查不到就留空，不编一个出来。</p>
 <p><b>每条都要真发一次关联请求。</b>快的 AP 1 秒给结论，慢的 5 秒以上。手机一次只能连一个网络，这是 Android 的限制，绕不过去 —— 所以候选的质量比数量重要得多：十万条盲试是按天算的，几百条精准的通常几分钟就完。</p>
 <p><b>判成功只认一种证据：4-Way Handshake 完成。</b>SSID、supplicant 状态、IP、netId 四条必须来自同一行输出，缺一条就不算。宁可报「不确定」，也不报一个假成功。</p>
 <p><b>锁屏继续跑，中断能接上。</b>进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。</p>
 
-<h2>还有什么</h2>
+<h2 id="feat">还有什么</h2>
 <table>
 <tr><th>能力</th><th>说明</th></tr>
 <tr><td>多目标队列</td><td>排好的一串目标依次执行，每个可单独暂停 / 继续</td></tr>
@@ -90,7 +98,7 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
 <tr><td>字典管理</td><td>内容搜索（包含 / 前缀 / 后缀 / 正则）、长按多选合并、大字典编辑不丢数据</td></tr>
 </table>
 
-<h2>和其他做法比</h2>
+<h2 id="vs">和其他做法比</h2>
 <table>
 <tr><th>做法</th><th>要什么</th><th>快不快</th><th>门槛</th></tr>
 <tr><td><b>WPAForge</b></td><td>一台 Root 的手机</td><td>现场派生候选，几百条一般几分钟</td><td>会点开始就行</td></tr>
@@ -100,14 +108,14 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
 </table>
 <p class="dim">WPAForge 的取舍：候选靠现场派生而不是堆字典，所以它擅长「路由器主人设的那种密码」，不擅长「随机 12 位强密码」。后者本来就该换 WPA3。</p>
 
-<h2>安装</h2>
+<h2 id="install">安装</h2>
 <p class="warn"><b>需要 Root · Android 8.0+</b><br>
 没有 Root 就别试了 —— 判定依赖 <code>su + cmd wifi</code>。Shizuku 与免 Root 通道在 1.8.x 已移除：Shizuku 要在每次连接时借 binder，免 Root 走 <code>WifiNetworkSpecifier</code> 则每条候选都会弹一次系统确认框 —— 两者都撑不起逐条字典遍历。</p>
 <pre>1. 打开「观测」页，扫描附近网络，选中你的目标
 2. 打开「破解」页，加载字典（或让它现场派生）
 3. 点开始，锁屏等结果 —— 命中的密码会直接标出来</pre>
 
-<h2>界面</h2>
+<h2 id="shots">界面</h2>
 <div class="shots">
   <figure><img src="screenshots/shot01.png" alt="观测"><figcaption>观测 · 雷达与信道占用</figcaption></figure>
   <figure><img src="screenshots/shot02.png" alt="网络侦察"><figcaption>网络侦察 · 同网段设备</figcaption></figure>
@@ -119,7 +127,7 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
   <figure><img src="screenshots/shot08.png" alt="命中"><figcaption>命中 · 密码与证据</figcaption></figure>
 </div>
 
-<h2>它什么时候会失败</h2>
+<h2 id="fail">它什么时候会失败</h2>
 <p>先把话说在前面，这样你不会把它当 bug 到处骂：</p>
 <table>
 <tr><th>现象</th><th>原因</th><th>怎么办</th></tr>

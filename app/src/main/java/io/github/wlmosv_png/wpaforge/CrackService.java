@@ -388,7 +388,8 @@ public class CrackService extends Service {
             List<Candidate> work = base;
 
             if (task.useTargetDict) {
-                TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800);
+                TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800,
+                        io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, task.bssid));
                 if (!dr.candidates.isEmpty()) {
                     List<Candidate> merged = new ArrayList<>();
                     java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
@@ -556,104 +557,11 @@ public class CrackService extends Service {
         });
     }
 
-    /** 免 root 模式执行。低版本设备上会直接拒绝，不加载任何 API 30 的类。 */
-    private void runNoRoot(final TaskQueue.Task ft, int startOffset) {
-        if (android.os.Build.VERSION.SDK_INT < 30) {
-            log(L.s("免 Root 模式需要 Android 11 或更高版本",
-                    "Root-free mode requires Android 11 or higher"));
-            ft.state = TaskQueue.State.STOPPED;
-            TaskQueue.update(this, ft);
-            running = false;
-            notifyQueue();
-            stopSelfSafe();
-            return;
-        }
-        try {
-            runNoRootImpl(ft, startOffset);
-        } catch (Throwable t) {
-            // 类加载失败等各种情况都不该让应用挂掉
-            log(L.f("免 Root 模式不可用: %s", "Root-free mode unavailable: %s",
-                    t.getClass().getSimpleName()));
-            ft.state = TaskQueue.State.STOPPED;
-            TaskQueue.update(this, ft);
-            running = false;
-            notifyQueue();
-            stopSelfSafe();
-        }
-    }
-
     /**
      * 真正用到 SuggestionProber 的地方。
      * 只有版本 >= 30 才会走到这里，JVM 才会去解析 WifiNetworkSuggestion。
      */
     @android.annotation.SuppressLint("NewApi")
-    private void runNoRootImpl(final TaskQueue.Task ft, int startOffset) {
-        // **免 Root 改走 WifiNetworkSpecifier + requestNetwork**
-        //
-        // 旧的 WifiNetworkSuggestion 是「白名单」：提交后由系统自己挑时间连，
-        // 应用根本不知道它试没试过 —— 判定只能靠猜，必然误判。
-        // requestNetwork 则是「指定这一个 SSID + 这一个密码，立刻去连」，
-        // 成功失败由 onAvailable / onUnavailable 明确回调。
-        final SpecifierProber spec = new SpecifierProber(this);
-        sugProberRef = spec;
-        log(L.s("模式: 免 Root（系统精确连接）", "Mode: root-free (precise request)"));
-
-        spec.run(ft.toNetRecord(), currentDict, startOffset, 0L, new SpecifierProber.Listener() {
-            @Override
-            public void onAttemptStart(int index, int total, String candidate) {
-                for (UiCallback cb : callbacks) cb.onAttempt(index, total, candidate);
-                updateNotification(L.f("正在破解 %s", "Cracking %s", ft.ssid),
-                        candidate + "   " + index + "/" + total, index, total);
-            }
-
-            @Override
-            public void onAttemptResult(SpecifierProber.Result r) {
-                boolean hit = r.isSuccess();
-                for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(r.password, hit, r.elapsedMs, r.detail);
-                }
-            }
-
-            @Override
-            public void onProgress(int tested, int total, double rate, long etaMs) {
-                for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
-            }
-
-            @Override
-            public void onLog(String line) {
-                log(line);
-            }
-
-            @Override
-            public void onFinished(int tested, int offset, String hitPassword) {
-                sugProberRef = null;
-                String outcome;
-                if (hitPassword != null && !hitPassword.isEmpty()) {
-                    outcome = "NORMAL";
-                } else if (spec.isPaused()) {
-                    outcome = "PAUSED";
-                } else if (ft.state == TaskQueue.State.STOPPED) {
-                    outcome = "STOPPED";
-                } else {
-                    outcome = "NORMAL";
-                }
-                finishTask(ft, outcome, tested, offset, hitPassword);
-            }
-
-            @Override
-            public void onBlocked(String title, String detail) {
-                log(L.f("无法开始: %s", "Cannot start: %s", title));
-                for (UiCallback cb : callbacks) cb.onLog(title + "\n" + detail);
-                sugProberRef = null;
-                ft.state = TaskQueue.State.STOPPED;
-                TaskQueue.update(CrackService.this, ft);
-                running = false;
-                notifyQueue();
-                stopSelfSafe();
-            }
-        });
-    }
-
     /** 统一收尾 */
     /**
      * 记录速率时该用哪个耗时。
@@ -732,96 +640,6 @@ public class CrackService extends Service {
         notifyQueue();
 
         if (ft.state == TaskQueue.State.STOPPED) running = false;
-    }
-
-    /** 走 shell 通道执行（Root 或 Shizuku） */
-    private void runWithRoot(final TaskQueue.Task ft, int startOffset) {
-        boolean shizuku = ft.crackMode == Prefs.MODE_SHIZUKU;
-        prober = new RootProber(this, shizuku);
-        log(shizuku
-                ? L.s("模式: Shizuku（以 shell 身份执行 cmd wifi）",
-                      "Mode: Shizuku (cmd wifi as shell user)")
-                : L.s("模式: Root（通过 su 执行 cmd wifi）",
-                      "Mode: root (cmd wifi via su)"));
-
-        prober.run(ft.toNetRecord(), currentDict, startOffset, new RootProber.Listener() {
-            @Override
-            public void onAttemptStart(int index, int total, String candidate) {
-                for (UiCallback cb : callbacks) cb.onAttempt(index, total, candidate);
-                updateNotification("正在破解 " + ft.ssid, candidate
-                        + "   " + index + "/" + total, index, total);
-            }
-
-            @Override
-            public void onAttemptResult(RootProber.Attempt a) {
-                boolean hit = a.verdict == RootProber.Verdict.SUCCESS;
-                for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(a.candidate, hit, a.elapsedMs, a.detail);
-                }
-            }
-
-            @Override
-            public void onProgress(int tested, int total, double rate, long etaMs) {
-                for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
-            }
-
-            @Override
-            public void onFinished(RootProber.Outcome outcome, int tested, int offset,
-                                   String hitPassword) {
-                ft.offset = offset;
-                ft.testedThisRun += tested;
-                ft.elapsedMs += System.currentTimeMillis() - taskStartAt;
-
-                if (hitPassword != null && !hitPassword.isEmpty()) {
-                    ft.hitPassword = hitPassword;
-                    ft.state = TaskQueue.State.DONE_HIT;
-                    log(L.f("任务结束: %s 已命中（试了 %d 条）",
-                            "Task finished: %s hit (%d tried)", ft.ssid, tested));
-                } else if (outcome == RootProber.Outcome.PAUSED) {
-                    ft.state = TaskQueue.State.PAUSED;
-                    log(L.s("已暂停，进度 ", "Paused at progress ") + offset + "/" + ft.dictSize);
-                } else if (outcome == RootProber.Outcome.STOPPED) {
-                    ft.state = TaskQueue.State.STOPPED;
-                    log(L.s("已停止，进度 ", "Stopped at progress ") + offset + "/" + ft.dictSize);
-                } else {
-                    ft.state = TaskQueue.State.DONE_MISS;
-                    log(L.s("任务完成，未命中（试了 ", "Task complete, no match (tried ") + tested + L.s(" 条）", " entries)"));
-                }
-
-                TaskQueue.update(CrackService.this, ft);
-                for (UiCallback cb : callbacks) {
-                    cb.onTaskDone(ft, hitPassword, ft.state.name());
-                }
-                notifyQueue();
-
-                // 命中或停止则不再继续队列
-                if (ft.state == TaskQueue.State.STOPPED) running = false;
-            }
-
-            @Override
-            public void onHit(String ssid, String password) {
-                // 已在 onFinished 里处理
-            }
-
-            @Override
-            public void onBlocked(String reason) {
-                log(L.s("无法开始: ", "Cannot start: ") + reason);
-                ft.state = TaskQueue.State.STOPPED;
-                TaskQueue.update(CrackService.this, ft);
-                running = false;
-            }
-
-            @Override
-            public void onLog(String line) {
-                log(line);
-            }
-        });
-
-        // 暂停时整个队列也跟着停
-        if (ft.state == TaskQueue.State.PAUSED) {
-            log(L.s("队列已暂停", "Queue paused"));
-            running = false;
-        }
     }
 
     // ---------------- 通知 ----------------

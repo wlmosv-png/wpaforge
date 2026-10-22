@@ -237,6 +237,45 @@ public final class WpaCore {
     }
 
     /** 十六进制串 -> 字节，失败返回 null */
+    /**
+     * PMKID = HMAC-SHA1-128(PMK, "PMK Name" || AP_MAC || STA_MAC)
+     *
+     * <p>公式来自 IEEE 802.11 的 PMKID 定义（也是 hashcat/hcxtools 用的那条）。
+     * 相比握手校验，这条路径**只需 PBKDF2 + 一次 HMAC** —— 不用派生 PTK，
+     * 也不用算 MIC，所以单位时间能试的候选数接近两倍。
+     *
+     * @return 16 字节 PMKID；参数不合法返回 null
+     */
+    public static byte[] computePmkid(String passphrase, String ssid,
+                                      byte[] apMac, byte[] staMac) {
+        if (passphrase == null || ssid == null) return null;
+        if (apMac == null || apMac.length != 6) return null;
+        if (staMac == null || staMac.length != 6) return null;
+        byte[] pmk = derivePmk(passphrase, ssid);
+        if (pmk == null) return null;
+        byte[] data = new byte[8 + 6 + 6];
+        byte[] name = new byte[]{0x50, 0x4D, 0x4B, 0x20, 0x4E, 0x61, 0x6D, 0x65}; // "PMK Name"
+        System.arraycopy(name, 0, data, 0, 8);
+        System.arraycopy(apMac, 0, data, 8, 6);
+        System.arraycopy(staMac, 0, data, 14, 6);
+        byte[] mac = hmacSha1(pmk, data);
+        if (mac == null || mac.length < 16) return null;
+        byte[] out = new byte[16];
+        System.arraycopy(mac, 0, out, 0, 16);
+        return out;
+    }
+
+    /** 候选密码的 PMKID 是否与材料一致。 */
+    public static boolean checkPmkid(String passphrase, String ssid,
+                                     byte[] apMac, byte[] staMac, byte[] expected) {
+        if (expected == null || expected.length != 16) return false;
+        byte[] got = computePmkid(passphrase, ssid, apMac, staMac);
+        if (got == null) return false;
+        int diff = 0;
+        for (int i = 0; i < 16; i++) diff |= got[i] ^ expected[i];
+        return diff == 0;
+    }
+
     public static byte[] hexToBytes(String hex) {
         if (hex == null) return null;
         String h = hex.replace(":", "").replace("-", "").replace(" ", "");

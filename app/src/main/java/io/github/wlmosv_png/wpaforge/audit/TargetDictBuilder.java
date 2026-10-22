@@ -62,6 +62,15 @@ public final class TargetDictBuilder {
      * @param max    最多生成多少条
      */
     public static Result build(NetRecord target, int max) {
+        return build(target, max, null);
+    }
+
+    /**
+     * 带厂商名的派生。
+     *
+     * @param vendorName OUI 表查到的厂商名，可为 null（查不到就不生成厂商词元桶）
+     */
+    public static Result build(NetRecord target, int max, String vendorName) {
         if (target == null) {
             return new Result(new ArrayList<>(), L.s("未选择目标", "No target selected"));
         }
@@ -259,6 +268,45 @@ public final class TargetDictBuilder {
             }
         }
         if (!h.isEmpty()) { buckets.add(h); categories.add(L.s("智能词元扩散", "token matrix")); }
+
+        // I. 厂商词元：OUI 表查到的厂商名本身就是强候选。
+        //    依据不是「厂商默认密码表」（那种表编不准），而是两点可观察的事实：
+        //      · 很多 SSID 直接带厂商名/型号（TP-LINK_xxxx、MERCURY_xxxx）
+        //      · 主人设密码时爱拿品牌名加数字（xiaomi123、huawei2026）
+        //    厂商名来自 IEEE OUI 登记表，查不到就整个桶不生成，绝不编一个。
+        List<String> vi = new ArrayList<>();
+        if (vendorName != null && !vendorName.trim().isEmpty()) {
+            java.util.LinkedHashSet<String> forms = new java.util.LinkedHashSet<>();
+            String raw = vendorName.trim();
+            String all = raw.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]", "");
+            if (all.length() >= 3 && all.length() <= 14) forms.add(all);
+            String firstWord = raw.split("[\\s,./-]+")[0].toLowerCase(java.util.Locale.ROOT)
+                    .replaceAll("[^a-z0-9]", "");
+            if (firstWord.length() >= 3 && firstWord.length() <= 14) forms.add(firstWord);
+
+            int vy = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR);
+            String[] vyrs = new String[]{
+                String.valueOf(vy), String.valueOf(vy - 1),
+                String.valueOf(vy - 2), String.valueOf(vy - 3)
+            };
+
+            for (String vf : forms) {
+                String cap = capitalize(vf);
+                vi.add(vf);
+                vi.add(cap);
+                if (vf.length() <= 6) vi.add(vf + vf);
+                for (String yr : vyrs) {
+                    vi.add(vf + yr);
+                    vi.add(cap + yr);
+                    vi.add(vf + "@" + yr);
+                }
+                for (String sf : NUM_SUFFIX) {
+                    vi.add(vf + sf);
+                    vi.add(cap + sf);
+                }
+            }
+        }
+        if (!vi.isEmpty()) { buckets.add(vi); categories.add(L.s("厂商词元", "vendor token")); }
 
         // 轮转交错：每轮从每个桶取 3 条。
         // 每桶独立游标；只要还有任意一个桶没读完就继续（不能因为

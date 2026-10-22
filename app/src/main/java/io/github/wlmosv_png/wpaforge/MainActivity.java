@@ -104,6 +104,8 @@ public class MainActivity extends Activity {
     /** 设置页里的“当前模式能不能用”小字 */
     private TextView modeReadyLabel;
     private TextView auditLog;
+    /** 离线校验是否在跑（同一时间只允许一条） */
+    private boolean offlineBusy = false;
     private List<Candidate> currentDict;
     private String currentDictName = "";
     private AuditEngine engine;
@@ -1114,6 +1116,29 @@ public class MainActivity extends Activity {
         });
         pageAudit.addView(check);
 
+        // ---------------- 离线校验（外部抓包材料） ----------------
+        pageAudit.addView(sectionLabel(L.s("离线校验（外部材料）", "Offline check (external capture)")));
+
+        TextView offHint = new TextView(this);
+        offHint.setText(L.s(
+                "材料由电脑侧抓包工具导出，手机端只做本地比对 —— 不会发起任何关联请求。\n"
+                + "支持 hashcat 22000 格式（.hc22000 / .22000），放到 Download 或 Download/WPAForge-hc/ 下即可。\n"
+                + "PMKID 材料只需 PBKDF2 + 一次 HMAC，比握手材料快近一倍，抓包时优先要它。",
+                "Material comes from a desktop capture tool; the phone only compares locally.\n"
+                + "hashcat 22000 format (.hc22000 / .22000) supported — drop it in Download or Download/WPAForge-hc/.\n"
+                + "PMKID needs only PBKDF2 + one HMAC, about twice as fast as EAPOL — ask for it when capturing."));
+        offHint.setTextSize(11.5f);
+        offHint.setTextColor(TEXT_DIM);
+        offHint.setLineSpacing(px(4), 1f);
+        offHint.setBackground(roundBg(SURFACE, 18));
+        offHint.setPadding(px(18), px(16), px(18), px(16));
+        pageAudit.addView(offHint);
+
+        Button offPick = btnSecondary(L.s("选择材料文件，跑当前字典",
+                "Pick a capture file, run the current dictionary"));
+        offPick.setOnClickListener(v -> showOfflinePicker());
+        pageAudit.addView(offPick);
+
         pageAudit.addView(sectionLabel(L.s("日志", "Log")));
 
         auditLog = new TextView(this);
@@ -1124,6 +1149,153 @@ public class MainActivity extends Activity {
         auditLog.setPadding(px(16), px(16), px(16), px(16));
         auditLog.setMinLines(6);
         pageAudit.addView(auditLog);
+    }
+
+    // ---------------- 离线校验 ----------------
+
+    /** 收集目录下的 22000 材料文件（只认扩展名，不递归）。 */
+    private void scanHcFiles(java.io.File dir, java.util.List<java.io.File> out) {
+        java.io.File[] fs = dir.listFiles();
+        if (fs == null) return;
+        for (java.io.File f : fs) {
+            if (!f.isFile()) continue;
+            String n = f.getName().toLowerCase();
+            if (n.endsWith(".hc22000") || n.endsWith(".22000")) out.add(f);
+        }
+    }
+
+    private void showOfflinePicker() {
+        if (offlineBusy) {
+            Toast.makeText(this, L.s("正在比对，等这一轮结束", "Already running"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (currentDict == null || currentDict.isEmpty()) {
+            Toast.makeText(this, L.s("字典为空，请先加载或生成字典",
+                    "Dictionary is empty - load or generate one first"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final java.util.List<java.io.File> files = new java.util.ArrayList<>();
+        scanHcFiles(new java.io.File("/sdcard/Download"), files);
+        scanHcFiles(new java.io.File("/sdcard/Download/WPAForge-hc"), files);
+        if (files.isEmpty()) {
+            Toast.makeText(this, L.s(
+                    "没找到 .hc22000 / .22000 文件。\n把电脑导出的材料放进 Download 目录即可。",
+                    "No .hc22000 / .22000 file found. Put one in the Download folder."),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        java.util.Collections.sort(files, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg = new io.github.wlmosv_png.wpaforge.ui.NetDialog(
+                this, L.s("选择材料文件", "Pick a capture file"), null);
+        for (java.io.File f : files) {
+            final java.io.File pick = f;
+            dlg.addItem(f.getName() + "  (" + Math.max(1, f.length() / 1024) + " KB)",
+                    d -> runOfflineRead(pick));
+        }
+        dlg.show();
+    }
+
+    /** 读文件并解析材料；多条时让用户挑一条，避免一次跑很久。 */
+    private void runOfflineRead(final java.io.File f) {
+        appendLog(L.s("读取材料: ", "Reading: ") + f.getName());
+        new Thread(() -> {
+            String text;
+            try {
+                text = readTextFile(f);
+            } catch (Throwable t) {
+                ui.post(() -> appendLog(L.s("读取失败: ", "read failed: ") + t));
+                return;
+            }
+            final java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> entries =
+                    io.github.wlmosv_png.wpaforge.audit.Hc22000.parse(text);
+            ui.post(() -> {
+                if (entries.isEmpty()) {
+                    appendLog(L.s("文件里没有可用材料（需要 PMKID，或含 MIC 的 EAPOL 帧）",
+                            "No usable material (need a PMKID, or an EAPOL frame with MIC)"));
+                    return;
+                }
+                int pmkid = 0;
+                for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : entries) {
+                    if (e.isPmkid()) pmkid++;
+                }
+                appendLog(L.f("找到 %d 条材料（其中 PMKID %d 条）",
+                        "Found %d material entries (%d PMKID)", entries.size(), pmkid));
+                if (entries.size() > 1) {
+                    io.github.wlmosv_png.wpaforge.ui.NetDialog pick = new io.github.wlmosv_png.wpaforge.ui.NetDialog(
+                            this, L.f("选择材料（%d 条）", "Pick material (%d)", entries.size()), null);
+                    for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : entries) {
+                        final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry chosen = e;
+                        pick.addItem(e.label(), d -> runOfflineOne(chosen));
+                    }
+                    pick.show();
+                } else {
+                    runOfflineOne(entries.get(0));
+                }
+            });
+        }, "wpaforge-offline-read").start();
+    }
+
+    /** 对一条材料跑当前字典。 */
+    private void runOfflineOne(final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e) {
+        final java.util.List<io.github.wlmosv_png.wpaforge.audit.Candidate> dict = currentDict;
+        if (dict == null || dict.isEmpty()) {
+            Toast.makeText(this, L.s("字典为空", "Dictionary is empty"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        offlineBusy = true;
+        appendLog(L.s("开始比对: ", "Comparing: ") + e.label() + " · " + dict.size() + L.s(" 条候选", " candidates"));
+        final long t0 = System.currentTimeMillis();
+        final int every = Math.max(1, dict.size() / 10);
+        new Thread(() -> {
+            final io.github.wlmosv_png.wpaforge.audit.AuditEngine engine =
+                    new io.github.wlmosv_png.wpaforge.audit.AuditEngine();
+            io.github.wlmosv_png.wpaforge.audit.AuditEngine.Progress cb =
+                    new io.github.wlmosv_png.wpaforge.audit.AuditEngine.Progress() {
+                @Override public void onProgress(long tested, long total, String found) {
+                    if (tested % every == 0) {
+                        final long t = tested, n = total;
+                        ui.post(() -> appendLog("  " + t + " / " + n));
+                    }
+                }
+                @Override public void onDone(io.github.wlmosv_png.wpaforge.audit.AuditEngine.Result r) {
+                    final long ms = System.currentTimeMillis() - t0;
+                    ui.post(() -> {
+                        offlineBusy = false;
+                        if (r.hit) {
+                            appendLog(L.s("⚡ 命中: ", "HIT: ") + r.hitPassword
+                                    + L.s("（字典第 ", " (index ") + r.hitIndex
+                                    + L.s(" 位，耗时 ", "), took ") + ms + " ms)");
+                        } else {
+                            appendLog(L.s("未命中：跑了 ", "No hit: tested ") + r.tested
+                                    + L.s(" 条，耗时 ", " in ") + ms + " ms");
+                        }
+                    });
+                }
+                @Override public void onError(String message) {
+                    ui.post(() -> {
+                        offlineBusy = false;
+                        appendLog(L.s("材料不完整: ", "Bad material: ") + message);
+                    });
+                }
+            };
+            if (e.isPmkid()) {
+                engine.runPmkid(io.github.wlmosv_png.wpaforge.audit.Hc22000.toPmkid(e), dict, cb);
+            } else {
+                engine.runHandshake(io.github.wlmosv_png.wpaforge.audit.Hc22000.toHandshake(e), dict, cb);
+            }
+        }, "wpaforge-offline-run").start();
+    }
+
+    /** 读文本文件（材料文件都是纯文本，限制 4 MB 防止误选大文件）。 */
+    private static String readTextFile(java.io.File f) throws Exception {
+        int cap = (int) Math.min(Math.max(f.length(), 1L), 4L * 1024 * 1024);
+        byte[] buf = new byte[cap];
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            int off = 0, n;
+            while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
+            return new String(buf, 0, off, java.nio.charset.StandardCharsets.UTF_8);
+        }
     }
 
     private void updateDictStatus() {
@@ -1174,7 +1346,8 @@ public class MainActivity extends Activity {
                 "Deriving candidates from SSID \"%s\"...", ssid));
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
-                    io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet, 20000);
+                    io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet, 20000,
+                            io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, targetNet.bssid));
             final String nm = L.s("SSID 派生 · ", "SSID-derived · ") + ssid;
             final String path = saveDictToFile(r.candidates, nm);
             ui.post(() -> {

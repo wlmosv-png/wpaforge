@@ -53,6 +53,29 @@ public class TargetDictTest {
         ok("含 209123 族", has(r2.candidates,"2091230")||has(r2.candidates,"20912320")||has(r2.candidates,"209123123"), "查209123族");
         ok("含 209888 族", has(r2.candidates,"2098880")||has(r2.candidates,"20988888")||has(r2.candidates,"20988820"), "查209888族");
 
+        System.out.println("== 厂商词元（OUI）==");
+        int yr = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR);
+        TargetDictBuilder.Result rv = TargetDictBuilder.build(t1, 2000, "TP-LINK");
+        // 厂商名本身只有 6 位，按 WPA2 最短 8 位规则会被过滤掉 ——
+        // 所以厂商桶必须出「加年份 / 加后缀 / 自重复」这类可用形态，而不是裸品牌名。
+        ok("厂商名自重复形态", has(rv.candidates, "tplinktplink"), "");
+        ok("厂商名 + 年份", has(rv.candidates, "tplink" + yr), "");
+        ok("厂商名首字母大写 + 年份", has(rv.candidates, "Tplink" + yr), "");
+        ok("厂商名 + @年份", has(rv.candidates, "tplink@" + yr), "");
+        ok("不足 8 位的裸品牌名被长度规则挡掉（符合 WPA2 规则）",
+                !has(rv.candidates, "tplink"), "");
+        ok("来源里标出厂商词元", rv.explanation.contains("厂商"), rv.explanation);
+
+        TargetDictBuilder.Result rvFull = TargetDictBuilder.build(t1, 2000, "Sichuan Tianyi Kanghe");
+        ok("长厂商名取首个词并加年份", has(rvFull.candidates, "sichuan" + yr), "");
+        TargetDictBuilder.Result rvEmpty = TargetDictBuilder.build(t1, 2000, "");
+        ok("厂商名为空不崩且不产生该来源",
+                rvEmpty.candidates.size() > 0 && !rvEmpty.explanation.contains("厂商"), "");
+        TargetDictBuilder.Result rvNull = TargetDictBuilder.build(t1, 2000, null);
+        ok("厂商名为 null 不崩", rvNull.candidates.size() > 0, "");
+        TargetDictBuilder.Result rvShort = TargetDictBuilder.build(t1, 2000, "AB");
+        ok("过短厂商名不产生词元", !has(rvShort.candidates, "ab"), "");
+
         System.out.println("== 中文 SSID ==");
         NetRecord t3 = new NetRecord("小卖部WiFi5", "11:22:33:44:55:66", -70, 2412,
                 NetRecord.Security.WPA2, false, "");

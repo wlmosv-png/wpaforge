@@ -163,7 +163,12 @@ public final class WpaLogReader {
     public static String read(CrackEngine.ShellChannel shell, int lines) {
         if (shell == null) return null;
         try {
-            String cmd = "logcat -d -t " + lines + " -s wpa_supplicant";
+            // 不要加 `-t N`：本机 400 行全量日志只覆盖约 5 秒，而一次尝试有 10 秒，
+            // 较早出现的 CTRL-EVENT-ASSOC-REJECT / 4-Way Handshake failed 会被挤出
+            // 窗口、再也读不到（实测 -t 400 -s wpa_supplicant 只剩 4 行，去掉 -t 有 305 行）。
+            // 调用方在每条候选前已 logcat -c，缓冲里就是本次尝试的日志。
+            // lines 参数保留仅为兼容调用点。
+            String cmd = "logcat -d -s wpa_supplicant";
             return shell.exec(cmd, 6000);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "读取日志失败: " + t);

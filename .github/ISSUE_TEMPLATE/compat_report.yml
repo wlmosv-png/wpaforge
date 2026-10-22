@@ -1,0 +1,31 @@
+name: 机型兼容上报
+description: 说一下你的机能不能跑、跑得怎么样（成功也算）
+labels: [compat]
+body:
+  - type: input
+    id: dev
+    attributes:
+      label: 机型 / ROM / Android 版本
+    validations:
+      required: true
+  - type: input
+    id: root
+    attributes:
+      label: Root 方案与版本
+      placeholder: Magisk 27 / KernelSU 0.9.5
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: 结果
+      options: [完全可用, 部分可用, 用不了]
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: 具体现象
+      description: 哪一步失败、报什么；目标 AP 的加密方式是 WPA2 还是 WPA3。
+    validations:
+      required: true

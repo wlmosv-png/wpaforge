@@ -1,0 +1,50 @@
+name: Bug 报告
+description: 行为不符合预期
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        只对自己有授权的网络测试。贴日志前请把 SSID / BSSID / 密码打码。
+  - type: input
+    id: ver
+    attributes:
+      label: WPAForge 版本
+      placeholder: 设置页版本号，例如 1.9.21 (91)
+    validations:
+      required: true
+  - type: input
+    id: dev
+    attributes:
+      label: 机型 / ROM / Android 版本
+      placeholder: 一加 Ace 3 Pro / ColorOS 15 / Android 15
+    validations:
+      required: true
+  - type: dropdown
+    id: root
+    attributes:
+      label: Root 方案
+      options: [Magisk, KernelSU, APatch, 其它, 没有 Root]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 1. 打开观测页… 2. …
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: 期望 / 实际
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志片段
+      description: 设置页 → 导出日志，或长按执行方式看诊断。请打码 SSID / BSSID。
+      render: text
+    validations:
+      required: false

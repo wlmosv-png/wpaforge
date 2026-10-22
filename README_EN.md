@@ -15,6 +15,8 @@
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
+<img src="docs/demo-ui.gif" alt="WPAForge UI overview" width="88%">
+
 </div>
 
 ---
@@ -136,3 +138,7 @@ Design trade-offs and pitfalls (config-reuse false positives, detection timing, 
 | **[TGAutoSign](https://github.com/wlmosv-png/TGAutoSign)** | Xposed module for Telegram auto check-in — multi-account slots, group sign-in detection, scheduled plans, themed UI. Manage targets with `/jmb` in any chat. |
 | **[apk-index](https://github.com/wlmosv-png/apk-index)** | APK static indexing & reverse-engineering search — parses AXML, indexes each dex, finds hook points by string / signature / structure. MCP-ready. |
 
+---
+
+**If this saved you time, hit ⭐ on the repo — that is the entire wishlist.**
+Questions and device-compat reports: [Discussions](https://github.com/wlmosv-png/wpaforge/discussions).

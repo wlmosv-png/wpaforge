@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
 [![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-**中文** · [English](README_EN.md) · [官网](https://wlmosv-png.github.io/wpaforge/) · [下载](https://github.com/wlmosv-png/wpaforge/releases/latest) · [讨论](https://github.com/wlmosv-png/wpaforge/discussions)
+**中文** · [English](README_EN.md) · [🎬 完整演示](https://wlmosv-png.github.io/wpaforge/#demo) · [官网](https://wlmosv-png.github.io/wpaforge/) · [下载](https://github.com/wlmosv-png/wpaforge/releases/latest) · [讨论](https://github.com/wlmosv-png/wpaforge/discussions)
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
@@ -19,10 +19,6 @@
 
 <sub>界面速览 —— 观测 → 选目标 → 字典 → 破解，四步</sub>
 
-<p align="center">
-  <video src="https://wlmosv-png.github.io/wpaforge/demo-v4.mp4" controls muted playsinline width="56%"></video>
-</p>
-<p align="center"><sub>完整演示 60 秒（真机录屏 + 原创配乐）· 也可直接<a href="https://wlmosv-png.github.io/wpaforge/">在落地页看</a></sub></p>
 
 </div>
 
@@ -49,9 +45,9 @@
 **锁屏继续跑，中断能接上。** 进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。
 
 <p align="center">
-  <img src="docs/demo-hit.gif" alt="真机录屏：第 11 条候选命中" width="46%">
+  <a href="https://wlmosv-png.github.io/wpaforge/#demo"><img src="docs/demo-hit.gif" alt="真机录屏：第 11 条候选命中" width="46%"></a>
 </p>
-<p align="center"><sub>真机录屏 · 第 11 条候选命中（10 秒；<a href="https://wlmosv-png.github.io/wpaforge/">完整 60 秒演示</a>）</sub></p>
+<p align="center"><sub>▶ 真机录屏 · 第 11 条候选命中（10 秒试看）—— <a href="https://wlmosv-png.github.io/wpaforge/#demo">点这里看完整 60 秒带配乐版</a></sub></p>
 
 ## 还有什么
 

@@ -17,7 +17,7 @@
 
 <img src="docs/demo-ui.gif" alt="WPAForge UI overview" width="100%">
 
-<img src="docs/demo-hit.gif" alt="Real-device capture: the 11th candidate hits" width="46%">
+<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="docs/demo-hit.gif" alt="Real-device capture: the 11th candidate hits" width="46%"></a>
 
 </div>
 

@@ -152,6 +152,8 @@ public class MainActivity extends Activity {
     private NetRecord targetNet;
     /** 设置页两个连接开关（状态直接写在按钮文案上） */
     private Button connPinBtn, connRotBtn;
+    /** 设置页「保活状态」卡片 */
+    private TextView keepAliveLabel;
     private Thread connectThread;
 
     // 服务绑定
@@ -1296,6 +1298,51 @@ public class MainActivity extends Activity {
             while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
             return new String(buf, 0, off, java.nio.charset.StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * 回到前台时检查：后台期间引擎是不是被系统挂起过。
+     *
+     * <p>判据：任务在跑，但最近一次心跳距今超过 90 秒 —— 说明中间一段时间
+     * 引擎完全没推进。实测（ColorOS 15）后台会限制应用，表现为 su 命令卡住、
+     * 引擎线程阻塞在管道读上，界面上看起来像「任务停了，回到应用才继续」。
+     */
+    private void checkBackgroundStall() {
+        try {
+            CrackService svc = liveService();
+            if (svc == null || !svc.isWorking()) return;
+            long last = Prefs.lastBeat(this);
+            if (last <= 0) return;
+            long gap = System.currentTimeMillis() - last;
+            if (gap > 90_000L) {
+                appendStreamColored(L.s(
+                        "检测到后台期间任务被系统挂起过（约 " + (gap / 1000) + " 秒没有推进）。"
+                        + "若反复出现，请到设置页看「保活状态」。",
+                        "Background stall detected (~" + (gap / 1000) + "s without progress). "
+                        + "See \"Keep-alive status\" in Settings if it repeats."), DANGER);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 刷新「保活状态」卡片 */
+    private void refreshKeepAlive() {
+        if (keepAliveLabel == null) return;
+        boolean batteryOk = false;
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager)
+                    getSystemService(android.content.Context.POWER_SERVICE);
+            if (pm != null) batteryOk = pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Throwable ignored) {}
+        StringBuilder sb = new StringBuilder();
+        sb.append(batteryOk ? "✓" : "✗")
+                .append(L.s(" 电池优化豁免（关屏后不被限制）\n",
+                        " battery-optimisation exemption (no throttling with screen off)\n"));
+        sb.append(CrackService.isRunning() ? "✓" : "·")
+                .append(L.s(" 前台服务（任务运行时自动开启）\n",
+                        " foreground service (starts with the task)\n"));
+        sb.append("·").append(L.s(" 系统深度睡眠白名单：任务启动时自动写入（需要 root）\n",
+                " OS deep-sleep whitelist: written automatically at task start (needs root)\n"));
+        keepAliveLabel.setText(sb.toString());
     }
 
     private void updateDictStatus() {
@@ -3266,6 +3313,51 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         pageSettings.addView(permFixBtn);
 
         // ---------------- 诊断 ----------------
+        // ---------------- 保活状态 ----------------
+        pageSettings.addView(sectionLabel(L.s("保活状态", "Keep-alive status")));
+
+        keepAliveLabel = new TextView(this);
+        keepAliveLabel.setTextSize(11.5f);
+        keepAliveLabel.setTextColor(TEXT_DIM);
+        keepAliveLabel.setLineSpacing(px(4), 1f);
+        keepAliveLabel.setBackground(roundBg(SURFACE, 18));
+        keepAliveLabel.setPadding(px(18), px(16), px(18), px(16));
+        pageSettings.addView(keepAliveLabel);
+        refreshKeepAlive();
+
+        Button fixAlive = btnSecondary(L.s("一键修复：写入系统白名单", "Fix now: write system whitelists"));
+        fixAlive.setOnClickListener(v -> {
+            Toast.makeText(this, L.s("正在写入…", "writing…"), Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                final StringBuilder err = new StringBuilder();
+                try {
+                    String pkg = getPackageName();
+                    io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                            new String[]{"su", "-c", "dumpsys deviceidle whitelist +" + pkg}, 8000);
+                    String cur = io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                            new String[]{"su", "-c",
+                                    "settings get global lspdoze.deepsleep.whitelist"}, 6000);
+                    if (cur != null && !cur.contains(pkg)) {
+                        String merged = cur.trim().isEmpty() ? pkg : cur.trim() + "," + pkg;
+                        io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                                new String[]{"su", "-c",
+                                        "settings put global lspdoze.deepsleep.whitelist '" + merged + "'"},
+                                6000);
+                    }
+                } catch (Throwable t) {
+                    err.append(t);
+                }
+                ui.post(() -> {
+                    refreshKeepAlive();
+                    Toast.makeText(this, err.length() == 0
+                                    ? L.s("已写入系统白名单", "whitelists updated")
+                                    : L.s("写入失败（需要 root）", "failed (root required)"),
+                            Toast.LENGTH_SHORT).show();
+                });
+            }, "wpaforge-fix-alive").start();
+        });
+        pageSettings.addView(fixAlive);
+
         pageSettings.addView(sectionLabel(L.s("诊断", "Diagnostics")));
 
         TextView diagHint = new TextView(this);
@@ -4164,6 +4256,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     @Override
     protected void onResume() {
         super.onResume();
+        checkBackgroundStall();
         if (currentTab == 0) {
             // 从后台回来要把雷达动画接上，否则会停在最后一帧
             if (radar != null) radar.startSpin();

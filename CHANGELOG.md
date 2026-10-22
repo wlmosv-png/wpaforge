@@ -4,6 +4,68 @@
 
 ---
 
+## [1.9.13] - 2026-10-22
+
+**修掉一个会让整条引擎线程永久卡死的 bug —— 这就是「切到后台任务停住、回到前台才继续」的真身。**
+
+### 1. 死锁：超时清理不彻底（本次核心）
+
+`RootProber.exec` 超时后只 `destroyForcibly()` 了直接子进程，而
+`su -c "cmd wifi ..."` 会派生**孙进程**（su → sh → cmd）。孙进程仍然持有管道写端，
+上层 `readLine()` 永远等不到 EOF。
+
+实测证据（2026-10-22，任务运行中）：
+
+```
+进度        offset 45 秒完全不变
+CPU         WPAForge 10 秒消耗 0 ticks（同期 Eta 44 ticks）
+线程栈      wpaforge-crack → libcore.io.Linux.readBytes
+            Thread-2704    → Process.waitFor(RootProber.java:700)
+进程        cgroup freezer:/（未被冻结）、State: S
+```
+
+也就是说：**进程活着、没被冻结，只是永远等在管道上**。回到前台时系统条件变化让这个
+read 得以返回，于是表现为「打开软件才继续」。
+
+修法：
+
+- 抽出纯逻辑类 `ShellExec`：超时后 `descendants().destroyForcibly()` 终止整棵树，
+  **并关闭三个流** —— 关掉读端是关键，否则阻塞在 read 上的线程即使子进程全死也不会醒
+- 新增**死锁回归测试**：用例真的起一棵「父进程等着、孙进程长睡」的进程树，
+  旧实现在这里会挂到测试超时（`ShellExecTest` 12 项）
+- **通道熔断**：连续 5 次 exec 超时 → 判定通道被系统限制 → 暂停任务并说明原因
+  （以前只会无声地一条条耗在超时上）
+
+### 2. 保活：把之前手动做的事固化进应用
+
+实测 ColorOS 的两层限制：
+
+```
+lspdoze.deepsleep.force_uid_disconnect=1        ← 关屏后强制断开该 UID 的网络
+lspdoze.deepsleep.intercept_disable_network=1   ← 并且拦截网络操作
+```
+
+- 启动任务时**自动写入**两处白名单（需要 root）：
+  - `dumpsys deviceidle whitelist +<pkg>` —— 电池优化豁免
+  - `settings put global lspdoze.deepsleep.whitelist ...` —— ColorOS 深度睡眠白名单
+- 设置页新增「保活状态」卡片与「一键修复」按钮
+- 回到前台时**检测后台挂起**：心跳间隔超过 90 秒就提示
+  （心跳由引擎在每条候选出结果时写入）
+
+### 3. 前台服务类型：dataSync → connectedDevice
+
+Android 15 对 `dataSync` 类型的前台服务有「每 24 小时最多 6 小时」的限制，
+而一次完整任务实测约 5.3 小时（3336 条 × 5.7 秒），已经压在这个上限上。
+改为 `connectedDevice`（语义为「与外部设备交互」，与反复关联 AP 相符，无时长上限），
+并补权限 `FOREGROUND_SERVICE_CONNECTED_DEVICE`；
+另加 `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 作为无 root 场景的兜底。
+
+### 测试
+
+`590 → 602` 项全过，新增 `ShellExecTest` 12 项（含死锁回归用例）。
+
+---
+
 ## [1.9.12] - 2026-10-22
 
 **真机抓包定位：日志判据其实一直是失效的 —— 而且原因在代码里躺了很久。**

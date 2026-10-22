@@ -26,6 +26,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      前台服务类型从 dataSync 改为 connectedDevice。
+      理由：Android 15 对 dataSync 类型的前台服务有「每 24 小时最多 6 小时」的限制，
+      而本应用一次完整任务实测约 5.3 小时（3336 条 × 5.7 秒），已经压在上限上；
+      connectedDevice 表示「与外部设备交互」，与「反复关联 WiFi AP」语义相符，且无时长上限。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- 无 root 场景下的兜底：引导用户关闭电池优化（有 root 时本应用会直接写白名单） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- ================= Shizuku 集成（必须的三件套）=================
          缺任何一样都会表现为：
@@ -62,7 +71,7 @@
         <service
             android:name=".CrackService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="connectedDevice" />
 
         <activity
             android:name=".AboutActivity"

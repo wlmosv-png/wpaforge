@@ -82,6 +82,10 @@ public class CrackService extends Service {
     /** 统一引擎实例（取消/暂停走它） */
     private volatile CrackEngine engineRef;
     private TaskQueue.Task currentTask;
+    /** 连续 exec 超时计数（通道熔断用） */
+    private int execTimeouts = 0;
+    private static final int EXEC_TIMEOUT_LIMIT = 5;
+    private volatile boolean whitelistEnsured = false;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     private List<Candidate> currentDict = new ArrayList<>();
@@ -318,8 +322,47 @@ public class CrackService extends Service {
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * 确保系统侧白名单包含本应用。
+     *
+     * <p>实测（OnePlus PJX110 / ColorOS 15）两个坑：
+     * <ul>
+     *   <li>不在**电池优化白名单** → 进入 Doze 后被限制</li>
+     *   <li>不在 ColorOS 的**深度睡眠白名单**（{@code lspdoze.deepsleep.whitelist}）
+     *       → 关屏后系统会强制断开该 UID 的网络并拦截网络操作
+     *       （{@code force_uid_disconnect=1}、{@code intercept_disable_network=1}）</li>
+     * </ul>
+     * 两项都能用 root 直接写，不需要用户去系统设置里翻。
+     */
+    private void ensureSystemWhitelist() {
+        if (whitelistEnsured) return;
+        whitelistEnsured = true;
+        final String pkg = getPackageName();
+        new Thread(() -> {
+            try {
+                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                        new String[]{"su", "-c", "dumpsys deviceidle whitelist +" + pkg}, 8000);
+            } catch (Throwable ignored) {}
+            try {
+                String cur = io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                        new String[]{"su", "-c",
+                                "settings get global lspdoze.deepsleep.whitelist"}, 6000);
+                if (cur != null && !cur.contains(pkg)) {
+                    String merged = cur.trim().isEmpty() ? pkg : cur.trim() + "," + pkg;
+                    io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                            new String[]{"su", "-c",
+                                    "settings put global lspdoze.deepsleep.whitelist '" + merged + "'"},
+                            6000);
+                    log(L.s("已加入系统深度睡眠白名单（关屏后不再被断网）",
+                            "added to system deep-sleep whitelist"));
+                }
+            } catch (Throwable ignored) {}
+        }, "wpaforge-whitelist").start();
+    }
+
     private void runQueue() {
         acquireLocks();
+        ensureSystemWhitelist();
         try {
             while (!stopRequested) {
                 if (Thread.currentThread().isInterrupted()) break;
@@ -460,8 +503,32 @@ public class CrackService extends Service {
             engine.setShellChannel(new CrackEngine.ShellChannel() {
                 @Override
                 public String exec(String cmd, long timeoutMs) {
-                    if (useShizuku) return ShizukuRunner.exec(cmd, timeoutMs);
-                    return RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                    String out;
+                    if (useShizuku) {
+                        out = ShizukuRunner.exec(cmd, timeoutMs);
+                    } else {
+                        out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                    }
+                    // ---- 通道熔断 ----
+                    // 连续多次命令超时，说明通道已经不可用（进程被系统限制、su 被反复卡住……）。
+                    // 这时继续跑只会让每条候选都耗在超时上 —— 界面看着像「在跑」，
+                    // 实际一步没动。与其无声卡住，不如停下来把情况讲清楚。
+                    if (!useShizuku) {
+                        if (RootProber.lastTimedOut()) {
+                            if (++execTimeouts >= EXEC_TIMEOUT_LIMIT) {
+                                execTimeouts = 0;
+                                log(L.s(
+                                        "连续多次命令超时 —— 通道已被系统限制，任务已暂停。"
+                                        + "回到应用界面后点继续即可（前台运行时不受此限制）。",
+                                        "Repeated command timeouts - channel throttled. Task paused; "
+                                        + "reopen the app and press resume."));
+                                stopAll();
+                            }
+                        } else if (out != null) {
+                            execTimeouts = 0;
+                        }
+                    }
+                    return out;
                 }
                 @Override
                 public void forgetTarget(String ssid) {
@@ -511,6 +578,8 @@ public class CrackService extends Service {
 
             @Override
             public void onAttemptResult(CrackEngine.Attempt a) {
+                // 心跳：回到前台时用它判断「后台期间是不是被系统挂起过」
+                Prefs.beat(CrackService.this, System.currentTimeMillis());
                 // 不要再覆盖引擎给出的 detail。
                 //
                 // 旧代码把 UNKNOWN 一律改写成「无法确认（当前连着目标，但可能是原有连接）」，

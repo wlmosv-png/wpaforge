@@ -686,38 +686,24 @@ public final class RootProber {
         }
     }
 
-    /** 同步执行并拿 stdout，超时可中断 */
-    public static String exec(Object ctx, String[] cmd, long timeoutMs) {
-        Process p = null;
-        try {
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(true);
-            p = pb.start();
-            final Process fp = p;
-            // 超时后强杀，避免挂住
-            Thread killer = new Thread(() -> {
-                try {
-                    if (!fp.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
-                        fp.destroyForcibly();
-                    }
-                } catch (Exception ignored) {}
-            });
-            killer.setDaemon(true);
-            killer.start();
+    /** 最近一次 exec 是否超时（供通道熔断判断） */
+    private static volatile boolean lastTimedOut = false;
 
-            StringBuilder sb = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                String line;
-                while ((line = r.readLine()) != null) sb.append(line).append('\n');
-            }
-            p.waitFor(500, TimeUnit.MILLISECONDS);
-            return sb.toString();
-        } catch (Exception e) {
-            return null;
-        } finally {
-            if (p != null) {
-                try { p.destroy(); } catch (Exception ignored) {}
-            }
-        }
+    public static boolean lastTimedOut() {
+        return lastTimedOut;
+    }
+
+    /**
+     * 同步执行并拿 stdout，超时返回 null。
+     *
+     * <p>实现委托给 {@link ShellExec} —— 超时后它终止的是**整棵进程树**并关闭管道，
+     * 而不是只杀直接子进程。旧实现只杀 su，孙进程（sh → cmd wifi）仍持有管道写端，
+     * 上层 {@code readLine()} 永远等不到 EOF，整条引擎线程就此卡死
+     * （实测：切后台后任务完全不动，前台才继续）。
+     */
+    public static String exec(Object ctx, String[] cmd, long timeoutMs) {
+        ShellExec.Result r = ShellExec.run(cmd, timeoutMs);
+        lastTimedOut = r.timedOut;
+        return r.timedOut ? null : r.output;
     }
 }

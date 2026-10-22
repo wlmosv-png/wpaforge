@@ -23,11 +23,26 @@ public final class Prefs {
     private static final String K_RATE_N = "rate_samples";  // 样本数
     private static final String K_PIN_BSSID = "pin_bssid";   // 连接锁定到选中的那个 AP
     private static final String K_MAC_ROTATE = "mac_rotate";  // 每次尝试换随机 MAC
+    private static final String K_LAST_BEAT = "last_beat_ms";  // 引擎心跳（检测被系统挂起）
 
     private Prefs() {}
 
     private static SharedPreferences sp(Context ctx) {
         return ctx.getApplicationContext().getSharedPreferences(NAME, Context.MODE_PRIVATE);
+    }
+
+    // ---------------- 引擎心跳 ----------------
+
+    /**
+     * 引擎每条候选都会调一次，用来判断「切到后台期间是不是被系统挂起过」。
+     * 回到前台时如果发现心跳间隔远大于正常值，就说明中间被冻过/卡过。
+     */
+    public static void beat(Context ctx, long nowMs) {
+        sp(ctx).edit().putLong(K_LAST_BEAT, nowMs).apply();
+    }
+
+    public static long lastBeat(Context ctx) {
+        return sp(ctx).getLong(K_LAST_BEAT, 0L);
     }
 
     // ---------------- 在线连接选项 ----------------

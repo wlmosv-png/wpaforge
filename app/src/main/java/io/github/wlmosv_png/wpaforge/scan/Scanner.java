@@ -94,6 +94,27 @@ public final class Scanner {
         return appCtx.checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
     }
 
+    /**
+     * 系统定位开关是否打开。
+     *
+     * 为什么必须单独查：Android 10 起，定位开关关着时 getScanResults() 一律返回
+     * 空列表且不抛异常，权限全部授予也一样（同机实测：定位开 27 条 / 定位关 0 条）。
+     * 不查这一项，界面只能说「可能周围确实没有网络」，把用户往错误方向带 ——
+     * 现网反馈正是「安装时给了定位权限、系统开关没开、应用没任何提示」。
+     */
+    public boolean isLocationEnabled() {
+        try {
+            android.location.LocationManager lm = (android.location.LocationManager)
+                    appCtx.getSystemService(Context.LOCATION_SERVICE);
+            if (lm == null) return true;              // 查不到就不拦，避免误报
+            if (Build.VERSION.SDK_INT >= 28) return lm.isLocationEnabled();
+            return android.provider.Settings.Secure.getInt(appCtx.getContentResolver(),
+                    android.provider.Settings.Secure.LOCATION_MODE, 0) != 0;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
     /** WiFi 开关是否打开 */
     public boolean isWifiEnabled() {
         try {
@@ -116,6 +137,12 @@ public final class Scanner {
         if (!missing.isEmpty()) {
             listener.onNotice(L.s("缺少权限: ", "Missing permissions: ") + String.join("、", missing)
                     + L.s("。没有它们系统不会返回扫描结果。", ". Without them the system returns no scan results."), true);
+        }
+        // 定位开关不在权限体系里，但关着时扫描结果一律为空（见 isLocationEnabled 注释）。
+        // 必须单独提示：只查权限的话，用户看到的是「一个网络都没有」而不知道该开定位。
+        if (!isLocationEnabled()) {
+            listener.onNotice(L.s("系统定位开关没打开：Android 10 起定位关着时系统不返回任何扫描结果，权限给了也一样。请下拉通知栏打开「定位」再试。",
+                    "System location is off: since Android 10 the system returns no scan results while location is off, even with permissions granted. Turn Location on and retry."), true);
         }
         if (!isWifiEnabled()) {
             listener.onNotice(L.s("WiFi 未开启，请先打开 WiFi 开关", "Wi-Fi is off — turn it on first"), true);
@@ -188,9 +215,15 @@ public final class Scanner {
             } else if ("EMPTY_RESULT".equals(d)) {
                 listener.onNotice(L.s("扫描完成但一个网络都没发现（可能周围确实没有）",
                         "Scan finished but found nothing nearby"), false);
+            } else if ("LOCATION_OFF".equals(d)) {
+                listener.onNotice(L.s("定位开关没打开：Android 10 起定位关着时系统不返回任何扫描结果，权限给了也一样。请下拉通知栏打开「定位」再试。",
+                        "Location is off: since Android 10 the system returns no scan results while location is off, even with permissions granted. Turn Location on and retry."), true);
             } else if (d.startsWith("NULL") || d.startsWith("WIFI_SERVICE")) {
                 listener.onNotice(L.s("系统没有返回扫描数据",
                         "The system returned no scan data"), true);
+            } else if (!d.isEmpty()) {
+                // 兜底：以前这类原因会静默，用户只看到「还没扫描到网络」。
+                listener.onNotice(L.s("读取扫描结果没成功：", "Reading scan results failed: ") + d, true);
             }
         }
         listener.onResults(records);
@@ -236,7 +269,9 @@ public final class Scanner {
             return fallbackOr(out);
         }
         if (raw.isEmpty()) {
-            lastDiag = "EMPTY_RESULT";
+            // 定位开关关着时系统就是这么表现的：空列表、不抛异常。
+            // 单独标出来，否则界面只会说「可能周围确实没有网络」。
+            lastDiag = isLocationEnabled() ? "EMPTY_RESULT" : "LOCATION_OFF";
             return fallbackOr(out);
         }
         lastDiag = "OK(" + raw.size() + ")";

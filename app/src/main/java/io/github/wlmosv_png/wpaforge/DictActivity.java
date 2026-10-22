@@ -1217,9 +1217,26 @@ public class DictActivity extends Activity {
     private void showOnlineSources() {
         java.util.List<DictSources.Source> sources = DictSources.list();
         NetDialog dlg = new NetDialog(this, L.s("在线字典", "Online sources"),
-                L.s("共 ", "Total ") + sources.size() + L.s(" 个公开来源。数据来自 SecLists（MIT 许可）等开源项目，", " public sources. Data comes from SecLists (MIT) and similar open-source projects,")
-                + L.s("下载后存在本机。", "saved locally after download."));
+                L.s("共 ", "Total ") + sources.size()
+                        + L.s(" 个公开来源，按类型分组（SecLists 为 MIT，其余多数未声明许可）。",
+                                " public sources grouped by type (SecLists is MIT; most others declare no licence).")
+                        + L.s("本应用只提供下载入口，不打包任何数据。",
+                                " This app only links; it bundles no data.")
+                        + L.s("\n在线爆破每个候选都要真连一次 AP（约 1.5 条/秒），条目上标的是预计耗时。",
+                                "\nEach candidate is a real association attempt (~1.5/s); the time shown is an estimate."));
+        String lastCat = "";
         for (DictSources.Source src : sources) {
+            // 分类标题：源按类型分组，避免一屏全是看不懂的大表名字
+            if (src.category != null && !src.category.isEmpty()
+                    && !src.category.equals(lastCat)) {
+                lastCat = src.category;
+                TextView h = new TextView(this);
+                h.setText(src.category);
+                h.setTextSize(12);
+                h.setTextColor(ACCENT);
+                h.setPadding(px(4), px(12), px(4), px(4));
+                dlg.addView(h);
+            }
             // 每个源做成两行条目
             android.widget.LinearLayout item = new android.widget.LinearLayout(this);
             item.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -1227,7 +1244,10 @@ public class DictActivity extends Activity {
             item.setPadding(px(16), px(14), px(16), px(14));
 
             TextView n = new TextView(this);
-            n.setText(src.name + "   " + src.sizeHint);
+            n.setText(src.name + "   " + src.sizeHint
+                    + (src.entries > 0 ? " · " + DictSources.estimateText(src.entries) : "")
+                    + (src.entries > DictSources.HUGE_ENTRIES
+                    ? L.s("  ⚠ 太大，在线跑不完", "  ! too large to finish online") : ""));
             n.setTextSize(13.5f);
             n.setTextColor(TEXT);
             item.addView(n);
@@ -1263,12 +1283,23 @@ public class DictActivity extends Activity {
 
         final NetDialog prog = new NetDialog(this, L.s("正在下载 ", "Downloading ") + src.name, null);
         prog.addView(tv);
-        prog.addHint(L.s("下载完成后会自动过滤掉长度不合法的口令并去重。", "Invalid lengths are filtered and duplicates removed after download."));
+        android.widget.TextView noteTv = new android.widget.TextView(this);
+        noteTv.setTextSize(11f);
+        noteTv.setTextColor(TEXT_DIM);
+        noteTv.setPadding(px(4), px(2), px(4), px(6));
+        prog.addView(noteTv);
+        prog.addHint(L.s("自动过滤掉短于 8 位（WPA 下限）与超过 63 位的口令并去重，"
+                        + "所以最终条数会比原始行数少；条目上写的是原始条数。",
+                "Entries shorter than 8 (the WPA minimum) or longer than 63 are filtered and duplicates removed, "
+                        + "so the final count is lower than the raw line count shown on the item."));
         prog.setNegative(L.s("后台继续", "Continue in background"), null);
         prog.show();
 
         new Thread(() -> DictSources.download(src, DictStore.defaultDir(this),
                 new DictSources.Progress() {
+                    @Override public void onNote(String line) {
+                        ui.post(() -> noteTv.setText(line));
+                    }
                     @Override public void onStart(int totalBytes) {
                         ui.post(() -> tv.setText(totalBytes > 0
                                 ? L.s("开始下载，约 ", "Starting, about ") + (totalBytes / 1024) + " KB"

@@ -15,8 +15,6 @@
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
-<img src="docs/demo-ui.gif" alt="WPAForge UI overview" width="88%">
-
 </div>
 
 ---
@@ -101,7 +99,7 @@ Audit · Crack — the rest you'll see once you install it.
 No Gradle, two manual stages:
 
 ```sh
-WP_VERSION_CODE=91 WP_VERSION_NAME=1.9.21 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
+WP_VERSION_CODE=92 WP_VERSION_NAME=1.9.22 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop: javac + d8 + sign (needs WP_FORGE_KS* vars)
 ```
 
@@ -138,7 +136,3 @@ Design trade-offs and pitfalls (config-reuse false positives, detection timing, 
 | **[TGAutoSign](https://github.com/wlmosv-png/TGAutoSign)** | Xposed module for Telegram auto check-in — multi-account slots, group sign-in detection, scheduled plans, themed UI. Manage targets with `/jmb` in any chat. |
 | **[apk-index](https://github.com/wlmosv-png/apk-index)** | APK static indexing & reverse-engineering search — parses AXML, indexes each dex, finds hook points by string / signature / structure. MCP-ready. |
 
----
-
-**If this saved you time, hit ⭐ on the repo — that is the entire wishlist.**
-Questions and device-compat reports: [Discussions](https://github.com/wlmosv-png/wpaforge/discussions).

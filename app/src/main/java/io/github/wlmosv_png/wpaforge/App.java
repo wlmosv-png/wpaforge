@@ -128,6 +128,22 @@ public class App extends Application {
                 }
                 sb.append('\n');
 
+                // 定位开关（系统级，不在权限体系里）：关着时扫描结果一定是空的。
+                // 历史事故：用户装完给了定位权限、系统开关没开，日志里查不到任何线索。
+                sb.append("-- 定位开关 --\n");
+                try {
+                    android.location.LocationManager lm =
+                            (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+                    boolean locOn = lm == null || (Build.VERSION.SDK_INT >= 28
+                            ? lm.isLocationEnabled()
+                            : android.provider.Settings.Secure.getInt(getContentResolver(),
+                                    android.provider.Settings.Secure.LOCATION_MODE, 0) != 0);
+                    sb.append(locOn ? "  定位开关: 开\n" : "  定位开关: 关（扫描一定是空的）\n");
+                } catch (Throwable t) {
+                    sb.append("  定位开关: 查询失败 ").append(t.getClass().getSimpleName()).append('\n');
+                }
+                sb.append('\n');
+
                 // 特权通道
                 sb.append("-- 特权通道 --\n");
                 try {

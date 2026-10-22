@@ -2017,12 +2017,16 @@ public class MainActivity extends Activity {
      * 是权限问题、WiFi 没开、还是系统节流。
      */
     private String emptyTextWithDiag() {
-        String base = L.s("还没扫描到网络。请确认 WiFi 已开启、权限已授予。",
-                "No networks found. Check that Wi-Fi is on and permissions are granted.");
+        String base = L.s("还没扫描到网络。请确认「定位」开关已打开、WiFi 已开启、权限已授予。",
+                "No networks found. Check that Location is on, Wi-Fi is on, and permissions are granted.");
         if (scanner == null) return base;
 
         StringBuilder sb = new StringBuilder(base);
         String d = scanner.lastDiagnostic();
+        if ("LOCATION_OFF".equals(d)) {
+            sb.append(L.s("  定位开关没打开 —— 扫描为空最常见的原因，权限给了也没用，请下拉通知栏打开「定位」。",
+                    "  Location is off - the most common cause of an empty scan; permissions alone are not enough."));
+        }
         if (d != null && !d.isEmpty()) {
             sb.append("\n\n").append(L.s("诊断: ", "Diagnostic: ")).append(d);
         }
@@ -4169,6 +4173,10 @@ public class MainActivity extends Activity {
                         == PackageManager.PERMISSION_GRANTED;
                 sb.append("  附近设备: ").append(nw ? "✓" : "✗（Android 13+ 扫描必需）").append('\n');
             }
+            boolean locSwStep1 = scanner == null || scanner.isLocationEnabled();
+            sb.append("  定位开关: ").append(locSwStep1
+                    ? "✓"
+                    : "✗（关着时扫描一定是空的，只给权限没用）").append('\n');
 
             // ── 步骤 2：通道 ──
             sb.append(L.s("\n【2/6】执行通道\n", "\n[2/6] Channel\n"));
@@ -5274,7 +5282,9 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         boolean loc = grantedOrFalse(android.Manifest.permission.ACCESS_FINE_LOCATION);
         boolean near = Build.VERSION.SDK_INT < 33
                 || grantedOrFalse("android.permission.NEARBY_WIFI_DEVICES");
-        boolean allOk = loc && near;
+        // 定位开关：不在应用权限里，permFixBtn 帮不上忙（系统设置页没有这一项），只在文案里说明。
+        boolean locSwitch = scanner == null || scanner.isLocationEnabled();
+        boolean allOk = loc && near && locSwitch;
 
         StringBuilder sb = new StringBuilder();
         sb.append(permLine(android.Manifest.permission.ACCESS_FINE_LOCATION,
@@ -5282,6 +5292,14 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         if (Build.VERSION.SDK_INT >= 33) {
             sb.append('\n').append(permLine("android.permission.NEARBY_WIFI_DEVICES",
                     L.s("附近设备（扫描）", "Nearby devices (scan)")));
+        }
+        // 定位开关是系统级开关，不在应用权限页里，所以单独一行写清楚去哪儿开。
+        sb.append('\n');
+        sb.append("  ").append(locSwitch ? "✓ " : "✗ ").append(L.s("系统定位开关（必须打开）",
+                "System location toggle (must be on)"));
+        if (!locSwitch) {
+            sb.append(L.s(" —— 关着时扫描结果一定是空的，权限给了也一样。请下拉通知栏打开「定位」（系统设置页里没有这一项）。",
+                    " - scans are always empty while it is off, even with permissions granted; turn it on from Quick Settings."));
         }
         sb.append('\n');
         if (allOk) {

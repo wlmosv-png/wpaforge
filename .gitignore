@@ -20,8 +20,10 @@ local.properties
 *.keystore
 signing.properties
 signing.env
+signing.env.local
 local.env
 .env
+*.local
 
 # 系统
 .DS_Store

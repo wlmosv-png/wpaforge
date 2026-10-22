@@ -11,9 +11,18 @@
 [![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
 [![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-**中文** · [English](README_EN.md)
+**中文** · [English](README_EN.md) · [官网](https://wlmosv-png.github.io/wpaforge/) · [下载](https://github.com/wlmosv-png/wpaforge/releases/latest) · [讨论](https://github.com/wlmosv-png/wpaforge/discussions)
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
+
+<img src="docs/demo-ui.gif" alt="WPAForge 界面速览" width="100%">
+
+<sub>界面速览 —— 观测 → 选目标 → 字典 → 破解，四步</sub>
+
+<p align="center">
+  <video src="https://wlmosv-png.github.io/wpaforge/demo-v4.mp4" controls muted playsinline width="56%"></video>
+</p>
+<p align="center"><sub>完整演示 60 秒（真机录屏 + 原创配乐）· 也可直接<a href="https://wlmosv-png.github.io/wpaforge/">在落地页看</a></sub></p>
 
 </div>
 
@@ -38,6 +47,11 @@
 「已连上」的情况。
 
 **锁屏继续跑，中断能接上。** 进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。
+
+<p align="center">
+  <img src="docs/demo-hit.gif" alt="真机录屏：第 11 条候选命中" width="46%">
+</p>
+<p align="center"><sub>真机录屏 · 第 11 条候选命中（10 秒；<a href="https://wlmosv-png.github.io/wpaforge/">完整 60 秒演示</a>）</sub></p>
 
 ## 还有什么
 
@@ -72,12 +86,18 @@ Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` �
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/shot04.jpg" width="88%">
-  <br>
-  <img src="docs/screenshots/shot06.jpg" width="88%">
+  <img src="docs/screenshots/shot01.png" width="23%">
+  <img src="docs/screenshots/shot02.png" width="23%">
+  <img src="docs/screenshots/shot03.png" width="23%">
+  <img src="docs/screenshots/shot04.png" width="23%">
 </p>
-
-审计 · 破解 —— 其余页面装上就知道。
+<p align="center">
+  <img src="docs/screenshots/shot05.png" width="23%">
+  <img src="docs/screenshots/shot06.png" width="23%">
+  <img src="docs/screenshots/shot07.png" width="23%">
+  <img src="docs/screenshots/shot08.png" width="23%">
+</p>
+<p align="center"><sub>① 观测 · ② 网络侦察 · ③ 字典管理 · ④ 字典内容 · ⑤ 口令强度与离线校验 · ⑥ WPS · ⑦ 破解 · ⑧ 命中</sub></p>
 
 ## 构建
 
@@ -90,6 +110,34 @@ sh 2-build-dex.sh                                       # 桌面侧：javac + d8
 
 产物 `build/out/wpaforge-signed.apk`，构建链完全显式可控。`1-aapt2.sh` 里的版本号默认值只作兜底，
 发布时必须显式传入，否则会打出与线上倒挂的版本号。
+
+## 和其他做法比
+
+| 做法 | 要什么 | 快不快 | 门槛 |
+|---|---|---|---|
+| **WPAForge** | 一台 Root 的手机 | 现场派生候选，几百条一般几分钟 | 会点开始就行 |
+| 电脑 aircrack-ng + 抓包 | 笔记本 + 支持 monitor 的网卡 + 已抓到的握手包 | 取决于字典，大字典按天算 | 会命令行、会抓包 |
+| 手机 Termux 脚本 | 手机上的 Linux 环境 + 外置网卡 | 多数只是替你跑 aircrack | 会折腾环境 |
+| 在线字典站 | 把握手包传给别人 | 排队 | 你的包离开了本机 |
+
+取舍说清楚：它擅长「路由器主人设的那种密码」，不擅长「随机 12 位强密码」—— 后者本来就该上 WPA3。
+
+## 它什么时候会失败
+
+先把话说在前面，这样你不会把它当 bug 到处骂：
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| 一直在试但拿不到 | 密码不在候选集合里 | 导入自己的字典，或调高候选上限 |
+| 一开始就全失败 | 目标开了 WPA3 / PMF，或 WPA2-WPA3 过渡模式 | 单靠关联尝试打不动，别硬啃 |
+| 部分 AP 扫不到 | 手机不支持 6GHz，或本机开了随机 MAC | 关掉本机随机 MAC 再扫 |
+| 报权限错误 | Root 没给，或 ROM 禁了 `cmd wifi` | 看设置页那 6 步自检 |
+| 中途被系统杀掉 | 后台省电策略 | 加白名单；进度会落盘，重开续跑 |
+
+## 想要什么，去哪儿说
+
+机型兼容反馈、失败的 AP 特征、功能建议 → [Discussions](https://github.com/wlmosv-png/wpaforge/discussions)；
+明确的 bug → [Issue 模板](https://github.com/wlmosv-png/wpaforge/issues/new/choose)。
 
 ---
 
@@ -104,6 +152,10 @@ sh 2-build-dex.sh                                       # 桌面侧：javac + d8
 Apache License 2.0 — 见 [LICENSE](LICENSE)
 
 设计取舍与踩过的坑（配置复用假阳性、判定时序、`finally` 覆盖结果等）见 [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md)。
+
+---
+
+**如果它帮到你了，回仓库点个 ⭐ —— 这是这个项目唯一的需求清单。**
 
 ## Star History
 

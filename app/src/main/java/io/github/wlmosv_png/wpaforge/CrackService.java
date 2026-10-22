@@ -86,6 +86,9 @@ public class CrackService extends Service {
     private int execTimeouts = 0;
     private static final int EXEC_TIMEOUT_LIMIT = 5;
     private volatile boolean whitelistEnsured = false;
+    /** 保活悬浮窗（1×1 透明） */
+    private android.view.View keepAliveOverlay;
+    private android.view.WindowManager keepAliveWm;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     private List<Candidate> currentDict = new ArrayList<>();
@@ -309,7 +312,63 @@ public class CrackService extends Service {
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * 显示一个 1×1 的透明悬浮窗，仅用于保活。
+     *
+     * <p>为什么需要它：实测（OnePlus PJX110 / ColorOS 15）后台应用会被系统冻结 ——
+     * 30 秒内 CPU 实际运行 0 ms，连待机桶已是 EXEMPTED、WakeLock 持有中、
+     * 前台服务在跑都拦不住。而带**可见窗口**的进程属于另一个待遇档位，
+     * 系统通常不冻它。
+     *
+     * <p>权限用 root 直接授（`appops set <pkg> SYSTEM_ALERT_WINDOW allow`），
+     * 不让用户去设置里翻。
+     */
+    private void showKeepAliveOverlay() {
+        try {
+            if (!android.provider.Settings.canDrawOverlays(this)) {
+                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
+                        new String[]{"su", "-c", "appops set " + getPackageName()
+                                + " SYSTEM_ALERT_WINDOW allow"}, 6000);
+            }
+            if (keepAliveOverlay != null) return;
+            if (keepAliveWm == null) {
+                keepAliveWm = (android.view.WindowManager)
+                        getSystemService(android.content.Context.WINDOW_SERVICE);
+            }
+            if (keepAliveWm == null) return;
+            keepAliveOverlay = new android.view.View(this);
+            android.view.WindowManager.LayoutParams lp =
+                    new android.view.WindowManager.LayoutParams(
+                            1, 1,
+                            android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                    | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                    | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                            android.graphics.PixelFormat.TRANSPARENT);
+            lp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
+            lp.x = 0;
+            lp.y = 0;
+            keepAliveWm.addView(keepAliveOverlay, lp);
+            log(L.s("已显示保活悬浮窗（1×1 透明，防止后台被系统冻结）",
+                    "keep-alive overlay shown (1x1 transparent)"));
+        } catch (Throwable t) {
+            log(L.s("悬浮窗不可用: ", "overlay unavailable: ") + t.getClass().getSimpleName());
+        }
+    }
+
+    private void hideKeepAliveOverlay() {
+        try {
+            if (keepAliveWm != null && keepAliveOverlay != null) {
+                keepAliveWm.removeView(keepAliveOverlay);
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            keepAliveOverlay = null;
+        }
+    }
+
     private void releaseLocks() {
+        hideKeepAliveOverlay();
         try {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
@@ -363,6 +422,7 @@ public class CrackService extends Service {
     private void runQueue() {
         acquireLocks();
         ensureSystemWhitelist();
+        showKeepAliveOverlay();
         try {
             while (!stopRequested) {
                 if (Thread.currentThread().isInterrupted()) break;

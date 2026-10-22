@@ -54,12 +54,27 @@ public final class WpaLogReader {
     public static final class LogEvent {
         public final long at;
         public final String ssid;
+        /**
+         * 这条事件属于哪个 AP。
+         *
+         * <p><b>为什么必须有这个字段</b>：本机日志里
+         * {@code Key negotiation completed with <BSSID>} 不带 SSID，
+         * 如果只判断「出现过协商完成」，就会把**别的网络**的握手算到目标头上。
+         * 实测事故（2026-10-22）：目标 2.4G-3 失败后系统回连 B217 并握手成功，
+         * 被误报成「2.4G-3 = redskins 命中」——密码其实是错的。
+         */
+        public final String bssid;
         public final String kind;
         public final String raw;
 
         LogEvent(long at, String ssid, String kind, String raw) {
+            this(at, ssid, null, kind, raw);
+        }
+
+        LogEvent(long at, String ssid, String bssid, String kind, String raw) {
             this.at = at;
             this.ssid = ssid;
+            this.bssid = bssid;
             this.kind = kind;
             this.raw = raw;
         }
@@ -67,8 +82,9 @@ public final class WpaLogReader {
 
     private static final Pattern P_ASSOC =
             Pattern.compile("Trying to associate with SSID '(.*)'");
+    /** 协商完成 —— 捕获 BSSID，用于归属校验（不带 SSID，只能靠 BSSID 认） */
     private static final Pattern P_NEGOTIATED =
-            Pattern.compile("Key negotiation completed");
+            Pattern.compile("Key negotiation completed with ([0-9a-fA-F:]{17})");
     private static final Pattern P_HANDSHAKE_FAIL =
             Pattern.compile("4-Way Handshake failed");
     private static final Pattern P_ASSOC_REJECT =
@@ -79,17 +95,17 @@ public final class WpaLogReader {
      * （这是用真机原文做测试向量时才暴露出来的：模式写窄了，功能静默失效。）
      */
     private static final Pattern P_HANDSHAKE_M1 =
-            Pattern.compile("(?:WPA|RSN): RX message 1 of 4-Way Handshake");
+            Pattern.compile("(?:WPA|RSN): RX message 1 of 4-Way Handshake from ([0-9a-fA-F:]{17})");
     /**
      * 本机最明确的失败信号：wpa_supplicant 把该网络临时禁用并给出 WRONG_KEY。
      * 实测这一行与 `4-Way Handshake failed` 同时出现，但它更「结构化」，
      * 即使前一行被日志配额丢掉，这一行也可能还在。
      */
     private static final Pattern P_WRONG_KEY =
-            Pattern.compile("reason=WRONG_KEY|CTRL-EVENT-SSID-TEMP-DISABLED");
-    /** 连上（含 BSSID 与 configKey），是「握手完成」之后的第二条确认 */
+            Pattern.compile("CTRL-EVENT-SSID-TEMP-DISABLED[^\\n]*ssid=\"([^\"]+)\"");
+    /** 连上 —— 同样捕获 BSSID，是「握手完成」之后的第二条确认 */
     private static final Pattern P_CONNECTED =
-            Pattern.compile("CTRL-EVENT-CONNECTED");
+            Pattern.compile("CTRL-EVENT-CONNECTED - Connection to ([0-9a-fA-F:]{17})");
 
     private WpaLogReader() {}
 
@@ -115,11 +131,14 @@ public final class WpaLogReader {
                 out.add(new LogEvent(now, m.group(1), "associate", line));
                 continue;
             }
-            if (P_NEGOTIATED.matcher(line).find()) {
-                out.add(new LogEvent(now, null, "negotiated", line));
+            Matcher mn = P_NEGOTIATED.matcher(line);
+            if (mn.find()) {
+                out.add(new LogEvent(now, null, mn.group(1), "negotiated", line));
                 continue;
             }
             if (P_HANDSHAKE_FAIL.matcher(line).find()) {
+                // 这一行本身不带归属（wpa_supplicant 就是这么打的），
+                // 所以调用方必须结合「本次见过目标的关联」来判断 —— 见 sawFailureLikelyForTarget
                 out.add(new LogEvent(now, null, "handshake_failed", line));
                 continue;
             }
@@ -127,16 +146,20 @@ public final class WpaLogReader {
                 out.add(new LogEvent(now, null, "assoc_reject", line));
                 continue;
             }
-            if (P_HANDSHAKE_M1.matcher(line).find()) {
-                out.add(new LogEvent(now, null, "handshake_m1", line));
+            Matcher mm1 = P_HANDSHAKE_M1.matcher(line);
+            if (mm1.find()) {
+                out.add(new LogEvent(now, null, mm1.group(1), "handshake_m1", line));
                 continue;
             }
-            if (P_WRONG_KEY.matcher(line).find()) {
-                out.add(new LogEvent(now, null, "handshake_failed", line));
+            Matcher mw = P_WRONG_KEY.matcher(line);
+            if (mw.find()) {
+                // ssid="X" 是这条日志唯一可靠的归属信息
+                out.add(new LogEvent(now, mw.group(1), "wrong_key", line));
                 continue;
             }
-            if (P_CONNECTED.matcher(line).find()) {
-                out.add(new LogEvent(now, null, "negotiated", line));
+            Matcher mc2 = P_CONNECTED.matcher(line);
+            if (mc2.find()) {
+                out.add(new LogEvent(now, null, mc2.group(1), "negotiated", line));
             }
         }
         return out;
@@ -156,10 +179,45 @@ public final class WpaLogReader {
         return false;
     }
 
-    /** 有没有出现过握手失败的记录（本机 ROM 通常没有，仅作参考） */
+    /**
+     * 有没有出现过握手失败**或**密码错误被拒。
+     *
+     * <p><b>注意</b>：这两类行（{@code 4-Way Handshake failed}、
+     * {@code CTRL-EVENT-ASSOC-REJECT}）不带归属信息，只能配合
+     * 「本次见过目标的关联尝试」一起用，否则会把别的网络的失败算到目标头上。
+     * 带归属的失败信号请用 {@link #sawWrongKeyFor}。
+     */
     public static boolean sawHandshakeFailure(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {
-            if ("handshake_failed".equals(e.kind)) return true;
+            if ("handshake_failed".equals(e.kind) || "wrong_key".equals(e.kind)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 目标 SSID 有没有被系统以 WRONG_KEY 临时禁用。
+     *
+     * <p>这是本机**唯一带归属的失败信号**（行里有 {@code ssid="X"}），
+     * 所以它比 {@code 4-Way Handshake failed} 更可信。
+     */
+    public static boolean sawWrongKeyFor(String logcatOutput, String targetSsid) {
+        if (targetSsid == null || targetSsid.isEmpty()) return false;
+        for (LogEvent e : parse(logcatOutput)) {
+            if ("wrong_key".equals(e.kind) && targetSsid.equals(e.ssid)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 目标 BSSID 有没有完成握手 —— **成功判定必须用这个，不能用 sawNegotiated**。
+     *
+     * @param targetBssid 目标 AP 的 MAC；为空时返回 false（宁可不判成功，也不能误判）
+     */
+    public static boolean sawNegotiatedFor(String logcatOutput, String targetBssid) {
+        if (targetBssid == null || targetBssid.isEmpty()) return false;
+        for (LogEvent e : parse(logcatOutput)) {
+            if ("negotiated".equals(e.kind) && e.bssid != null
+                    && targetBssid.equalsIgnoreCase(e.bssid)) return true;
         }
         return false;
     }
@@ -172,7 +230,13 @@ public final class WpaLogReader {
         return false;
     }
 
-    /** 有没有出现过协商完成（密码正确的直接证据，本机 ROM 通常没有） */
+    /**
+     * 有没有出现过协商完成 —— <b>不分是哪个 AP，禁止用于成功判定</b>。
+     *
+     * <p>保留它只是为了兼容旧调用点与排查问题。要判定命中请用
+     * {@link #sawNegotiatedFor(String, String)}，否则系统回连别的网络时会误报
+     * （2026-10-22 的假阳性事故就是这么来的）。
+     */
     /** 有没有出现过收到握手第 1 帧（说明 AP 已响应认证，可用于动态延长看门狗超时） */
     public static boolean sawHandshakeM1(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {

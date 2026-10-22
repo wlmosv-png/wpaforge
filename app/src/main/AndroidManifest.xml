@@ -35,6 +35,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- 无 root 场景下的兜底：引导用户关闭电池优化（有 root 时本应用会直接写白名单） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!--
+      保活悬浮窗：任务进行时显示一个 1×1 透明窗口。
+      目的不是给用户看，而是让系统认为本应用「有可见窗口」——
+      实测 ColorOS 会冻结纯后台应用（即使持 WakeLock、待机桶已是 EXEMPTED、
+      即使有前台服务）。授权由 root 自动完成，无需用户操作。
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- ================= Shizuku 集成（必须的三件套）=================
          缺任何一样都会表现为：

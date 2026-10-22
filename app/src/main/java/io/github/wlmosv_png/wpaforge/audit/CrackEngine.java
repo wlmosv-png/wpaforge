@@ -1200,7 +1200,10 @@ public final class CrackEngine {
                         android.util.Log.i(TAG, "捕获握手第 1 帧，看门狗延长 2.5s");
                     }
 
-                    if (tried && WpaLogReader.sawNegotiated(wlog)) {
+                    // 必须校验**这个握手是目标的**：日志里同一时刻常常还有
+                    // 系统回连别的网络并握手成功的记录，只判断「出现过协商完成」
+                    // 会把别的网络算成命中（2026-10-22 假阳性事故）。
+                    if (tried && WpaLogReader.sawNegotiatedFor(wlog, target.bssid)) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "命中(日志): 关联目标后完成协商");
                         return new Attempt(password, Verdict.SUCCESS, ms,
@@ -1213,8 +1216,12 @@ public final class CrackEngine {
                     // 「本次尝试失败」的直接记录，不需要再拿关联行做前置条件。
                     // （旧逻辑用 tried 做前置：一旦关联行被 ColorOS 的日志配额丢掉，
                     //   失败行即使读到了也不会被采纳，只能干等超时。）
-                    if (WpaLogReader.sawHandshakeFailure(wlog)
-                            || WpaLogReader.sawAssocReject(wlog)) {
+                    // 带归属的失败信号优先：`CTRL-EVENT-SSID-TEMP-DISABLED ssid="X"` 里
+                    // 有 SSID，能确认是目标的失败。另外两种（Handshake failed / ASSOC-REJECT）
+                    // 不带归属，所以仍要求本次见过目标的关联尝试。
+                    if (WpaLogReader.sawWrongKeyFor(wlog, target.ssid)
+                            || (tried && (WpaLogReader.sawHandshakeFailure(wlog)
+                                    || WpaLogReader.sawAssocReject(wlog)))) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
                         return new Attempt(password, Verdict.AUTH_FAIL, ms,

@@ -4,6 +4,113 @@
 
 ---
 
+## [1.9.15] - 2026-10-22
+
+**修掉一个假阳性：日志判据从不校验「这个握手是谁的」。**
+
+### 事故
+
+目标 `2.4G-3` 被判「命中 redskins」，但密码其实是错的：
+
+```
+√ 成功 redskins (3240ms 日志确认握手完成（Key negotiation completed）（依据: wpalog）)
+```
+
+### 根因
+
+引擎的日志成功判据是 `tried && sawNegotiated(wlog)`：
+
+- `sawNegotiated` 只匹配 `Key negotiation completed`，**从不检查是哪个 AP**
+- `tried` 只证明「日志里出现过目标的关联尝试」，**不能证明这个握手属于目标**
+
+而本机日志里 `Key negotiation completed with <BSSID>` **不带 SSID**，只有 BSSID。
+
+**假阳性路径**（与用户日志完全吻合）：
+
+1. 系统尝试目标 `2.4G-3` → 日志出现 `Trying to associate with SSID '2.4G-3'` → `tried = true`
+2. 目标失败 → **系统回连 B217 并握手成功** → 日志出现
+   `Key negotiation completed with 28:93:7d:41:cc:39`
+3. 旧实现只问「有没有出现过协商完成」→ **判定 2.4G-3 = redskins** ✗
+
+用户日志里的 `事件 6: B217↑ B217↓ B217↑ ...` 就是那次回连。
+
+### 为什么现在才暴露
+
+1.9.12 之前日志读取本身是坏的（`-t` 窗口截断 + 探测源错），判据从未真正生效。
+1.9.12 修好读取后判据**第一次真正跑起来** —— 于是暴露了它自身的缺陷。
+典型的「修好一层，露出下一层」。
+
+### 修复：所有判据加归属校验
+
+- `LogEvent` 增加 `bssid` 字段
+- 各模式改为捕获归属：`Key negotiation completed with <BSSID>`、
+  `CTRL-EVENT-CONNECTED - Connection to <BSSID>`、
+  `RX message 1 ... from <BSSID>`、`CTRL-EVENT-SSID-TEMP-DISABLED ssid="X"`
+- 新增 **`sawNegotiatedFor(log, targetBssid)`** —— 成功判定必须用它；
+  目标 BSSID 为空时返回 false（宁可漏判，绝不误判）
+- 新增 `sawWrongKeyFor(log, targetSsid)` —— 本机唯一带归属的失败信号
+- `sawNegotiated` 保留但明确标注「禁止用于成功判定」
+- 引擎改为：成功走 `sawNegotiatedFor(wlog, target.bssid)`；
+  失败优先 `sawWrongKeyFor(wlog, target.ssid)`，其余失败信号仍要求本次见过目标的关联
+
+### 彻查：还有没有别的假阳性路径
+
+按 systematic-debugging 的方法，把引擎里**所有 SUCCESS 返回点**逐个过了一遍：
+
+| 返回点 | 判据 | 归属校验 |
+|---|---|---|
+| status 四条件 | SSID + COMPLETED + IP + netId **同行同源** | ✓ 最强 |
+| 日志 | `sawNegotiatedFor(..., target.bssid)` | ✓ 本次修 |
+| 免 Root 回调 | `onAvailable` 后再复核 SSID | ✓（本机不走此路径） |
+
+`NetworkWatcher` 事件**不参与成功判定**（只在失败时打诊断日志）；
+`WifiStateLog.sawConnectedFor` 本身带 SSID 校验（原先就是对的）。
+
+### 测试
+
+`602 → 617` 项全过。新增 `LogAttributionTest` 15 项，其中两条是核心：
+
+- `旧判据确实会被骗（事故可复现）` —— 证明这个 bug 真实存在
+- `新判据：目标 BSSID 没握过手 -> 不算命中` —— 证明修复有效
+
+---
+
+## [1.9.14] - 2026-10-22
+
+**后台保活：用「保活悬浮窗」绕开 ColorOS 的应用冻结。**
+
+### 背景：Android 侧的白名单全试过了，不够
+
+实测（OnePlus PJX110 / ColorOS 15）后台运行时应用会被系统完全冻结：
+
+| 检查项 | 结果 |
+|---|---|
+| 待机桶 | 5 = EXEMPTED（Android 最优档） |
+| Doze | `mState=ACTIVE`（未启用） |
+| WakeLock | `wpaforge:crack` 持有中 |
+| cgroup | `freezer:/`（不在标准冻结组） |
+| **30 秒实际 CPU** | **0 ms**（同期连 Eta 自己也是 0 ms） |
+
+也就是说 Android 的标准机制都没拦住它 —— 这是 ColorOS 的私有策略。
+表现就是「切到后台任务不动、回到前台才继续」，而且每条候选会从 5~6 秒
+膨胀到 40 秒以上（日志时间戳可直接看出来）。
+
+### 做法：让进程拥有「可见窗口」
+
+任务开始时显示一个 **1×1 的透明悬浮窗**（`TYPE_APPLICATION_OVERLAY`）。
+带可见窗口的进程在系统里属于另一个待遇档位，通常不在冻结范围内。
+
+- 权限由 root 直接授：`appops set <pkg> SYSTEM_ALERT_WINDOW allow`，
+  不需要用户去设置里翻
+- 任务结束 / 服务销毁时自动移除，不留残留窗口
+- 悬浮窗不可用时不阻断任务，只在日志里说明
+
+### 测试
+
+`602` 项全过（本次为服务层改动，无新增纯逻辑测试）。
+
+---
+
 ## [1.9.13] - 2026-10-22
 
 **修掉一个会让整条引擎线程永久卡死的 bug —— 这就是「切到后台任务停住、回到前台才继续」的真身。**

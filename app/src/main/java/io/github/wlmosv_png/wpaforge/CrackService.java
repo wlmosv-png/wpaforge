@@ -575,7 +575,9 @@ public class CrackService extends Service {
             CrackEngine e = engineRef;
             if (e == null || !running) return 0;
             int n = e.testedCount();
-            long pure = e.lastPureTryMs();
+            // 必须用**运行中**的累计值：lastPureTryMs 只在整轮循环结束后才赋值，
+            // 任务进行中它恒为 0，于是界面永远显示上一个任务的历史数字。
+            long pure = e.livePureTryMs();
             if (n > 0 && pure > 0) return pure / n;
         } catch (Throwable ignored) {}
         return 0;

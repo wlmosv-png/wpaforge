@@ -4,6 +4,65 @@
 
 ---
 
+## [1.9.12] - 2026-10-22
+
+**真机抓包定位：日志判据其实一直是失效的 —— 而且原因在代码里躺了很久。**
+
+### 1. 被冤枉的「ROM 不输出」（旧结论作废）
+
+`WpaLogReader` 的类注释里曾写着：
+
+```
+实测结论（本机 Color OS 15 / Android 15）:
+  Key negotiation completed   ✗ 该 ROM 不输出
+  4-Way Handshake failed      ✗ 该 ROM 不输出
+```
+
+2026-10-22 在任务运行中直接抓取（`-s wpa_supplicant`）证明**这两行一直都在**：
+
+```
+09:17:53.953 wlan0: WPA: Key negotiation completed with 28:93:7d:41:cc:39 [PTK=CCMP GTK=TKIP]
+09:19:24.107 wlan0: WPA: 4-Way Handshake failed - pre-shared key may be incorrect
+09:19:24.107 wlan0: CTRL-EVENT-SSID-TEMP-DISABLED ... reason=WRONG_KEY
+```
+
+当年判「不输出」，是因为采样时机撞上了引擎自己的 `logcat -c` —— 清空后读当然是空的。
+这个结论让失败加速形同虚设，注释里还写着「仅作参考」。
+
+### 2. 三个让判据真正失效的 bug
+
+- **探测源不对**：`logReadable` 用状态机日志（`-e ClientModeImpl`，本机只有 ContextImpl
+  噪音）做探测，却去读 `wpa_supplicant` —— 探测结论与真实读取源无关。现在两者一致。
+- **失败判据多了一个致命前置**：原来是 `if (tried && 握手失败)`，而 `tried` 要求先看到
+  `Trying to associate`。ColorOS 对每个进程有日志配额（实测约 300 行 / 8 KB，超出丢弃），
+  关联行一旦被丢，**失败行即使读到了也不会被采纳**，只能干等超时。现在去掉这个前置。
+- **握手第 1 帧的模式写窄了**：只认 `WPA: RX message 1...`，真机打的是
+  `RSN: RX message 1...` —— 功能静默失效。现在两种前缀都认。
+
+这三个都是「拿真机原文当测试向量」才暴露出来的（新增 6 项真机样本测试）。
+
+### 3. 其余修正
+
+- 退避再加时间条件：只有**明显快于单发时限**（< 70%）的尝试才进采样窗口
+- 实时速率改用运行中累计值 —— `lastPureTryMs` 只在整轮结束后才赋值，
+  任务进行中恒为 0，所以状态行一直显示上一个任务的数字
+
+### 4. 必须说清的现实
+
+日志判据修好后，能省下的只有「信号到达 → 立即判负」这一段。**真正的耗时在 AP 侧**：
+实测目标 AP 在 -63 dBm 下，从 `Trying to associate` 到吐出
+`4-Way Handshake failed` 用了 **8.8 秒**。这不是软件能绕过的。
+
+因此如果想让单条更快，**关掉「更换随机 MAC」值得一试**：每次新 MAC 会被 AP 当作
+新客户端，可能走更慢的认证路径。这是可验证的假设，建议做对照测试。
+
+### 测试
+
+`583 → 590` 项全过。新增 6 项真机原文向量：失败行、`reason=WRONG_KEY`、成功行、
+`CTRL-EVENT-CONNECTED`、关联行、握手第 1 帧。
+
+---
+
 ## [1.9.11] - 2026-10-22
 
 **上一版声称的「提速」在这台设备上等于没做 —— 这次修的是真正的瓶颈，

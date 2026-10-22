@@ -82,6 +82,40 @@ public class WpaLogTest {
         check("握手第 1 帧 (M1) 能识别",
                 WpaLogReader.sawHandshakeM1(m1Sample));
 
+        // ---- 2026-10-22 真机抓到的原文（不是构造的样本）----
+        System.out.println("== 真机原文（ColorOS 15）==");
+        String realFail = "10-22 09:19:24.107 28272 28272 I wpa_supplicant: "
+                + "wlan0: WPA: 4-Way Handshake failed - pre-shared key may be incorrect\n";
+        check("真机失败行能识别", WpaLogReader.sawHandshakeFailure(realFail));
+
+        String realWrongKey = "10-22 09:19:24.107 28272 28272 I wpa_supplicant: "
+                + "wlan0: CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"FAST_E972\" "
+                + "auth_failures=1 duration=5 reason=WRONG_KEY\n";
+        check("reason=WRONG_KEY 能识别（结构化失败信号）",
+                WpaLogReader.sawHandshakeFailure(realWrongKey));
+
+        String realOk = "10-22 09:17:53.953 28272 28272 I wpa_supplicant: "
+                + "wlan0: WPA: Key negotiation completed with 28:93:7d:41:cc:39 [PTK=CCMP GTK=TKIP]\n";
+        check("真机成功行能识别（旧结论说本机不输出，实测有）",
+                WpaLogReader.sawNegotiated(realOk));
+
+        String realConnected = "10-22 09:17:53.953 28272 28272 I wpa_supplicant: "
+                + "wlan0: CTRL-EVENT-CONNECTED - Connection to 28:93:7d:41:cc:39 completed "
+                + "[id=0 id_str=%7B%22configKey%22%3A%22%5C%22B\n";
+        check("CTRL-EVENT-CONNECTED 也算成功证据",
+                WpaLogReader.sawNegotiated(realConnected));
+
+        String realAssoc = "10-22 09:19:15.288 28272 28272 I wpa_supplicant: "
+                + "wlan0: Trying to associate with SSID 'FAST_E972'\n";
+        check("真机关联行能识别，且 SSID 解析正确",
+                WpaLogReader.sawAssociateFor(realAssoc, "FAST_E972"));
+        check("关联行的 SSID 不会张冠李戴",
+                !WpaLogReader.sawAssociateFor(realAssoc, "B212"));
+
+        String realM1 = "10-22 09:17:53.914 28272 28272 I wpa_supplicant: "
+                + "wlan0: RSN: RX message 1 of 4-Way Handshake from 28:93:7d:41:cc:39 (ver=2)\n";
+        check("握手第 1 帧能识别", WpaLogReader.sawHandshakeM1(realM1));
+
         System.out.println("\n=== wpa 日志解析测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
     }

@@ -24,14 +24,27 @@ import java.util.regex.Pattern;
  *
  * 这比任何状态轮询都直接 —— 它就是**这次尝试本身**的记录。
  *
- * <h3>实测结论（本机 Color OS 15 / Android 15）</h3>
+ * <h3>实测结论（2026-10-22 复核，ColorOS 15 / Android 15）</h3>
  * <pre>
- *   Trying to associate with SSID 'X'   ✓ 有
- *   Key negotiation completed           ✗ 该 ROM 不输出
- *   4-Way Handshake failed              ✗ 该 ROM 不输出
+ *   Trying to associate with SSID 'X'                       ✓ 有
+ *   WPA: 4-Way Handshake failed - pre-shared key ...        ✓ 有
+ *   WPA: Key negotiation completed with ...                 ✓ 有
+ *   CTRL-EVENT-SSID-TEMP-DISABLED ... reason=WRONG_KEY      ✓ 有
+ *   CTRL-EVENT-CONNECTED - Connection to ... completed      ✓ 有
  * </pre>
- * 所以这里只用它**做辅助证据**：确认某条密码确实被尝试过。
- * 命中判定仍然靠 {@link NetworkWatcher}，但可以交叉验证。
+ *
+ * <p><b>改正一条旧结论</b>：本文以前写「本机不输出 Key negotiation completed /
+ * 4-Way Handshake failed」，那是**采样时机造成的误判** —— 引擎每条候选前会
+ * `logcat -c`，若恰在清空后读取，就什么都读不到，于是被当成「ROM 不输出」。
+ * 事实上这些行一直都在（2026-10-22 直接抓取确认）。
+ *
+ * <h3>两个真实的限制</h3>
+ * <ul>
+ *   <li>ColorOS 对每个进程有日志配额（实测 wpa_supplicant 约 300 行 / 8 KB），
+ *       超出部分会被丢弃，关键行可能读不到。</li>
+ *   <li>AP 对错误密码的响应本身可能很慢（实测某 AP 在 -63dBm 下要 8.8 秒
+ *       才吐 `4-Way Handshake failed`），这不是软件能绕过的。</li>
+ * </ul>
  */
 public final class WpaLogReader {
 
@@ -60,8 +73,23 @@ public final class WpaLogReader {
             Pattern.compile("4-Way Handshake failed");
     private static final Pattern P_ASSOC_REJECT =
             Pattern.compile("CTRL-EVENT-ASSOC-REJECT");
+    /**
+     * 握手第 1 帧。真机（ColorOS 15）打的是 {@code RSN: RX message 1 of ...}，
+     * 而不是 {@code WPA: RX message 1 of ...} —— 两种前缀都认。
+     * （这是用真机原文做测试向量时才暴露出来的：模式写窄了，功能静默失效。）
+     */
     private static final Pattern P_HANDSHAKE_M1 =
-            Pattern.compile("WPA: RX message 1 of 4-Way Handshake");
+            Pattern.compile("(?:WPA|RSN): RX message 1 of 4-Way Handshake");
+    /**
+     * 本机最明确的失败信号：wpa_supplicant 把该网络临时禁用并给出 WRONG_KEY。
+     * 实测这一行与 `4-Way Handshake failed` 同时出现，但它更「结构化」，
+     * 即使前一行被日志配额丢掉，这一行也可能还在。
+     */
+    private static final Pattern P_WRONG_KEY =
+            Pattern.compile("reason=WRONG_KEY|CTRL-EVENT-SSID-TEMP-DISABLED");
+    /** 连上（含 BSSID 与 configKey），是「握手完成」之后的第二条确认 */
+    private static final Pattern P_CONNECTED =
+            Pattern.compile("CTRL-EVENT-CONNECTED");
 
     private WpaLogReader() {}
 
@@ -101,6 +129,14 @@ public final class WpaLogReader {
             }
             if (P_HANDSHAKE_M1.matcher(line).find()) {
                 out.add(new LogEvent(now, null, "handshake_m1", line));
+                continue;
+            }
+            if (P_WRONG_KEY.matcher(line).find()) {
+                out.add(new LogEvent(now, null, "handshake_failed", line));
+                continue;
+            }
+            if (P_CONNECTED.matcher(line).find()) {
+                out.add(new LogEvent(now, null, "negotiated", line));
             }
         }
         return out;

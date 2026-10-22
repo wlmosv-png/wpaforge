@@ -1034,10 +1034,13 @@ public final class CrackEngine {
 
         // 日志判据是否可用：root 通道能读 logcat，Shizuku(shell) 读不到。
         // 探测一次（读一小段），失败就只走 status/netId 判据。
+        // 探测「日志能不能读」要用**真正要读的那个源**：
+        // 以前这里探测的是状态机日志（-e ClientModeImpl，本机只有 ContextImpl 噪音），
+        // 与后面实际读的 wpa_supplicant 不是一回事，探测结论没有意义。
         boolean logReadable = false;
         {
-            String probe = WifiStateLog.read(shell, 20);
-            if (probe != null && !probe.trim().isEmpty()) logReadable = true;
+            String probe = WpaLogReader.read(shell, 0);
+            if (probe != null && probe.contains("wpa_supplicant")) logReadable = true;
         }
 
         // ══════════════════════════════════════════════════════════════
@@ -1205,8 +1208,13 @@ public final class CrackEngine {
                                     "log confirms handshake completed"),
                                 "wpalog");
                     }
-                    if (tried && (WpaLogReader.sawHandshakeFailure(wlog)
-                            || WpaLogReader.sawAssocReject(wlog))) {
+                    // 失败判定**不再要求先看到 "Trying to associate"**：
+                    // `4-Way Handshake failed` / `reason=WRONG_KEY` 这两行本身就是
+                    // 「本次尝试失败」的直接记录，不需要再拿关联行做前置条件。
+                    // （旧逻辑用 tried 做前置：一旦关联行被 ColorOS 的日志配额丢掉，
+                    //   失败行即使读到了也不会被采纳，只能干等超时。）
+                    if (WpaLogReader.sawHandshakeFailure(wlog)
+                            || WpaLogReader.sawAssocReject(wlog)) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
                         return new Attempt(password, Verdict.AUTH_FAIL, ms,
@@ -1444,10 +1452,13 @@ public final class CrackEngine {
         final long netIdBefore = currentNetId();
 
         // 日志在这一轮是否可读（Shizuku 读不到，root 可以）
+        // 探测「日志能不能读」要用**真正要读的那个源**：
+        // 以前这里探测的是状态机日志（-e ClientModeImpl，本机只有 ContextImpl 噪音），
+        // 与后面实际读的 wpa_supplicant 不是一回事，探测结论没有意义。
         boolean logReadable = false;
         {
-            String probe = WifiStateLog.read(shell, 20);
-            if (probe != null && !probe.trim().isEmpty()) logReadable = true;
+            String probe = WpaLogReader.read(shell, 0);
+            if (probe != null && probe.contains("wpa_supplicant")) logReadable = true;
         }
 
         long deadline = t0 + timeoutMs;
@@ -1701,11 +1712,15 @@ public final class CrackEngine {
                 Attempt a = tryOne(target, security, c.password, perItem);
                 long itemMs = SystemClock.uptimeMillis() - itemT0;
                 pureTryMs += itemMs;
+                livePureTryMs = pureTryMs;
 
                 // 退避检测：**只喂「AP 给了明确结论」的尝试**（见 BackoffPolicy.countable）。
                 // 等满超时是本地策略的固定值、通道异常与用户中断也都不是 AP 的响应特征 ——
                 // 把它们算进样本，会让「每条都超时」被误读成「连续限流」，越退越慢。
-                if (BackoffPolicy.countable(a.verdict)) {
+                // 再加一道时间条件：**只有明显快于单发时限的尝试**才反映 AP 的响应速度。
+                // 本机错误密码常常是「等到 8~10 秒才有失败信号」，那种耗时是
+                // AP 慢 + 本地时限共同决定的，拿来当「变慢」的证据会一直自证。
+                if (BackoffPolicy.countable(a.verdict) && itemMs < perItem * 7 / 10) {
                     backoff.record(itemMs);
                 }
                 long cool = BackoffPolicy.suggestDelayMs(backoff.recent(), backoff.count());
@@ -1813,6 +1828,8 @@ public final class CrackEngine {
      * 供服务层记录实测速率 —— 用墙钟会让预估严重偏高。
      */
     private volatile long lastPureTryMs = 0L;
+    /** 运行中的实时累计净尝试耗时（供界面算**本次**速率，不是历史值） */
+    private volatile long livePureTryMs = 0L;
     /** 本轮已试条数（供界面算实时速率） */
     private volatile int testedCount = 0;
 
@@ -1823,6 +1840,10 @@ public final class CrackEngine {
     /** 上一轮净尝试耗时（毫秒）；没跑过返回 0。 */
     public long lastPureTryMs() {
         return lastPureTryMs;
+    }
+
+    public long livePureTryMs() {
+        return livePureTryMs;
     }
 
     private String channelName() {

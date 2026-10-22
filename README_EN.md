@@ -57,6 +57,14 @@ continuously (throttled to at most one write per 20 attempts).
   a fresh random MAC per attempt
 - Self-audit: reads the WiFi networks saved on the phone and ranks their passphrases
   against common-password lists
+- WPS attack (its own tab): decides whether an AP can be attacked at all during the scan,
+  keyed on `km=WPS` / `WPS-M2D`. Four candidate layers — vendor BSSID→PIN algorithms, a
+  built-in weak-PIN table, your own imported list, full enumeration — plus a halving
+  attack and resumable state
+- Offline verification: import `.cap` / `.hc22000`, both the EAPOL and PMKID paths —
+  10,000 candidates in about 37 s on this phone
+- Dictionary management: content search (contains / prefix / suffix / regex), long-press
+  multi-select merge, large dictionaries no longer lose data on edit
 
 ## Install
 
@@ -91,7 +99,7 @@ Audit · Crack — the rest you'll see once you install it.
 No Gradle, two manual stages:
 
 ```sh
-WP_VERSION_CODE=79 WP_VERSION_NAME=1.9.9 sh 1-aapt2.sh   # device: aapt2 resource compile (version set here)
+WP_VERSION_CODE=91 WP_VERSION_NAME=1.9.21 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop: javac + d8 + sign (needs WP_FORGE_KS* vars)
 ```
 

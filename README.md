@@ -46,6 +46,10 @@
 - 观测页：信道占用图给出换信道建议，列出带宽与 Wi-Fi 代际，可按 WPS 筛选
 - 连接可控：同名 SSID 有多个 AP 时用 `-b` 锁定你选中的那一条；可开启每次尝试换随机 MAC
 - 本机自查：读手机里已保存的 WiFi，给出每条密码在常见口令表里的位次
+- WPS 攻击（独立页）：扫描阶段就判「打不打得动」，判据以 `km=WPS` / `WPS-M2D` 为准；
+  候选四层（厂商算法 / 内置弱 PIN 表 / 自定义列表 / 完整枚举），另有拆半攻击与断点续跑
+- 离线校验：导入 `.cap` / `.hc22000`，EAPOL 与 PMKID 两条校验路径，1 万条约 37 秒
+- 字典管理：内容搜索（包含 / 前缀 / 后缀 / 正则）、长按多选合并、大字典编辑不再丢数据
 
 ## 安装
 
@@ -80,7 +84,7 @@ Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` �
 不依赖 Gradle，两段式手工链：
 
 ```sh
-WP_VERSION_CODE=79 WP_VERSION_NAME=1.9.9 sh 1-aapt2.sh   # 设备侧：aapt2 编译资源（版本号在这一步写入）
+WP_VERSION_CODE=91 WP_VERSION_NAME=1.9.21 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
 sh 2-build-dex.sh                                       # 桌面侧：javac + d8 + 签名（需 WP_FORGE_KS* 变量）
 ```
 

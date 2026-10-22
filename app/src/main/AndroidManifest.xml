@@ -96,6 +96,7 @@
             android:label="局域网设备探测"
             android:screenOrientation="portrait" />
 
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

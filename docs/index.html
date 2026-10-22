@@ -27,8 +27,11 @@ p{color:#d3d3dc}
 figure{margin:22px 0;text-align:center}
 figure img{max-width:100%;border-radius:12px;border:1px solid var(--line)}
 figcaption{color:var(--dim);font-size:14px;margin-top:8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:18px 0}
-.grid img{width:100%;border-radius:10px;border:1px solid var(--line)}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:16px;margin:22px 0}
+.shots figure{margin:0}
+.shots img{width:100%;display:block;border-radius:14px;border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.45);transition:transform .25s ease,border-color .25s}
+.shots img:hover{transform:translateY(-4px);border-color:#3a3a46}
+.shots figcaption{font-size:13px;color:var(--dim);margin-top:8px}
 table{width:100%;border-collapse:collapse;margin:16px 0;font-size:15px}
 th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
 th{background:#1c1c22;color:var(--fg)}
@@ -63,7 +66,7 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
 
 <figure>
   <img src="demo-ui.gif" alt="WPAForge 界面速览">
-  <figcaption>界面速览 —— 观测 → 选目标 → 字典 → 破解，四步。</figcaption>
+  <figcaption>界面速览 —— 观测 → 审计 → 破解 → 命中 → 侦察</figcaption>
 </figure>
 
 <h2>它怎么找密码</h2>
@@ -103,15 +106,16 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
 2. 打开「破解」页，加载字典（或让它现场派生）
 3. 点开始，锁屏等结果 —— 命中的密码会直接标出来</pre>
 
-<figure>
-  <img src="screenshots/shot01.jpg" alt="观测页" style="max-width:300px">
-  <figcaption>观测：雷达 + 信道占用</figcaption>
-</figure>
-<div class="grid">
-  <img src="screenshots/shot02.jpg" alt="信号分布">
-  <img src="screenshots/shot05.jpg" alt="审计">
-  <img src="screenshots/shot07.jpg" alt="字典">
-  <img src="screenshots/shot08.jpg" alt="破解">
+<h2>界面</h2>
+<div class="shots">
+  <figure><img src="screenshots/shot01.png" alt="观测"><figcaption>观测 · 雷达与信道占用</figcaption></figure>
+  <figure><img src="screenshots/shot02.png" alt="网络侦察"><figcaption>网络侦察 · 同网段设备</figcaption></figure>
+  <figure><img src="screenshots/shot03.png" alt="字典管理"><figcaption>字典管理 · 16 个字典 7 MB</figcaption></figure>
+  <figure><img src="screenshots/shot04.png" alt="字典内容"><figcaption>字典内容 · 搜索与编辑</figcaption></figure>
+  <figure><img src="screenshots/shot05.png" alt="口令强度与离线校验"><figcaption>口令强度 · 离线校验</figcaption></figure>
+  <figure><img src="screenshots/shot06.png" alt="WPS"><figcaption>WPS · PIN 候选与体检</figcaption></figure>
+  <figure><img src="screenshots/shot07.png" alt="破解"><figcaption>破解 · 候选排队验证</figcaption></figure>
+  <figure><img src="screenshots/shot08.png" alt="命中"><figcaption>命中 · 密码与证据</figcaption></figure>
 </div>
 
 <h2>它什么时候会失败</h2>

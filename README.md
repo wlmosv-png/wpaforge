@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
 [![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-**中文** · [English](README_EN.md)
+**中文** · [English](README_EN.md) · [官网](https://wlmosv-png.github.io/wpaforge/) · [下载](https://github.com/wlmosv-png/wpaforge/releases/latest) · [讨论](https://github.com/wlmosv-png/wpaforge/discussions)
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
@@ -76,13 +76,18 @@ Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` �
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/shot01.jpg" width="44%">
-  <img src="docs/screenshots/shot08.jpg" width="44%">
+  <img src="docs/screenshots/shot01.png" width="23%">
+  <img src="docs/screenshots/shot02.png" width="23%">
+  <img src="docs/screenshots/shot03.png" width="23%">
+  <img src="docs/screenshots/shot04.png" width="23%">
 </p>
-
-观测 · 破解 —— 其余页面装上就知道，`docs/screenshots/` 里还有全套。
-
-> 截图里的 SSID 与 BSSID 已打码；演示一律用自有路由器，这一点比功能重要。
+<p align="center">
+  <img src="docs/screenshots/shot05.png" width="23%">
+  <img src="docs/screenshots/shot06.png" width="23%">
+  <img src="docs/screenshots/shot07.png" width="23%">
+  <img src="docs/screenshots/shot08.png" width="23%">
+</p>
+<p align="center"><sub>① 观测 · ② 网络侦察 · ③ 字典管理 · ④ 字典内容 · ⑤ 口令强度与离线校验 · ⑥ WPS · ⑦ 破解 · ⑧ 命中</sub></p>
 
 ## 构建
 

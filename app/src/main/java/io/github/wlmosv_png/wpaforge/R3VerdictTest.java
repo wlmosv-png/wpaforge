@@ -155,6 +155,51 @@ public class R3VerdictTest {
         ok("判据 6 握手失败为 false", !WpaLogReader.sawHandshakeFailure(emptySlice));
         ok("判据 7 关联被拒为 false", !WpaLogReader.sawAssocReject(emptySlice));
 
+        System.out.println("== R3-7c 缓冲区截断：不得把「被截掉」当成「没发生」 ==");
+        // 场景 A：环形缓冲把**头部**挤掉 —— 标记滚出缓冲，后面只剩证据行。
+        String truncatedHead = line("wlan0: Trying to associate with SSID '" + T + "'")
+                + line("wlan0: CTRL-EVENT-SSID-TEMP-DISABLED ssid=\"" + T
+                        + "\" reason=WRONG_KEY");
+        AttemptMarker.Window wA = AttemptMarker.evaluate(MID, true, true, truncatedHead);
+        ok("标记被截掉 → 窗口不可用（不冒充「本条已隔离」）", !wA.evidenceUsable());
+        eq("理由码 = no-marker", "no-marker", wA.reason);
+        ok("整段里的失败行不可用（切片为空 → 判据全 false）",
+                AttemptMarker.sliceAfter(truncatedHead, MID).isEmpty()
+                        && !WpaLogReader.sawWrongKeyFor(
+                                AttemptMarker.sliceAfter(truncatedHead, MID), T));
+        // 场景 B：标记在、但其后的行被**切尾**（读取窗口右侧被截断）。
+        String truncatedTail = line(AttemptMarker.line(MID));
+        eq("标记之后没有任何行 → 切片为空", "",
+                AttemptMarker.sliceAfter(truncatedTail, MID));
+        ok("窗口仍算可用，但无证据 → 只能得出「无结论」",
+                AttemptMarker.evaluate(MID, true, true, truncatedTail).evidenceUsable()
+                        && !WpaLogReader.sawNegotiatedFor(
+                                AttemptMarker.sliceAfter(truncatedTail, MID), BSSID));
+        // 降级语义：任何「证据缺失」组合都不得变成认证失败
+        ok("证据全缺 → TIMEOUT（不是 AUTH_FAIL）",
+                CrackEngine.classifyDeadline(false, false, false, false, false).verdict
+                        == CrackEngine.Verdict.TIMEOUT);
+
+        System.out.println("== R3-7d 过滤遗漏：漏一类行只能降级为「无证据」 ==");
+        // 过滤式若漏掉某类判据行，该类证据永远不会出现 —— 语义上必须等价于
+        // 「没有观察到这类事件」，因此结论只能落到 TIMEOUT/UNKNOWN 一侧。
+        String filteredAway = "";      // 服务端 grep 把该类行丢掉后的样子
+        ok("被过滤掉的行在解析层不产生任何事件",
+                WpaLogReader.parse(filteredAway).isEmpty()
+                        && !WpaLogReader.sawHandshakeFailure(filteredAway)
+                        && !WpaLogReader.sawAssocReject(filteredAway)
+                        && !WpaLogReader.sawWrongKeyFor(filteredAway, T));
+        ok("失败类证据缺失时，到期归类里没有任何组合产出 AUTH_FAIL",
+                noAuthFailAcrossDeadlineGrid());
+        ok("过滤式仍覆盖全部 7 类判据行（逐条由 WpaFilterTest 覆盖守卫钉住）",
+                WpaLogReader.SHELL_FILTER.contains("4-Way")
+                        && WpaLogReader.SHELL_FILTER.contains("ASSOC-REJECT")
+                        && WpaLogReader.SHELL_FILTER.contains("SSID-TEMP-DISABLED")
+                        && WpaLogReader.SHELL_FILTER.contains("negotiat")
+                        && WpaLogReader.SHELL_FILTER.contains("RX message")
+                        && WpaLogReader.SHELL_FILTER.contains("CONNECTED")
+                        && WpaLogReader.SHELL_FILTER.contains("reason="));
+
         System.out.println("== R3-7 接线守卫：闸门被删即红 ==");
         String eng = readFile("/workspace/promo-wpaforge/app/src/main/java/"
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
@@ -217,6 +262,16 @@ public class R3VerdictTest {
             sb.append(k >= 0 ? l.substring(0, k) : l).append('\n');
         }
         return sb.toString();
+    }
+
+    /** 穷举到期归类的 32 种输入组合，检查是否出现过 AUTH_FAIL。 */
+    private static boolean noAuthFailAcrossDeadlineGrid() {
+        for (int m = 0; m < 32; m++) {
+            CrackEngine.DeadlineOutcome o = CrackEngine.classifyDeadline(
+                    (m & 1) != 0, (m & 2) != 0, (m & 4) != 0, (m & 8) != 0, (m & 16) != 0);
+            if (o.verdict == CrackEngine.Verdict.AUTH_FAIL) return false;
+        }
+        return true;
     }
 
     private static String readFile(String path) {

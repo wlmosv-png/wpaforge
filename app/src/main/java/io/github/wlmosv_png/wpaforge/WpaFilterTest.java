@@ -60,6 +60,47 @@ public class WpaFilterTest {
         }
         check("判定用的 7 类行全部放行（漏 " + missing + " 类）", missing == 0);
 
+        // 1a) ★ 覆盖守卫（发布前复核新增）：原来这里自称"将来新增 Pattern 时这个测试会
+        //     立刻红"，但**没有任何机制保证** —— 样例是硬编码的 7 行，新增一个 Pattern
+        //     却忘了同步 SHELL_FILTER 时，本测试照样绿（静默丢判据 = 过滤遗漏）。
+        //     现在把 WpaLogReader 里的 Pattern 字段与"是否被过滤式覆盖"显式绑定：
+        //     源码里出现任何未登记的 P_ 字段即判红。
+        String src = readSource("app/src/main/java/io/github/wlmosv_png/wpaforge/audit/"
+                + "WpaLogReader.java");
+        java.util.Set<String> declared = new java.util.LinkedHashSet<>();
+        if (src != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("Pattern\\s+(P_[A-Z_0-9]+)\\s*=").matcher(src);
+            while (m.find()) declared.add(m.group(1));
+        }
+        // 每个 Pattern 字段 → 是否必须被 SHELL_FILTER 覆盖（true）、或为什么不需要
+        java.util.Map<String, String> registry = new java.util.LinkedHashMap<>();
+        registry.put("P_ASSOC", "1");
+        registry.put("P_NEGOTIATED", "1");
+        registry.put("P_HANDSHAKE_FAIL", "1");
+        registry.put("P_ASSOC_REJECT", "1");
+        registry.put("P_HANDSHAKE_M1", "1");
+        registry.put("P_WRONG_KEY", "1");
+        registry.put("P_CONNECTED", "1");
+        // P_TS 作用于**已经过过滤的**文本（M1 去重取时间戳），不经 SHELL_FILTER：
+        registry.put("P_TS", "0");
+        check("源码里的 Pattern 字段全部已登记（漏登记即判红）",
+                src != null && declared.equals(registry.keySet()));
+        if (src != null) {
+            java.util.Set<String> missingReg = new java.util.LinkedHashSet<>(declared);
+            missingReg.removeAll(registry.keySet());
+            if (!missingReg.isEmpty()) System.out.println("       未登记: " + missingReg);
+            java.util.Set<String> stale = new java.util.LinkedHashSet<>(registry.keySet());
+            stale.removeAll(declared);
+            if (!stale.isEmpty()) System.out.println("       已删除: " + stale);
+        }
+        int needFilter = 0;
+        for (String v : registry.values()) if ("1".equals(v)) needFilter++;
+        check("需要过滤式覆盖的 Pattern = 7 个（其余必须显式说明原因）", needFilter == 7);
+        check("P_TS 明确标注为不参与过滤式（它作用于已过滤文本）",
+                "0".equals(registry.get("P_TS")));
+
+
         // 1b) R6：起点标记也要过同一个过滤式，否则窗口隔离无从证明。
         //     标记与证据必须来自同一次 logcat 快照（见 WpaLogReader.readCommand）。
         java.lang.String markerLine = io.github.wlmosv_png.wpaforge.audit.AttemptMarker
@@ -112,5 +153,16 @@ public class WpaFilterTest {
         System.out.println();
         System.out.println("日志预过滤: pass=" + pass + " fail=" + fail);
         if (fail > 0) System.exit(1);
+    }
+
+    /** 读项目源码（相对项目根）。读不到返回 null，调用方按 NOT RUN 处理。 */
+    private static String readSource(String rel) {
+        try {
+            return new String(java.nio.file.Files.readAllBytes(
+                    java.nio.file.Paths.get("/workspace/promo-wpaforge/" + rel)),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

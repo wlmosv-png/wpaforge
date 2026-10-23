@@ -259,6 +259,16 @@ sh /data/local/tmp/eta/wp-queue.sh in     # 写回（cat 覆写保 inode + chown
   → 这两类恒记 0/0，**连失败也一起漏判**。`/workspace/wpf-gate.sh` 两种格式都认，
   且**解析不到结果就判红**。
 - 当前：41 类 / 1003 例 / 0 失败。
+- **站点链接门禁** `tools/check-site-links.py`（已接进 `/workspace/wpf-gate.sh`）：
+  ① 构建脚本版本是唯一真相；② README 两份的出包示例必须等于它；
+  ③ 页面/README **不许出现版本钉死的 Release 地址**（`/releases/tag/vX`、`/releases/download/vX/…`），
+     一律用 `/releases/latest`；④ 落地页必须保留永久直链
+     `…/releases/latest/download/WPAForge.apk`；⑤ `RELEASE.md` 的 tag 必须等于本版。
+  加 `--online` 可联网核对 Release 与两个资产是否都在。
+- **发布时记得给新 Release 也传一份版本无关的别名资产 `WPAForge.apk`**，
+  永久直链才不会断（v1.9.23 已加：Release 里同时有 `WPAForge-1.9.23.apk` 与 `WPAForge.apk`）。
+- 踩过的坑：`io.open(path, "w", newline=<非法值>)` 会**先截断文件再抛异常** ——
+  我因此把 `wpf-gate.sh` 写空过一次。改脚本要么用真编辑器，要么先拼好内容再写。
 
 ### 性能测量四件套（在 `/data/local/tmp/eta/`）
 - `wp-cost.sh` —— 逐项量 shell 调用成本（**App 在跑时也量一遍**，对比现场值）

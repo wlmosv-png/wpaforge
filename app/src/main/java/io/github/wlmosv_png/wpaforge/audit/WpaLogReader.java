@@ -314,7 +314,7 @@ public final class WpaLogReader {
     /**
      * 用 shell 通道读一次日志。
      *
-     * 需要 shell 权限（Shizuku / root）；普通应用读不到系统组件的日志。
+     * 需要 shell 权限（Root）；普通应用读不到系统组件的日志。
      *
      * @param shell 通道；为 null 时返回 null
      * @param lines 读取最后多少行

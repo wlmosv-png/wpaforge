@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import io.github.wlmosv_png.wpaforge.audit.ShizukuRunner;
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
 
 /**
@@ -24,13 +23,13 @@ import io.github.wlmosv_png.wpaforge.core.NetRecord;
  *   返回**空列表但不报错** —— 界面只能显示"还没扫描到网络"，
  *   用户完全不知道为什么。
  *
- *   而本工具本来就已经有 root / Shizuku 通道（破解功能就靠它）。
+ *   而本工具本来就已经有 root 通道（破解功能就靠它）。
  *   同一套权限可以直接执行 `cmd wifi list-scan-results`，
  *   拿到的是系统权威数据，实测比 getScanResults 更完整。
  *
  * 通道顺序（由 Scanner 决定何时降级）：
  *   1. 普通 API（快、无副作用）
- *   2. Shizuku（shell 身份，免 root）
+
  *   3. su（root）
  *
  * 输出格式（实测，Android 12~15 通用）：
@@ -53,12 +52,8 @@ public final class PrivScanReader {
 
     private PrivScanReader() {}
 
-    /** 是否至少有一条特权通道可用（不实际执行命令，只查状态） */
+    /** 特权通道（Root）是否可用：只用一条极轻的命令探一下，不实际扫描 */
     public static boolean hasPrivilegedChannel() {
-        try {
-            if (ShizukuRunner.isAvailable()) return true;
-        } catch (Throwable ignored) {}
-        // root：用一个极轻的命令探一下，超时短，失败就当没有
         try {
             String out = execRoot("id", 4000);
             return out != null && out.contains("uid=0");
@@ -67,22 +62,9 @@ public final class PrivScanReader {
         }
     }
 
-    /**
-     * 读一次扫描结果。两条通道都失败时返回空列表（不抛异常）。
-     *
-     * @param preferShizuku true = 先试 Shizuku，再试 root；
-     *                      false = 先试 root，再试 Shizuku
-     */
-    public static List<NetRecord> read(boolean preferShizuku) {
-        String raw = null;
-
-        if (preferShizuku) {
-            raw = tryShizuku();
-            if (isEmpty(raw)) raw = tryRoot();
-        } else {
-            raw = tryRoot();
-            if (isEmpty(raw)) raw = tryShizuku();
-        }
+    /** 读一次扫描结果。root 通道失败时返回空列表（不抛异常）。 */
+    public static List<NetRecord> read() {
+        String raw = tryRoot();
 
         if (isEmpty(raw)) {
             lastChannel = "";
@@ -92,20 +74,6 @@ public final class PrivScanReader {
         List<NetRecord> out = parse(raw);
         android.util.Log.i(TAG, "特权通道 " + lastChannel + " 解析出 " + out.size() + " 条");
         return out;
-    }
-
-    private static String tryShizuku() {
-        try {
-            if (!ShizukuRunner.isAvailable()) return null;
-            String out = ShizukuRunner.exec("cmd wifi list-scan-results", 12000);
-            if (!isEmpty(out) && out.contains("BSSID")) {
-                lastChannel = "Shizuku";
-                return out;
-            }
-        } catch (Throwable t) {
-            android.util.Log.w(TAG, "Shizuku 读取失败: " + t);
-        }
-        return null;
     }
 
     private static String tryRoot() {

@@ -27,13 +27,11 @@ import java.util.List;
 
 import io.github.wlmosv_png.wpaforge.audit.AuditEngine;
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
-import io.github.wlmosv_png.wpaforge.audit.ConnectionProber;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
 import io.github.wlmosv_png.wpaforge.audit.HistStore;
 import io.github.wlmosv_png.wpaforge.audit.SavedWifiReader;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
-import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
@@ -146,7 +144,6 @@ public class MainActivity extends Activity {
     private TextView jumpLatestBtn;
     private LinearLayout.LayoutParams streamParams;
     private boolean streamCollapsed = false;
-    private ConnectionProber prober;
     private RootProber rootProber;
     private volatile boolean rootProberRunning = false;
     private NetRecord targetNet;
@@ -168,7 +165,6 @@ public class MainActivity extends Activity {
     /** 「去系统设置里允许」按钮；权限齐全时隐藏 */
     private Button permFixBtn;
 
-    private static final int REQ_SHIZUKU = 3001;
 
     private int currentTab = 0;
     private float dp;
@@ -181,7 +177,6 @@ public class MainActivity extends Activity {
         buildUi();
         requestPermsIfNeeded();
         scanner = new Scanner(this, scanListener);
-        registerShizukuWatcher();
         bindCrackService();
         requestNotifPermission();
         if (Prefs.pinEnabled(this)) setupPinGate();
@@ -2015,7 +2010,7 @@ public class MainActivity extends Activity {
      * 观测页"没扫到网络"时展示的文案。
      *
      * 不再是干巴巴一句"还没扫描到" —— 而是把 Scanner 记下的真实原因
-     * 和特权通道（root / Shizuku）的结果一起摊开，用户一眼能看出
+     * 和特权通道（root）的结果一起摊开，用户一眼能看出
      * 是权限问题、WiFi 没开、还是系统节流。
      */
     private String emptyTextWithDiag() {
@@ -2036,8 +2031,8 @@ public class MainActivity extends Activity {
         if (priv != null && !priv.isEmpty()) {
             sb.append("\n");
             if ("PRIV_UNAVAILABLE".equals(priv)) {
-                sb.append(L.s("系统通道不可用：本机没有可用的 root，Shizuku 服务也没在运行。",
-                        "System channel unavailable: no working root, and the Shizuku service is not running."));
+                sb.append(L.s("系统通道不可用：本机没有可用的 root（判定依赖 su + cmd wifi）。",
+                        "System channel unavailable: no working root (verdicts need su + cmd wifi)."));
             } else if ("PRIV_EMPTY".equals(priv)) {
                 sb.append(L.s("系统通道可用，但系统本身也没有扫描数据。",
                         "The system channel works, but the system itself has no scan data."));
@@ -3153,7 +3148,7 @@ public class MainActivity extends Activity {
             }
         }
         // 再让工作线程退出当前那条。
-        // 它会阻塞到当前候选等完（Shizuku 通道最多 ~3 秒），
+        // 它会阻塞到当前候选等完（每条最多几秒），
         // 但队列状态已经是停止，界面不会再显示"进行中"。
         CrackService svc = liveService();
         if (svc != null) {
@@ -3218,9 +3213,7 @@ public class MainActivity extends Activity {
     /**
      * 破解页那一行「通道 · 速度」。
      *
-     * 只有一种通道了，所以不再写「执行方式:」暗示可切换，
-     * 也不再枚举 Shizuku / 免 Root 分支 —— 那两个分支永远走不到，
-     * 留着只会让后来人以为还有别的通道。
+     * 只有一种通道（Root），所以不写「执行方式:」暗示可切换。
      *
      * 这一行不可点。可用性由上面的设置页实时检测负责，
      * 这里只报「用什么通道 + 实测多快」。
@@ -3553,8 +3546,7 @@ public class MainActivity extends Activity {
         TextView meta = new TextView(this);
         String hit = task.hitPassword == null || task.hitPassword.isEmpty()
                 ? "" : L.f("\n口令: %s", "\nPassphrase: %s", task.hitPassword);
-        String modeTag = task.crackMode == Prefs.MODE_NO_ROOT
-                ? L.s("免 Root", "root-free") : L.s("Root", "Root");
+        String modeTag = L.s("Root", "Root");
         meta.setText(L.f("%s 模式\n字典 %s（%s）\n进度 %d / %d%s%s",
                 "%s mode\nDictionary %s (%s)\nProgress %d / %d%s%s",
                 modeTag,
@@ -3850,31 +3842,14 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // 按当前模式选择检查器
+        // 只有 Root 一条通道
         final int mode = Prefs.mode(this);
-        RootProber.CheckResult chk;
-        if (mode == Prefs.MODE_SHIZUKU) {
-            chk = RootProber.checkShizuku(this);
-        } else if (mode == Prefs.MODE_NO_ROOT) {
-            SuggestionProber.CheckResult sc = SuggestionProber.check(this);
-            chk = sc.ok ? new RootProber.CheckResult(true, "", "")
-                    : new RootProber.CheckResult(false, sc.title, sc.detail);
-        } else {
-            chk = RootProber.check(this);
-        }
+        RootProber.CheckResult chk = RootProber.check(this);
         if (!chk.ok) {
             connectStreamView.setText("");
             appendStreamColored(L.f("无法开始: %s", "Cannot start: %s", chk.title), DANGER);
             NetDialog d = new NetDialog(this, chk.title, chk.detail);
             d.setNegative(L.s("知道了", "Got it"), null);
-            // 给一个「换用其它方式」的快捷入口
-            if (mode != Prefs.MODE_ROOT) {
-                d.setPositive(L.s("改用 Root 模式", "Use root mode"),
-                        dd -> pickMode(Prefs.MODE_ROOT));
-            } else if (android.os.Build.VERSION.SDK_INT >= 26) {
-                d.setPositive(L.s("改用 Shizuku", "Use Shizuku"),
-                        dd -> pickMode(Prefs.MODE_SHIZUKU));
-            }
             d.show();
             return;
         }
@@ -3889,10 +3864,6 @@ public class MainActivity extends Activity {
                     "Mode %s · %d entries · est. %s (%s %s/s)",
                     Prefs.modeLabel(this), planned, est,
                     sampled ? L.s("实测", "measured") : L.s("默认", "default"), rate));
-            if (mode == Prefs.MODE_NO_ROOT) {
-                appendStream(L.s("免 Root 模式下系统会退避，实际可能比预估更慢",
-                        "Root-free mode backs off — it may take longer than estimated"));
-            }
         }
 
         // 记下原网络，跑完连回去
@@ -4148,22 +4119,16 @@ public class MainActivity extends Activity {
             sb.append("模式: ").append(modeName(m)).append("\n");
             sb.append("密码长度: ").append(pass.length()).append("\n\n");
 
-            // 构造 shell 通道
-            final boolean useShizuku = m == Prefs.MODE_SHIZUKU;
-            io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel sh = null;
-            if (m != Prefs.MODE_NO_ROOT) {
-                sh = new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
-                    @Override public String exec(String cmd, long timeoutMs) {
-                        if (useShizuku) {
-                            return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
+            // 构造 shell 通道（只有 Root）
+            io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel sh =
+                    new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                        @Override public String exec(String cmd, long timeoutMs) {
+                            return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                    .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
                         }
-                        return io.github.wlmosv_png.wpaforge.audit.RootProber
-                                .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
-                    }
-                    @Override public void forgetTarget(String s2) { }
-                    @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
-                };
-            }
+                        @Override public void forgetTarget(String s2) { }
+                        @Override public String name() { return "Root"; }
+                    };
 
             // ── 步骤 1：权限 ──
             sb.append(L.s("【1/6】权限检查\n", "[1/6] Permissions\n"));
@@ -4182,10 +4147,7 @@ public class MainActivity extends Activity {
 
             // ── 步骤 2：通道 ──
             sb.append(L.s("\n【2/6】执行通道\n", "\n[2/6] Channel\n"));
-            if (sh == null) {
-                sb.append(L.s("  免 Root 模式：本机无法做字典遍历式判定，建议改用 Shizuku。\n",
-                        "  Root-free mode: cannot do per-candidate verdicts here; use Shizuku.\n"));
-            } else {
+            {
                 String probe = null;
                 try { probe = sh.exec("cmd wifi status", 8000); } catch (Throwable t) {
                     sb.append("  ✗ exec 异常: ").append(t.getClass().getSimpleName()).append('\n');
@@ -4193,8 +4155,8 @@ public class MainActivity extends Activity {
                 if (probe == null || probe.trim().isEmpty()) {
                     sb.append(L.s("  ✗ cmd wifi status 无输出 —— 通道没通，后面必然失败。\n",
                             "  x cmd wifi status returned nothing - channel is dead.\n"));
-                    sb.append(L.s("     请检查 Shizuku 服务是否运行、本应用是否已授权。\n",
-                            "     Check Shizuku service and that this app is authorised.\n"));
+                    sb.append(L.s("     请确认设备已 root，且本应用已获得 su 授权。\n",
+                            "     Make sure the device is rooted and this app has su access.\n"));
                 } else {
                     sb.append("  ✓ cmd wifi status 可用\n");
                 }
@@ -4751,191 +4713,24 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         return lp;
     }
 
-    /**
-     * 切换模式。
-     *
-     * 与旧 applyCrackMode 的区别：切到 Shizuku 时**主动走一遍授权流程**——
-     * 以前只是把 Prefs 里的数字改掉，用户回到破解页一点开始就报
-     * 「尚未授权」，而界面上根本没有能触发授权的地方，死循环。
-     */
-    private void pickMode(int mode) {
-        if (Prefs.mode(this) == mode) {
-            // 已经是这个模式也不能就此结束 ——
-            // 用户可能正好想重新走一遍授权（Shizuku 重启后就需要）。
-            Toast.makeText(this, L.f("当前已是: %s", "Already on: %s",
-                    Prefs.modeLabel(this)), Toast.LENGTH_SHORT).show();
-            refreshModeReady();
-            if (mode == Prefs.MODE_SHIZUKU) ensureShizukuPermission();
-            return;
-        }
-        Prefs.setMode(this, mode);
-        Toast.makeText(this, L.f("已切换到: %s", "Switched to: %s",
-                Prefs.modeLabel(this)), Toast.LENGTH_SHORT).show();
-        updateConnectMode();
-        fillModeInfo();
-        refreshModeReady();
-
-        if (mode == Prefs.MODE_SHIZUKU) {
-            ensureShizukuPermission();
-        }
-    }
-
-    /**
-     * 确保 Shizuku 可用：没装→提示去装；没启动→提示启动；没授权→弹授权框。
-     * 这是 Shizuku 模式唯一的入口，所有路径都汇到这里。
-     */
-    private void ensureShizukuPermission() {
-        if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isInstalled(this)) {
-            NetDialog.info(this, L.s("没有检测到 Shizuku", "Shizuku not detected"),
-                    L.s("Shizuku 让应用以 shell 身份运行，免 root。\n\n"
-                            + "去 Shizuku 的 GitHub 项目下载安装，\n"
-                            + "再用 ADB 或 root 启动一次服务。\n\n"
-                            + "不想折腾就直接用 Root 模式。",
-                        "Shizuku runs apps as the shell user without root.\n\n"
-                            + "Install it from its GitHub project, then start the\n"
-                            + "service once via ADB or root.\n\n"
-                            + "Or simply use Root mode."));
-            return;
-        }
-        if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isAvailable()) {
-            NetDialog d = new NetDialog(this, L.s("Shizuku 服务未运行", "Shizuku service is not running"),
-                    L.s("Shizuku 装了但服务没起来。\n\n"
-                            + "打开 Shizuku 应用，点「启动服务」——\n"
-                            + "注意：重启手机后需要重新激活。",
-                        "Shizuku is installed but its service is not running.\n\n"
-                            + "Open the Shizuku app and tap Start —\n"
-                            + "activation must be repeated after a reboot."));
-            d.setPositive(L.s("去授权", "Grant"), dd -> {
-                try {
-                    android.content.Intent i = getPackageManager()
-                            .getLaunchIntentForPackage("moe.shizuku.privileged.api");
-                    if (i != null) { i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i); }
-                } catch (Throwable ignored) {}
-            });
-            d.setNegative(L.s("知道了", "Got it"), null);
-            d.show();
-            return;
-        }
-        if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isGranted()) {
-            requestShizukuPermission();
-            return;
-        }
-        Toast.makeText(this, L.s("Shizuku 通道已就绪", "Shizuku channel ready"),
-                Toast.LENGTH_SHORT).show();
-    }
-
-    /**
-     * 盯着 Shizuku 的 binder。
-     *
-     * **这是之前「明明开着却显示服务未运行」的根因**：
-     * Shizuku 的 binder 是异步推过来的，应用启动那一刻服务没起来
-     * （或者服务重启过），pingBinder() 就一直 false，而且不会自己重试。
-     * 注册 sticky 监听后：binder 一到就立刻刷新界面状态。
-     */
-    private final io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.StateListener shizukuWatcher =
-            new io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.StateListener() {
-        @Override
-        public void onBinderReady() {
-            ui.post(() -> {
-                refreshModeReady();
-                updateConnectMode();
-            });
-        }
-
-        @Override
-        public void onBinderDead() {
-            ui.post(() -> refreshModeReady());
-        }
-    };
-
-    private void registerShizukuWatcher() {
-        try {
-            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.registerListeners();
-            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.addStateListener(shizukuWatcher);
-        } catch (Throwable ignored) {}
-    }
-
-    /** 真正弹 Shizuku 的授权框 */
-    private void requestShizukuPermission() {
-        try {
-            if (io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isPreV11()) {
-                // v11 之前的旧版没有权限机制，直接可用
-                Toast.makeText(this, L.s("旧版 Shizuku 无需授权", "Legacy Shizuku needs no grant"),
-                        Toast.LENGTH_SHORT).show();
-                return;
-            }
-            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner
-                    .requestPermission(REQ_SHIZUKU);
-        } catch (Throwable t) {
-            NetDialog.info(this, L.s("无法申请授权", "Cannot request permission"),
-                    L.s("请手动打开 Shizuku → 已授权应用 → 找到 WPAForge → 打开开关。",
-                        "Open Shizuku → Authorised apps → WPAForge → enable it manually."));
-        }
-    }
-
-    /** 刷新设置页里「当前模式能不能用」的小字 */
     /** 填充设置页的模式说明卡片。切模式后会重新调用。 */
     private void fillModeInfo() {
         if (modeInfo == null) return;
 
             int m = Prefs.mode(this);
             StringBuilder sb = new StringBuilder();
-            if (m == Prefs.MODE_NO_ROOT) {
-                sb.append(L.s("当前: 免 Root 模式", "Current: root-free mode")).append("\n\n");
-                // 如实告知弹窗：这是 Android 强制的，我们关不掉。
-                // 不告知就是骗用户。
-                sb.append(L.s(
-                        "⚠ 系统会对每一条候选弹一次确认框。\n"
-                        + "这是 Android 的安全设计，应用无法关闭。\n\n"
-                        + "想不被打扰：用 Shizuku 模式（和 Root 一样快，无弹窗）。\n\n",
-                        "⚠ Android shows a confirmation dialog for every candidate.\n"
-                        + "This is a platform security requirement; apps cannot disable it.\n\n"
-                        + "To avoid the interruptions, use Shizuku mode "
-                        + "(as fast as root, no dialogs).\n\n"));
-                sb.append(L.s(
-                        "通过系统的「网络建议」接口提交候选，系统自己去连。\n"
-                        + "优点：不需要 root。\n"
-                        + "缺点：\n"
-                        + "· 首次会弹一次系统授权框，要点「允许」\n"
-                        + "· 系统对频繁失败会退避，速度比 Root 模式慢不少\n"
-                        + "· 系统会在通知栏显示连接尝试\n"
-                        + "· 需要 Android 11 或更高版本",
-                        "Submits candidates via the system's network-suggestion API "
-                        + "and lets the system connect for you.\n"
-                        + "Pros: no root needed.\n"
-                        + "Cons:\n"
-                        + "· a one-time system permission dialog appears on first use\n"
-                        + "· the system backs off after repeated failures, so it is slower\n"
-                        + "· connection attempts show in the notification shade\n"
-                        + "· requires Android 11 or higher"));
-            } else if (m == Prefs.MODE_SHIZUKU) {
-                sb.append(L.s("当前: Shizuku 模式", "Current: Shizuku mode")).append("\n\n");
-                sb.append(L.s(
-                        "通过 Shizuku 以 shell 身份执行同一条系统命令。\n"
-                        + "优点：\n"
-                        + "· 不需要 root，只需 Shizuku 服务运行中\n"
-                        + "· 速度与 Root 模式相同（都是等目标回应）\n"
-                        + "· 进度、暂停都可控\n"
-                        + "注意：重启手机后需要重新启动 Shizuku 服务。\n"
-                        + "上方三个按钮点哪个就用哪个，下面一行会实时告诉你能不能用。",
-                        "Runs the same system command as the shell user via Shizuku.\n"
-                        + "Pros:\n"
-                        + "· no root needed, only a running Shizuku service\n"
-                        + "· same speed as root mode (both wait on the target)\n"
-                        + "· progress and pause are fully controllable\n"
-                        + "Note: the Shizuku service must be restarted after a reboot.\n"
-                        + "Tap whichever of the three buttons you want — the line below "
-                        + "shows live whether it actually works."));
-            } else {
-                sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
-                sb.append(L.s(
-                        "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
-                        + "实测约 1 秒/条，且进度和暂停都可控。\n"
-                        + "需要设备已 root 并给本应用授权。",
-                        "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
-                        + "Measured about 1 second per attempt, with precise progress and pause.\n"
-                        + "Requires a rooted device with root granted to this app."));
-            }
+            sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
+            sb.append(L.s(
+                    "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
+                    + "实测约 1 秒/条，且进度和暂停都可控。\n"
+                    + "需要设备已 root 并给本应用授权。\n"
+                    + "（Shizuku 与免 Root 通道已在 1.9.24 移除：前者每次关联都要借 binder、"
+                    + "后者每条候选都要弹一次系统确认框，都撑不起逐条字典遍历。）",
+                    "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
+                    + "Measured about 1 second per attempt, with precise progress and pause.\n"
+                    + "Requires a rooted device with root granted to this app.\n"
+                    + "(The Shizuku and root-free channels were removed in 1.9.24: they cannot "
+                    + "sustain per-candidate dictionary traversal.)"));
             sb.append("\n\n").append(L.f("当前实测速度: %s 条/秒",
                     "Measured: %s per second", Prefs.avgRateLabel(this)));
             if (!Prefs.hasRateSample(this)) {
@@ -4943,9 +4738,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                         " (no samples yet — mode default)"));
             }
             modeInfo.setText(sb.toString());
-            if (m == Prefs.MODE_NO_ROOT) modeInfo.setTextColor(OK_GREEN);
-            else if (m == Prefs.MODE_SHIZUKU) modeInfo.setTextColor(Color.parseColor("#64B5F6"));
-            else modeInfo.setTextColor(ACCENT);
+            modeInfo.setTextColor(ACCENT);
 
     }
 
@@ -4959,20 +4752,10 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     private void refreshModeReady() {
         if (modeReadyLabel == null) return;
         final int m = Prefs.mode(this);
-        // 前缀带上模式名：之前只有一句结论，
-        // 切模式的瞬间会出现“卡片写 Root、状态行说免 Root”的矛盾。
-        // 现在每次连模式名一起刷新，不会误读。
         modeReadyLabel.setTextColor(TEXT_DIM);
         modeReadyLabel.setText(modeName(m) + L.s("：正在检测…", ": checking…"));
         // 点一下重新检测。
-        // 如果当前是 Shizuku 模式，还要走一遍完整引导（包括弹授权框），
-        // 否则用户在设置里找不到任何可以触发授权的入口。
-        modeReadyLabel.setOnClickListener(v -> {
-            refreshModeReady();
-            if (Prefs.mode(this) == Prefs.MODE_SHIZUKU) {
-                ensureShizukuPermission();
-            }
-        });
+        modeReadyLabel.setOnClickListener(v -> refreshModeReady());
         // 长按看完整自检证据
         modeReadyLabel.setOnLongClickListener(v -> {
             showChannelProbeDetail();
@@ -4980,27 +4763,11 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         });
 
         new Thread(() -> {
-            String text;
-            boolean ok;
-            if (m == Prefs.MODE_SHIZUKU) {
-                io.github.wlmosv_png.wpaforge.audit.RootProber.CheckResult r =
-                        io.github.wlmosv_png.wpaforge.audit.RootProber.checkShizuku(getApplicationContext());
-                ok = r.ok;
-                text = ok ? L.s("✓ 已就绪", "\u2713 ready")
-                          : L.s("\u2717 ", "\u2717 ") + r.title;
-            } else if (m == Prefs.MODE_NO_ROOT) {
-                io.github.wlmosv_png.wpaforge.audit.SuggestionProber.CheckResult r =
-                        io.github.wlmosv_png.wpaforge.audit.SuggestionProber.check(getApplicationContext());
-                ok = r.ok;
-                text = ok ? L.s("✓ 可用（速度较慢）", "\u2713 available (slower)")
-                          : L.s("\u2717 ", "\u2717 ") + r.title;
-            } else {
-                io.github.wlmosv_png.wpaforge.audit.RootProber.CheckResult r =
-                        io.github.wlmosv_png.wpaforge.audit.RootProber.check(getApplicationContext());
-                ok = r.ok;
-                text = ok ? L.s("✓ 已就绪", "\u2713 ready")
-                          : L.s("\u2717 ", "\u2717 ") + r.title;
-            }
+            io.github.wlmosv_png.wpaforge.audit.RootProber.CheckResult r =
+                    io.github.wlmosv_png.wpaforge.audit.RootProber.check(getApplicationContext());
+            boolean ok = r.ok;
+            String text = ok ? L.s("\u2713 \u5df2\u5c31\u7eea", "\u2713 ready")
+                             : L.s("\u2717 ", "\u2717 ") + r.title;
             final String ft = modeName(m) + L.s("\uff1a", ": ") + text
                     + L.s("\uff08\u70b9\u6b64\u91cd\u6d4b\uff09", " (tap to re-check)");
             final boolean fok = ok;
@@ -5023,25 +4790,19 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         new Thread(() -> {
             io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
                     new io.github.wlmosv_png.wpaforge.audit.CrackEngine(this, m);
-            if (m != Prefs.MODE_NO_ROOT) {
-                final boolean useShizuku = m == Prefs.MODE_SHIZUKU;
-                eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
-                    @Override
-                    public String exec(String cmd, long timeoutMs) {
-                        if (useShizuku) {
-                            return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
-                        }
-                        return io.github.wlmosv_png.wpaforge.audit.RootProber
-                                .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
-                    }
-                    @Override public void forgetTarget(String ssid) { }
-                    @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
-                });
-            }
+            eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                @Override
+                public String exec(String cmd, long timeoutMs) {
+                    return io.github.wlmosv_png.wpaforge.audit.RootProber
+                            .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                }
+                @Override public void forgetTarget(String ssid) { }
+                @Override public String name() { return "Root"; }
+            });
             io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe p = eng.probeChannel();
             StringBuilder sb = new StringBuilder();
             for (String line : p.steps) sb.append(line).append('\n');
-            // 附上完整环境诊断（设备/权限/Shizuku 状态/各判据层可读性）
+            // 附上完整环境诊断（设备/权限/各判据层可读性）
             try {
                 io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.Report r =
                         io.github.wlmosv_png.wpaforge.audit.EnvDiagnostics.run(
@@ -5063,8 +4824,6 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
 
     /** 模式名（不带“模式”后缀，用于状态行前缀） */
     private String modeName(int m) {
-        if (m == Prefs.MODE_SHIZUKU) return "Shizuku";
-        if (m == Prefs.MODE_NO_ROOT) return L.s("免 Root", "Root-free");
         return "Root";
     }
 
@@ -5376,15 +5135,6 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         if (code == 1001 || code == 1003) {
             if (permLabel != null) refreshPermLabel();
         }
-        if (code == REQ_SHIZUKU) {
-            boolean granted = results.length > 0
-                    && results[0] == PackageManager.PERMISSION_GRANTED;
-            Toast.makeText(this,
-                    granted ? L.s("Shizuku 授权成功", "Shizuku granted")
-                            : L.s("Shizuku 授权被拒绝", "Shizuku permission denied"),
-                    Toast.LENGTH_SHORT).show();
-            refreshModeReady();
-        }
         if (scanner != null) scanner.emit();
     }
 
@@ -5415,12 +5165,8 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        try {
-            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.removeStateListener(shizukuWatcher);
-        } catch (Throwable ignored) {}
         if (scanner != null) scanner.stop();
         if (engine != null) engine.cancel();
-        if (prober != null) prober.cancel();
         if (serviceBound) {
             try {
                 if (crackService != null) crackService.removeCallback(svcCallback);

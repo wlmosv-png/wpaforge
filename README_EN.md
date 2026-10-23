@@ -77,7 +77,7 @@ continuously (throttled to at most one write per 20 attempts).
 [**⬇️ Download latest APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
 
 No root, no luck — detection relies on `su + cmd wifi`. The Shizuku and rootless channels were removed
-in 1.8.x: Shizuku needs a binder call per association, and the rootless path (`WifiNetworkSpecifier`)
+in 1.9.24 (code and dependencies removed): Shizuku needs a binder call per association, and the rootless path (`WifiNetworkSpecifier`)
 pops a system dialog for every candidate — neither can carry a dictionary walk.
 
 ## Quick start
@@ -103,7 +103,7 @@ Audit · Crack — the rest you'll see once you install it.
 No Gradle, two manual stages:
 
 ```sh
-WP_VERSION_CODE=93 WP_VERSION_NAME=1.9.23 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
+WP_VERSION_CODE=94 WP_VERSION_NAME=1.9.24 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop: javac + d8 + sign (needs WP_FORGE_KS* vars)
 ```
 

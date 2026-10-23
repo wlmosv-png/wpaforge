@@ -68,7 +68,7 @@ public final class TaskQueue {
         public boolean useTargetDict = false;
         /** 是否启用智能排序 */
         public boolean useSmartSort = false;
-        /** 破解模式：0=Root，1=免Root（入队时记录） */
+        /** 破解模式：恒为 0=Root（历史字段，1/2 已在 1.9.24 废弃） */
         public int crackMode = 0;
 
         public Task() {}

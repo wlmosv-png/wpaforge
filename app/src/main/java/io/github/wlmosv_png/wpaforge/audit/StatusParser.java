@@ -4,7 +4,7 @@ package io.github.wlmosv_png.wpaforge.audit;
  * `cmd wifi status` 输出解析器（纯逻辑，无 Android 依赖）。
  *
  * <h3>为什么需要它</h3>
- * Shizuku 通道以 shell(uid 2000) 身份运行，**读不到 logcat**
+ * 通道以 shell(uid 2000) 身份运行时**读不到 logcat**
  * （Android logd 不给 shell uid 返回系统日志，实测 0 字节）。
  * 但它能跑 `cmd wifi status` —— 这是判定连接是否成功的可靠出口。
  *

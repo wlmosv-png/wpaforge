@@ -20,10 +20,7 @@ import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
-import io.github.wlmosv_png.wpaforge.audit.ShizukuRunner;
 import io.github.wlmosv_png.wpaforge.audit.ShellSession;
-import io.github.wlmosv_png.wpaforge.audit.SpecifierProber;
-import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
@@ -72,14 +69,6 @@ public class CrackService extends Service {
     private final List<UiCallback> callbacks = new ArrayList<>();
     private volatile boolean running = false;
     private Thread worker;
-    private RootProber prober;
-    /**
-     * 免 root 执行器。**故意声明为 Object** —— SuggestionProber 引用了
-     * API 30 才有的 WifiNetworkSuggestion，如果这里用具体类型，服务类
-     * 一被加载就会去解析它，在低版本设备上直接 NoClassDefFoundError。
-     * 用 Object 装，只在真的要跑免 root 模式时才强转（那时已确认版本）。
-     */
-    private Object sugProberRef;
     /** 统一引擎实例（取消/暂停走它） */
     private volatile CrackEngine engineRef;
     private TaskQueue.Task currentTask;
@@ -188,7 +177,6 @@ public class CrackService extends Service {
         super.onDestroy();
         instance = null;
         running = false;
-        if (prober != null) prober.cancel();
         if (worker != null) worker.interrupt();
     }
 
@@ -264,17 +252,12 @@ public class CrackService extends Service {
 
     /** 暂停：当前任务保留进度，队列原地等待 */
     public void pause() {
-        if (prober != null) prober.pause();
-        safeInvoke("pause");
         // ★ 最关键的一步：把「暂停」真正送到引擎。
         //
         // 历史事故（2026-10-23 实机复现）：这里以前**只**通知免-root
-        // 执行器（prober.pause() 与反射调 sugProberRef），而 Root / Shizuku 模式下
-        // 那两个引用都是 null —— 于是 pause() 退化成纯 UI 动作：队列标成
-        // PAUSED、日志写「正在暂停…」，引擎毫不知情、继续逐条往下跑。
-        //
-        // 当天实测：08:38:21 点暂停，日志仍每 2~6 秒一条推进到 08:40:33，
-        // 队列 offset 25 秒里从 82 涨到 88 —— 界面「已暂停」，实际全速。
+        // 执行器（那两个引用在 Root 模式下都是 null），于是 pause() 退化成
+        // 纯 UI 动作：队列标成 PAUSED、日志写「正在暂停…」，引擎毫不知情、
+        // 继续逐条往下跑。当天实测：点暂停后 offset 25 秒里从 82 涨到 88。
         CrackEngine eng = engineRef;
         if (eng != null) eng.pause();
         // 立刻把当前任务标 PAUSED，UI 马上能看到
@@ -285,15 +268,6 @@ public class CrackService extends Service {
             notifyQueue();
         }
         log(L.s("正在暂停…（进度会保留）", "Pausing… (progress kept)"));
-    }
-
-    /** 安全调用免 root 执行器的方法（它可能是 null，也可能类型不可用） */
-    private void safeInvoke(String method) {
-        Object o = sugProberRef;
-        if (o == null) return;
-        try {
-            o.getClass().getMethod(method).invoke(o);
-        } catch (Throwable ignored) {}
     }
 
     /** 用户点过停止 */
@@ -309,8 +283,6 @@ public class CrackService extends Service {
     public void stopAll() {
         stopRequested = true;
 
-        if (prober != null) prober.cancel();
-        safeInvoke("cancel");
         CrackEngine eng = engineRef;
         if (eng != null) eng.cancel();
 
@@ -720,7 +692,7 @@ public class CrackService extends Service {
     /**
      * 统一引擎入口。
      *
-     * Shizuku / Root 走 shell 通道，免 Root 走系统精确连接。
+     * 只有 Root 通道：su + cmd wifi。
      * 判定全在引擎里，不分正两份。
      */
     private void runViaEngine(final TaskQueue.Task ft, int startOffset) {
@@ -728,98 +700,90 @@ public class CrackService extends Service {
         final CrackEngine engine = new CrackEngine(this, ft.crackMode);
         engineRef = engine;
 
-        if (ft.crackMode != Prefs.MODE_NO_ROOT) {
-            final boolean useShizuku = ft.crackMode == Prefs.MODE_SHIZUKU;
-            // 常驻会话（2026-10-23 实测）：App 里每起一次 su 要 ~137ms，
-            // 一条候选约 28 次，光起进程就 3.8 秒 —— 这是「每条 5 秒」的真正大头。
-            // 改成一个常驻 `su -c sh` 会话里连打命令，实测 88ms/次 → 20ms/次。
-            // 会话不可用就退回一次性 su：功能不丢，只是慢回去。
-            final ShellSession sess = new ShellSession();
-            final int[] sessFails = {0};
-            final boolean[] sessOff = {false};
-            engine.setShellChannel(new CrackEngine.ShellChannel() {
-                @Override
-                public String exec(String cmd, long timeoutMs) {
-                    String out;
-                    if (useShizuku) {
-                        out = ShizukuRunner.exec(cmd, timeoutMs);
-                    } else {
-                        out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
-                        if (out == null) {
-                            // 这一帧没拿到（超时 / 会话死了）。连续几次就彻底不再试，
-                            // 免得每轮白付一次启动成本。
-                            if (!sessOff[0] && ++sessFails[0] >= 3) {
-                                sessOff[0] = true;
-                                log(L.s("常驻 shell 会话不可用，已退回逐条 su（会慢一些）",
-                                        "persistent shell unavailable; falling back to per-call su"));
-                            }
-                            out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
-                        } else {
-                            sessFails[0] = 0;
-                        }
+        {
+        // 常驻会话（2026-10-23 实测）：App 里每起一次 su 要 ~137ms，
+        // 一条候选约 28 次，光起进程就 3.8 秒 —— 这是「每条 5 秒」的真正大头。
+        // 改成一个常驻 `su -c sh` 会话里连打命令，实测 88ms/次 → 20ms/次。
+        // 会话不可用就退回一次性 su：功能不丢，只是慢回去。
+        final ShellSession sess = new ShellSession();
+        final int[] sessFails = {0};
+        final boolean[] sessOff = {false};
+        engine.setShellChannel(new CrackEngine.ShellChannel() {
+            @Override
+            public String exec(String cmd, long timeoutMs) {
+                String out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
+                if (out == null) {
+                    // 这一帧没拿到（超时 / 会话死了）。连续几次就彻底不再试，
+                    // 免得每轮白付一次启动成本。
+                    if (!sessOff[0] && ++sessFails[0] >= 3) {
+                        sessOff[0] = true;
+                        log(L.s("常驻 shell 会话不可用，已退回逐条 su（会慢一些）",
+                                "persistent shell unavailable; falling back to per-call su"));
                     }
-                    // ---- 通道熔断 ----
-                    // 连续多次命令超时，说明通道已经不可用（进程被系统限制、su 被反复卡住……）。
-                    // 这时继续跑只会让每条候选都耗在超时上 —— 界面看着像「在跑」，
-                    // 实际一步没动。与其无声卡住，不如停下来把情况讲清楚。
-                    if (!useShizuku) {
-                        if (RootProber.lastTimedOut()) {
-                            if (++execTimeouts >= EXEC_TIMEOUT_LIMIT) {
-                                execTimeouts = 0;
-                                log(L.s(
-                                        "连续多次命令超时 —— 通道已被系统限制，任务已暂停。"
-                                        + "回到应用界面后点继续即可（前台运行时不受此限制）。",
-                                        "Repeated command timeouts - channel throttled. Task paused; "
-                                        + "reopen the app and press resume."));
-                                stopAll();
-                            }
-                        } else if (out != null) {
+                    out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                } else {
+                    sessFails[0] = 0;
+                }
+                // ---- 通道熔断 ----
+                // 连续多次命令超时，说明通道已经不可用（进程被系统限制、su 被反复卡住……）。
+                // 这时继续跑只会让每条候选都耗在超时上 —— 界面看着像「在跑」，
+                // 实际一步没动。与其无声卡住，不如停下来把情况讲清楚。
+                {
+                    if (RootProber.lastTimedOut()) {
+                        if (++execTimeouts >= EXEC_TIMEOUT_LIMIT) {
                             execTimeouts = 0;
+                            log(L.s(
+                                    "连续多次命令超时 —— 通道已被系统限制，任务已暂停。"
+                                    + "回到应用界面后点继续即可（前台运行时不受此限制）。",
+                                    "Repeated command timeouts - channel throttled. Task paused; "
+                                    + "reopen the app and press resume."));
+                            stopAll();
                         }
+                    } else if (out != null) {
+                        execTimeouts = 0;
                     }
-                    return out;
                 }
-                @Override
-                public void close() {
-                    sess.close();
-                }
-                @Override
-                public void forgetTarget(String ssid) {
-                    // 删净旧配置 + 回读校验
-                    //
-                    // 解析统一走 CrackEngine.parseNetIdLine：**不能**再用
-                    // split("\s+") 取 parts[1] 当 SSID —— SSID 含空格
-                    // （"My Net 5G"）会匹配失败，配置删不掉，
-                    // 系统随后拿已保存的旧密码连上，判定就成了假阳性。
-                    for (int round = 0; round < 3; round++) {
-                        String list = exec("cmd wifi list-networks", 4000);
-                        if (list == null) return;
-                        long leftover = -1;
-                        for (String line : list.split("\n")) {
-                            Long id = io.github.wlmosv_png.wpaforge.audit.CrackEngine
-                                    .parseNetIdLine(line, ssid);
-                            if (id != null) { leftover = id; break; }
-                        }
-                        if (leftover < 0) {
-                            log(L.f("配置已清干净: %s", "config cleared: %s", ssid));
-                            return;
-                        }
-                        exec("cmd wifi forget-network " + leftover, 4000);
-                        log(L.f("清除旧配置: %s netId=%s",
-                                "forgot stale config: %s netId=%s", ssid, leftover));
-                        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                return out;
+            }
+            @Override
+            public void close() {
+                sess.close();
+            }
+            @Override
+            public void forgetTarget(String ssid) {
+                // 删净旧配置 + 回读校验
+                //
+                // 解析统一走 CrackEngine.parseNetIdLine：**不能**再用
+                // split("\s+") 取 parts[1] 当 SSID —— SSID 含空格
+                // （"My Net 5G"）会匹配失败，配置删不掉，
+                // 系统随后拿已保存的旧密码连上，判定就成了假阳性。
+                for (int round = 0; round < 3; round++) {
+                    String list = exec("cmd wifi list-networks", 4000);
+                    if (list == null) return;
+                    long leftover = -1;
+                    for (String line : list.split("\n")) {
+                        Long id = io.github.wlmosv_png.wpaforge.audit.CrackEngine
+                                .parseNetIdLine(line, ssid);
+                        if (id != null) { leftover = id; break; }
                     }
-                    log(L.s("警告: 旧配置可能未删净，结果可能不准",
-                            "Warning: stale config may remain; results may be unreliable"));
+                    if (leftover < 0) {
+                        log(L.f("配置已清干净: %s", "config cleared: %s", ssid));
+                        return;
+                    }
+                    exec("cmd wifi forget-network " + leftover, 4000);
+                    log(L.f("清除旧配置: %s netId=%s",
+                            "forgot stale config: %s netId=%s", ssid, leftover));
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) {}
                 }
-                @Override
-                public String name() { return useShizuku ? "Shizuku" : "Root"; }
-            });
+                log(L.s("警告: 旧配置可能未删净，结果可能不准",
+                        "Warning: stale config may remain; results may be unreliable"));
+            }
+            @Override
+            public String name() { return "Root"; }
+        });
         }
 
-        log(L.f("引擎模式: %s", "Engine mode: %s",
-                ft.crackMode == Prefs.MODE_NO_ROOT ? L.s("免 Root", "root-free")
-                        : (ft.crackMode == Prefs.MODE_SHIZUKU ? "Shizuku" : "Root")));
+        log(L.s("引擎模式: Root", "Engine mode: Root"));
 
         engine.run(ft.toNetRecord(), currentDict, startOffset, 0L, new CrackEngine.Listener() {
             @Override
@@ -879,12 +843,6 @@ public class CrackService extends Service {
         });
     }
 
-    /**
-     * 真正用到 SuggestionProber 的地方。
-     * 只有版本 >= 30 才会走到这里，JVM 才会去解析 WifiNetworkSuggestion。
-     */
-    @android.annotation.SuppressLint("NewApi")
-    /** 统一收尾 */
     /**
      * 本次任务的实时速率（毫秒/条）；没有任务在跑时返回 0。
      *

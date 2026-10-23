@@ -67,7 +67,7 @@
 
 [**⬇️ 下载最新版 APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
 
-没有 Root 就别试了——判定依赖 `su + cmd wifi`。Shizuku 与免 Root 通道在 1.8.x 已移除：
+没有 Root 就别试了——判定依赖 `su + cmd wifi`。Shizuku 与免 Root 通道已在 1.9.24 彻底移除（含代码依赖）：
 Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` 则每条候选都会弹一次系统
 确认框——两者都撑不起逐条字典遍历。
 
@@ -100,7 +100,7 @@ Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` �
 不依赖 Gradle，两段式手工链：
 
 ```sh
-WP_VERSION_CODE=93 WP_VERSION_NAME=1.9.23 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
+WP_VERSION_CODE=94 WP_VERSION_NAME=1.9.24 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
 sh 2-build-dex.sh                                       # 桌面侧：javac + d8 + 签名（需 WP_FORGE_KS* 变量）
 ```
 

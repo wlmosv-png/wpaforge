@@ -6,7 +6,7 @@ import io.github.wlmosv_png.wpaforge.audit.StatusParser;
  * `cmd wifi status` 解析的离线自测。
  *
  * 样本取自真机（Color OS 15 / Android 15）。
- * Shizuku 通道读不到 logcat，判定就靠解析 status —— 解析错了整个判定就废了。
+ * 通道读不到 logcat 时判定就靠解析 status —— 解析错了整个判定就废了。
  */
 public class StatusParseTest {
 

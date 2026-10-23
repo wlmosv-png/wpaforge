@@ -12,10 +12,15 @@ public final class Prefs {
 
     private static final String NAME = "wpaforge_prefs";
 
-    /** 破解模式 */
-    public static final int MODE_ROOT = 0;         // su + cmd wifi
-    public static final int MODE_NO_ROOT = 1;      // 系统 API（手动确认）
-    public static final int MODE_SHIZUKU = 2;      // Shizuku + cmd wifi（免 root，快）
+    /**
+     * 执行方式。**现在只有一种：Root**（`su + cmd wifi`）。
+     *
+     * Shizuku 与免 Root 通道已在 1.9.24 彻底移除 —— 前者要在每次关联时借
+     * binder、后者走 `WifiNetworkSpecifier` 每条候选都要弹一次系统确认框，
+     * 都撑不起逐条字典遍历。常量保留是为了队列 JSON 里 `crackMode` 字段的
+     * 兼容：老任务存的值不是 0 也一律当 Root。
+     */
+    public static final int MODE_ROOT = 0;
 
     private static final String K_MODE = "crack_mode";
     private static final String K_PIN = "app_pin_sha256";   // 空表示未设 PIN
@@ -84,47 +89,10 @@ public final class Prefs {
     private static int autoCache = MODE_UNSET;
 
     public static int mode(Context ctx) {
-        int v = sp(ctx).getInt(K_MODE, MODE_UNSET);
-        if (v >= 0) return v;
-        return autoMode(ctx);
-    }
-
-    /**
-     * 自动挑一个**当前设备真正可用**的模式。
-     *
-     * 为什么需要它：以前默认值是 Root 模式。没 root 的手机（比如用 Shizuku
-     * 或者干脆免 Root 的那台）一装上就是「Root 模式」，用户点开始必然失败，
-     * 还会以为「密码不对」——这就是最典型的低级错误。
-     *
-     * 顺序：Root 可用 → Root；否则 Shizuku 就绪 → Shizuku；否则免 Root。
-     */
-    public static int autoMode(Context ctx) {
-        if (autoCache != MODE_UNSET) return autoCache;
-        int pick;
-        try {
-            if (io.github.wlmosv_png.wpaforge.audit.RootProber.check(ctx).ok) {
-                pick = MODE_ROOT;
-            } else if (io.github.wlmosv_png.wpaforge.audit.RootProber.checkShizuku(ctx).ok) {
-                pick = MODE_SHIZUKU;
-            } else {
-                pick = MODE_NO_ROOT;
-            }
-        } catch (Throwable t) {
-            pick = MODE_NO_ROOT;
-        }
-        autoCache = pick;
-        return pick;
-    }
-
-    /** 后台探测一次并落盘，让后续读取不再卡。 */
-    public static void warmUp(final Context ctx) {
-        new Thread(() -> {
-            int m = autoMode(ctx);
-            if (sp(ctx).getInt(K_MODE, MODE_UNSET) < 0) {
-                sp(ctx).edit().putInt(K_MODE, m).apply();
-            }
-            android.util.Log.i("WPAForgePrefs", "auto mode = " + m);
-        }, "wpaforge-modeprobe").start();
+        // 只有 Root 一种执行方式。
+        // 老版本可能存过 1（免 Root）/ 2（Shizuku），一律当 Root ——
+        // 绝不能因为一个旧值就落到一条已经删掉的通道上，那会表现为「点开始没反应」。
+        return MODE_ROOT;
     }
 
     /** 用户是否手动指定过模式（用于界面提示） */
@@ -173,21 +141,8 @@ public final class Prefs {
         }
     }
 
-    public static void setMode(Context ctx, int mode) {
-        sp(ctx).edit().putInt(K_MODE, mode).apply();
-    }
-
     public static String modeLabel(Context ctx) {
-        switch (mode(ctx)) {
-            case MODE_NO_ROOT: return L.s("普通模式", "Normal mode");
-            case MODE_SHIZUKU: return L.s("Shizuku 模式", "Shizuku mode");
-            default: return L.s("Root 模式", "Root mode");
-        }
-    }
-
-    /** 该模式是否通过 shell 通道执行（root 与 shizuku 都是） */
-    public static boolean usesShell(int mode) {
-        return mode == MODE_ROOT || mode == MODE_SHIZUKU;
+        return L.s("Root 模式", "Root mode");
     }
 
     // ---------------- 速度统计 ----------------
@@ -224,11 +179,11 @@ public final class Prefs {
         p.edit().putLong(K_RATE, merged).putInt(K_RATE_N, Math.min(n + 1, 50)).apply();
     }
 
-    /** 平均每条耗时（毫秒）。没有样本时给模式默认值。 */
+    /** 平均每条耗时（毫秒）。没有样本时给 Root 通道的默认值。 */
     public static long avgMsPerItem(Context ctx) {
         long v = sp(ctx).getLong(K_RATE, 0);
         if (v > 0) return v;
-        return mode(ctx) == MODE_NO_ROOT ? 8000L : 1000L;
+        return 1000L;
     }
 
     public static String avgRateLabel(Context ctx) {

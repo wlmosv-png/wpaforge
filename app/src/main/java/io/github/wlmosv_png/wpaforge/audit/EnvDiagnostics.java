@@ -14,7 +14,7 @@ import io.github.wlmosv_png.wpaforge.Prefs;
  *
  * <h3>为什么需要它</h3>
  * 用户报障时只能看到「没连上」「跳过判定」这类结果，看不到**卡在哪一层**。
- * 判定链有 4 层判据 + 3 种执行通道（Root / Shizuku / 免Root），
+ * 判定链有 4 层判据，执行通道只有 Root（su + cmd wifi），
  * 任何一层不通，表现都是同一句「没判定」。
  *
  * 这个类把每一层能测的都测一遍，逐项给出「通了 / 不通 / 为什么」，
@@ -78,47 +78,7 @@ public final class EnvDiagnostics {
         // ---------- 3. 执行通道 ----------
         r.line("③ 执行通道（模式: " + modeName(mode) + "）");
 
-        if (mode == Prefs.MODE_NO_ROOT) {
-            r.line("  · 免 Root 模式，走系统 WifiNetworkSpecifier");
-            r.line("    API: " + Build.VERSION.SDK_INT
-                    + (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? " （支持）" : " （不支持，需 10+）"));
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) r.failCritical();
-            // 系统定位开关 —— Android 用 WiFi 连接 API 的硬性前提，最常被忽略
-            boolean locOn = false;
-            try {
-                android.location.LocationManager lm = (android.location.LocationManager)
-                        ctx.getSystemService(Context.LOCATION_SERVICE);
-                locOn = lm != null && lm.isLocationEnabled();
-            } catch (Throwable ignored) {}
-            r.line("    " + (locOn ? "✓" : "✗") + " 系统定位开关: "
-                    + (locOn ? "开" : "关（必须打开！WiFi 连接 API 依赖它）"));
-            if (!locOn) r.failCritical();
-            r.line("    说明: 免 Root 会弹系统确认框，且无法做字典遍历的精确判定");
-            r.line("    建议: 有条件请用 Shizuku（不需 root）或 Root 模式");
-        } else if (mode == Prefs.MODE_SHIZUKU) {
-            r.line("  · Shizuku 模式");
-            boolean installed = ShizukuRunner.isInstalled(ctx);
-            boolean alive = ShizukuRunner.isAvailable();
-            boolean granted = ShizukuRunner.isGranted();
-            int ver = ShizukuRunner.version();
-            r.line("    Shizuku 已安装: " + yesNo(installed));
-            r.line("    Shizuku 服务运行中: " + yesNo(alive));
-            r.line("    已授权本应用: " + yesNo(granted));
-            r.line("    服务版本: " + (ver < 0 ? "未知" : String.valueOf(ver)));
-            if (!installed) {
-                r.line("    ✗ 未安装 Shizuku —— 到 GitHub 下载安装并启动服务");
-                r.failCritical();
-            } else if (!alive) {
-                r.line("    ✗ 服务未运行 —— 打开 Shizuku 应用点「启动」"
-                        + "（重启手机后需要重新激活）");
-                r.failCritical();
-            } else if (!granted) {
-                r.line("    ✗ 未授权 —— Shizuku → 已授权应用 → WPAForge → 打开开关");
-                r.failCritical();
-            } else {
-                r.line("    ✓ Shizuku 通道就绪");
-            }
-        } else {
+        {
             r.line("  · Root 模式");
             String id = io.github.wlmosv_png.wpaforge.audit.RootProber.exec(
                     null, new String[]{"su", "-c", "id"}, 12000);
@@ -153,7 +113,7 @@ public final class EnvDiagnostics {
                 r.line("    当前 SSID: " + (cur == null ? "（未连接）" : cur));
             }
 
-            // logcat 可读性（区分 Root / Shizuku 判定层）
+            // logcat 可读性
             //
             // 一次性探测会误报：此刻系统可能刚好没有这个 tag 的新日志
             // （实测：同一台机器上有时读到 300+ 行、有时读到 0 行，
@@ -181,7 +141,7 @@ public final class EnvDiagnostics {
             r.line("    list-networks: " + (nets != null && nets.contains("SSID") ? "OK" : "无输出"));
             r.line("");
         } else {
-            r.line("④ shell 通道: 未设置（免 Root 模式正常）");
+            r.line("④ shell 通道: 未设置");
             r.line("");
         }
 
@@ -236,8 +196,6 @@ public final class EnvDiagnostics {
     }
 
     private static String modeName(int mode) {
-        if (mode == Prefs.MODE_NO_ROOT) return "免 Root";
-        if (mode == Prefs.MODE_SHIZUKU) return "Shizuku";
         return "Root";
     }
 }

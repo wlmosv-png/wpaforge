@@ -15,13 +15,9 @@ import java.util.Locale;
 /**
  * 应用入口。
  *
- * 这里做两件防护，目标都是**让应用在任何环境都能打开**：
+ * 这里装一个全局未捕获异常处理器，目标都是**让应用在任何环境都能打开**：
  *
- *   1. 关闭 Shizuku 的自动 Sui 初始化
- *      ShizukuProvider 默认会尝试初始化 Sui，设备上没装/版本不匹配时
- *      可能抛异常。我们的 Shizuku 支持不依赖 Sui，关掉更安全。
- *
- *   2. 装一个全局未捕获异常处理器
+ *   1. 装一个全局未捕获异常处理器
  *      即使真的崩了，也把堆栈写进文件，用户能拿来反馈，
  *      不用非得连电脑抓 logcat。
  */
@@ -44,12 +40,6 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
 
-        disableSuiSafely();
-        registerShizukuEarly();
-        probeShizukuChannel();
-        // 后台自动探测一次可用模式（没设过的话就按探测结果落盘），
-        // 避免默认值把「没 root 的手机」定成 Root 模式
-        Prefs.warmUp(this);
 
         final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
@@ -144,26 +134,11 @@ public class App extends Application {
                 }
                 sb.append('\n');
 
-                // 特权通道
+                // 特权通道（只有 Root；Shizuku 与免 Root 已在 1.9.24 移除）
                 sb.append("-- 特权通道 --\n");
                 try {
-                    boolean shizukuAlive = io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isAvailable();
-                    boolean shizukuGranted = shizukuAlive
-                            && io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isGranted();
-                    sb.append("  Shizuku 服务: ").append(shizukuAlive ? "在" : "不在（没跑或没装）").append('\n');
-                    if (shizukuAlive) {
-                        sb.append("  Shizuku 授权: ").append(shizukuGranted ? "已授权" : "未授权").append('\n');
-                        sb.append("  Shizuku 版本: ")
-                                .append(io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.version()).append('\n');
-                        sb.append("  Shizuku 通道实测: ").append(shizukuProbeResult).append('\n');
-                        sb.append("  Wi-Fi Binder 通道: ").append(wifiApiProbeResult).append('\n');
-                    }
-                } catch (Throwable t) {
-                    sb.append("  Shizuku 查询失败: ").append(t.getClass().getSimpleName()).append('\n');
-                }
-                try {
                     boolean hasPriv = io.github.wlmosv_png.wpaforge.scan.PrivScanReader.hasPrivilegedChannel();
-                    sb.append("  特权扫描通道可用: ").append(hasPriv ? "是" : "否").append('\n');
+                    sb.append("  Root 通道可用: ").append(hasPriv ? "是" : "否（su 不可用）").append('\n');
                 } catch (Throwable t) {
                     sb.append("  特权通道查询失败: ").append(t.getClass().getSimpleName()).append('\n');
                 }
@@ -175,30 +150,18 @@ public class App extends Application {
                 try {
                     sb.append('\n').append("-- 引擎通道自检 --\n");
                     int mode = io.github.wlmosv_png.wpaforge.Prefs.mode(App.this);
-                    sb.append("  当前模式: ")
-                            .append(mode == io.github.wlmosv_png.wpaforge.Prefs.MODE_NO_ROOT
-                                    ? "免 Root"
-                                    : (mode == io.github.wlmosv_png.wpaforge.Prefs.MODE_SHIZUKU
-                                            ? "Shizuku" : "Root"))
-                            .append('\n');
+                    sb.append("  当前模式: Root\n");
                     io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
                             new io.github.wlmosv_png.wpaforge.audit.CrackEngine(App.this, mode);
-                    if (mode != io.github.wlmosv_png.wpaforge.Prefs.MODE_NO_ROOT) {
-                        final boolean useShizuku =
-                                mode == io.github.wlmosv_png.wpaforge.Prefs.MODE_SHIZUKU;
-                        eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
-                            @Override
-                            public String exec(String cmd, long timeoutMs) {
-                                if (useShizuku) {
-                                    return io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec(cmd, timeoutMs);
-                                }
-                                return io.github.wlmosv_png.wpaforge.audit.RootProber
-                                        .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
-                            }
-                            @Override public void forgetTarget(String ssid) { }
-                            @Override public String name() { return useShizuku ? "Shizuku" : "Root"; }
-                        });
-                    }
+                    eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                        @Override
+                        public String exec(String cmd, long timeoutMs) {
+                            return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                    .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                        }
+                        @Override public void forgetTarget(String ssid) { }
+                        @Override public String name() { return "Root"; }
+                    });
                     io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe cp = eng.probeChannel();
                     // 拼成一个字符串再一次性追加。
                     // 之前逐行 append 出现过 steps 全部空白的情况，
@@ -244,118 +207,6 @@ public class App extends Application {
         }, "wpaforge-startup-log").start();
     }
 
-    /**
-     * 关掉 Shizuku 的自动 Sui 初始化。
-     *
-     * 用 try-catch 包住：如果 Shizuku 的类不可用（没集成、被裁剪），
-     * 也不该影响应用启动。低版本 Android 上跳过。
-     */
-    /**
-     * 尽早在进程启动时注册 Shizuku 的 binder 监听。
-     *
-     * 为什么必须在 Application 里做：
-     *   Shizuku 的 binder 是**异步推**给客户端的。如果等到用户点进
-     *   设置页才注册，那么「服务已经跑起来、binder 也已经推过」的
-     *   情况就完全错过了 —— pingBinder() 永远 false，界面永远显示
-     *   「服务未运行」，哪怕用户在 Shizuku 里看到开关是开的。
-     *
-     *   sticky 版本在注册时会立刻检查一次当前 binder 状态，
-     *   所以早注册等于不会丢事件。
-     */
-    private void registerShizukuEarly() {
-        try {
-            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.registerListeners();
-        } catch (Throwable t) {
-            Log.i(TAG, "Shizuku 监听注册跳过: " + t.getClass().getSimpleName());
-        }
-    }
-
-    /** 自测结果（写进启动自检，用户不用连电脑就能看到） */
-    private static volatile String shizukuProbeResult = "尚未检测";
-
-    /** Wi-Fi Binder 通道自测结果 */
-    private static volatile String wifiApiProbeResult = "尚未检测";
-
-    public static String wifiApiProbe() {
-        return wifiApiProbeResult;
-    }
-
-    public static String shizukuProbe() {
-        return shizukuProbeResult;
-    }
-
-    /**
-     * 等 binder 就绪后真跑一条 cmd wifi，确认通道可用。
-     *
-     * 为什么要自测：
-     *   “能 ping 到 binder”与“能执行命令”是两回事。
-     *   之前只看 pingBinder()，结果 binder 就绪了但命令还是可能跑不通，
-     *   用户只能在点开始后才发现。现在启动就把结果落盘。
-     */
-    private void probeShizukuChannel() {
-        new Thread(() -> {
-            try {
-                // 等一等，binder 是异步推过来的
-                for (int i = 0; i < 40; i++) {
-                    if (io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isAvailable()) break;
-                    Thread.sleep(250);
-                }
-                if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isAvailable()) {
-                    shizukuProbeResult = "服务未就绪（binder 拿不到）";
-                    return;
-                }
-                if (!io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.isGranted()) {
-                    shizukuProbeResult = "服务在，但未授权本应用";
-                    return;
-                }
-                String out = io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.exec("cmd wifi help", 8000);
-                if (out == null) {
-                    shizukuProbeResult = "已授权，但命令执行失败";
-                } else if (out.contains("connect-network")) {
-                    shizukuProbeResult = "可用（cmd wifi connect-network 已确认）";
-                } else if (out.trim().isEmpty()) {
-                    shizukuProbeResult = "命令返回空";
-                } else {
-                    shizukuProbeResult = "部分可用（cmd wifi 有响应，但未见 connect-network）";
-                }
-
-                // **关键自测**：Binder 直调 addOrUpdateNetwork 能不能走通。
-                // 这是修「任何密码都判成功」的核心路径，
-                // 不跑通就不能发包。
-                try {
-                    io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.WifiApiProbe pr =
-                            io.github.wlmosv_png.wpaforge.audit.ShizukuRunner.probeWifiApi();
-                    wifiApiProbeResult = pr.message;
-                } catch (Throwable t) {
-                    wifiApiProbeResult = "异常: " + t.getClass().getSimpleName();
-                }
-            } catch (Throwable t) {
-                shizukuProbeResult = "自测异常: " + t.getClass().getSimpleName();
-            }
-            writeStartupLog();
-        }, "wpaforge-shizuku-probe").start();
-    }
-
-    private void disableSuiSafely() {
-        if (Build.VERSION.SDK_INT < 26) return;
-        try {
-            Class<?> c = Class.forName("rikka.shizuku.ShizukuProvider");
-            c.getMethod("disableAutomaticSuiInitialization").invoke(null);
-            Log.i(TAG, "已关闭 Shizuku 自动 Sui 初始化");
-        } catch (Throwable t) {
-            // 正常情况：没集成 Shizuku，或类被裁剪
-            Log.i(TAG, "跳过 Sui 初始化设置: " + t.getClass().getSimpleName());
-        }
-    }
-
-    /**
-     * 返回一个可以安全写入的文件。
-     *
-     * ColorOS 的存储层上，直接对**已存在**的文件 new FileWriter(f)
-     * 会返回 `open failed: EEXIST (File exists)` 而失败 ——
-     * 不是权限问题，是这一层的实现差异。
-     * 所以覆盖写之前必须先把旧文件删掉。
-     */
     private static File safeTruncate(File f) {
         try {
             if (f.exists()) f.delete();

@@ -53,10 +53,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h3>对外用法</h3>
  * <pre>
- *   CrackEngine engine = new CrackEngine(ctx, Prefs.MODE_SHIZUKU);
+ *   CrackEngine engine = new CrackEngine(ctx, Prefs.MODE_ROOT);
  *   engine.run(target, candidates, startOffset, listener);
  * </pre>
- * 引擎自己决定走哪个通道，调用方不需要知道。
+ * 通道由调用方用 setShellChannel 接入；现在只有 Root 一种。
  */
 public final class CrackEngine {
 
@@ -120,7 +120,6 @@ public final class CrackEngine {
 
     private final Context appCtx;
     private final WifiManager wifi;
-    private final ConnectivityManager cm;
     private final int mode;
     /** 连接选项（设置页两个开关），构造时读一次 */
     private final boolean pinBssid;
@@ -156,7 +155,7 @@ public final class CrackEngine {
      */
     private WifiAuthFailureWatcher authWatch;
 
-    /** shell 通道（Shizuku/Root），null 表示走系统 API */
+    /** shell 通道（Root），null 表示没接上 */
     private ShellChannel shell;
 
     /** 通道测速：连续 N 条都超时，说明这个通道在当前环境跑不动 */
@@ -171,7 +170,6 @@ public final class CrackEngine {
         this.watcher = new NetworkWatcher(appCtx);
         this.authWatch = new WifiAuthFailureWatcher(appCtx);
         this.wifi = (WifiManager) appCtx.getSystemService(Context.WIFI_SERVICE);
-        this.cm = (ConnectivityManager) appCtx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.mode = mode;
         this.pinBssid = Prefs.pinBssid(appCtx);
         this.macRotate = Prefs.macRotate(appCtx);
@@ -179,7 +177,7 @@ public final class CrackEngine {
 
     // ------------------------------------------------------------------ 通道
 
-    /** shell 通道抽象（Shizuku / Root 共用一个接口） */
+    /** shell 通道抽象 */
     public interface ShellChannel {
         String exec(String cmd, long timeoutMs);
         void forgetTarget(String ssid);
@@ -278,19 +276,6 @@ public final class CrackEngine {
 
     /** 引擎在当前模式下能不能跑 */
     public CheckResult check() {
-        if (mode == Prefs.MODE_NO_ROOT) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                return new CheckResult(false,
-                        L.s("系统版本过低", "Android version too old"),
-                        L.s("免 Root 精确连接需要 Android 10+。\n这台设备只能用 Root 模式。",
-                            "Precise root-free connection needs Android 10+.\nOnly root mode is available here."));
-            }
-            if (cm == null) {
-                return new CheckResult(false,
-                        L.s("无法访问连接管理服务", "Cannot access ConnectivityManager"),
-                        L.s("系统没有提供 ConnectivityManager。", "The system exposed no ConnectivityManager."));
-            }
-        }
         if (wifi == null) {
             return new CheckResult(false,
                     L.s("无法访问 WiFi 服务", "Cannot access the Wi-Fi service"),
@@ -604,8 +589,8 @@ public final class CrackEngine {
      * 这是用户要求的「完全判定」：不看界面写着什么，
      * 而是**实际跑一遍判定链**，每一步都留证据。
      *
-     * <p>为什么必须做这个：用户看到的「执行方式: Shizuku」只是 prefs 里
-     * 存的一个数字，跟通道是否真的可用完全无关。之前没有自检，
+     * <p>为什么必须做这个：设置里显示的模式只是 prefs 里存的一个数字，
+     * 跟通道是否真的可用完全无关。之前没有自检，
      * 通道断了也照跑，跑完 97 条全是「未连上」，用户以为密码不对。
      */
     public ChannelProbe probeChannel() {
@@ -623,28 +608,7 @@ public final class CrackEngine {
                     join(p), p.steps);
         }
 
-        // --- 2. 通道类型 ---
-        if (mode == Prefs.MODE_NO_ROOT) {
-            p.step("✓ " + L.s("通道: 系统精确连接（不需要 shell）",
-                    "channel: system precise request (no shell needed)"));
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                p.step("✗ " + L.s("需要 Android 10+", "needs Android 10+"));
-                return new ChannelProbe(false,
-                        L.s("系统版本过低", "Android version too old"), join(p), p.steps);
-            }
-            if (cm == null) {
-                p.step("✗ " + L.s("拿不到 ConnectivityManager", "no ConnectivityManager"));
-                return new ChannelProbe(false,
-                        L.s("系统服务缺失", "system service missing"), join(p), p.steps);
-            }
-            // 读当前连接作为一次实读
-            String cur = currentSsid();
-            p.step((cur != null ? "✓ " : "· ") + L.s("当前连接读取: ", "current SSID read: ")
-                    + (cur == null ? L.s("读不到（正常，可能没连）", "n/a (may be disconnected)") : cur));
-            return new ChannelProbe(true, L.s("免 Root 通道可用", "root-free channel ready"), join(p), p.steps);
-        }
-
-        // --- 3. shell 通道 ---
+        // --- 2. 通道类型：只有 Root ---
         if (shell == null) {
             p.step("✗ " + L.s("shell 通道未设置", "shell channel not set"));
             return new ChannelProbe(false,
@@ -672,10 +636,10 @@ public final class CrackEngine {
                     L.s("通道未真正接入", "channel is not actually attached"),
                     join(p) + "\n\n" + L.s(
                             "「执行方式」里显示的模式只是设置项，不代表通道可用。\n"
-                                    + "请到设置页点那行状态重新检测，或重新授予 Shizuku 权限。",
+                                    + "请到设置页点那行状态重新检测，并确认本应用已获得 root 授权。",
                             "The mode shown in Settings is just a preference; it does not mean "
                                     + "the channel works. Re-check the status line on the Settings page, "
-                                    + "or re-grant Shizuku permission."));
+                                    + "and make sure this app has root access."));
         }
 
         String trimmed = out.trim();
@@ -685,8 +649,8 @@ public final class CrackEngine {
             return new ChannelProbe(false,
                     L.s("通道未真正接入", "channel is not actually attached"),
                     join(p) + "\n\n" + L.s(
-                            "常见原因：Shizuku 未授权本应用，或服务已停止。",
-                            "Common causes: Shizuku has not granted this app, or the service stopped."));
+                            "常见原因：su 未授权本应用，或命令被系统限制。",
+                            "Common causes: su was not granted to this app, or the command is blocked."));
         }
 
         boolean looksLikeWifi = trimmed.contains("Wifi") || trimmed.contains("Wi-Fi")
@@ -765,157 +729,12 @@ public final class CrackEngine {
                     L.s("长度不合法（WPA 要求 8-63）", "illegal length (WPA needs 8-63)"), "");
         }
 
-        if (mode == Prefs.MODE_NO_ROOT) {
-            return tryOnePrecise(target, password, timeoutMs, t0);
-        } else {
-            return tryOneShell(target, security, password, timeoutMs, t0);
-        }
+        // 只有 Root（su + cmd wifi）一条通道
+        return tryOneShell(target, security, password, timeoutMs, t0);
     }
 
     /**
-     * 把 requestNetwork 的异常翻译成「怎么办」。
-     *
-     * Android 13+ 用 WifiNetworkSpecifier 连 WiFi 有一堆前置条件，缺任何一条
-     * 都抛 SecurityException，光看类型根本不知道差什么。这里逐项查一遍。
-     */
-    private String describeRequestNetworkFailure(Throwable t) {
-        StringBuilder sb = new StringBuilder();
-        String cls = t.getClass().getSimpleName();
-        sb.append(L.s("发起请求失败: ", "requestNetwork failed: ")).append(cls);
-
-        if (t instanceof SecurityException) {
-            sb.append('\n').append(L.s("原因排查:", "Possible causes:"));
-            // 目标 SDK 越高，系统检查越严
-            sb.append('\n').append("  · targetSdk=").append(appCtx.getApplicationInfo().targetSdkVersion);
-            sb.append("  · Android ").append(Build.VERSION.RELEASE)
-              .append(" (API ").append(Build.VERSION.SDK_INT).append(')');
-
-            // 定位权限
-            boolean fine = appCtx.checkSelfPermission(
-                    android.Manifest.permission.ACCESS_FINE_LOCATION)
-                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
-            sb.append('\n').append("  · 定位权限: ").append(fine ? "有" : "缺（必须授予）");
-
-            // 附近设备权限（API 33+）
-            if (Build.VERSION.SDK_INT >= 33) {
-                boolean nearby = appCtx.checkSelfPermission(
-                        "android.permission.NEARBY_WIFI_DEVICES")
-                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
-                sb.append('\n').append("  · 附近设备权限: ").append(nearby ? "有" : "缺（必须授予）");
-            }
-
-            // 系统定位开关 —— 这是最常被忽略的一条
-            boolean locOn = false;
-            try {
-                android.location.LocationManager lm = (android.location.LocationManager)
-                        appCtx.getSystemService(Context.LOCATION_SERVICE);
-                locOn = lm != null && lm.isLocationEnabled();
-            } catch (Throwable ignored) {}
-            sb.append('\n').append("  · 系统定位开关: ")
-              .append(locOn ? "开" : "**关**（Android 要求打开定位才能用 WiFi 连接 API）");
-
-            sb.append('\n').append(L.s(
-                    "  → 免 Root 模式在 Android 13+ 限制极多（必须前台、定位开启、"
-                            + "且每次连接都会弹系统确认框，无法做字典遍历）。",
-                    "  -> root-free mode is heavily restricted on Android 13+."));
-            sb.append('\n').append(L.s(
-                    "  → 强烈建议改用 Shizuku 模式（装 Shizuku 应用并启动服务，"
-                            + "不需要 root），或 Root 模式。",
-                    "  -> strongly recommend Shizuku mode instead."));
-        }
-        return sb.toString();
-    }
-
-    /** 免 Root：requestNetwork + 回调 */
-    private Attempt tryOnePrecise(NetRecord target, String password, long timeoutMs, long t0) {
-        final CountDownLatch latch = new CountDownLatch(1);
-        final AtomicInteger outcome = new AtomicInteger(0); // 0未定 1成功 2失败
-
-        WifiNetworkSpecifier spec;
-        try {
-            spec = new WifiNetworkSpecifier.Builder()
-                    .setSsid(target.ssid)
-                    .setWpa2Passphrase(password)
-                    .build();
-        } catch (Throwable t) {
-            return new Attempt(password, Verdict.ERROR,
-                    SystemClock.uptimeMillis() - t0,
-                    L.s("构建请求失败: ", "specifier failed: ") + t.getClass().getSimpleName(), "");
-        }
-
-        NetworkRequest req = new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                // 关键：不要 INTERNET 能力。
-                // 带上它系统会认为你要「上网」，于是必须让你确认；
-                // 去掉之后语义是「我只是想连上这个 AP」，弹窗明显减少。
-                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
-                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-                .setNetworkSpecifier(spec)
-                .build();
-
-        // 把这次操作登记成「应用自己发起的」，走静默路径
-        noteAppOpAllow();
-
-        final ConnectivityManager.NetworkCallback cb = new ConnectivityManager.NetworkCallback() {
-            @Override public void onAvailable(Network n) {
-                // 不完全相信 onAvailable：还要 SSID 对得上
-                String by = null;
-                for (int i = 0; i < 12 && by == null; i++) {
-                    if (cancelFlag.get()) break;
-                    by = connectedSignal(target.ssid, null);
-                    if (by == null) {
-                        try { Thread.sleep(150); } catch (InterruptedException e) { break; }
-                    }
-                }
-                outcome.set(by != null ? 1 : 2);
-                latch.countDown();
-            }
-            @Override public void onUnavailable() {
-                outcome.set(2);
-                latch.countDown();
-            }
-            @Override public void onLost(Network n) {
-                if (latch.getCount() > 0) { outcome.set(2); latch.countDown(); }
-            }
-        };
-
-        try {
-            cm.requestNetwork(req, cb);
-        } catch (Throwable t) {
-            return new Attempt(password, Verdict.ERROR,
-                    SystemClock.uptimeMillis() - t0,
-                    describeRequestNetworkFailure(t), "");
-        }
-
-        try {
-            long deadline = SystemClock.uptimeMillis() + timeoutMs;
-            while (SystemClock.uptimeMillis() < deadline) {
-                if (cancelFlag.get() || pauseFlag.get()) {
-                    return new Attempt(password, Verdict.ABORTED,
-                            SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
-                }
-                if (latch.await(200, TimeUnit.MILLISECONDS)) break;
-            }
-            long ms = SystemClock.uptimeMillis() - t0;
-            if (latch.getCount() > 0) {
-                return new Attempt(password, Verdict.TIMEOUT, ms,
-                        L.s("超时（系统未给出结论）", "timeout (no verdict)"), "");
-            }
-            return outcome.get() == 1
-                    ? new Attempt(password, Verdict.SUCCESS, ms, L.s("已连上", "connected"), "callback+ssid")
-                    : new Attempt(password, Verdict.AUTH_FAIL, ms, L.s("未连上", "not connected"), "");
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            return new Attempt(password, Verdict.ABORTED,
-                    SystemClock.uptimeMillis() - t0, L.s("已中断", "interrupted"), "");
-        } finally {
-            try { cm.unregisterNetworkCallback(cb); } catch (Throwable ignored) {}
-        }
-    }
-
-    /**
-     * Root / Shizuku：发连接命令，**判定只认 NetworkWatcher 的事件**。
+     * Root：发连接命令，**判定只认 NetworkWatcher 的事件**。
      *
      * <h3>为什么推倒重来</h3>
      * 旧实现轮询 `WifiInfo` / 解析 `cmd wifi status`，叠了三层防护仍然误报：
@@ -1029,33 +848,14 @@ public final class CrackEngine {
         // ══════════════════════════════════════════════════════════════
         //  发起连接。
         //
-        //  Shizuku 模式下改用 **binder 直调**（addOrUpdateNetwork + enableNetwork），
-        //  而不是 `cmd wifi connect-network` 字符串命令。
+        //  统一走 `cmd wifi connect-network`。
         //
-        //  为什么：`cmd wifi` 这条命令在不同 ROM 上行为不一、对 SSID/密码里的
-        //  特殊字符敏感（shell 转义一旦出错，命令就被吞掉，netId 建不出来，
-        //  判定永远失败）。binder 直调是把 WifiConfiguration 直接交给系统，
-        //  返回 netId，不经过 shell 字符串拼接 —— 这是参考项目 bszapp 的核心做法。
-        //
-        //  Root 模式仍走 `cmd wifi`（本机实测可用；Root 下没有 Shizuku 的
-        //  binder 通道可借用）。
+        //  历史：曾给 Shizuku 通道单独做过 binder 直调（addOrUpdateNetwork +
+        //  enableNetwork），理由是 `cmd wifi` 对 SSID/密码里的特殊字符敏感。
+        //  但 Shizuku 通道已在 1.9.24 移除；在 Root 下 `cmd wifi` 实测可用
+        //  （ConnectSpec 负责转义），保留一条路径更好维护。
         // ══════════════════════════════════════════════════════════════
-        if (mode == Prefs.MODE_SHIZUKU) {
-            new Thread(() -> {
-                try {
-                    int netId = ShizukuRunner.addOrUpdateNetwork(
-                            target.ssid, password, target.isHidden(), 0);
-                    if (netId != -1) {
-                        ShizukuRunner.enableNetwork(netId);
-                        android.util.Log.i(TAG, "binder 直调: netId=" + netId);
-                    } else {
-                        android.util.Log.w(TAG, "binder addOrUpdateNetwork 失败(-1)");
-                    }
-                } catch (Throwable t) {
-                    android.util.Log.w(TAG, "binder 连接异常: " + t.getClass().getSimpleName());
-                }
-            }, "wpaforge-engine-binder").start();
-        } else {
+        {
             final String cmd = ConnectSpec.buildConnect(target.ssid, security, password,
                     pinBssid ? target.bssid : null, macRotate);
             final ShellChannel sh = shell;
@@ -1120,7 +920,7 @@ public final class CrackEngine {
         int netIdRejects = 0;
         boolean sawAttempt = false;
         // shell 通道是否真的能执行命令（status 能读出内容）。
-        // Shizuku 读不到 logcat，sawAttempt 恒为 false；有了这个标志就能把
+        // 通道读不到 logcat 时 sawAttempt 恒为 false；有了这个标志就能把
         // 「密码错」和「通道死」区分开，不再一律 UNKNOWN。
         boolean channelAlive = false;
         String lastStatusSsid = null;
@@ -1130,7 +930,7 @@ public final class CrackEngine {
         // 本轮 `cmd wifi status` 读到的 netId（供判据 C/D 复用，避免重复起 shell）
         long roundNetId = -1;
 
-        // 日志判据是否可用：root 通道能读 logcat，Shizuku(shell) 读不到。
+        // 日志判据是否可用：Root 通道能读 logcat，通道断了就读不到。
         // 探测一次（读一小段），失败就只走 status/netId 判据。
         // 探测「日志能不能读」要用**真正要读的那个源**：
         // 以前这里探测的是状态机日志（-e ClientModeImpl，本机只有 ContextImpl 噪音），
@@ -1546,91 +1346,6 @@ public final class CrackEngine {
 
     // ------------------------------------------------------------------ 批量交给系统
 
-    /**
-     * 一次性把一批候选交给系统（Android 11+），只弹一次确认框。
-     *
-     * <p>语义与逐条模式**不同**，必须让用户知道：
-     * <ul>
-     *   <li>系统自己去试，顺序和时间由系统决定</li>
-     *   <li>我们只能等它连上，**不能**知道它在试哪一条</li>
-     *   <li>所以命中时拿到的密码是**推断**的，不是逐条确认的</li>
-     * </ul>
-     *
-     * <p>适合「网络很多、受不了逐条弹窗」的场景；
-     * 要精确结果仍然应该用逐条模式或 Shizuku。
-     *
-     * @param batchSize 一批交多少个，太多系统会排队很久
-     * @return 兼容 Android 11 以下返回 false
-     */
-    public boolean submitBatchToSystem(Context activityCtx, NetRecord target,
-                                       List<Candidate> batch) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
-        if (target == null || batch == null || batch.isEmpty()) return false;
-        try {
-            java.util.ArrayList<android.net.wifi.WifiNetworkSuggestion> list =
-                    new java.util.ArrayList<>();
-            for (Candidate c : batch) {
-                if (c.password == null
-                        || c.password.length() < 8 || c.password.length() > 63) continue;
-                WifiNetworkSpecifier.Builder b = new WifiNetworkSpecifier.Builder()
-                        .setSsid(target.ssid);
-                // 这里用 specifier 构建器只是为了拿到带密码的实例，
-                // 真正提交给系统的是 WifiNetworkSuggestion
-                list.add(new android.net.wifi.WifiNetworkSuggestion.Builder()
-                        .setSsid(target.ssid)
-                        .setWpa2Passphrase(c.password)
-                        .build());
-            }
-            if (list.isEmpty()) return false;
-            // Android 11+ 支持一次提交多个
-            int status = wifi.addNetworkSuggestions(list);
-            return status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS;
-        } catch (Throwable t) {
-            android.util.Log.w(TAG, "submitBatchToSystem 失败: " + t);
-            return false;
-        }
-    }
-
-    /** 清掉本应用提交的全部建议 */
-    public void clearSystemSuggestions() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                wifi.removeNetworkSuggestions(new java.util.ArrayList<>());
-            }
-        } catch (Throwable ignored) {}
-    }
-
-    /**
-     * 当前 ROM 是否支持“批量交给系统”。
-     * Android 11+ 才有，且需要系统支持多建议提交。
-     */
-    public boolean supportsBatchSubmit() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
-    }
-
-    /**
-     * 当前 ROM 上逐条 requestNetwork 会不会弹确认框。
-     *
-     * Android 10-15 都会弹（系统强制，无官方开关）。
-     * 这里如实告诉用户，不做假承诺。
-     */
-    public String popupNote() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            return L.s("系统版本过低，无法使用免 Root 模式。",
-                    "System too old for root-free mode.");
-        }
-        return L.s("系统会对每一条候选弹一次确认框，这是 Android 的安全设计，"
-                        + "无法关闭。\n\n"
-                        + "想不被打扰有两条路：\n"
-                        + "· 用 Shizuku 模式（推荐，和 Root 一样快且无弹窗）\n"
-                        + "· 用“批量交给系统”（只弹一次，但结果是推断的）",
-                "Android will show a confirmation dialog for every candidate. "
-                        + "This is a platform security requirement and cannot be disabled.\n\n"
-                        + "Two ways to avoid the interruptions:\n"
-                        + "· use Shizuku mode (recommended - as fast as root, no dialogs)\n"
-                        + "· use \"submit batch to system\" (one dialog, but the result is inferred)");
-    }
-
     // ------------------------------------------------------------------ 命中复核
 
     /** 复核结果 */
@@ -1694,7 +1409,7 @@ public final class CrackEngine {
 
         // 复验判据与主判定**保持一致**（四层，任一确认即通过）。
         //
-        // 旧实现只认 NetworkWatcher 事件，而 Shizuku 通道下回调常常拿不到 SSID，
+        // 旧实现只认 NetworkWatcher 事件，而部分机型上回调拿不到 SSID，
         // 于是正确密码在主判定里明明「看起来连上了」，到复验这一步却永远失败，
         // 被降级成 UNKNOWN —— 用户看到的就是「密码对也判不出来」。
         //
@@ -1835,8 +1550,8 @@ public final class CrackEngine {
 
         // **跑之前先自检通道**
         //
-        // 用户看到的「执行方式: Shizuku」只是设置里的一个数字，
-        // 跟通道能不能用毫无关系。之前没有这一步，通道断了也照跑 97 条，
+        // 设置里显示的模式只是个数字，跟通道能不能用毫无关系。
+        // 之前没有这一步，通道断了也照跑 97 条，
         // 全是「未连上」，用户以为是密码不对 —— 这就是他反复遇到的
         // 「明明密码对却识别不到」。
         ChannelProbe probe = probeChannel();
@@ -1920,7 +1635,7 @@ public final class CrackEngine {
         }
 
         final long perItem = timeoutMsPerItem > 0 ? timeoutMsPerItem
-                : (mode == Prefs.MODE_NO_ROOT ? 15_000L : 10_000L);
+                : 10_000L;
         final String security = securityArg(target);
         final int total = candidates.size();
         final int start = Math.max(0, Math.min(startOffset, total));
@@ -2138,8 +1853,6 @@ public final class CrackEngine {
     }
 
     private String channelName() {
-        if (mode == Prefs.MODE_NO_ROOT) return L.s("免 Root（精确连接）", "root-free (precise)");
-        if (mode == Prefs.MODE_SHIZUKU) return "Shizuku";
         return "Root";
     }
 

@@ -317,7 +317,7 @@ public final class Scanner {
     }
 
     /**
-     * 普通 API 拿不到东西时的兜底：走 root / Shizuku 读系统扫描结果。
+     * 普通 API 拿不到东西时的兜底：走 root 读系统扫描结果。
      *
      * 为什么需要这条：
      *   部分 ROM（ColorOS 等）上 getScanResults() 会**静默返回空** ——
@@ -336,14 +336,14 @@ public final class Scanner {
         lastPrivAt = now;
 
         try {
-            List<NetRecord> priv = PrivScanReader.read(false);
+            List<NetRecord> priv = PrivScanReader.read();
             if (priv != null && !priv.isEmpty()) {
                 privEverWorked = true;
                 privDiag = "";
                 return priv;
             }
             privDiag = PrivScanReader.lastChannel().isEmpty()
-                    ? "PRIV_UNAVAILABLE"        // 没有可用通道（没 root、Shizuku 没跑）
+                    ? "PRIV_UNAVAILABLE"        // 没有可用通道（没 root）
                     : "PRIV_EMPTY";             // 通道在，但系统也没数据
         } catch (Throwable t) {
             privDiag = "PRIV_ERR:" + t.getClass().getSimpleName();

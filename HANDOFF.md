@@ -12,9 +12,9 @@
 | 项目（Linux） | `/workspace/promo-wpaforge` |
 | 同一目录（Android） | `/data/local/tmp/eta/promo-wpaforge`（**同一挂载**，Linux 改完 Android 立即可见） |
 | 分支 / HEAD | `main`（`git log -1` = 本轮 commit，**尚未推送远端**） |
-| 版本号 | `93` / `1.9.23`（唯一来源是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`；APK 清单不写 versionName，`Ver.java` 一律读 PackageManager，所以只改这一处） |
-| 已装机 | `/data/local/tmp/wp.apk`（2,947,896 B；sha256 `a50b12af…`；**93/1.9.23**） |
-| 门禁 | 41 个测试类 / **1003 例全过**（`/workspace/wpf-gate.sh`） |
+| 版本号 | `94` / `1.9.24`（唯一来源是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`；APK 清单不写 versionName，`Ver.java` 一律读 PackageManager，所以只改这一处） |
+| 已装机 | `/data/local/tmp/wp.apk`（2,837,304 B；sha256 `c2759527…`；**94/1.9.24**） |
+| 门禁 | 40 个测试类 / **990 例全过**（`/workspace/wpf-gate.sh`，含站点链接门禁） |
 
 ---
 
@@ -135,6 +135,43 @@ java.lang.RuntimeException: Can't create handler inside thread
 现在 `load` 失败留痕、**拒绝接下来的空写入**，并在写空前备份 `queue.json.bak`。
 `QueueGuardTest` 钉住边界（用户主动清空不受影响）。
 
+---
+
+## 二·三、1.9.24：**Shizuku 与免 Root 通道彻底移除**（用户 2026-10-23 要求）
+
+公开口径一直是「需要 Root」，README 从 1.8.x 就写着 Shizuku / 免 Root 已移除 ——
+但代码里那条管线**没删干净**（界面还留着可点的「改用 Shizuku」、`Prefs.autoMode()` 还会
+兜底到 SHIZUKU/NO_ROOT）。这轮连根拔掉：
+
+| 删掉的东西 | 说明 |
+| --- | --- |
+| `audit/ShizukuRunner` | 通道本体 |
+| `shizuku/SafeShizukuProvider` | 清单里的 ContentProvider（binder 入口） |
+| `audit/SpecifierProber`、`audit/SuggestionProber`、`audit/ConnectionProber` | 免 Root 三条实现 |
+| `app/libs/shizuku-{api,provider,aidl}.jar` | **本应用不再依赖任何第三方库** |
+| AndroidManifest | Shizuku 权限 / 包可见性 `<queries>` / V3 meta-data / Provider 全撤 |
+| 界面残留 | 失败弹窗的模式切换、设置页授权引导、队列行模式标签、`REQ_SHIZUKU` 回调 |
+| `Prefs` | `MODE_NO_ROOT` / `MODE_SHIZUKU` 常量、`autoMode()`、`warmUp()`、`setMode()` |
+| `CrackEngine` | `tryOnePrecise`（requestNetwork 回调判定）、`submitBatchToSystem` 等批量接口、binder 直调分支、`cm` 字段 |
+| `App` | Sui 关闭、binder 早注册、Shizuku 探针与启动自检段 |
+| `RootProber` | `useShizuku` 分支、`checkShizuku`、`execAsync` 的 Shizuku 分支 |
+| 测试 | `SpecifierTest`（免 Root 路径的用例，随功能删除） |
+
+**兼容**：队列里老任务存的旧模式值（1=免 Root / 2=Shizuku）一律按 Root 处理 ——
+`Prefs.mode()` 现在恒返回 `MODE_ROOT`，不会因为一个历史值落到一条已不存在的通道上。
+
+**验收证据（都可复现）**：
+
+- 包内 **shizuku 字样 0 处**：`unzip -l` 0 命中、`classes.dex` 0 命中、`aapt2 dump xmltree AndroidManifest.xml` 0 命中
+- 体积 **2,947,896 → 2,837,304 B（−110,592）**，正是那三个 jar 的大小
+- 应用自检（`startup-last.txt`）：`版本: 1.9.24` / `Root 通道可用: 是` /
+  `结论: 已接入`（6 项全过，`cmd wifi` 实测 78ms）
+- 门禁 40 类 / 990 例 / 0 失败
+
+⚠️ 遗留待办：`CrackEngine.verifyHit()`（命中复核）**没有任何调用方**，是更早那轮
+「去掉复验一票否决」留下的死代码；`RootProber` 里那几个 `MIN_WAIT_MS/MAX_WAIT_MS/POLL_MS`
+常量与它的旧 `tryOne` 循环同理。本轮**没动**（超出「删 Shizuku」范围），下轮可一并清理。
+
 ## 三、没做完的（下一轮直接从这里开始）
 
 ### A. 速度：已做到 2.4 秒/条；剩下这些**还没做**（都量过）
@@ -170,7 +207,8 @@ framework 在 **11 毫秒内**就去连 B212/B214（该环境 38 个保存网络
   `RELEASE.md`；资产 `WPAForge-1.9.23.apk` 2,947,896 B / sha256 `a50b12af…` ——
   已下载回来核对，**与装机那版字节一致**）。
   页面：`https://github.com/wlmosv-png/wpaforge/releases/tag/v1.9.23`
-- **下一版基线 = `v1.9.23`**：再改代码时版本号按铁律「线上已发布 + 1」→ **`1.9.24 / 94`**，
+- **下一版基线 = `v1.9.24`**（本版尚未发 Release）：再改代码按铁律「线上已发布 + 1」，
+  但 `1.9.24` 还没发，所以**先把它发出去**再谈 95；
   唯一真相是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`
   （APK 清单不写 versionName，`Ver.java` 读 PackageManager，所以只改这一处）。
 - **发版动作照这次来**：正文用 `RELEASE.md`（标题写在文件首行注释里）+ 附

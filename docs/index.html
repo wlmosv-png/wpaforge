@@ -124,7 +124,7 @@ footer{color:var(--dim);font-size:14px;text-align:center;margin-top:60px;border-
 
 <h2 id="install">安装</h2>
 <p class="warn"><b>需要 Root · Android 8.0+</b><br>
-没有 Root 就别试了 —— 判定依赖 <code>su + cmd wifi</code>。Shizuku 与免 Root 通道在 1.8.x 已移除：Shizuku 要在每次连接时借 binder，免 Root 走 <code>WifiNetworkSpecifier</code> 则每条候选都会弹一次系统确认框 —— 两者都撑不起逐条字典遍历。</p>
+没有 Root 就别试了 —— 判定依赖 <code>su + cmd wifi</code>。Shizuku 与免 Root 通道已在 1.9.24 <b>彻底移除</b>（连代码依赖一起删了）：Shizuku 要在每次连接时借 binder，免 Root 走 <code>WifiNetworkSpecifier</code> 则每条候选都会弹一次系统确认框 —— 两者都撑不起逐条字典遍历。</p>
 <pre>1. 打开「观测」页，扫描附近网络，选中你的目标
 2. 打开「破解」页，加载字典（或让它现场派生）
 3. 点开始，锁屏等结果 —— 命中的密码会直接标出来</pre>

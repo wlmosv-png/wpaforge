@@ -19,8 +19,8 @@ ANDROID_JAR="${WP_ANDROID_JAR:-$TOOLS/libs/android.jar}"
 D8_JAR="${WP_D8_JAR:-$TOOLS/libs/android-16/lib/d8.jar}"
 APKSIGNER_JAR="${WP_APKSIGNER_JAR:-$TOOLS/libs/android-16/lib/apksigner.jar}"
 
-# Shizuku 的 API 与 Provider（本地 jar，不走 Maven）
-SHIZUKU_LIBS="$PROJ/app/libs/shizuku-api.jar:$PROJ/app/libs/shizuku-provider.jar:$PROJ/app/libs/shizuku-aidl.jar"
+# 无第三方依赖：Shizuku / 免 Root 通道已在 1.9.24 彻底移除，
+# 现在只需要 android.jar。
 # ---------------------------------------------------------------------------
 # 签名材料通过环境变量传入，**不要把密码写进脚本**。
 #
@@ -70,19 +70,14 @@ mkdir -p "$OUT/classes"
 # 源码 + aapt2 生成的 R.java（资源引用需要）
 SRC="$(find "$APP/src/main/java" -name "*.java") $(find "$OUT/gen" -name "*.java" 2>/dev/null)"
 javac --release 17 -encoding UTF-8 \
-  -cp "$ANDROID_JAR:$SHIZUKU_LIBS" \
+  -cp "$ANDROID_JAR" \
   -d "$OUT/classes" $SRC
 
-echo "==> d8 转 dex（含 Shizuku API 类）"
-# 把 Shizuku 的 jar 也交给 d8 —— 它们最终要一起进 classes.dex，
-# 否则运行时找不到 rikka.shizuku.ShizukuProvider 会直接崩。
+echo "==> d8 转 dex"
 java -cp "$D8_JAR" com.android.tools.r8.D8 \
   --release --min-api 26 --lib "$ANDROID_JAR" \
   --output "$DEX" \
-  $(find "$OUT/classes" -name "*.class") \
-  "$PROJ/app/libs/shizuku-api.jar" \
-  "$PROJ/app/libs/shizuku-provider.jar" \
-  "$PROJ/app/libs/shizuku-aidl.jar"
+  $(find "$OUT/classes" -name "*.class")
 
 echo "==> 组装未签名 APK"
 STAGE=$OUT/stage

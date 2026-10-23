@@ -70,6 +70,21 @@ public final class TaskQueue {
         public boolean useSmartSort = false;
         /** 破解模式：恒为 0=Root（历史字段，1/2 已在 1.9.24 废弃） */
         public int crackMode = 0;
+        /**
+         * 本轮是否**被进程中断**过（R7）。
+         *
+         * <p>进程被杀时盘上会留下 {@code RUNNING}；下次启动由
+         * {@link TaskQueue#normalizeInterrupted} 归一为 PAUSED 并置本标志。
+         * 注意：它只说明「上一轮没跑完」，**不代表**上一轮的实时证据仍然有效 ——
+         * 续跑会用新的 runId 重新确立证据。旧数据没有这个字段 → 默认 false。
+         */
+        public boolean interrupted = false;
+        /**
+         * 上一次运行（run）的标识（R7）：续跑时作为**血缘**保留，
+         * 只用于事后追问「这条结果出自哪一次运行」，新 run 绝不复用该 id。
+         * 旧数据没有这个字段 → 默认空串。
+         */
+        public String lastRunId = "";
 
         public Task() {}
 
@@ -138,6 +153,8 @@ public final class TaskQueue {
                 o.put("useTargetDict", useTargetDict);
                 o.put("useSmartSort", useSmartSort);
                 o.put("crackMode", crackMode);
+                o.put("interrupted", interrupted);
+                o.put("lastRunId", lastRunId == null ? "" : lastRunId);
             } catch (Exception ignored) {}
             return o;
         }
@@ -166,8 +183,47 @@ public final class TaskQueue {
             t.useTargetDict = o.optBoolean("useTargetDict", false);
             t.useSmartSort = o.optBoolean("useSmartSort", false);
             t.crackMode = o.optInt("crackMode", 0);
+            // 旧版本数据没有这两个字段 → 取默认值，不抛异常、不伪造
+            t.interrupted = o.optBoolean("interrupted", false);
+            t.lastRunId = o.optString("lastRunId", "");
             return t;
         }
+    }
+
+    // ---------------------------------------------------------------- R7 状态恢复
+
+    /**
+     * 进程重启后的**状态归一**：把盘上残留的 {@code RUNNING} 归为可恢复状态。
+     *
+     * <h3>为什么必须做</h3>
+     * {@code RUNNING} 只由正在跑的服务写入（见 {@code CrackService.executeTask}）。
+     * 进程被杀 / 服务被回收后没人再改它 —— 于是界面会**永久**显示「进行中」，
+     * 而实际上没有任何线程在跑（审计 R7）。
+     *
+     * <h3>归类（三条都要明确）</h3>
+     * <ul>
+     *   <li><b>可恢复</b>：{@code RUNNING → PAUSED}（offset 原样保留，点「继续」即可续跑）</li>
+     *   <li><b>必须标为中断</b>：{@code interrupted = true}（用户能看到「上一轮被中断」）</li>
+     *   <li><b>必须重新验证</b>：续跑不继承上一轮的实时证据 —— 由新的 runId +
+     *       每个候选自己的窗口标记重新确立（见 {@code AttemptMarker}）</li>
+     * </ul>
+     *
+     * <p>幂等：第二次调用不会再把 PAUSED 改回什么，也不会重复计数。
+     *
+     * @return 被归一的条数（0 = 没有残留的 RUNNING）
+     */
+    public static int normalizeInterrupted(List<Task> tasks) {
+        if (tasks == null || tasks.isEmpty()) return 0;
+        int n = 0;
+        for (Task t : tasks) {
+            if (t == null) continue;
+            if (t.state == State.RUNNING) {
+                t.state = State.PAUSED;
+                t.interrupted = true;
+                n++;
+            }
+        }
+        return n;
     }
 
     private static final String FILE = "queue.json";

@@ -198,6 +198,20 @@ public final class CrackEngine {
     private volatile String currentRunId;
     /** 同进程内第几次任务（保证同秒启动也不重号）。 */
     private int runOrdinal = 0;
+    /**
+     * 外部预设的 runId（R7 续跑用）。
+     *
+     * <p>续跑时由服务层用 {@code AttemptId.adoptForResume} 生成新 runId 并预置进来，
+     * 好处是**血缘**（previousRunId）只在服务层记录一次，引擎仍是单一事实来源。
+     * 绝不允许用它复用旧 runId —— 由 {@code adoptForResume} 保证新 id 不同。
+     */
+    private volatile String presetRunId;
+    /** 取本次运行的标识（null = 还没开始跑）。 */
+    public String currentRunId() { return currentRunId; }
+    /** 预置本次运行的标识；传 null 清除（下次 run() 自行生成）。 */
+    public void presetRunId(String runId) {
+        this.presetRunId = AttemptId.wellFormedRunId(runId) ? runId : null;
+    }
     /** 最近一次尝试的日志窗口元数据（由 tryOne 回填到 Attempt）。 */
     private volatile AttemptMarker.Window lastWindow;
     private static final int TIMEOUT_ALERT = 5;
@@ -1921,7 +1935,9 @@ public final class CrackEngine {
 
         // R6：本次任务的运行标识。只含时间（36 进制）+ 目标 SSID 的哈希前 8 位，
         // 不含 SSID 明文、不含口令 —— 可以安全地写进任务日志。
-        currentRunId = AttemptId.newRunId(System.currentTimeMillis(), target.ssid, runOrdinal++);
+        currentRunId = presetRunId != null ? presetRunId
+                : AttemptId.newRunId(System.currentTimeMillis(), target.ssid, runOrdinal++);
+        presetRunId = null;   // 一次预置只用一次
         l.onLog(L.s("运行标识: ", "run id: ")
                 + (currentRunId == null ? "<invalid>" : currentRunId)
                 + L.s("（本次任务内每条候选的判词都会带上它）",

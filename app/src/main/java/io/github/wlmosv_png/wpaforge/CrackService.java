@@ -118,6 +118,34 @@ public class CrackService extends Service {
         L.init(this);
         instance = this;
         createChannel();
+        recoverInterrupted();
+    }
+
+    /**
+     * R7：启动时把盘上残留的 {@code RUNNING} 归一为可恢复状态。
+     *
+     * <p>{@code RUNNING} 只由正在跑的服务写入，进程被杀后没人再改它 ——
+     * 界面会永久显示「进行中」而实际没有线程（审计 R7）。这里：
+     * RUNNING → PAUSED + interrupted=true，offset 原样保留（可续跑），
+     * 并明确告知用户「上一轮的实时证据不继承，续跑会重新验证」。
+     */
+    private void recoverInterrupted() {
+        try {
+            java.util.List<TaskQueue.Task> all = TaskQueue.load(this);
+            int n = TaskQueue.normalizeInterrupted(all);
+            if (n > 0) {
+                TaskQueue.save(this, all);
+                log(L.f("检测到 %d 个上次未跑完的任务：已标记为「被中断」并置为可续跑"
+                                + "（续跑会重新验证，不沿用上一轮的实时证据）",
+                        "%d task(s) from a previous run were interrupted: marked as "
+                                + "interrupted and made resumable (evidence is re-established "
+                                + "on resume, not inherited)", n));
+                notifyQueue();
+            }
+        } catch (Throwable t) {
+            log(L.s("中断状态归一失败（不影响其它功能）",
+                    "failed to normalise interrupted state (harmless)") + ": " + t);
+        }
     }
 
     /** 是否成功进入前台模式 */
@@ -596,6 +624,35 @@ public class CrackService extends Service {
         notifyQueue();
 
         log(L.s("===== 开始任务: ", "===== Starting task: ") + task.ssid + " =====");
+
+        // ── R7：运行标识与续跑血缘 ────────────────────────────────────────────
+        // 续跑时**开新 run**（绝不复用旧 id）：旧 run 只作为血缘保留在记录里，
+        // 旧证据（日志窗口、连接状态）一律不继承 —— 由新 run + 每条候选自己的
+        // 窗口标记重新确立。这样「恢复」不会假装已丢失的实时证据仍然有效。
+        try {
+            io.github.wlmosv_png.wpaforge.audit.AttemptId.ResumeTicket tk =
+                    io.github.wlmosv_png.wpaforge.audit.AttemptId.adoptForResume(
+                    task.lastRunId, task.offset, System.currentTimeMillis(),
+                    task.ssid, 0);
+            if (tk.newRunId != null && engineRef != null) {
+                engineRef.presetRunId(tk.newRunId);
+                task.lastRunId = tk.newRunId;
+                task.interrupted = false;      // 已开始新的一轮，中断标记清掉
+                TaskQueue.update(this, task);
+                if (tk.previousRunId != null) {
+                    log(L.f("续跑：自第 %d 条继续；上一轮运行标识 %s，本轮 %s（不继承其证据）",
+                            "resume from #%d; previous run %s, current run %s "
+                                    + "(evidence is not inherited)",
+                            tk.resumeFromOffset, tk.previousRunId, tk.newRunId));
+                } else {
+                    log(L.f("本轮运行标识: %s", "run id: %s", tk.newRunId));
+                }
+            }
+        } catch (Throwable t) {
+            log(L.s("运行标识生成失败（不影响判定，但这次没有可追溯标识）",
+                    "failed to create a run id (verdicts unaffected, but this run "
+                            + "has no traceable id)") + ": " + t);
+        }
 
         // 准备候选。按任务入队时记录的开关决定，不再无条件叠加。
         // 续跑时必须用完全相同的规则重建列表，否则 offset 会对不上。

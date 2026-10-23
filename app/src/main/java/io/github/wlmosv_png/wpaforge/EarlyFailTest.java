@@ -67,6 +67,13 @@ public class EarlyFailTest {
                 WpaLogReader.countHandshakeM1For(m1a, "28:93:7D:44:95:A9") == 1);
         check("按 BSSID 归属：BSSID 为空时返回 0（由调用方退回关联行判据）",
                 WpaLogReader.countHandshakeM1For(m1a, "") == 0);
+        // ★ 守门：静默判据的阈值不许调回 600ms 附近。
+        //   正确密码的四条件成立要等 DHCP，实测一次命中共用 1368ms；
+        //   阈值太紧会抢先判「密码错」，表现就是「对着正确密码跳过去」（2026-10-24 实报）。
+        check("静默阈值 >= 1200ms（否则会误杀正确密码）",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.EARLY_FAIL_SILENCE_MS >= 1200L);
+        check("静默阈值不失控（<= 2000ms）",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.EARLY_FAIL_SILENCE_MS <= 2000L);
         check("没有关联行也能归属（这正是修这个 bug 的目的）",
                 !WpaLogReader.sawAssociateFor(m1a, "B214")
                         && WpaLogReader.countHandshakeM1For(m1a, "28:93:7d:44:95:a9") == 1);

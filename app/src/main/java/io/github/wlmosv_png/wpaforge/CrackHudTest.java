@@ -150,6 +150,27 @@ public class CrackHudTest {
         check("全部视图含明细", LogFilter.visible(LogFilter.Kind.DETAIL, false));
         check("null 不炸", LogFilter.classify(null) == LogFilter.Kind.DETAIL);
 
+        // ══════════ 判词尾巴（诊断用）══════════
+        section = "判词尾巴";
+        System.out.println("== 判词尾巴 ==");
+        eq("命中带依据", "147258369=\u2713wpalog",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
+                        "147258369", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.SUCCESS, "wpalog"));
+        eq("密码错带判据", "password=\u2717m1silent",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
+                        "password", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1silent"));
+        eq("超时", "x=\u8d85\u65f6",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
+                        "x", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.TIMEOUT, ""));
+        eq("通道异常", "x=!\u901a\u9053",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
+                        "x", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.ERROR, ""));
+        eq("密码为 null 不炸", "?=\u2717auth",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
+                        null, io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, ""));
+        eq("verdict 为 null 不炸", "x=?",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag("x", null, ""));
+
         System.out.println();
         System.out.println("破解页 HUD: pass=" + pass + " fail=" + fail);
         if (fail > 0) System.exit(1);

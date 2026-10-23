@@ -201,12 +201,18 @@ public final class CrackEngine {
      * <p>真机实测（2026-10-23，B214）：正确密码从「命令发出」到「四条件成立（拿到 IP）」
      * 只要 670~722 ms；M2 是在 M1 之后约 4ms 发出的，AP 的 M3/M4 紧随其后。
      * 而错误密码时，AP 要等到 **1.0 秒后**才重发 M1。
-     * 因此「M1 出现后 600ms 内没有任何握手进展」= 密码错误，且留有约 10 倍余量。
+     *
+     * <p><b>阈值 600 → 1200（2026-10-24 实机事故）</b>：正确密码的「四条件成立」
+     * 要等 DHCP 拿地址，实测一次命中共用 1368ms —— M1 之后到四条件成立只差
+     * 几十毫秒就可能被 600ms 的静默判据抢先判成「密码错」，于是**对着正确的
+     * 密码跳过去**（用户报的正是这个）。1200ms 留足余量：真密码错时，
+     * M1 重发判据（M1+0.96s）通常先命中，代价只是「日志配额把重发行丢掉的
+     * 少数情况」多等约 0.6 秒。
      *
      * <p>代价说明：本判据在极端拥塞的 AP 上可能把**正确**密码误判为失败（只会漏判，
      * 绝不会误判成功）——与本项目「宁可漏判，不可误判」的一贯取舍一致。
      */
-    public static final long EARLY_FAIL_SILENCE_MS = 600L;
+    public static final long EARLY_FAIL_SILENCE_MS = 1200L;
 
     /**
      * 第二级早退判据（纯函数，便于离线单测）。
@@ -241,6 +247,28 @@ public final class CrackEngine {
         return "  [关联 " + (tAssocMs < 0 ? "-" : tAssocMs + "ms")
                 + " / M1 " + (tM1Ms < 0 ? "-" : tM1Ms + "ms")
                 + " / 广播 " + (tAuthMs < 0 ? "-" : tAuthMs + "ms") + "]";
+    }
+
+    /**
+     * 一条候选的判词短标签，用于收尾那条「最近判定」尾巴（纯函数，可测）。
+     *
+     * <p>形如 {@code 147258369=✗m1silent} / {@code password=✓wpalog} / {@code x=超时}。
+     * 为什么要这个：2026-10-24 用户报「明明正确的密码被跳过去」，而**文件日志里
+     * 一条判词都没有**（逐条结果只走界面回调），查不动。现在每次跑完没命中，
+     * 最后 6 条的判词会写进文件日志，这种事自己就能说清。
+     */
+    public static String verdictTag(String password, Verdict v, String by) {
+        String pw = password == null ? "?" : password;
+        if (v == null) return pw + "=?";
+        switch (v) {
+            case SUCCESS: return pw + "=✓" + (by == null || by.isEmpty() ? "hit" : by);
+            case AUTH_FAIL: return pw + "=✗" + (by == null || by.isEmpty() ? "auth" : by);
+            case TIMEOUT: return pw + "=超时";
+            case TARGET_GONE: return pw + "=目标不在";
+            case ERROR: return pw + "=!通道";
+            case ABORTED: return pw + "=⏹中断";
+            default: return pw + "=?不明";
+        }
     }
 
     public static boolean m1RetryImpliesWrongKey(int m1Count, boolean successSeen) {
@@ -869,21 +897,16 @@ public final class CrackEngine {
         //
         // 原来是固定 sleep(400) 再查一次：快机器上白等，慢机器上可能还没建好。
         // 改成轮询 —— 最快 100ms 就能继续，最多等 600ms。
-        long netIdProbe = -1;
-        // 窗口 600ms → 200ms（2026-10-23 实测）：这个 netId 在判定链里
-        // **只写进证据串、从不作否决**（SuccessRule 的入参里没有它，
-        // 归因靠的是命令前那两道闸门：配置删净回读 + 已连目标先断开）。
-        // 而实测发令后 framework 建好配置常常要等满整个窗口，净白等 600ms；
-        // 一本 3336 条的字典就是 33 分钟。压到 200ms 只影响「证据串里带不带 netId」。
+        // 不再为了拿 netId 在这里白等。
+        //
+        // 实测（2026-10-24，B212，三次）：framework 把配置建出来要
+        // **242 / 267 / 324 ms**。老代码固定等 600ms（白扔半秒/条），
+        // 我在提速时压到 200ms —— **压过头**：配置还没出现就返回，
+        // netId 永远是 -1。现在改成**把探测挪进主循环的前几轮**
+        // （那时本来就在轮询）：白等没了，证据照样能在 ~300ms 拿到。
         long statProbe0 = SystemClock.uptimeMillis();
-        final long netIdWaitUntil = statProbe0 + 200;
-        while (SystemClock.uptimeMillis() < netIdWaitUntil) {
-            sleep(100);
-            netIdProbe = netIdOfTarget(target.ssid);
-            if (netIdProbe >= 0) break;
-        }
+        long targetNetId = -1;
         statProbeMs = SystemClock.uptimeMillis() - statProbe0;
-        final long targetNetId = netIdProbe;
 
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
                 + " pw=" + password.length() + " timeout=" + timeoutMs
@@ -973,6 +996,15 @@ public final class CrackEngine {
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
             statRounds++;
+            // 前 4 轮里顺便探掉「本条命令有没有建出配置」：
+            //   · 建出来了 → 记下 netId（证据串要用，非否决项）
+            //   · 4 轮还没建出来（>400ms）→ 这条命令很可能被框架悄悄丢了。
+            //     `cmd wifi connect-network` 成功失败都**不打印任何东西**，
+            //     只有「配置存不存在」能证明它生效。
+            if (targetNetId < 0 && statRounds <= 4) {
+                long id = netIdOfTarget(target.ssid);
+                if (id >= 0) targetNetId = id;
+            }
             // 间隔自适应（2026-10-23 实测后调整）：
             //   前 1.2 秒 = 全速轮询（间隔 20ms）。这一段时间里会出现最早的成功证据
             //   （实测正确密码 950ms 内完成）和最早的失败证据（M1#2 约在 1.5~2.5s），
@@ -1284,7 +1316,18 @@ public final class CrackEngine {
         }
         String detail;
         Verdict verdict;
-        if (currentOnTarget) {
+        // 「命令根本没生效」先摘出来：过了 4 轮（>400ms）框架都没给这个 SSID
+        // 建出配置，说明 connect-network 被悄悄丢掉了（它在忙时就是这样，
+        // 连输出都没有）。这条**不能当密码错** —— 真机表现为「对着正确的密码
+        // 跳过去」（2026-10-24 实报）。归到通道异常，用户能看出是环境问题。
+        if (targetNetId < 0 && !sawAttempt && channelAlive) {
+            detail = L.s("连接命令似乎未生效：框架没有为本条候选建出配置"
+                            + "（通道忙时 cmd wifi 会静默丢弃请求）。换个 AP 或稍后重试。",
+                    "the connect command did not take effect: the framework created no "
+                            + "config for this candidate (cmd wifi drops requests silently "
+                            + "when busy). Try another AP, or retry later.");
+            verdict = Verdict.ERROR;
+        } else if (currentOnTarget) {
             // **不能因为「现在连着目标」就判成功**。
             //
             // 这正是那批假阳性的来源：系统回连、旧连接残留、缓存凭据……
@@ -1654,6 +1697,8 @@ public final class CrackEngine {
         final BackoffPolicy.Window backoff = new BackoffPolicy.Window();
         /** 每 20 条吐一行耗时汇总（后台跑的日志里唯一能看到快慢的地方） */
         final CostMeter costMeter = new CostMeter(20);
+        /** 最近 6 条的判词 —— 没命中时写进日志，让「为什么没判出来」有据可查 */
+        final java.util.ArrayDeque<String> recentVerdicts = new java.util.ArrayDeque<>();
         /** 上一行监听器诊断 —— 内容没变就不重复写，免得刷满日志 */
         String lastWatcherLine = null;
 
@@ -1699,6 +1744,8 @@ public final class CrackEngine {
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
                 costMeter.record(itemMs, a.verdict.name(), a.confirmedBy,
                         statPrepMs, statProbeMs, statPollMs, statLogMs, statRounds);
+                recentVerdicts.addLast(verdictTag(c.password, a.verdict, a.confirmedBy));
+                while (recentVerdicts.size() > 6) recentVerdicts.removeFirst();
                 String costLine = costMeter.takeSummary();
                 if (costLine != null) l.onLog("  " + costLine);
 
@@ -1811,6 +1858,17 @@ public final class CrackEngine {
             // 常驻 shell 会话必须显式关掉：否则一轮任务跑完，
             // 后台会留着一个 root shell 进程。
             try { shell.close(); } catch (Throwable ignored) {}
+            // 没命中时把最后几条的判词写进**文件日志**。
+            // 逐条结果平时只走界面回调，文件里一条都没有 —— 于是「为什么没判出来」
+            // 事后完全查不动（2026-10-24 就吃过这个亏）。这里只写一行，不破降噪。
+            if (hit == null && !recentVerdicts.isEmpty()) {
+                StringBuilder vb = new StringBuilder();
+                for (String v2 : recentVerdicts) {
+                    if (vb.length() > 0) vb.append(" · ");
+                    vb.append(v2);
+                }
+                l.onLog("  " + L.s("最近判定: ", "recent verdicts: ") + vb);
+            }
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
             else if (pauseFlag.get()) outcome = "PAUSED";

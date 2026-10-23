@@ -12,7 +12,10 @@ package io.github.wlmosv_png.wpaforge.ui;
  * <ul>
  *   <li>{@link Kind#MILESTONE} —— 任务级节点：开始 / 命中 / 暂停 / 停止 / 结束 / 续跑。
  *       这些是「出事了要看的」。</li>
- *   <li>{@link Kind#REASON} —— 为什么没成：早期失败 / 快速失败 / 超时 / 提示通道异常。</li>
+ *   <li>{@link Kind#REASON} —— 运行中每条的结论与「为什么没成」：
+ *       每条的判定结果、早期失败 / 快速失败 / 命令超时 / 通道异常。
+ *       <b>逐条结果必须留在这里</b>：它就是"正在干活"的心跳，
+ *       全丢进 DETAIL 会让关键视图看起来像卡死（2026-10-24 实机反馈）。</li>
  *   <li>{@link Kind#DETAIL} —— 其余全部：启动自检、逐条候选结果、耗时汇总、监听器诊断。</li>
  * </ul>
  *
@@ -26,7 +29,7 @@ public final class LogFilter {
 
     private LogFilter() {}
 
-    /** 只匹配行首的这些前缀 ———— 逐条候选结果与命中结果 */
+    /** 逐条候选结果的行首（写入方在 appendStream… 里已把级别定死，这里只是兜底） */
     private static final String CAND_FAIL = "✗  ";
     private static final String CAND_HIT = "✓ 成功";
 
@@ -35,8 +38,9 @@ public final class LogFilter {
         String t = line.trim();
         if (t.isEmpty()) return Kind.DETAIL;
 
-        // ① 逐条候选结果：先判掉，否则后面「回连/超时」会把它们判成关键
-        if (t.startsWith(CAND_FAIL)) return Kind.DETAIL;
+        // ① 逐条候选结果：都是「关键」—— 它是运行中的心跳，不是噪音。
+        //    （真正该藏的是启动自检，那些会落到末尾的 DETAIL。）
+        if (t.startsWith(CAND_FAIL)) return Kind.REASON;
         if (t.startsWith(CAND_HIT)) return Kind.MILESTONE;
 
         // ② 任务级节点
@@ -48,7 +52,9 @@ public final class LogFilter {
 
         // ③ 失败/异常原因
         if (has(t, "早期失败") || has(t, "快速失败") || has(t, "命令超时")) return Kind.REASON;
-        if (has(t, "无法确认") || has(t, "不可信") || has(t, "没有结论")) return Kind.REASON;
+        // 「不可信」只出现在真正的判定说明里；不再拿「无法确认 / 没有结论」当关键词 ——
+        // 它们也出现在开跑前那段解释文案里，会把整段说明染成「关键」。
+        if (has(t, "不可信")) return Kind.REASON;
         if (has(t, "旧配置未清除") || has(t, "通道可能没真正生效")) return Kind.REASON;
         if (has(t, "已退回逐条 su") || has(t, "常驻 shell 会话不可用")) return Kind.REASON;
 

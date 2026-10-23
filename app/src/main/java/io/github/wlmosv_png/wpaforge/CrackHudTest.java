@@ -93,10 +93,11 @@ public class CrackHudTest {
 
         eq("速率 0.09 条/秒 → 条/分", "5.4 条/分", CrackHud.ratePerMin(0.09));
         eq("速率 0.4 条/秒 → 24 条/分", "24 条/分", CrackHud.ratePerMin(0.4));
-        eq("速率 0 → —（不编 0 出来）", "—", CrackHud.ratePerMin(0));
-        eq("速率负数 → —", "—", CrackHud.ratePerMin(-1));
+        eq("速率 0 → 空串（不编 0 出来，也不打占位符）", "", CrackHud.ratePerMin(0));
+        eq("速率负数 → 空串", "", CrackHud.ratePerMin(-1));
 
         eq("脚注", "1,204 / 13,255 · 5.4 条/分", CrackHud.footnote(1204, 13255, 0.09));
+        eq("速率未知时脚注只有数量（不打 — 占位）", "15 / 13,255", CrackHud.footnote(15, 13255, 0));
 
         eq("ETA 45 秒", "剩 45 秒", CrackHud.etaLabel(45_000));
         eq("ETA 9 分", "剩 9 分", CrackHud.etaLabel(9 * 60_000L));
@@ -124,8 +125,8 @@ public class CrackHudTest {
             {"旧配置未清除（netId=613），本条结果不可信", LogFilter.Kind.REASON},
             {"常驻 shell 会话不可用，已退回逐条 su（会慢一些）", LogFilter.Kind.REASON},
 
-            {"✗  88888888  (5123ms 系统已回连到其它网络 B212 —— 目标这次没连上)", LogFilter.Kind.DETAIL},
-            {"✗  password  (10000ms 超时)", LogFilter.Kind.DETAIL},
+            {"✗  88888888  (5123ms 系统已回连到其它网络 B212 —— 目标这次没连上)", LogFilter.Kind.REASON},
+            {"✗  password  (10000ms 超时)", LogFilter.Kind.REASON},
             {"已启用静音音频保活（防止后台被系统冻结）", LogFilter.Kind.DETAIL},
             {"已显示保活悬浮窗（1×1 透明，防止后台被系统冻结）", LogFilter.Kind.DETAIL},
             {"加载字典 07 通用口令榜 TOP 3336 -> 3336 条", LogFilter.Kind.DETAIL},
@@ -133,6 +134,7 @@ public class CrackHudTest {
             {"引擎模式: Root", LogFilter.Kind.DETAIL},
             {"  近 20 条 · 均 2342ms（前置 443 · netId 222 · 轮询 375 · 读日志 623）轮 10 均 34ms", LogFilter.Kind.DETAIL},
             {"  监听器诊断: fired 2x, SSID unavailable every time", LogFilter.Kind.DETAIL},
+            {"  所有密码都会被判为「无法确认」，请不要误以为密码不对。", LogFilter.Kind.DETAIL},
             {"", LogFilter.Kind.DETAIL},
         };
         for (Object[] c : cases) {

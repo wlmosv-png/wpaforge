@@ -3442,9 +3442,10 @@ public class MainActivity extends Activity {
                                     .percentLabel(index - 1, total)));
                     connectProgress.setStages(s0);
                     connectProgress.setDone(false);
-                    connectProgress.setText("",
-                            io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                    .footnote(index - 1, total, 0));
+                    // **不要在这里 setText** —— 进度文字只归 onProgress 管。
+                    // 我先前的版本在这里写了一次空标题，结果 onProgress 刚写上的
+                    // 「还剩多久」在下一条候选开始时又被清掉，界面上大部分时间空着
+                    // （2026-10-24 实机反馈「大字不显示」）。
                 }
             });
         }
@@ -4195,14 +4196,14 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 逐条候选结果专用入口：**强制标成明细**。
+     * 逐条候选结果专用入口：级别**定死成「原因」**（关键视图可见）。
      *
-     * <p>为什么不靠 {@code LogFilter} 自己认：「✗  88888888  (5123ms 系统已回连到……)」
-     * 这句里带「回连」「超时」，按关键词会被判成「关键」—— 于是一跑就是几千行关键行，
-     * 筛选等于没筛。所以这类行在写入时就把级别定死。
+     * <p>这条线是运行中的心跳 —— 真实的判定结论文案五花八门
+     * （回连 / 超时 / 早期失败 / 握手完成…），靠关键词认不全，
+     * 所以在写入时就把级别定下来，别让筛选把"它在干活"的证据一起藏了。
      */
     private void appendStreamDetail(String line, int color) {
-        appendStreamColored(line, color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.DETAIL);
+        appendStreamColored(line, color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON);
     }
 
     private void appendStreamColored(String line, int color,

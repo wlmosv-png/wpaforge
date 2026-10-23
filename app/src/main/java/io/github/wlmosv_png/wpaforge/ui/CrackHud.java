@@ -55,18 +55,22 @@ public final class CrackHud {
         return thousands(tested) + " / " + thousands(total);
     }
 
-    /**
-     * 速率：条/分。perSec <= 0 时给「—」（不编一个 0 出来，那会被误读成"卡住"）。
-     */
+    /** 速率：条/分。perSec <= 0 时返回空串（由调用方决定是否拼这一节）。 */
     public static String ratePerMin(double perSec) {
-        if (perSec <= 0) return "—";
+        if (perSec <= 0) return "";
         double perMin = perSec * 60d;
         if (perMin < 10d) return String.format(Locale.US, "%.1f 条/分", perMin);
         return String.format(Locale.US, "%.0f 条/分", perMin);
     }
 
-    /** 「1,204 / 13,255 · 5.4 条/分」——进度下方那一行小字。 */
+    /**
+     * 「1,204 / 13,255 · 5.4 条/分」——进度下方那一行小字。
+     *
+     * <p>速率还不知道时**只显示数量**，不要拼一个占位符号上去：
+     * 「15 / 13,255 · —」在真机上看着像坏掉了（2026-10-24 反馈）。
+     */
     public static String footnote(int tested, int total, double perSec) {
+        if (perSec <= 0) return countsLabel(tested, total);
         return countsLabel(tested, total) + " · " + ratePerMin(perSec);
     }
 

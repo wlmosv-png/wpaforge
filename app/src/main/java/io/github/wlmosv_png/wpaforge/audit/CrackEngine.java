@@ -1094,7 +1094,7 @@ public final class CrackEngine {
         boolean channelAlive = false;
         String lastStatusSsid = null;
         // 分层证据记录（结束时不命中就逐层打印，让用户看清卡在哪一层）
-        int logRounds = 0, statusRounds = 0, watcherHits = 0;
+        int logRounds = 0, statusRounds = 0;
         int logRound = 0;
         // 本轮 `cmd wifi status` 读到的 netId（供判据 C/D 复用，避免重复起 shell）
         long roundNetId = -1;
@@ -1587,11 +1587,13 @@ public final class CrackEngine {
                 + " verdict=" + verdict);
 
         // 分层证据摘要（未命中时也给出，方便定位是哪层的问题）
-        detail = detail + L.f(" [层: 日志%d/%s · status%d/%s · 事件%d]",
-                " [layers: log%d/%s status%d/%s events%d]",
+        // R10：原来这里报的「事件N」恒为 0（NetworkWatcher 早就不参与判定）—— **假数字**。
+        // 现在改报真正影响结论的东西：本条候选的日志窗口是否可用。
+        detail = detail + L.f(" [层: 日志%d/%s · status%d/%s · 窗口%s]",
+                " [layers: log%d/%s status%d/%s window:%s]",
                 logRounds, logReadable ? "可读" : "不可读",
                 statusRounds, channelAlive ? "通" : "断",
-                watcherHits);
+                lastWindow == null ? "未采集" : (lastWindow.evidenceUsable() ? "可用" : lastWindow.reason));
 
         Attempt fin = new Attempt(password, verdict, total, detail, "");
         fin.reason = out.reason;
@@ -1801,11 +1803,12 @@ public final class CrackEngine {
                     watcher.isRegistered()
                             ? L.s("已启用（判定可用）", "active (verdict available)")
                             : L.s("启用失败（判定不可用）", "failed to register (verdict unavailable)")));
-            l.onLog(L.s("  说明: 判定完全依赖系统回调。若回调拿不到 SSID，",
-                    "  Note: the verdict depends entirely on system callbacks. "
-                            + "If a callback cannot carry an SSID,"));
-            l.onLog(L.s("  所有密码都会被判为「无法确认」，请不要误以为密码不对。",
-                    "  every passphrase will read as unconfirmed - that is not a wrong passphrase."));
+            l.onLog(L.s("  说明: 判定主链是 `cmd wifi status` 的三条件同行，加上本候选窗口内的",
+                    "  Note: the verdict rests on `cmd wifi status` (three conditions on one "
+                            + "line) plus the wpa_supplicant lines inside"));
+            l.onLog(L.s("  wpa_supplicant 日志。系统回调只用于诊断显示，不参与判定。",
+                    "  this candidate's own log window. System callbacks are diagnostics only "
+                            + "and do not decide the verdict."));
         } else {
             l.onLog(L.s("事件监听器未初始化",
                     "event watcher not initialised"));

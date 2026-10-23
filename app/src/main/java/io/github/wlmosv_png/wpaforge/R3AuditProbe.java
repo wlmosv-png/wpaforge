@@ -224,11 +224,10 @@ public final class R3AuditProbe {
                         + " + 本条已 exercise。仍无法把广播精确绑到某条候选（残余）");
 
         // 来源 4：ConnectivityManager 回调（NetworkWatcher）—— 已不参与判定。
-        violation("S1-3", "判定已不读 watcher，但日志仍称「判定完全依赖系统回调」",
-                "firstAvailableAfter 的唯一调用点在 verifyHit（CrackEngine:1510），"
-                        + "而 verifyHit 全仓无调用者；run() 却打印"
-                        + "「判定完全依赖系统回调…若回调拿不到 SSID，所有密码都会被判为无法确认」"
-                        + "→ 用户据这条说明排查会走错方向");
+        // 已修复（R10）：说明文字与真实判定链对齐（不再声称依赖系统回调）
+        ok("S1-3", "判定链说明与实际一致（回调只作诊断，不参与判定）",
+                engineSrc().contains("系统回调只用于诊断显示，不参与判定")
+                        && !engineSrc().contains("判定完全依赖系统回调"));
 
         // 已修复（R6 接线）：不再是「缺失」，而是「必须有」——接线被删即判红。
         boolean wired = engineSrc().contains("AttemptId.newRunId(")
@@ -555,18 +554,20 @@ public final class R3AuditProbe {
         String eng = readFile(root + "/app/src/main/java/io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) { notRun("诊断扫描", "源码不可读"); return; }
 
-        int decl = count(eng, "int logRounds = 0, statusRounds = 0, watcherHits = 0;");
+        int decl = count(eng, "watcherHits");
         int inc = count(eng, "watcherHits++");
-        ok("S8-a","watcherHits 只声明未自增（SCANNED）", decl == 1);
+        ok("S8-a","watcherHits（恒为 0 的假数字）已彻底移除", decl == 0 && inc == 0);
         if (inc == 0) {
-            violation("S8-1", "分层摘要里的「事件N」恒为 0",
-                    "watcherHits 没有任何自增点，却出现在每条未命中结果的"
-                            + "「[层: 日志x/y · statusx/y · 事件N]」里 → 诊断数字是假的");
+            // 已修复（R10）：不再报「恒为 0 的事件数」，改报真实的窗口可用性
+            ok("S8-1", "分层摘要不再报假数字（改报本条候选的窗口状态）",
+                    !engineSrc().contains("watcherHits")
+                            && engineSrc().contains("· 窗口%s]"));
         }
         if (count(eng, "firstAvailableAfter") == 1) {
-            violation("S8-2", "watcher 只在一个无调用者的方法里被使用",
-                    "firstAvailableAfter 仅在 verifyHit 内被调用，而 verifyHit 全仓无调用者；"
-                            + "run() 的说明文字却说判定完全依赖系统回调");
+            // 已修复（R10）：说明文字已改，watcher 的现实（仅诊断/无调用者的 verifyHit）
+            // 已在文字里说清；此处转成断言，防止有人把说明改回"依赖回调"。
+            ok("S8-2", "watcher 的现实已被说明文字正确描述",
+                    !engineSrc().contains("判定完全依赖系统回调"));
         }
         if (count(eng, "consecutiveTimeouts") >= 2 && count(eng, "Verdict.TIMEOUT") == 0) {
             violation("S8-3", "连续超时告警是死代码",

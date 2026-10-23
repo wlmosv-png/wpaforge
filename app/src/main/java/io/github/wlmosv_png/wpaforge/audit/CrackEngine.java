@@ -257,8 +257,10 @@ public final class CrackEngine {
      * 一条判词都没有**（逐条结果只走界面回调），查不动。现在每次跑完没命中，
      * 最后 6 条的判词会写进文件日志，这种事自己就能说清。
      */
-    public static String verdictTag(String password, Verdict v, String by) {
-        String pw = password == null ? "?" : password;
+    public static String verdictTag(int index, String password, Verdict v, String by) {
+        // 口令一律脱敏（#哈希前6(len=N)），顺序号保留 —— 顺序号是非敏感信息，
+        // 却是排查时对回字典的关键（"第 11 条是哪个口令"）。
+        String pw = io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(index, password);
         if (v == null) return pw + "=?";
         switch (v) {
             case SUCCESS: return pw + "=✓" + (by == null || by.isEmpty() ? "hit" : by);
@@ -1744,7 +1746,7 @@ public final class CrackEngine {
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
                 costMeter.record(itemMs, a.verdict.name(), a.confirmedBy,
                         statPrepMs, statProbeMs, statPollMs, statLogMs, statRounds);
-                recentVerdicts.addLast(verdictTag(c.password, a.verdict, a.confirmedBy));
+                recentVerdicts.addLast(verdictTag(cursor, c.password, a.verdict, a.confirmedBy));
                 while (recentVerdicts.size() > 6) recentVerdicts.removeFirst();
                 String costLine = costMeter.takeSummary();
                 if (costLine != null) l.onLog("  " + costLine);

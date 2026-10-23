@@ -790,7 +790,9 @@ public class CrackService extends Service {
             public void onAttemptStart(int index, int total, String candidate) {
                 for (UiCallback cb : callbacks) cb.onAttempt(index, total, candidate);
                 updateNotification(L.f("正在破解 %s", "Cracking %s", ft.ssid),
-                        candidate + "   " + index + "/" + total, index, total);
+                        // 通知栏是最暴露的面（锁屏可见），候选一律脱敏
+                        io.github.wlmosv_png.wpaforge.ui.Redact.pw(candidate)
+                                + "   " + index + "/" + total, index, total);
             }
 
             @Override

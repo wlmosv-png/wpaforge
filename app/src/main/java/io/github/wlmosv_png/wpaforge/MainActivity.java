@@ -143,6 +143,8 @@ public class MainActivity extends Activity {
     private TextView chipKey;
     private TextView chipAll;
     private int lastTested = 0, lastTotal = 0;
+    /** 当前候选在字典里的位置（1 起）—— 脱敏后靠它把日志对回字典 */
+    private int curCandIndex = 0;
     private TextView connectStatsView;
     private TextView connectStreamView;
     /** 候选流折叠：头部、箭头、行数、布局参数 */
@@ -2404,7 +2406,8 @@ public class MainActivity extends Activity {
                     ui.post(() -> {
                         offlineBusy = false;
                         if (r.hit) {
-                            appendLog(L.s("⚡ 命中: ", "HIT: ") + r.hitPassword
+                            appendLog(L.s("⚡ 命中: ", "HIT: ")
+                                    + io.github.wlmosv_png.wpaforge.ui.Redact.pw(r.hitPassword)
                                     + L.s("（字典第 ", " (index ") + r.hitIndex
                                     + L.s(" 位，耗时 ", "), took ") + ms + " ms)");
                         } else {
@@ -3426,6 +3429,7 @@ public class MainActivity extends Activity {
             // onProgress 用的 tested 是两套计数，交替刷新会让进度条来回跳。
             // 统一由 onProgress 负责，这里只报当前在试什么。
             ui.post(() -> {
+                curCandIndex = index;
                 // 方案 A：候选不再塞在进度条脚下的小字里，
                 // 而是独立的「正在试」区（等宽大字 + 上两条）。
                 candTicker.push(candidate);
@@ -3454,11 +3458,13 @@ public class MainActivity extends Activity {
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail) {
             ui.post(() -> {
                 if (hit) {
-                    appendStreamColored("✓ 成功  " + candidate
+                    appendStreamColored("✓ 成功  "
+                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate)
                             + "  (" + ms + "ms " + detail + ")", OK_GREEN);
                     showHitCard(candidate, ms, detail);
                 } else {
-                    appendStreamDetail("✗  " + candidate
+                    appendStreamDetail("✗  "
+                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate)
                             + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
                 }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
@@ -3492,7 +3498,9 @@ public class MainActivity extends Activity {
         public void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome) {
             ui.post(() -> {
                 if ("DONE_HIT".equals(outcome)) {
-                    appendStreamColored(L.s("⚡ 密钥命中 ", "★ HIT!") + task.ssid + " = " + hitPassword, OK_GREEN);
+                    appendStreamColored(L.s("⚡ 密钥命中 ", "★ HIT!") + task.ssid + " = "
+                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, hitPassword),
+                            OK_GREEN);
                     Toast.makeText(MainActivity.this,
                             L.s("破解成功: ", "Cracked: ") + task.ssid, Toast.LENGTH_LONG).show();
                     // 记一笔历史

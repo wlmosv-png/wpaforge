@@ -153,23 +153,28 @@ public class CrackHudTest {
         // ══════════ 判词尾巴（诊断用）══════════
         section = "判词尾巴";
         System.out.println("== 判词尾巴 ==");
-        eq("命中带依据", "147258369=\u2713wpalog",
+        eq("命中带依据（口令脱敏 + 顺序号）", "#11 #560071(len=9)=\u2713wpalog",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                        "147258369", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.SUCCESS, "wpalog"));
-        eq("密码错带判据", "password=\u2717m1silent",
+                        11, "147258369", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.SUCCESS, "wpalog"));
+        eq("密码错带判据", "#7 #5e8848(len=8)=\u2717m1silent",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                        "password", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1silent"));
-        eq("超时", "x=\u8d85\u65f6",
+                        7, "password", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1silent"));
+        eq("超时", "#1 #2d7116(len=1)=\u8d85\u65f6",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                        "x", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.TIMEOUT, ""));
-        eq("通道异常", "x=!\u901a\u9053",
+                        1, "x", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.TIMEOUT, ""));
+        eq("通道异常", "#1 #2d7116(len=1)=!\u901a\u9053",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                        "x", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.ERROR, ""));
-        eq("密码为 null 不炸", "?=\u2717auth",
+                        1, "x", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.ERROR, ""));
+        eq("密码为 null 不炸", "#? #e3b0c4(len=0)=\u2717auth",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                        null, io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, ""));
-        eq("verdict 为 null 不炸", "x=?",
-                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag("x", null, ""));
+                        0, null, io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, ""));
+        eq("verdict 为 null 不炸", "#1 #2d7116(len=1)=?",
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(1, "x", null, ""));
+        // ★ 尾巴里绝不许出现明文口令（用户决策：全量脱敏）
+        String tail = io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
+                11, "147258369", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1retry");
+        check("判词尾巴不含明文口令", !tail.contains("147258369"));
+        check("判词尾巴不含口令片段", !tail.contains("147") && !tail.contains("369"));
 
         System.out.println();
         System.out.println("破解页 HUD: pass=" + pass + " fail=" + fail);

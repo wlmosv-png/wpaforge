@@ -60,6 +60,16 @@ public class WpaFilterTest {
         }
         check("判定用的 7 类行全部放行（漏 " + missing + " 类）", missing == 0);
 
+        // 1b) R6：起点标记也要过同一个过滤式，否则窗口隔离无从证明。
+        //     标记与证据必须来自同一次 logcat 快照（见 WpaLogReader.readCommand）。
+        java.lang.String markerLine = io.github.wlmosv_png.wpaforge.audit.AttemptMarker
+                .line("m5k3p1-3f9a2b7c-1#11");
+        check("起点标记放行", markerLine != null && filter.matcher(markerLine).find());
+        check("读取命令同时取 wpa_supplicant 与标记 tag",
+                WpaLogReader.readCommand().contains("-s wpa_supplicant")
+                        && WpaLogReader.readCommand().contains(
+                                io.github.wlmosv_png.wpaforge.audit.AttemptMarker.TAG));
+
         // 2) 噪音该被丢掉（这就是 50 倍收益的来源）
         int kept = 0;
         for (String line : NOISE) {

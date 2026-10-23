@@ -116,6 +116,81 @@ public final class AttemptMarker {
         return found;
     }
 
+    // ------------------------------------------------------------ 窗口元数据
+
+    /**
+     * 一次尝试的**日志窗口元数据**（纯数据）。
+     *
+     * <p>把四件事分开记录，不允许合成一个布尔值后再解释：
+     * <ol>
+     *   <li>{@link #clearOk} 日志清理操作是否拿到帧（注意：{@code logcat -c} 成功时**无输出**，
+     *       所以不能用「输出为空」当失败判据）</li>
+     *   <li>{@link #markerWritten} 起点标记的写命令是否已发出（本阶段不做回读校验）</li>
+     *   <li>{@link #markerVisible} 本次读取文本里是否真的出现了本候选的标记</li>
+     *   <li>{@link #foreignMarker} 本候选标记之后是否出现了**别的候选**的标记</li>
+     * </ol>
+     *
+     * <p><b>语义边界</b>：{@link #evidenceUsable()} 为真只表示「这段日志允许被进一步评估」，
+     * 是任何日志类结论的**必要**条件，绝不是充分条件 —— 它既不能推出成功，也不能推出失败。
+     * 为假或未知时，只能把日志证据记为「不可用」，**不得**把「没看到失败行」解释成认证失败。
+     */
+    public static final class Window {
+        /** 本条候选的 id；非法/缺失为 {@code null}（显式无效，不会退化成某个合法 id）。 */
+        public final String attemptId;
+        public final boolean clearOk;
+        public final boolean markerWritten;
+        public final boolean markerVisible;
+        public final boolean foreignMarker;
+        /** 起始标记与外来标记都没有出现时为 true —— id 非法时为 false。 */
+        public final boolean isolated;
+        /** 短标签，进判词/诊断：{@code id-invalid} / {@code no-marker} / {@code foreign} / {@code ok}。 */
+        public final String reason;
+
+        Window(String attemptId, boolean clearOk, boolean markerWritten,
+               boolean markerVisible, boolean foreignMarker) {
+            this.attemptId = attemptId;
+            this.clearOk = clearOk;
+            this.markerWritten = markerWritten;
+            this.markerVisible = markerVisible;
+            this.foreignMarker = foreignMarker;
+            this.isolated = markerVisible && !foreignMarker;
+            if (!AttemptId.wellFormed(attemptId)) this.reason = "id-invalid";
+            else if (foreignMarker) this.reason = "foreign";
+            else if (!markerVisible) this.reason = "no-marker";
+            else this.reason = "ok";
+        }
+
+        /** 日志证据是否可用（必要条件，非充分条件）。 */
+        public boolean evidenceUsable() { return isolated; }
+
+        /** 一行可读诊断（进 detail/日志）。 */
+        public String describe() {
+            return "clear=" + (clearOk ? "ok" : "no-frame")
+                    + " marker=" + (markerWritten ? (markerVisible ? "visible" : "invisible")
+                                                   : "not-sent")
+                    + " foreign=" + (foreignMarker ? "yes" : "no")
+                    + " iso=" + (isolated ? "yes" : "no");
+        }
+    }
+
+    /**
+     * 由「清理结果 + 标记写入结果 + 本轮实际读到的文本」算出窗口元数据。
+     *
+     * <p>只做记录，**不做任何判定**：调用方不得据此改变成功/失败结论（R6 阶段约束）。
+     *
+     * @param attemptId     本条候选的 id；null/非法 → 元数据显式标记无效
+     * @param clearOk       日志清理是否拿到帧
+     * @param markerWritten 起点标记的写命令是否已发出
+     * @param readText      本轮实际读到的日志文本（null 视为没读到）
+     */
+    public static Window evaluate(String attemptId, boolean clearOk, boolean markerWritten,
+                                  String readText) {
+        String id = AttemptId.wellFormed(attemptId) ? attemptId : null;
+        boolean visible = id != null && present(readText, id);
+        boolean foreign = id != null && foreignMarkerAfter(readText, id);
+        return new Window(id, clearOk, markerWritten, visible, foreign);
+    }
+
     /** 从一行里取出标记携带的 attemptId（形状合法才算）；没有返回 {@code null}。 */
     public static String idIn(String oneLine) {
         if (oneLine == null) return null;

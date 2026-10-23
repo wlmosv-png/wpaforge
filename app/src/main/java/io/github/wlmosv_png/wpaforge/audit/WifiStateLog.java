@@ -187,11 +187,56 @@ public final class WifiStateLog {
         }
     }
 
+    /**
+     * 日志清理的**结果**（不是「成功/失败」两个字，而是分开记录可判与不可判的部分）。
+     *
+     * <p>为什么需要它：{@code logcat -c} 成功时**不产生任何输出**，
+     * 所以「输出为空」既可能是成功、也可能是命令没跑起来 —— 不能当失败判据。
+     * 唯一可判的是**这一帧有没有拿到**（{@code ShellChannel.exec} 返回 null
+     * 表示超时或会话失联）。因此这里只把 {@link #frameOk} 作为「清理动作是否
+     * 可被信任为已执行」的依据，并把输出原样保留供诊断。
+     */
+    public static final class ClearResult {
+        /** 是否真的发出了清空命令（shell 通道为空时为 false）。 */
+        public final boolean issued;
+        /** exec 是否返回了帧（null = 超时/失联，无法确认命令是否执行）。 */
+        public final boolean frameOk;
+        /** 命令输出（正常为空串）。 */
+        public final String output;
+
+        ClearResult(boolean issued, boolean frameOk, String output) {
+            this.issued = issued;
+            this.frameOk = frameOk;
+            this.output = output == null ? "" : output;
+        }
+
+        /** 清理动作可否被认为已执行（后续仍要靠起点标记证明窗口边界）。 */
+        public boolean ok() { return issued && frameOk; }
+
+        public String describe() {
+            return (issued ? "" : "not-issued") + (frameOk ? "" : "no-frame")
+                    + (ok() ? "ok" : "");
+        }
+    }
+
+    /**
+     * 清空日志缓冲并**返回结果**（替代原来的 void 版本）。
+     *
+     * <p>调用方【必须】检查返回值：返回 {@code ok()==false} 时，
+     * 「缓冲已被清空」这个前提不成立，日志类证据一律按不可用处理。
+     */
+    public static ClearResult clearChecked(CrackEngine.ShellChannel shell) {
+        if (shell == null) return new ClearResult(false, false, null);
+        try {
+            String out = shell.exec("logcat -c", 4000);
+            return new ClearResult(true, out != null, out);
+        } catch (Throwable t) {
+            return new ClearResult(true, false, null);
+        }
+    }
+
     /** 清空日志缓冲，让读取只包含本次尝试的记录 */
     public static void clear(CrackEngine.ShellChannel shell) {
-        if (shell == null) return;
-        try {
-            shell.exec("logcat -c", 4000);
-        } catch (Throwable ignored) {}
+        clearChecked(shell);
     }
 }

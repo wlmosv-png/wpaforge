@@ -91,9 +91,25 @@ public final class CrackEngine {
         public final String password;
         public final Verdict verdict;
         public final long elapsedMs;
-        public final String detail;
+        /** 结论描述。由 {@link #tryOne} 统一追加窗口元数据，故非 final。 */
+        public String detail;
         /** 哪一个信号确认的（排查用） */
         public final String confirmedBy;
+        /**
+         * 本条候选的尝试标识（{@code runId#序号}）。
+         *
+         * <p>空串 = **没有拿到有效标识**（未接线 / 非法 / 过期），这是一个
+         * 显式无效状态，不允许被下游当成「某条合法尝试」。由 {@link #tryOne} 回填。
+         */
+        public String attemptId = "";
+        /**
+         * 日志窗口元数据（R6）。{@code null} = 本阶段未采集。
+         *
+         * <p><b>只作证据质量标注</b>：它不参与任何成功/失败判定。
+         * {@code evidenceUsable()} 为真是「允许进一步评估日志证据」的必要条件，
+         * 不是充分条件；为假也不等于认证失败。由 {@link #tryOne} 回填。
+         */
+        public AttemptMarker.Window logWindow;
 
         Attempt(String password, Verdict v, long ms, String detail, String confirmedBy) {
             this.password = password;
@@ -163,6 +179,14 @@ public final class CrackEngine {
 
     /** 日志检查用计数器（每 5 轮查一次，避免频繁起进程） */
     private int logCheckCounter = 0;
+
+    // ---- R6：尝试身份（只作记录与追溯，不参与判定）----------------------
+    /** 本次任务的 runId；null = 尚未生成或生成失败。 */
+    private volatile String currentRunId;
+    /** 同进程内第几次任务（保证同秒启动也不重号）。 */
+    private int runOrdinal = 0;
+    /** 最近一次尝试的日志窗口元数据（由 tryOne 回填到 Attempt）。 */
+    private volatile AttemptMarker.Window lastWindow;
     private static final int TIMEOUT_ALERT = 5;
 
     public CrackEngine(Context ctx, int mode) {
@@ -257,6 +281,18 @@ public final class CrackEngine {
      * 一条判词都没有**（逐条结果只走界面回调），查不动。现在每次跑完没命中，
      * 最后 6 条的判词会写进文件日志，这种事自己就能说清。
      */
+    /**
+     * 带尝试标识的判词（R6）：让每条判词都能追到具体尝试。
+     *
+     * <p>标识缺失或非法时输出 {@code <id-invalid>} —— **显式无效**，
+     * 不允许悄悄省略、也不允许退化成某个合法 id。
+     */
+    public static String verdictTag(String attemptId, int index, String password,
+                                    Verdict v, String by) {
+        String id = AttemptId.wellFormed(attemptId) ? attemptId : "<id-invalid>";
+        return "[" + id + "] " + verdictTag(index, password, v, by);
+    }
+
     public static String verdictTag(int index, String password, Verdict v, String by) {
         // 口令一律脱敏（#哈希前6(len=N)），顺序号保留 —— 顺序号是非敏感信息，
         // 却是排查时对回字典的关键（"第 11 条是哪个口令"）。
@@ -751,16 +787,38 @@ public final class CrackEngine {
      * 不管走哪个通道，判定都在这里统一做。
      */
     public Attempt tryOne(NetRecord target, String security, String password, long timeoutMs) {
+        return tryOne(target, security, password, timeoutMs, null);
+    }
+
+    /**
+     * 与 {@link #tryOne(NetRecord, String, String, long)} 相同，但带上本条候选的尝试标识。
+     *
+     * <p>标识与窗口元数据在**这里统一回填**，判定逻辑一行不碰：
+     * <ul>
+     *   <li>{@code attemptId} 为空/非法 → Attempt 里保持空串（显式无效）</li>
+     *   <li>窗口元数据追加到 detail，供事后复盘「这段日志到底属不属于本条候选」</li>
+     * </ul>
+     */
+    public Attempt tryOne(NetRecord target, String security, String password,
+                          long timeoutMs, String attemptId) {
         long t0 = SystemClock.uptimeMillis();
 
         if (password == null || password.length() < 8 || password.length() > 63) {
-            return new Attempt(password, Verdict.AUTH_FAIL,
+            Attempt a = new Attempt(password, Verdict.AUTH_FAIL,
                     SystemClock.uptimeMillis() - t0,
                     L.s("长度不合法（WPA 要求 8-63）", "illegal length (WPA needs 8-63)"), "");
+            a.attemptId = AttemptId.wellFormed(attemptId) ? attemptId : "";
+            return a;
         }
 
         // 只有 Root（su + cmd wifi）一条通道
-        return tryOneShell(target, security, password, timeoutMs, t0);
+        Attempt a = tryOneShell(target, security, password, timeoutMs, t0, attemptId);
+        a.attemptId = AttemptId.wellFormed(attemptId) ? attemptId : "";
+        a.logWindow = lastWindow;
+        if (lastWindow != null) {
+            a.detail = a.detail + L.f(" [窗口 %s]", " [window %s]", lastWindow.describe());
+        }
+        return a;
     }
 
     /**
@@ -786,7 +844,8 @@ public final class CrackEngine {
      * 这个判据不依赖文本解析，也不依赖轮询时机。
      */
     private Attempt tryOneShell(NetRecord target, String security, String password,
-                                long timeoutMs, long t0) {
+                                long timeoutMs, long t0, String attemptId) {
+        lastWindow = null;
         if (shell == null) {
             return new Attempt(password, Verdict.ERROR,
                     SystemClock.uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
@@ -862,7 +921,21 @@ public final class CrackEngine {
 
         // 清日志缓冲。判定完全依赖命令之后新产生的日志行，
         // 所以这一步是归因的前提，不能省。
-        try { WifiStateLog.clear(shell); } catch (Throwable ignored) {}
+        //
+        // R6：不再「清完就当它清了」——
+        //   ① 记录清理动作是否真的拿到帧（exec 返回 null = 超时/失联）
+        //   ② 清完立刻写一行**起点标记**，作为「窗口从这里开始」的可验证证据
+        //   ③ 每轮读日志时用 readCommand() 把标记与证据一起读回来，
+        //      由 AttemptMarker.evaluate 算出窗口元数据（只记录，不改判定）
+        WifiStateLog.ClearResult clearRes = WifiStateLog.clearChecked(shell);
+        String markerCmd = AttemptMarker.writeCommand(attemptId);
+        boolean markerWritten = false;
+        if (markerCmd != null) {
+            try {
+                shell.exec(markerCmd, 4000);
+                markerWritten = true;   // 只表示命令已发出；可见性由 evaluate 判断
+            } catch (Throwable ignored) {}
+        }
 
         // **命令发出时刻**：判定以此为界。
         // 之后出现的「目标 SSID 已连上」才可能是这条候选的功劳。
@@ -1163,6 +1236,9 @@ public final class CrackEngine {
             {
                 long statLog0 = SystemClock.uptimeMillis();
                 String wlog = WpaLogReader.read(shell, 400);
+                // R6：本轮的窗口元数据（证据质量标注，不参与任何判定）
+                lastWindow = AttemptMarker.evaluate(attemptId, clearRes.ok(),
+                        markerWritten, wlog);
                 statLogMs += SystemClock.uptimeMillis() - statLog0;
                 if (wlog != null && !wlog.isEmpty()) {
                     // 预过滤之后输出里不会再有 "wpa_supplicant" 这个字样
@@ -1306,6 +1382,12 @@ public final class CrackEngine {
         }
 
         long total = SystemClock.uptimeMillis() - t0;
+
+        // R6：循环里一次日志都没读到（例如通道不吐日志）时也要留下窗口状态，
+        // 不能让「没读到日志」和「没采集元数据」在记录里长得一样。
+        if (lastWindow == null) {
+            lastWindow = AttemptMarker.evaluate(attemptId, clearRes.ok(), markerWritten, null);
+        }
 
         // 超时后的归类
         boolean currentOnTarget = target.ssid.equals(snapshotSsid());
@@ -1715,6 +1797,14 @@ public final class CrackEngine {
                 + ConnectSpec.describe(target.ssid, security,
                         pinBssid ? target.bssid : null, macRotate));
 
+        // R6：本次任务的运行标识。只含时间（36 进制）+ 目标 SSID 的哈希前 8 位，
+        // 不含 SSID 明文、不含口令 —— 可以安全地写进任务日志。
+        currentRunId = AttemptId.newRunId(System.currentTimeMillis(), target.ssid, runOrdinal++);
+        l.onLog(L.s("运行标识: ", "run id: ")
+                + (currentRunId == null ? "<invalid>" : currentRunId)
+                + L.s("（本次任务内每条候选的判词都会带上它）",
+                      " (every verdict in this run carries it)"));
+
         try {
             for (int i = start; i < total; i++) {
                 if (cancelFlag.get() || pauseFlag.get()) break;
@@ -1726,7 +1816,11 @@ public final class CrackEngine {
                 l.onAttemptStart(cursor, total, c.password);
 
                 long itemT0 = SystemClock.uptimeMillis();
-                Attempt a = tryOne(target, security, c.password, perItem);
+                // 序号 = 该候选在字典里的位置（与判词里的顺序号同源）。
+                // runId 拿不到时传 null，Attempt 会显式记为无效而不是伪造一个 id。
+                String aid = currentRunId == null ? null
+                        : AttemptId.of(currentRunId, cursor);
+                Attempt a = tryOne(target, security, c.password, perItem, aid);
                 long itemMs = SystemClock.uptimeMillis() - itemT0;
 
                 // 挂起/中断发生在这一条执行到一半 —— 它**没有**得到结论。
@@ -1746,7 +1840,8 @@ public final class CrackEngine {
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
                 costMeter.record(itemMs, a.verdict.name(), a.confirmedBy,
                         statPrepMs, statProbeMs, statPollMs, statLogMs, statRounds);
-                recentVerdicts.addLast(verdictTag(cursor, c.password, a.verdict, a.confirmedBy));
+                recentVerdicts.addLast(verdictTag(a.attemptId, cursor, c.password,
+                        a.verdict, a.confirmedBy));
                 while (recentVerdicts.size() > 6) recentVerdicts.removeFirst();
                 String costLine = costMeter.takeSummary();
                 if (costLine != null) l.onLog("  " + costLine);

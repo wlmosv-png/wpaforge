@@ -115,7 +115,25 @@ public final class WpaLogReader {
      */
     public static final String SHELL_FILTER =
             "associate|4-Way|RX message|negotiat|ASSOC-REJECT|SSID-TEMP-DISABLED"
-                    + "|CONNECTED|WRONG_KEY|reason=";
+                    + "|CONNECTED|WRONG_KEY|reason="
+                    // R6：起点标记行必须能穿过同一个过滤式，否则窗口隔离无从证明
+                    + "|" + AttemptMarker.FIELD;
+
+    /**
+     * 读取时要放行的 tag：wpa_supplicant 的判定证据 + 本项目的起点标记。
+     *
+     * <p>用一次 {@code logcat -d} 同时取两个 tag 的原因：标记与证据必须来自
+     * **同一次缓冲快照**，否则「标记之后的日志属于本条候选」这句话就失去依据。
+     *
+     * <p>设备行为（{@code -s} 重复是否被本机 logcat 接受、标记是否真能被读到）
+     * **尚未验证**，报告里记为 NOT RUN。
+     */
+    public static final String LOG_TAGS = "-s wpa_supplicant -s " + AttemptMarker.TAG;
+
+    /** 读取命令（纯函数，便于离线断言其形状）。 */
+    public static String readCommand() {
+        return "logcat -d " + LOG_TAGS + " | grep -iE '" + SHELL_FILTER + "'";
+    }
 
     private WpaLogReader() {}
 
@@ -335,7 +353,7 @@ public final class WpaLogReader {
             //   · parse() 的输入变小，Java 侧开销同步变小
             // 过滤式必须**覆盖 WpaLogReader 全部 7 个模式**，少一个就会静默丢判据 ——
             // 有 WpaFilterTest 钉住这条不变式（新增模式时必须同步更新 SHELL_FILTER）。
-            String cmd = "logcat -d -s wpa_supplicant | grep -iE '" + SHELL_FILTER + "'";
+            String cmd = readCommand();
             return shell.exec(cmd, 6000);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "读取日志失败: " + t);

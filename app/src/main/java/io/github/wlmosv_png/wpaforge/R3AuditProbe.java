@@ -367,11 +367,20 @@ public final class R3AuditProbe {
                 Round.w(1650, ST_TARGET_ASSOC, assoc() + m1(1)),           // 静默阈值到
                 Round.w(1750, stTarget(613), assoc() + m1(1) + negotiated())); // 真证据稍晚
         note("成功证据比静默阈值晚 100ms 到", late);
-        if (late.verdict == CrackEngine.Verdict.AUTH_FAIL) {
-            violation("S4-1", "正确密码的候选可被静默判据提前判负（漏判窗口）",
-                    "EARLY_FAIL_SILENCE_MS=1200 是经验阈值（注释自述按某台 AP 实测调过 600→1200），"
-                            + "不是协议保证；阈值一到就 return，成功证据晚到即永远看不到");
-        }
+        // 已修复（R2）：静默不再单独结案 → 成功证据晚到也能拿到 SUCCESS。
+        ok("S4-1", "静默不再结案：成功证据晚于静默阈值 100ms 仍判成功",
+                late.verdict == CrackEngine.Verdict.SUCCESS);
+
+        // R2 补充：失败加速没有被一起删掉 —— AP 重发 M1 仍会判负（证据驱动）
+        Result retryFast = Loop.run(TARGET, TARGET_BSSID, 10_000L, 613L,
+                new Round(0, ST_OFF, ""),
+                Round.w(400, ST_TARGET_ASSOC, assoc() + m1(1)),
+                Round.w(1500, ST_TARGET_ASSOC, assoc() + m1(1) + m1(2)),
+                Round.w(1700, ST_TARGET_ASSOC, assoc() + m1(1) + m1(2)));
+        note("M1 被重发（协议层失败证据）的判定", retryFast);
+        ok("S4-1b", "M1 重发仍是可结案的失败证据（加速保留）",
+                retryFast.verdict == CrackEngine.Verdict.AUTH_FAIL
+                        && "m1retry".equals(retryFast.by));
 
         // negotiated 的护栏在 bssid 为空时恒为假
         ok("S4-c","sawNegotiatedFor(空 bssid) == false（真实函数）→ 静默判据失去成功护栏",
@@ -757,12 +766,9 @@ public final class R3AuditProbe {
                     boolean m1Seen = bssidKnown ? (m1ForTarget >= 1)
                             : (tried && WpaLogReader.sawHandshakeM1(wlog));
                     if (m1Seen) {
+                        // R2：静默（纯时间判据）**不再结案**，只记录首次看到 M1 的时刻。
+                        // 失败一律交给下面的 m1retry（协议层：AP 重发了 M1）。
                         if (m1FirstSeenAt == 0L) m1FirstSeenAt = round.tMs;
-                        if (CrackEngine.m1SilentImpliesWrongKey(true, succ,
-                                round.tMs - m1FirstSeenAt, CrackEngine.EARLY_FAIL_SILENCE_MS)) {
-                            return new Result(CrackEngine.Verdict.AUTH_FAIL, "m1silent",
-                                    round.tMs, "M1 后静默 ≥" + CrackEngine.EARLY_FAIL_SILENCE_MS + "ms");
-                        }
                     }
                     int m1Count = bssidKnown ? m1ForTarget
                             : (tried ? WpaLogReader.countHandshakeM1(wlog) : 0);

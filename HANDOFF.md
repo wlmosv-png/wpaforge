@@ -166,14 +166,16 @@ framework 在 **11 毫秒内**就去连 B212/B214（该环境 38 个保存网络
 
 ### C. 其他
 - 本轮 commit **已推远端**（用户 2026-10-23 明确说「先 commit」）
-- **版本号现状**：线上最新 Release 是 `v1.9.21`；`1.9.22 / 92` 已出包装机但**没发过 Release**；
-  本轮改代码后升到 **`1.9.23 / 93`**（不重号）。发布口径 = `v1.9.21 → 1.9.23`，
-  说明在 `CHANGELOG.md` 里（`## [1.9.23]` = 本轮，`## [1.9.22]` = 上一轮）。
-- 发布正文模板已备好：仓库根目录 **`RELEASE.md`**（可直接贴 GitHub Release），
-  标题见文件首行注释。按用户 2026-10-23 的口气：**只出包，不发版；发版等用户说「发」**。
-- 要发 Release 的话：打 tag `v1.9.23`，标题 `WPAForge 1.9.23`，正文直接取
-  `CHANGELOG.md` 的 1.9.23 + 1.9.22 两段；版本号四处（构建脚本 / CHANGELOG /
-  README 出包示例 / GitHub Release）唯一的真相是 `1-aapt2.sh`。
+- **`v1.9.23` 已于 2026-10-23 发布**（tag `v1.9.23` → `c77cc05`；正文取仓库根目录
+  `RELEASE.md`；资产 `WPAForge-1.9.23.apk` 2,947,896 B / sha256 `a50b12af…` ——
+  已下载回来核对，**与装机那版字节一致**）。
+  页面：`https://github.com/wlmosv-png/wpaforge/releases/tag/v1.9.23`
+- **下一版基线 = `v1.9.23`**：再改代码时版本号按铁律「线上已发布 + 1」→ **`1.9.24 / 94`**，
+  唯一真相是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`
+  （APK 清单不写 versionName，`Ver.java` 读 PackageManager，所以只改这一处）。
+- **发版动作照这次来**：正文用 `RELEASE.md`（标题写在文件首行注释里）+ 附
+  `WPAForge-<版本>.apk`（历次 Release 都附）。发完顺手核：tag 指向 HEAD、
+  下载回来 sha256 与装机包一致。
 
 ### D. 新发现：应用不在前台时 WifiInfo / NetworkCallback 拿不到 SSID（**未修**）
 用 `am start-foreground-service` 起任务（界面没开）时，通道自检报

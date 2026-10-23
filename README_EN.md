@@ -106,7 +106,7 @@ Audit · Crack — the rest you'll see once you install it.
 No Gradle, two manual stages:
 
 ```sh
-WP_VERSION_CODE=94 WP_VERSION_NAME=1.9.24 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
+WP_VERSION_CODE=95 WP_VERSION_NAME=1.9.25 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop: javac + d8 + sign (needs WP_FORGE_KS* vars)
 ```
 

@@ -1,5 +1,5 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.24 · 精简 + 破解页重做：只保留 Root 通道，界面按「一眼三问」重排 -->
-<!-- tag: v1.9.24   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.25 · 判定链加固：失败必须有证据，结论可追溯 -->
+<!-- tag: v1.9.25   target: main -->
 
 更少的依赖 · 更少的失败路径 · 更清楚的预期 · 更干净的界面
 

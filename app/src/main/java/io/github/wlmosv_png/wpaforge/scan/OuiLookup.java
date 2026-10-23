@@ -44,7 +44,7 @@ public final class OuiLookup {
     /**
      * 查厂商名。
      *
-     * @param bssid 形如 "5C:DE:34:26:2E:F2" 或 "5cde3426 2ef2"
+     * @param bssid 形如 "5C:DE:34:11:22:0B" 或 "5cde3426 2ef2"
      * @return 厂商名；查不到返回 null（调用方自行决定显示「未知」还是隐藏）
      */
     public static String vendor(Context ctx, String bssid) {

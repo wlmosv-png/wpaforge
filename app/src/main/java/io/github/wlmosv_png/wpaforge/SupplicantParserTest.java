@@ -19,20 +19,20 @@ public class SupplicantParserTest {
 
     /** 真机：正确密码连上 B209 时的 WifiInfo 行 */
     private static final String OK_B209 =
-            "WifiInfo: SSID: \"B209\", BSSID: 28:93:7d:45:dc:ed, MAC: 52:85:10:b7:77:b8, "
+            "WifiInfo: SSID: \"B209\", BSSID: 28:93:7d:11:22:02, MAC: 52:85:10:11:22:18, "
             + "IP: /192.168.1.3, Security type: 2, Supplicant state: COMPLETED, "
             + "Wi-Fi standard: 11n, RSSI: -52, Link speed: 117Mbps, Net ID: 613, "
             + "Metered hint: false, score: 60, isUsable: true";
 
     /** 真机：错误密码后系统回连 B217（别的网）—— 同样是 COMPLETED */
     private static final String OK_B217 =
-            "WifiInfo: SSID: \"B217\", BSSID: 28:93:7d:45:da:31, MAC: 42:7d:5b:72:d3:f9, "
+            "WifiInfo: SSID: \"B217\", BSSID: 28:93:7d:11:22:06, MAC: 42:7d:5b:11:22:17, "
             + "IP: /192.168.1.5, Security type: 2, Supplicant state: COMPLETED, "
             + "Wi-Fi standard: 11n, RSSI: -57, Link speed: 162Mbps, Net ID: 631, score: 60";
 
     /** 连接中（握手未完成） */
     private static final String HANDSHAKING =
-            "WifiInfo: SSID: \"B209\", BSSID: 28:93:7d:45:dc:ed, IP: /0.0.0.0, "
+            "WifiInfo: SSID: \"B209\", BSSID: 28:93:7d:11:22:02, IP: /0.0.0.0, "
             + "Security type: 2, Supplicant state: 4WAY_HANDSHAKE, Net ID: 700";
 
     /** 未连接 */

@@ -34,7 +34,7 @@ import io.github.wlmosv_png.wpaforge.core.NetRecord;
  *
  * 输出格式（实测，Android 12~15 通用）：
  *   BSSID              Frequency      RSSI           Age(sec)     SSID                                 Flags
- *   28:93:7d:45:dc:ed       2432    -46(0:-49/1:-49)   169.150    B209      [WPA2-PSK-CCMP+TKIP][ESS][WPS]
+ *   28:93:7d:11:22:02       2432    -46(0:-49/1:-49)   169.150    B209      [WPA2-PSK-CCMP+TKIP][ESS][WPS]
  *
  * 注意 SSID 里可能含空格，所以按「BSSID 固定列 + 频率 + RSSI + Age」
  * 之后的位置切分，不能简单地 split 空白。

@@ -27,14 +27,14 @@ public class WpaFilterTest {
     /** 判定要用的 7 类原始日志行（照真机格式写的样例） */
     private static final String[] NEEDED = {
             "wlan0: Trying to associate with SSID 'B212'",
-            "wlan0: WPA: Key negotiation completed with 28:93:7d:41:cc:39 [PTK=CCMP GTK=CCMP]",
+            "wlan0: WPA: Key negotiation completed with 28:93:7d:11:22:01 [PTK=CCMP GTK=CCMP]",
             "wlan0: WPA: 4-Way Handshake failed - pre-shared key may be incorrect",
-            "wlan0: CTRL-EVENT-ASSOC-REJECT bssid=28:93:7d:41:cc:39 status_code=1",
-            "wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:41:cc:39 (ver=2)",
+            "wlan0: CTRL-EVENT-ASSOC-REJECT bssid=28:93:7d:11:22:01 status_code=1",
+            "wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:01 (ver=2)",
             "wlan0: CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"B212\" auth_failures=1 "
                     + "duration=10 reason=WRONG_KEY",
-            "wlan0: CTRL-EVENT-CONNECTED - Connection to 28:93:7d:41:cc:39 completed [id=0 id_str=]",
-            "wlan0: RSN: RX message 1 of 4-Way Handshake from 28:93:7d:41:cc:39 (ver=2)",
+            "wlan0: CTRL-EVENT-CONNECTED - Connection to 28:93:7d:11:22:01 completed [id=0 id_str=]",
+            "wlan0: RSN: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:01 (ver=2)",
     };
 
     /** 该被丢掉的噪音（本机一轮 293 行里绝大多数是这类） */
@@ -42,7 +42,7 @@ public class WpaFilterTest {
             "wlan0: CTRL-EVENT-SCAN-RESULTS",
             "wlan0: nl80211: Received scan results (12 bsses)",
             "wlan0: Setting scan request: 9.000000 sec",
-            "wlan0: BSS: Add new id 7 BSSID 28:93:7d:44:95:a9",
+            "wlan0: BSS: Add new id 7 BSSID 28:93:7d:11:22:03",
     };
 
     public static void main(String[] args) {
@@ -86,13 +86,13 @@ public class WpaFilterTest {
 
         // 4) 用现有判据函数核对（真正被引擎调用的那几个）
         check("sawAssociateFor 命中", WpaLogReader.sawAssociateFor(filtered, "B212"));
-        check("sawNegotiatedFor 命中", WpaLogReader.sawNegotiatedFor(filtered, "28:93:7d:41:cc:39"));
+        check("sawNegotiatedFor 命中", WpaLogReader.sawNegotiatedFor(filtered, "28:93:7d:11:22:01"));
         check("sawWrongKeyFor 命中", WpaLogReader.sawWrongKeyFor(filtered, "B212"));
         check("sawHandshakeFailure 命中", WpaLogReader.sawHandshakeFailure(filtered));
         check("sawAssocReject 命中", WpaLogReader.sawAssocReject(filtered));
         check("sawHandshakeM1 命中", WpaLogReader.sawHandshakeM1(filtered));
         check("countHandshakeM1For 计数 = 2",
-                WpaLogReader.countHandshakeM1For(filtered, "28:93:7d:41:cc:39") == 2);
+                WpaLogReader.countHandshakeM1For(filtered, "28:93:7d:11:22:01") == 2);
 
         // 5) 空/异常输入不炸
         check("空串不炸", WpaLogReader.parse("").isEmpty());

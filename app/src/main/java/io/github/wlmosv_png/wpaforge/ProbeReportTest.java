@@ -32,8 +32,8 @@ public class ProbeReportTest {
     public static void main(String[] args) {
         System.out.println("== 最小输入（无 diff、无证据）不崩 ==");
         List<LanProbe.Host> hosts = new ArrayList<>();
-        hosts.add(h("192.168.1.1", "28:93:7D:41:CC:38", "四川天邑康和", true, false));
-        hosts.add(h("192.168.1.2", "86:64:BC:21:D7:58", "", false, true));
+        hosts.add(h("192.168.1.1", "28:93:7D:11:22:04", "四川天邑康和", true, false));
+        hosts.add(h("192.168.1.2", "86:64:BC:11:22:15", "", false, true));
 
         String r = ProbeReport.build("192.168.1.2", "B212", hosts, null, null, true);
         check("含标题", r.contains("# WPAForge 网络自查报告"));

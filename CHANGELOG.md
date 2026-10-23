@@ -52,7 +52,7 @@
 ### 🔐 日志脱敏
 
 日志、通知栏与导出内容**不再出现明文口令**：候选一律以
-`#<sha256 前 6 位>(len=N)` 呈现，并保留**顺序号**（形如 `#11 #560071(len=9)`）——
+`#<sha256 前 6 位>(len=N)` 呈现，并保留**顺序号**（形如 `#11 #29ff2d(len=9)`）——
 顺序号是非敏感信息，排查时能对回字典，明文零输出。
 
 - 覆盖范围：逐条候选结果、未命中时的「最近判定」尾巴、通知栏进度、导出日志、异常/调试输出
@@ -511,7 +511,7 @@ status 里出现目标（关联中 / 握手中 / 已连上）说明这次尝试�
 
 1. 系统尝试目标 `2.4G-3` → 日志出现 `Trying to associate with SSID '2.4G-3'` → `tried = true`
 2. 目标失败 → **系统回连 B217 并握手成功** → 日志出现
-   `Key negotiation completed with 28:93:7d:41:cc:39`
+   `Key negotiation completed with 28:93:7d:11:22:01`
 3. 旧实现只问「有没有出现过协商完成」→ **判定 2.4G-3 = redskins** ✗
 
 用户日志里的 `事件 6: B217↑ B217↓ B217↑ ...` 就是那次回连。
@@ -672,7 +672,7 @@ Android 15 对 `dataSync` 类型的前台服务有「每 24 小时最多 6 小�
 2026-10-22 在任务运行中直接抓取（`-s wpa_supplicant`）证明**这两行一直都在**：
 
 ```
-09:17:53.953 wlan0: WPA: Key negotiation completed with 28:93:7d:41:cc:39 [PTK=CCMP GTK=TKIP]
+09:17:53.953 wlan0: WPA: Key negotiation completed with 28:93:7d:11:22:01 [PTK=CCMP GTK=TKIP]
 09:19:24.107 wlan0: WPA: 4-Way Handshake failed - pre-shared key may be incorrect
 09:19:24.107 wlan0: CTRL-EVENT-SSID-TEMP-DISABLED ... reason=WRONG_KEY
 ```
@@ -772,7 +772,7 @@ TIMEOUT / UNKNOWN / ERROR / TARGET_GONE / ABORTED 不算。
 开了「锁定 AP」「更换随机 MAC」却不知道有没有生效 —— 现在引擎点火后会打一行：
 
 ```
-连接参数: connect-network 'CMCC-6339' wpa2 -b C8:98:28:6F:A1:2B -r non_persistent（每条换 MAC）
+连接参数: connect-network 'CMCC-6339' wpa2 -b C8:98:28:11:22:11 -r non_persistent（每条换 MAC）
 ```
 
 参数没带上、BSSID 形状不对、开关没生效，一眼就能看出。
@@ -956,9 +956,9 @@ WifiLock，队列结束 / 服务销毁时释放 —— 锁屏后不再因为 CPU
 列表每行的 BSSID 后面现在会跟厂商名：
 
 ```
-28:93:7D:41:CC:39 · ch5 · WPA2 · 四川天邑康和 · ≈8.2m
-5C:DE:34:26:2E:F2 · ch6 · WPA2 · 水星
-F4:6A:92:4F:E9:72 · ch1 · WPA2 · FAST · ≈3.1m
+28:93:7D:11:22:01 · ch5 · WPA2 · 四川天邑康和 · ≈8.2m
+5C:DE:34:11:22:0B · ch6 · WPA2 · 水星
+F4:6A:92:11:22:0D · ch1 · WPA2 · FAST · ≈3.1m
 ```
 
 **数据来源是 IEEE 官方 OUI 登记表**（`standards-oui.ieee.org/oui/oui.txt`，

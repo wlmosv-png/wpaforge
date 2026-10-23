@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  * 而 wpa_supplicant 的日志里直接写着**正在尝试哪个 SSID**：
  * <pre>
  *   wlan0: Trying to associate with SSID 'B209'
- *   WPA: Key negotiation completed with 28:93:7d:45:dc:ed
+ *   WPA: Key negotiation completed with 28:93:7d:11:22:02
  *   WPA: 4-Way Handshake failed - pre-shared key may be incorrect
  * </pre>
  *

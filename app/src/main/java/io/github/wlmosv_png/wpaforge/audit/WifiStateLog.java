@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  * 系统 WiFi 状态机在每次状态迁移时打一条日志：
  * <pre>
  *   尝试中：ClientModeImpl$ConnectableState ... "B209"WPA_PSK nid=608
- *   已连上：ClientModeImpl$L2ConnectedState screen=on 36 0 "B209" 28:93:7d:45:dc:ed rssi=-48 ...
+ *   已连上：ClientModeImpl$L2ConnectedState screen=on 36 0 "B209" 28:93:7d:11:22:02 rssi=-48 ...
  * </pre>
  * 关键区别：
  * <ul>

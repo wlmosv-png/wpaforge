@@ -37,7 +37,7 @@ public class RedactTest {
 
         // 1) 固定向量（独立算出）
         eq("12345678 → #ef797c(len=8)", "#ef797c(len=8)", Redact.pw("12345678"));
-        eq("147258369 → #560071(len=9)", "#560071(len=9)", Redact.pw("147258369"));
+        eq("sample-pw → #29ff2d(len=9)", "#29ff2d(len=9)", Redact.pw("sample-pw"));
         eq("password → #5e8848(len=8)", "#5e8848(len=8)", Redact.pw("password"));
         eq("空串 → #e3b0c4(len=0)", "#e3b0c4(len=0)", Redact.pw(""));
         eq("null 按空串处理", "#e3b0c4(len=0)", Redact.pw(null));
@@ -49,7 +49,7 @@ public class RedactTest {
         // 空串更没意义（Java 里任何字符串都 contains("")）。
         // 判定链本身拒绝长度 <8 的口令，所以这个边界在实际路径上不可达；
         // 这里按"长度 ≥8 的口令"来钉规格。
-        String[] secrets = {"12345678", "147258369", "password", "P@ssw0rd!2026",
+        String[] secrets = {"12345678", "sample-pw", "password", "P@ssw0rd!2026",
                             "x".repeat(63), "口令12345678"};
         for (String s : secrets) {
             String tag = Redact.pw(s);
@@ -61,11 +61,11 @@ public class RedactTest {
                     !tag.contains(s.substring(s.length() - 2)));
         }
         // 标签字符集必须只有十六进制 + 固定壳，杜绝"意外带出别的字符"
-        String tagShape = Redact.pw("147258369");
+        String tagShape = Redact.pw("sample-pw");
         check("标签形如 #hex(len=N)", tagShape.matches("#[0-9a-f]{6}\\(len=[0-9]+\\)"));
 
         // 3) 可对照：同 → 同；异 → 异
-        eq("同口令标签稳定", Redact.pw("147258369"), Redact.pw("147258369"));
+        eq("同口令标签稳定", Redact.pw("sample-pw"), Redact.pw("sample-pw"));
         check("不同口令标签不同", !Redact.pw("12345678").equals(Redact.pw("12345679")));
         check("长度相同但内容不同也要区分",
                 !Redact.pw("aaaaaaaa").equals(Redact.pw("aaaaaaab")));
@@ -76,9 +76,9 @@ public class RedactTest {
         check("长度体现在标签里", Redact.pw("x".repeat(63)).endsWith("(len=63)"));
 
         // 5) 顺序号（非敏感标识，排查主力）
-        eq("带顺序号", "#11 #560071(len=9)", Redact.pwAt(11, "147258369"));
-        eq("顺序号未知", "#? #560071(len=9)", Redact.pwAt(0, "147258369"));
-        eq("顺序号负数按未知", "#? #560071(len=9)", Redact.pwAt(-3, "147258369"));
+        eq("带顺序号", "#11 #29ff2d(len=9)", Redact.pwAt(11, "sample-pw"));
+        eq("顺序号未知", "#? #29ff2d(len=9)", Redact.pwAt(0, "sample-pw"));
+        eq("顺序号负数按未知", "#? #29ff2d(len=9)", Redact.pwAt(-3, "sample-pw"));
 
         // 6) 中文 / emoji 口令也要稳（按 UTF-8 字节算）
         String cn = "口令123";

@@ -24,8 +24,8 @@ public class WifiStateLogTest {
     private static final String SUCCESS_LOG = "" +
             "10-11 19:23:35.617  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$ConnectableState screen=on 12 0\n" +
             "10-11 19:23:35.631  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$ConnectableState screen=on 12 0\n" +
-            "10-11 19:23:37.860  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$L2ConnectedState screen=on 36 0 \"B209\" 28:93:7d:45:dc:ed rssi=-48 f=2432 sc=60 link=300\n" +
-            "10-11 19:23:39.875  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$L2ConnectedState screen=on 36 0 \"B209\" 28:93:7d:45:dc:ed rssi=-48 f=2432 sc=60 link=104";
+            "10-11 19:23:37.860  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$L2ConnectedState screen=on 36 0 \"B209\" 28:93:7d:11:22:02 rssi=-48 f=2432 sc=60 link=300\n" +
+            "10-11 19:23:39.875  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$L2ConnectedState screen=on 36 0 \"B209\" 28:93:7d:11:22:02 rssi=-48 f=2432 sc=60 link=104";
 
     /** 真机：用错误密码连 B209 时，只出现「尝试」然后回连别的网络 */
     private static final String FAIL_LOG = "" +
@@ -38,7 +38,7 @@ public class WifiStateLogTest {
     /** 真机：错误密码时 AOSP 打的另一种「尝试」行格式（带 ssid: 前缀和 reasonCode） */
     private static final String FAIL_LOG_ALT = "" +
             "10-11 19:26:41.461  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$ConnectableState screen=on  ssid: \"B209\" bssid: 00:00:00:00:00:00 reasonCode: 2 locallyGenerated: false\n" +
-            "10-11 19:26:44.100  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$L2ConnectedState screen=on 36 0 \"B217\" 28:93:7d:41:cd:dd rssi=-62";
+            "10-11 19:26:44.100  3734  4871 D WifiClientModeImpl[454191808:wlan0]:  ClientModeImpl$L2ConnectedState screen=on 36 0 \"B217\" 28:93:7d:11:22:05 rssi=-62";
 
     public static void main(String[] args) {
         System.out.println("== 成功场景（正确密码连上 B209）==");

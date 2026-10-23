@@ -23,32 +23,32 @@ public class OuiTest {
         System.out.println("== 随机化 MAC 判定（首字节 bit1）==");
         // 全局唯一地址：首字节 bit1 = 0
         check("28:93:7D:... 不是随机",
-                !OuiLookup.isRandomized("28:93:7D:41:CC:39"));
+                !OuiLookup.isRandomized("28:93:7D:11:22:01"));
         check("5C:DE:34:... 不是随机",
-                !OuiLookup.isRandomized("5C:DE:34:26:2E:F2"));
+                !OuiLookup.isRandomized("5C:DE:34:11:22:0B"));
         check("CC:2D:21:... 不是随机",
-                !OuiLookup.isRandomized("CC:2D:21:B0:88:D4"));
+                !OuiLookup.isRandomized("CC:2D:21:11:22:0F"));
 
         // 本地管理位为 1 → 随机化地址
         check("6A:93:7D:... 是随机（0x6A & 0x02）",
-                OuiLookup.isRandomized("6A:93:7D:41:CC:3B"));
+                OuiLookup.isRandomized("6A:93:7D:11:22:08"));
         check("82:93:7D:... 是随机",
-                OuiLookup.isRandomized("82:93:7D:43:58:91"));
+                OuiLookup.isRandomized("82:93:7D:11:22:07"));
         check("8A:93:7D:... 是随机",
-                OuiLookup.isRandomized("8A:93:7D:45:CF:07"));
+                OuiLookup.isRandomized("8A:93:7D:11:22:09"));
         check("92:93:7D:... 是随机",
-                OuiLookup.isRandomized("92:93:7D:45:DC:EF"));
+                OuiLookup.isRandomized("92:93:7D:11:22:1A"));
         check("36:AB:95:... 是随机",
-                OuiLookup.isRandomized("36:AB:95:3A:60:C5"));
+                OuiLookup.isRandomized("36:AB:95:11:22:16"));
         check("5E:DE:34:... 是随机",
-                OuiLookup.isRandomized("5E:DE:34:46:2E:F1"));
+                OuiLookup.isRandomized("5E:DE:34:11:22:0C"));
 
         System.out.println("== 各种写法都要能解析（不崩、判定一致）==");
-        check("冒号大写", !OuiLookup.isRandomized("28:93:7D:41:CC:39"));
-        check("冒号小写", !OuiLookup.isRandomized("28:93:7d:41:cc:39"));
-        check("连字符", !OuiLookup.isRandomized("28-93-7D-41-CC-39"));
-        check("无分隔", !OuiLookup.isRandomized("28937D41CC39"));
-        check("小写无分隔", !OuiLookup.isRandomized("28937d41cc39"));
+        check("冒号大写", !OuiLookup.isRandomized("28:93:7D:11:22:01"));
+        check("冒号小写", !OuiLookup.isRandomized("28:93:7d:11:22:01"));
+        check("连字符", !OuiLookup.isRandomized("28-93-7D-11-22-01"));
+        check("无分隔", !OuiLookup.isRandomized("28937D112201"));
+        check("小写无分隔", !OuiLookup.isRandomized("28937d112201"));
 
         System.out.println("== 异常输入不崩 ==");
         check("null", !OuiLookup.isRandomized(null));

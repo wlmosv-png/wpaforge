@@ -26,11 +26,11 @@ public class EarlyFailTest {
     public static void main(String[] args) {
         System.out.println("== 早退判据：M1 重发 ==");
 
-        String m1a = "10-23 06:03:33.936  5784  5784 I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:44:95:a9 (ver=2)";
-        String m1b = "10-23 06:03:34.940  5784  5784 I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:44:95:a9 (ver=2)";
-        String m1c = "10-23 06:03:35.945  5784  5784 I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:44:95:a9 (ver=2)";
+        String m1a = "10-23 06:03:33.936  5784  5784 I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:03 (ver=2)";
+        String m1b = "10-23 06:03:34.940  5784  5784 I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:03 (ver=2)";
+        String m1c = "10-23 06:03:35.945  5784  5784 I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:03 (ver=2)";
         String assoc = "10-23 06:03:32.162  5784  5784 I wpa_supplicant: wlan0: Trying to associate with SSID 'B214'";
-        String neg = "10-23 06:03:34.000  5784  5784 I wpa_supplicant: WPA: Key negotiation completed with 28:93:7d:44:95:a9";
+        String neg = "10-23 06:03:34.000  5784  5784 I wpa_supplicant: WPA: Key negotiation completed with 28:93:7d:11:22:03";
         String failLine = "10-23 06:03:36.980  5784  5784 I wpa_supplicant: wlan0: WPA: 4-Way Handshake failed - pre-shared key may be incorrect";
 
         check("空日志 → 0 次", WpaLogReader.countHandshakeM1("") == 0);
@@ -59,12 +59,12 @@ public class EarlyFailTest {
 
 
         // ---- 按 BSSID 归属（真机翻车后补：关联行会被日志配额丢掉，不能靠它归属）----
-        check("按 BSSID 归属：目标那条算 1", WpaLogReader.countHandshakeM1For(m1a, "28:93:7d:44:95:a9") == 1);
+        check("按 BSSID 归属：目标那条算 1", WpaLogReader.countHandshakeM1For(m1a, "28:93:7d:11:22:03") == 1);
         check("按 BSSID 归属：别的 BSSID 不算", WpaLogReader.countHandshakeM1For(m1a, "aa:bb:cc:dd:ee:ff") == 0);
         check("按 BSSID 归属：重发两次算 2",
-                WpaLogReader.countHandshakeM1For(m1a + "\n" + m1b, "28:93:7d:44:95:a9") == 2);
+                WpaLogReader.countHandshakeM1For(m1a + "\n" + m1b, "28:93:7d:11:22:03") == 2);
         check("按 BSSID 归属：大小写不敏感",
-                WpaLogReader.countHandshakeM1For(m1a, "28:93:7D:44:95:A9") == 1);
+                WpaLogReader.countHandshakeM1For(m1a, "28:93:7D:11:22:03") == 1);
         check("按 BSSID 归属：BSSID 为空时返回 0（由调用方退回关联行判据）",
                 WpaLogReader.countHandshakeM1For(m1a, "") == 0);
         // ★ 守门：静默判据的阈值不许调回 600ms 附近。
@@ -76,7 +76,7 @@ public class EarlyFailTest {
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.EARLY_FAIL_SILENCE_MS <= 2000L);
         check("没有关联行也能归属（这正是修这个 bug 的目的）",
                 !WpaLogReader.sawAssociateFor(m1a, "B214")
-                        && WpaLogReader.countHandshakeM1For(m1a, "28:93:7d:44:95:a9") == 1);
+                        && WpaLogReader.countHandshakeM1For(m1a, "28:93:7d:11:22:03") == 1);
 
         System.out.println("早退判据: pass=" + pass + " fail=" + fail);
         if (fail > 0) throw new RuntimeException("早退判据有用例失败");

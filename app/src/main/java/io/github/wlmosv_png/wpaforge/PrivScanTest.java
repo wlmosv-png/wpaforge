@@ -24,12 +24,12 @@ public final class PrivScanTest {
     /** 与设备实测输出同构的样本 */
     static final String SAMPLE =
         "    BSSID              Frequency      RSSI           Age(sec)     SSID                                 Flags\n" +
-        "  28:93:7d:45:dc:ed       2432    -46(0:-49/1:-49)   169.150    B209                              [WPA2-PSK-CCMP+TKIP][RSN-PSK-CCMP+TKIP][WPA-PSK-CCMP+TKIP][ESS][WPS]\n" +
-        "  cc:2d:21:b0:88:d8       5220    -90(0:-92/1:-94)   169.517    Tenda_B088D0_5G                   [WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS][WPS]\n" +
-        "  5c:de:34:26:2e:f2       5765    -89(0:-93/1:-92)   169.392    CMCC-密码                          [WPA-PSK-CCMP][WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS][WPS]\n" +
-        "  f4:6a:92:4f:e9:72       2467    -48(0:-50/1:-54)   168.473    FAST_E972                         [WPA-PSK-CCMP][WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS]\n" +
-        "  f4:83:cd:6d:18:f6       2412    -70(0:-71/1:-77)   169.623    南面217                            [WPA2-PSK-CCMP][RSN-PSK-CCMP][WPA-PSK-CCMP][ESS]\n" +
-        "  82:93:7d:43:58:91       2447    -64(0:-68/1:-67)   168.876    2.4G-3                            [WPA2-PSK-CCMP+TKIP][RSN-PSK-CCMP+TKIP][WPA-PSK-CCMP+TKIP][ESS][WPS]\n" +
+        "  28:93:7d:11:22:02       2432    -46(0:-49/1:-49)   169.150    B209                              [WPA2-PSK-CCMP+TKIP][RSN-PSK-CCMP+TKIP][WPA-PSK-CCMP+TKIP][ESS][WPS]\n" +
+        "  cc:2d:21:11:22:10       5220    -90(0:-92/1:-94)   169.517    Tenda_B088D0_5G                   [WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS][WPS]\n" +
+        "  5c:de:34:11:22:0b       5765    -89(0:-93/1:-92)   169.392    CMCC-密码                          [WPA-PSK-CCMP][WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS][WPS]\n" +
+        "  f4:6a:92:11:22:0d       2467    -48(0:-50/1:-54)   168.473    FAST_E972                         [WPA-PSK-CCMP][WPA2-PSK-CCMP][RSN-PSK-CCMP][ESS]\n" +
+        "  f4:83:cd:11:22:0e       2412    -70(0:-71/1:-77)   169.623    南面217                            [WPA2-PSK-CCMP][RSN-PSK-CCMP][WPA-PSK-CCMP][ESS]\n" +
+        "  82:93:7d:11:22:07       2447    -64(0:-68/1:-67)   168.876    2.4G-3                            [WPA2-PSK-CCMP+TKIP][RSN-PSK-CCMP+TKIP][WPA-PSK-CCMP+TKIP][ESS][WPS]\n" +
         "  aa:bb:cc:dd:ee:ff       2437    -55                 12.0       My Home Net                       [WPA2-PSK-CCMP][ESS]\n" +
         "  11:22:33:44:55:66       2412    -80                 5.0                                          [ESS]\n";
 
@@ -48,7 +48,7 @@ public final class PrivScanTest {
             ok("B209 非 5G", !b209.is5Ghz);
             ok("B209 判定 WPA2", b209.security == NetRecord.Security.WPA2);
             ok("B209 支持 WPS", b209.wpsSupported);
-            ok("B209 BSSID 全大写", "28:93:7D:45:DC:ED".equals(b209.bssid));
+            ok("B209 BSSID 全大写", "28:93:7D:11:22:02".equals(b209.bssid));
         }
 
         NetRecord tenda = find(rs, "Tenda_B088D0_5G");

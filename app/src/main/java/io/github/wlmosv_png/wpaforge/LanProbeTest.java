@@ -57,7 +57,7 @@ public class LanProbeTest {
         check("关端口行", closed.line().contains("closed") && closed.line().contains("http-proxy"));
 
         System.out.println("== Host 行输出 ==");
-        LanProbe.Host gw = new LanProbe.Host("192.168.1.1", "28:93:7D:41:CC:38", "华为", true, false);
+        LanProbe.Host gw = new LanProbe.Host("192.168.1.1", "28:93:7D:11:22:04", "华为", true, false);
         check("网关行", gw.line().contains("192.168.1.1") && gw.line().contains("华为") && gw.line().contains("(网关)"));
         LanProbe.Host self = new LanProbe.Host("192.168.1.7", "", "", false, true);
         check("本机行（无 MAC/厂商）", self.line().contains("本机") && self.line().contains("192.168.1.7"));

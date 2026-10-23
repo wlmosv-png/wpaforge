@@ -29,7 +29,7 @@ public class FalsePositiveTest {
     private static final String ON_TARGET =
             "Wifi is enabled\n"
             + "Wifi is connected to \"B212\"\n"
-            + "WifiInfo: SSID: \"B212\", BSSID: 28:93:7d:41:cc:39, "
+            + "WifiInfo: SSID: \"B212\", BSSID: 28:93:7d:11:22:01, "
             + "IP: /192.168.1.2, Security type: 2, Supplicant state: COMPLETED, "
             + "Frequency: 2432MHz, Net ID: 666, score: 60\n";
 

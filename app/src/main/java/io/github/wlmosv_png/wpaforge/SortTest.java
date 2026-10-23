@@ -23,7 +23,7 @@ public class SortTest {
 
     public static void main(String[] a) {
         System.out.println("== 目标线索优先 ==");
-        NetRecord target = new NetRecord("B209", "AA:BB:CC:45:DC:ED", -45, 2432,
+        NetRecord target = new NetRecord("B209", "AA:BB:CC:11:22:02", -45, 2432,
                 NetRecord.Security.WPA2, false, "[WPA2-PSK]");
 
         List<Candidate> dict = new ArrayList<>();
@@ -31,7 +31,7 @@ public class SortTest {
         dict.add(new Candidate("zzzzzzzzzz", Candidate.Origin.USER_DICT));
         dict.add(new Candidate("B209123", Candidate.Origin.USER_DICT));
         dict.add(new Candidate("randompass", Candidate.Origin.USER_DICT));
-        dict.add(new Candidate("45dced", Candidate.Origin.USER_DICT));
+        dict.add(new Candidate("112202", Candidate.Origin.USER_DICT));
         dict.add(new Candidate("12345678", Candidate.Origin.USER_DICT));
 
         List<Candidate> sorted = SmartSorter.prioritize(target, dict, 0);
@@ -47,7 +47,7 @@ public class SortTest {
                 + "," + sorted.get(2).password;
         ok("含 SSID 的口令进前 3", top3.contains("B209123"), top3);
         ok("含 MAC 尾号的口令进前 4",
-                top3.contains("45dced") || sorted.get(3).password.equals("45dced"),
+                top3.contains("112202") || sorted.get(3).password.equals("112202"),
                 top3 + "," + sorted.get(3).password);
         ok("高频弱口令 12345678 进前 4",
                 top3.contains("12345678") || sorted.get(3).password.equals("12345678"),

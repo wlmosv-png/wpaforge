@@ -153,9 +153,9 @@ public class CrackHudTest {
         // ══════════ 判词尾巴（诊断用）══════════
         section = "判词尾巴";
         System.out.println("== 判词尾巴 ==");
-        eq("命中带依据（口令脱敏 + 顺序号）", "#11 #560071(len=9)=\u2713wpalog",
+        eq("命中带依据（口令脱敏 + 顺序号）", "#11 #29ff2d(len=9)=\u2713wpalog",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                        11, "147258369", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.SUCCESS, "wpalog"));
+                        11, "sample-pw", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.SUCCESS, "wpalog"));
         eq("密码错带判据", "#7 #5e8848(len=8)=\u2717m1silent",
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
                         7, "password", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1silent"));
@@ -172,8 +172,8 @@ public class CrackHudTest {
                 io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(1, "x", null, ""));
         // ★ 尾巴里绝不许出现明文口令（用户决策：全量脱敏）
         String tail = io.github.wlmosv_png.wpaforge.audit.CrackEngine.verdictTag(
-                11, "147258369", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1retry");
-        check("判词尾巴不含明文口令", !tail.contains("147258369"));
+                11, "sample-pw", io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict.AUTH_FAIL, "m1retry");
+        check("判词尾巴不含明文口令", !tail.contains("sample-pw"));
         check("判词尾巴不含口令片段", !tail.contains("147") && !tail.contains("369"));
 
         System.out.println();

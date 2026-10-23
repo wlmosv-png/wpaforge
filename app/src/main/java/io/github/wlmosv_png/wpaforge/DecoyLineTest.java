@@ -44,7 +44,7 @@ public class DecoyLineTest {
             "Wifi scanning is always available\n" +
             "==== ClientModeManager instance: ConcreteClientModeManager{id=40153976 iface=wlan0 role=ROLE_CLIENT_PRIMARY} ====\n" +
             "Wifi is connected to \"B212\"\n" +
-            "WifiInfo: SSID: \"B212\", BSSID: 28:93:7d:41:cc:39, MAC: 6a:f9:13:0a:61:73, " +
+            "WifiInfo: SSID: \"B212\", BSSID: 28:93:7d:11:22:01, MAC: 6a:f9:13:11:22:19, " +
             "IP: /192.168.1.2, Security type: 2, Supplicant state: COMPLETED, " +
             "Wi-Fi standard: 11n, RSSI: -44, Link speed: 117Mbps, " +
             "Frequency: 2432MHz, Net ID: 666, score: 60, isUsable: true\n" +

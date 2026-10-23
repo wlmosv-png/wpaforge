@@ -209,8 +209,8 @@ public final class WpsHelper {
              *
              * 为什么必须补：framework 的 list-scan-results 和 supplicant 的 BSS 表
              * 会给出**不一样的 BSSID**。实测 CMCC-6339 就是典型：
-             *   list-scan-results → c8:98:28:6f:a1:2c（无响应，打不动）
-             *   BSS 表            → c8:98:28:6f:a1:2b（关联 5.8 秒，真能打）
+             *   list-scan-results → c8:98:28:11:22:12（无响应，打不动）
+             *   BSS 表            → c8:98:28:11:22:11（关联 5.8 秒，真能打）
              * 只信前者的后果就是「体检名单里全是打不动的，能打的扫不出来」。
              * 枚举方式：BSS FIRST 拿首条，再 BSS NEXT-<id> 顺序遍历（id 是内部索引，不连续）。
              */

@@ -252,7 +252,7 @@ public final class CrackEngine {
     /**
      * 一条候选的判词短标签，用于收尾那条「最近判定」尾巴（纯函数，可测）。
      *
-     * <p>形如 {@code 147258369=✗m1silent} / {@code password=✓wpalog} / {@code x=超时}。
+     * <p>形如 {@code sample-pw=✗m1silent} / {@code password=✓wpalog} / {@code x=超时}。
      * 为什么要这个：2026-10-24 用户报「明明正确的密码被跳过去」，而**文件日志里
      * 一条判词都没有**（逐条结果只走界面回调），查不动。现在每次跑完没命中，
      * 最后 6 条的判词会写进文件日志，这种事自己就能说清。

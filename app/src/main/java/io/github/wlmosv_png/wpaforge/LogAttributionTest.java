@@ -7,7 +7,7 @@ import io.github.wlmosv_png.wpaforge.audit.WpaLogReader;
  *
  * <h3>事故（2026-10-22）</h3>
  * 目标 `2.4G-3` 尝试失败后，系统回连 `B217` 并握手成功，日志里出现
- * {@code Key negotiation completed with 28:93:7d:41:cc:39}。旧实现只检查
+ * {@code Key negotiation completed with 28:93:7d:11:22:01}。旧实现只检查
  * 「有没有出现过协商完成」，不检查那是**哪个 AP** 的 —— 于是报出
  * 「2.4G-3 = redskins 命中」，而密码其实是错的。
  *
@@ -18,7 +18,7 @@ public class LogAttributionTest {
     /** 目标 2.4G-3 的 BSSID（虚构） */
     private static final String TARGET = "AA:BB:CC:DD:EE:FF";
     /** B217 的 BSSID（真机抓到的样本） */
-    private static final String OTHER = "28:93:7d:41:cc:39";
+    private static final String OTHER = "28:93:7d:11:22:01";
 
     private static int pass = 0, fail = 0;
 

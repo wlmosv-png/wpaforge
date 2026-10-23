@@ -144,7 +144,7 @@ public class WpsPinTest {
         System.out.println("== AP 能力画像：WSC 配置方法位 ==");
         // 真实抓取样本：Broadcom 系 AP 报 0x2008（只有 VIRTUAL_DISPLAY），不收外部 PIN
         // 真机 BSS 回复是「每行一个 key=value」（raw 打印时才会变成 " | " 形态）
-        String bssBroadcom = "id=940\nbssid=28:93:7d:45:dc:ed\nfreq=2412\nlevel=-46\n"
+        String bssBroadcom = "id=940\nbssid=28:93:7d:11:22:02\nfreq=2412\nlevel=-46\n"
                 + "ssid=B209\nwps_state=configured\nwps_device_name=BroadcomAP\n"
                 + "wps_config_methods=0x2008\n"
                 + "ie=dd7b0050f204104a0001101044000102"
@@ -157,7 +157,7 @@ public class WpsPinTest {
         ok("回带设备名", capB != null && "BroadcomAP".equals(capB[2]), "");
 
         // 真实抓取样本：fiberhome ONT 报 0x0100（KEYPAD）→ 可以打
-        String bssFiber = "bssid=68:41:3c:8e:66:d8\nssid=B201\nwps_device_name=fiberhome ONT\n"
+        String bssFiber = "bssid=68:41:3c:11:22:14\nssid=B201\nwps_device_name=fiberhome ONT\n"
                 + "wps_config_methods=0x0100\nie=dd0c0050f2041044000102100800020100";
         String[] capF = WpsHelper.parseBssCap(bssFiber);
         ok("0x0100 判 PIN_OK", capF != null && "PIN_OK".equals(capF[0]), capF == null ? "null" : capF[0]);
@@ -173,7 +173,7 @@ public class WpsPinTest {
 
         // raw 动作展示用的竖线形态也要能解析（同一条回复的两种写法）
         String[] capPipe = WpsHelper.parseBssCap(
-                "id=940 | bssid=28:93:7d:45:dc:ed | wps_device_name=BroadcomAP"
+                "id=940 | bssid=28:93:7d:11:22:02 | wps_device_name=BroadcomAP"
                         + " | wps_config_methods=0x2008");
         ok("竖线形态同样可解析", capPipe != null && "NO_PIN".equals(capPipe[0]),
                 capPipe == null ? "null" : capPipe[0]);
@@ -210,7 +210,7 @@ public class WpsPinTest {
 
         System.out.println("== helper 能力输出契约解析 ==");
         WpsController.Info inf = WpsController.parseInfo(
-                "WPS_BSSID=28:93:7d:45:dc:ed\nWPS_SSID=B209\nWPS_DEV=BroadcomAP\n"
+                "WPS_BSSID=28:93:7d:11:22:02\nWPS_SSID=B209\nWPS_DEV=BroadcomAP\n"
                         + "WPS_STATE=configured\nWPS_METHODS=0x2008\nWPS_PIN_CAPABLE=0\n"
                         + "WPS_PBC_CAPABLE=0\nWPS_LOCKED=0\nWPS_VERDICT=NO_PIN\nWPS_OK=1\n");
         ok("parseInfo verdict", "NO_PIN".equals(inf.verdict), inf.verdict);

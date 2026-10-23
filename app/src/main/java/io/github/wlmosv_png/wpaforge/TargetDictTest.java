@@ -25,7 +25,7 @@ public class TargetDictTest {
 
     public static void main(String[] a) {
         System.out.println("== 光猫型 SSID: FAST_E972 ==");
-        NetRecord t1 = new NetRecord("FAST_E972", "AA:BB:CC:E9:72:11", -50, 2432,
+        NetRecord t1 = new NetRecord("FAST_E972", "AA:BB:CC:11:22:1A", -50, 2432,
                 NetRecord.Security.WPA2, false, "");
         TargetDictBuilder.Result r1 = TargetDictBuilder.build(t1, 2000);
         System.out.println("     生成 " + r1.candidates.size() + " 条");

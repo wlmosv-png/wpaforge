@@ -22,10 +22,10 @@ public class WpaLogTest {
     /** 真机实测日志片段 */
     private static final String REAL = "" +
             "10-11 19:09:05.609  1118  1118 I wpa_supplicant: wlan0: CTRL-EVENT-DSCP-POLICY clear_all\n" +
-            "10-11 19:09:05.688  1118  1118 D wpa_supplicant: wlan0: Considering connect request: reassociate: 1  selected: 28:93:7d:45:dc:ed  bssid: 00:00:00:00:00:00  pending: 00:00:00:00:00:00  wpa_state: DISCONNECTED  ssid=0xb4000078c4850c00  current_ssid=0xb4000078c4850c00\n" +
+            "10-11 19:09:05.688  1118  1118 D wpa_supplicant: wlan0: Considering connect request: reassociate: 1  selected: 28:93:7d:11:22:02  bssid: 00:00:00:00:00:00  pending: 00:00:00:00:00:00  wpa_state: DISCONNECTED  ssid=0xb4000078c4850c00  current_ssid=0xb4000078c4850c00\n" +
             "10-11 19:09:05.688  1118  1118 I wpa_supplicant: wlan0: Trying to associate with SSID 'B209'\n" +
-            "10-11 19:09:09.374  1118  1118 D wpa_supplicant: nl80211: Scan results indicate BSS status with 28:93:7d:45:dc:ed as associated\n" +
-            "10-11 19:08:44.931  1118  1118 D wpa_supplicant: wlan0: BSS: Remove id 159 BSSID 74:26:ff:3a:93:d3 SSID '232' due to wpa_bss_flush_by_age";
+            "10-11 19:09:09.374  1118  1118 D wpa_supplicant: nl80211: Scan results indicate BSS status with 28:93:7d:11:22:02 as associated\n" +
+            "10-11 19:08:44.931  1118  1118 D wpa_supplicant: wlan0: BSS: Remove id 159 BSSID 74:26:ff:11:22:13 SSID '232' due to wpa_bss_flush_by_age";
 
     public static void main(String[] args) {
         System.out.println("== 解析真机日志 ==");
@@ -78,7 +78,7 @@ public class WpaLogTest {
                 WpaLogReader.sawNegotiated(other));
         check("其它 ROM 的握手失败能识别",
                 WpaLogReader.sawHandshakeFailure(other));
-        String m1Sample = "I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:45:dc:ed\n";
+        String m1Sample = "I wpa_supplicant: wlan0: WPA: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:02\n";
         check("握手第 1 帧 (M1) 能识别",
                 WpaLogReader.sawHandshakeM1(m1Sample));
 
@@ -95,12 +95,12 @@ public class WpaLogTest {
                 WpaLogReader.sawHandshakeFailure(realWrongKey));
 
         String realOk = "10-22 09:17:53.953 28272 28272 I wpa_supplicant: "
-                + "wlan0: WPA: Key negotiation completed with 28:93:7d:41:cc:39 [PTK=CCMP GTK=TKIP]\n";
+                + "wlan0: WPA: Key negotiation completed with 28:93:7d:11:22:01 [PTK=CCMP GTK=TKIP]\n";
         check("真机成功行能识别（旧结论说本机不输出，实测有）",
                 WpaLogReader.sawNegotiated(realOk));
 
         String realConnected = "10-22 09:17:53.953 28272 28272 I wpa_supplicant: "
-                + "wlan0: CTRL-EVENT-CONNECTED - Connection to 28:93:7d:41:cc:39 completed "
+                + "wlan0: CTRL-EVENT-CONNECTED - Connection to 28:93:7d:11:22:01 completed "
                 + "[id=0 id_str=%7B%22configKey%22%3A%22%5C%22B\n";
         check("CTRL-EVENT-CONNECTED 也算成功证据",
                 WpaLogReader.sawNegotiated(realConnected));
@@ -113,7 +113,7 @@ public class WpaLogTest {
                 !WpaLogReader.sawAssociateFor(realAssoc, "B212"));
 
         String realM1 = "10-22 09:17:53.914 28272 28272 I wpa_supplicant: "
-                + "wlan0: RSN: RX message 1 of 4-Way Handshake from 28:93:7d:41:cc:39 (ver=2)\n";
+                + "wlan0: RSN: RX message 1 of 4-Way Handshake from 28:93:7d:11:22:01 (ver=2)\n";
         check("握手第 1 帧能识别", WpaLogReader.sawHandshakeM1(realM1));
 
         System.out.println("\n=== wpa 日志解析测试: " + pass + " 通过, " + fail + " 失败 ===");

@@ -39,13 +39,13 @@ public class PmkidTest {
                         WpaCore.computePmkid("12345678", "TestSSID",
                                 hex("001122334455"), hex("66778899aabb")))));
         ok("向量 2：password / FAST_E972",
-                "1c696a385f76965d39a3e9f2d2aab26a".equals(toHex(
+                "4c36d51ab70dba05a89ffe049c9c0db0".equals(toHex(
                         WpaCore.computePmkid("password", "FAST_E972",
-                                hex("AABBCCE97211"), hex("001122334455")))));
+                                hex("AABBCC11221A"), hex("001122334455")))));
         ok("向量 3：中文 SSID",
-                "a42e5d4afb23b3908bc672b980ad6f87".equals(toHex(
+                "5be255a3aed0e6a48a2513fb01b36666".equals(toHex(
                         WpaCore.computePmkid("MyPass2026!", "小卖部WiFi5",
-                                hex("28937D45DCED"), hex("2C48D7415E2D")))));
+                                hex("28937D112202"), hex("2C48D7415E2D")))));
 
         System.out.println("== checkPmkid ==");
         byte[] exp = hex("8547b061fd9759b2779ea0bdb7bda7f9");

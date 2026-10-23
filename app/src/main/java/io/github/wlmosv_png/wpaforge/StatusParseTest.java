@@ -23,7 +23,7 @@ public class StatusParseTest {
             "Wifi scanning is always available\n" +
             "==== ClientModeManager instance: ConcreteClientModeManager{id=40153976 iface=wlan0 role=ROLE_CLIENT_PRIMARY} ====\n" +
             "Wifi is connected to \"B209\"\n" +
-            "WifiInfo: SSID: \"B209\", BSSID: 28:93:7d:45:dc:ed, MAC: 52:85:10:b7:77:b8, " +
+            "WifiInfo: SSID: \"B209\", BSSID: 28:93:7d:11:22:02, MAC: 52:85:10:11:22:18, " +
             "IP: /192.168.1.3, Security type: 2, Supplicant state: COMPLETED, " +
             "Wi-Fi standard: 11n, RSSI: -52, Link speed: 117Mbps, Net ID: 613, " +
             "Metered hint: false, score: 60, isUsable: true";

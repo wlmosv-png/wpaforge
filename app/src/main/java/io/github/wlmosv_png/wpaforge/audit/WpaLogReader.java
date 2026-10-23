@@ -107,6 +107,16 @@ public final class WpaLogReader {
     private static final Pattern P_CONNECTED =
             Pattern.compile("CTRL-EVENT-CONNECTED - Connection to ([0-9a-fA-F:]{17})");
 
+    /**
+     * 服务端（shell 侧 grep）预过滤式。
+     *
+     * <p>必须覆盖下面全部 7 个 Pattern；{@code WpaFilterTest} 会逐条验证
+     * 「每个模式认得出来的样例行，都能被这个式子放行」。
+     */
+    public static final String SHELL_FILTER =
+            "associate|4-Way|RX message|negotiat|ASSOC-REJECT|SSID-TEMP-DISABLED"
+                    + "|CONNECTED|WRONG_KEY|reason=";
+
     private WpaLogReader() {}
 
     /**
@@ -317,7 +327,15 @@ public final class WpaLogReader {
             // 窗口、再也读不到（实测 -t 400 -s wpa_supplicant 只剩 4 行，去掉 -t 有 305 行）。
             // 调用方在每条候选前已 logcat -c，缓冲里就是本次尝试的日志。
             // lines 参数保留仅为兼容调用点。
-            String cmd = "logcat -d -s wpa_supplicant";
+            //
+            // **服务端预过滤**（2026-10-23 实测）：本机一轮原始输出 293 行 / 33KB，
+            // 而判定真正要用的只有 5 行 / 0.6KB。整段读回来要过管道、进 JVM 逐行收，
+            // 每轮 ~23ms 白花在 50 倍的无用数据上。加一层 grep：
+            //   · 每轮传输量降到 1/50
+            //   · parse() 的输入变小，Java 侧开销同步变小
+            // 过滤式必须**覆盖 WpaLogReader 全部 7 个模式**，少一个就会静默丢判据 ——
+            // 有 WpaFilterTest 钉住这条不变式（新增模式时必须同步更新 SHELL_FILTER）。
+            String cmd = "logcat -d -s wpa_supplicant | grep -iE '" + SHELL_FILTER + "'";
             return shell.exec(cmd, 6000);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "读取日志失败: " + t);

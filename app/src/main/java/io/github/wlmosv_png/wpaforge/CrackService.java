@@ -21,6 +21,7 @@ import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
 import io.github.wlmosv_png.wpaforge.audit.ShizukuRunner;
+import io.github.wlmosv_png.wpaforge.audit.ShellSession;
 import io.github.wlmosv_png.wpaforge.audit.SpecifierProber;
 import io.github.wlmosv_png.wpaforge.audit.SuggestionProber;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
@@ -729,6 +730,13 @@ public class CrackService extends Service {
 
         if (ft.crackMode != Prefs.MODE_NO_ROOT) {
             final boolean useShizuku = ft.crackMode == Prefs.MODE_SHIZUKU;
+            // 常驻会话（2026-10-23 实测）：App 里每起一次 su 要 ~137ms，
+            // 一条候选约 28 次，光起进程就 3.8 秒 —— 这是「每条 5 秒」的真正大头。
+            // 改成一个常驻 `su -c sh` 会话里连打命令，实测 88ms/次 → 20ms/次。
+            // 会话不可用就退回一次性 su：功能不丢，只是慢回去。
+            final ShellSession sess = new ShellSession();
+            final int[] sessFails = {0};
+            final boolean[] sessOff = {false};
             engine.setShellChannel(new CrackEngine.ShellChannel() {
                 @Override
                 public String exec(String cmd, long timeoutMs) {
@@ -736,7 +744,19 @@ public class CrackService extends Service {
                     if (useShizuku) {
                         out = ShizukuRunner.exec(cmd, timeoutMs);
                     } else {
-                        out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                        out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
+                        if (out == null) {
+                            // 这一帧没拿到（超时 / 会话死了）。连续几次就彻底不再试，
+                            // 免得每轮白付一次启动成本。
+                            if (!sessOff[0] && ++sessFails[0] >= 3) {
+                                sessOff[0] = true;
+                                log(L.s("常驻 shell 会话不可用，已退回逐条 su（会慢一些）",
+                                        "persistent shell unavailable; falling back to per-call su"));
+                            }
+                            out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                        } else {
+                            sessFails[0] = 0;
+                        }
                     }
                     // ---- 通道熔断 ----
                     // 连续多次命令超时，说明通道已经不可用（进程被系统限制、su 被反复卡住……）。
@@ -758,6 +778,10 @@ public class CrackService extends Service {
                         }
                     }
                     return out;
+                }
+                @Override
+                public void close() {
+                    sess.close();
                 }
                 @Override
                 public void forgetTarget(String ssid) {

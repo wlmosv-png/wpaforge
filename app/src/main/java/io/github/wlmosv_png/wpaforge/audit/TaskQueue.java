@@ -176,11 +176,36 @@ public final class TaskQueue {
         return new File(ctx.getFilesDir(), FILE);
     }
 
+    // 上一次 load 是不是**读失败**（而不是队列真的空）
+    //
+    // 2026-10-23 真事：队列里 16 个任务（含 5 条已爆破出的口令）被写成了 `[]`。
+    // 链条是这样的：
+    //   queue.json 读不到（比如 SELinux 标签不对）
+    //     → load() 静默吞掉异常、返回空列表
+    //     → 调用方（删除、清理、入队都一样）拿着空列表回写
+    //     → 整个队列**永久消失**
+    // 所以 load 失败必须留下痕迹，并且**拒绝接下来的空写入**。
+    private static volatile boolean loadFailedFlag = false;
+
+    /** 上一次 load 是否读失败 */
+    public static boolean lastLoadFailed() { return loadFailedFlag; }
+
+    /**
+     * 纯逻辑：这次写盘要不要拒绝。
+     *
+     * <p>只有「刚刚读失败过」+「要写空列表」同时成立才拒绝 ——
+     * 用户自己清空队列（读取正常）不受影响，不能把正常功能也堵了。
+     */
+    public static boolean refuseSave(List<?> tasks, boolean loadFailed) {
+        return loadFailed && (tasks == null || tasks.isEmpty());
+    }
+
     /** 读取整个队列 */
     public static List<Task> load(Context ctx) {
         List<Task> out = new ArrayList<>();
         File f = file(ctx);
-        if (!f.isFile()) return out;
+        // 文件不存在 = 真空队列，合法
+        if (!f.isFile()) { loadFailedFlag = false; return out; }
         try (BufferedReader r = new BufferedReader(new InputStreamReader(
                 new FileInputStream(f), StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();
@@ -190,7 +215,13 @@ public final class TaskQueue {
             for (int i = 0; i < arr.length(); i++) {
                 out.add(Task.fromJson(arr.getJSONObject(i)));
             }
-        } catch (Exception ignored) {}
+            loadFailedFlag = false;
+        } catch (Exception e) {
+            // **绝不能静默返回空**：调用方拿着空列表去 save，
+            // 就等于把用户整个队列删了。
+            loadFailedFlag = true;
+            android.util.Log.e("WPAForge", "队列读取失败（不当作空队列）: " + f + " → " + e);
+        }
         return out;
     }
 
@@ -200,6 +231,29 @@ public final class TaskQueue {
             JSONArray arr = new JSONArray();
             for (Task t : tasks) arr.put(t.toJson());
             File f = file(ctx);
+            // 读失败过还要写空？直接拒绝。
+            // 否则一次临时的读失败（SELinux 标签、损坏、写到一半被杀）
+            // 就会在用户点一下「删除」时把整个队列永久淹掉。
+            if (refuseSave(tasks, loadFailedFlag)) {
+                android.util.Log.e("WPAForge", "队列读取失败过，拒绝用空列表覆盖，避免误删");
+                return false;
+            }
+            // 写空之前先备一份：即便真是用户清空，也还能把口令找回来。
+            if (tasks.isEmpty() && f.isFile() && f.length() > 4) {
+                try {
+                    File bak = new File(ctx.getFilesDir(), FILE + ".bak");
+                    java.io.InputStream in = new FileInputStream(f);
+                    try {
+                        java.io.OutputStream os = new FileOutputStream(bak);
+                        try {
+                            byte[] buf = new byte[8192];
+                            int n;
+                            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                        } finally { os.close(); }
+                    } finally { in.close(); }
+                    android.util.Log.w("WPAForge", "队列被清空，已备份为 " + bak);
+                } catch (Exception ignored) {}
+            }
             // 先写临时文件再改名，避免写一半崩溃导致队列损坏
             File tmp = new File(ctx.getFilesDir(), FILE + ".tmp");
             try (OutputStreamWriter w = new OutputStreamWriter(

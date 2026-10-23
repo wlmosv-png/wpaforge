@@ -184,6 +184,8 @@ public final class CrackEngine {
         String exec(String cmd, long timeoutMs);
         void forgetTarget(String ssid);
         String name();
+        /** 收尾钩子：常驻会话（su -c sh）必须在这里关掉，别把 root shell 留在后台。 */
+        default void close() {}
     }
 
     public void setShellChannel(ShellChannel ch) {
@@ -473,8 +475,12 @@ public final class CrackEngine {
             }
             if (leftover < 0) return true;
             try {
+                // sleep 0.3 → 0.15（2026-10-23 实测）：这一步是「删 + 等 + 回读」，
+                // 等的是让 framework 把删除落定。实测 0.05s 就已经读不到了（5/5 干净），
+                // 取 0.15 留 3 倍余量 —— 万一真读回旧配置，下面的校验会让它多跑一轮
+                // （只是慢，不会误判），所以这条可以放心压。
                 String out2 = shell.exec("cmd wifi forget-network " + leftover
-                        + "; sleep 0.3; cmd wifi list-networks", 6000);
+                        + "; sleep 0.15; cmd wifi list-networks", 6000);
                 if (out2 != null && netIdIn(out2, ssid) < 0) return true;
             } catch (Throwable ignored) {}
         }
@@ -937,6 +943,9 @@ public final class CrackEngine {
                     SystemClock.uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
         }
 
+        long statT0 = SystemClock.uptimeMillis();
+        statPrepMs = 0; statProbeMs = 0; statPollMs = 0; statLogMs = 0; statRounds = 0;
+
         // 每条之前删净旧配置（配置复用会让任何密码都"成功"）。
         // 走引擎自带实现，保证各调用方行为一致。
         if (!forgetTargetByShell(target.ssid)) {
@@ -1009,6 +1018,7 @@ public final class CrackEngine {
         // **命令发出时刻**：判定以此为界。
         // 之后出现的「目标 SSID 已连上」才可能是这条候选的功劳。
         final long commandAt = SystemClock.uptimeMillis();
+        statPrepMs = commandAt - statT0;
 
         // 记录命令前的当前 SSID 与 netId。
         // 若命令后系统回连到别的已保存网络，我们不能把那个连接算到这条候选头上。
@@ -1060,12 +1070,19 @@ public final class CrackEngine {
         // 原来是固定 sleep(400) 再查一次：快机器上白等，慢机器上可能还没建好。
         // 改成轮询 —— 最快 100ms 就能继续，最多等 600ms。
         long netIdProbe = -1;
-        final long netIdWaitUntil = SystemClock.uptimeMillis() + 600;
+        // 窗口 600ms → 200ms（2026-10-23 实测）：这个 netId 在判定链里
+        // **只写进证据串、从不作否决**（SuccessRule 的入参里没有它，
+        // 归因靠的是命令前那两道闸门：配置删净回读 + 已连目标先断开）。
+        // 而实测发令后 framework 建好配置常常要等满整个窗口，净白等 600ms；
+        // 一本 3336 条的字典就是 33 分钟。压到 200ms 只影响「证据串里带不带 netId」。
+        long statProbe0 = SystemClock.uptimeMillis();
+        final long netIdWaitUntil = statProbe0 + 200;
         while (SystemClock.uptimeMillis() < netIdWaitUntil) {
             sleep(100);
             netIdProbe = netIdOfTarget(target.ssid);
             if (netIdProbe >= 0) break;
         }
+        statProbeMs = SystemClock.uptimeMillis() - statProbe0;
         final long targetNetId = netIdProbe;
 
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
@@ -1155,6 +1172,7 @@ public final class CrackEngine {
                 return new Attempt(password, Verdict.ABORTED,
                         SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
+            statRounds++;
             // 间隔自适应（2026-10-23 实测后调整）：
             //   前 1.2 秒 = 全速轮询（间隔 20ms）。这一段时间里会出现最早的成功证据
             //   （实测正确密码 950ms 内完成）和最早的失败证据（M1#2 约在 1.5~2.5s），
@@ -1163,8 +1181,14 @@ public final class CrackEngine {
             // 每轮真实成本：`su -c cmd wifi status` ~17ms + 一次 logcat 读 ~40ms。
             sleep(SystemClock.uptimeMillis() - t0 < 1200L ? 20L : 80L);
 
+            // 曾把这一轮的两条命令合并成一条（哨兵分隔）想省一次往返，
+            // 实测**反而更慢**：合并后 79ms/轮，分开只要 44ms/轮。
+            // 原因是日志那一半有 33KB，塞进同一个管道会和 status 抢缓冲、互相等。
+            // 回退成两条独立调用。（日志本身改用服务端预过滤，见 WpaLogReader。）
             String st = null;
+            long statStatus0 = SystemClock.uptimeMillis();
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
+            statPollMs += SystemClock.uptimeMillis() - statStatus0;
             if (st != null && !st.trim().isEmpty()) {
                 channelAlive = true;
                 statusRounds++;
@@ -1303,9 +1327,14 @@ public final class CrackEngine {
             // 相当于每条候选白白多等一个轮询周期。
             // 一次 logcat 读只要 239ms（真机实测），付得起。
             {
+                long statLog0 = SystemClock.uptimeMillis();
                 String wlog = WpaLogReader.read(shell, 400);
+                statLogMs += SystemClock.uptimeMillis() - statLog0;
                 if (wlog != null && !wlog.isEmpty()) {
-                    if (!logReadable && wlog.contains("wpa_supplicant")) {
+                    // 预过滤之后输出里不会再有 "wpa_supplicant" 这个字样
+                    // （那是 tag，-s 过滤后不打印），能读到非空行本身就是
+                    // 「这条通道读得到日志」的证据。
+                    if (!logReadable) {
                         logReadable = true;   // 惰性置位：只要看到过就长期有效
                         android.util.Log.i(TAG, "日志通道确认可读");
                     }
@@ -1906,8 +1935,12 @@ public final class CrackEngine {
         // WiFi 重置、基线断开、通道自检这些一次性开销，
         // 摊进「每条耗时」会让预估值被严重高估。
         long pureTryMs = 0L;
-        // AP 侧退避检测窗口（连续偏慢就冷却一下，别拿无效尝试硬怼）
+        /** AP 侧退避检测窗口（连续偏慢就冷却一下，别拿无效尝试硬怼） */
         final BackoffPolicy.Window backoff = new BackoffPolicy.Window();
+        /** 每 20 条吐一行耗时汇总（后台跑的日志里唯一能看到快慢的地方） */
+        final CostMeter costMeter = new CostMeter(20);
+        /** 上一行监听器诊断 —— 内容没变就不重复写，免得刷满日志 */
+        String lastWatcherLine = null;
 
         l.onLog(L.f("引擎点火：%s 通道 · 弹药 %d 发 · 单发时限 %.1f 秒",
                 "Engine: %s, %d candidates, up to %.1fs each",
@@ -1946,6 +1979,13 @@ public final class CrackEngine {
                 }
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;
+
+                // 攒够 20 条写一行汇总。四段分解 + 判定归类，
+                // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
+                costMeter.record(itemMs, a.verdict.name(), a.confirmedBy,
+                        statPrepMs, statProbeMs, statPollMs, statLogMs, statRounds);
+                String costLine = costMeter.takeSummary();
+                if (costLine != null) l.onLog("  " + costLine);
 
                 // 退避检测：**只喂「AP 给了明确结论」的尝试**（见 BackoffPolicy.countable）。
                 // 等满超时是本地策略的固定值、通道异常与用户中断也都不是 AP 的响应特征 ——
@@ -2005,18 +2045,26 @@ public final class CrackEngine {
                 // 「没收到事件」和「收到事件但 SSID 对不上」是两种不同故障。
                 if (watcher != null && a.verdict != Verdict.SUCCESS) {
                     int n = watcher.eventCount();
+                    String wline;
                     if (n == 0) {
                         // 没有事件 —— 把监听器自己的诊断也带上。
                         // 「没注册」「注册了但系统不回调」「回调了但拿不到 SSID」
                         // 是三种完全不同的故障。
-                        l.onLog(L.s("  监听器诊断: ", "  watcher: ") + watcher.diagnose());
+                        wline = L.s("  监听器诊断: ", "  watcher: ") + watcher.diagnose();
                     } else {
                         StringBuilder sb = new StringBuilder("  ");
                         sb.append(L.s("事件 ", "events ")).append(n).append(": ");
                         for (NetworkWatcher.Event e : watcher.recent(6)) {
                             sb.append(e.ssid).append(e.available ? "↑" : "↓").append(' ');
                         }
-                        l.onLog(sb.toString().trim());
+                        wline = sb.toString().trim();
+                    }
+                    // 降噪：这条诊断每轮都在打，而且内容往往一字不变。
+                    // 后台跑时它曾把日志刷满，真正的信息（耗时汇总、判定归类）
+                    // 一条都看不见。内容变了才写。
+                    if (!wline.equals(lastWatcherLine)) {
+                        lastWatcherLine = wline;
+                        l.onLog(wline);
                     }
                 }
 
@@ -2045,6 +2093,9 @@ public final class CrackEngine {
             lastPureTryMs = pureTryMs;
             if (watcher != null) watcher.stop();
             if (authWatch != null) authWatch.stop();
+            // 常驻 shell 会话必须显式关掉：否则一轮任务跑完，
+            // 后台会留着一个 root shell 进程。
+            try { shell.close(); } catch (Throwable ignored) {}
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
             else if (pauseFlag.get()) outcome = "PAUSED";
@@ -2064,6 +2115,12 @@ public final class CrackEngine {
     private volatile long lastPureTryMs = 0L;
     /** 运行中的实时累计净尝试耗时（供界面算**本次**速率，不是历史值） */
     private volatile long livePureTryMs = 0L;
+
+    // ── 每条候选的耗时分解（只为可观测性，**不参与任何判定**）──────────────
+    // 后台跑任务时界面没开、UI 回调是空的，逐条结果不会进任务日志 ——
+    // 没有这几个数就只能靠猜。20 条汇总一次，写在 run() 里。
+    volatile long statPrepMs, statProbeMs, statPollMs, statLogMs;
+    volatile int statRounds;
     /** 本轮已试条数（供界面算实时速率） */
     private volatile int testedCount = 0;
 

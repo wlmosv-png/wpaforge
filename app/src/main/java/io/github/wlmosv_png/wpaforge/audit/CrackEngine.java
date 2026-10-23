@@ -1246,7 +1246,9 @@ public final class CrackEngine {
 
                 // 成功判定走唯一的纯逻辑入口（SuccessRule）—— netId 不参与，
                 // 避免它因时序问题否决一次真实的命中（漏判）。
-                if (SuccessRule.isSuccess(target.ssid, info.ssid, info.state, info.ip)) {
+                SuccessRule.Assessment sa = SuccessRule.assess(target.ssid, info.ssid,
+                        info.state, info.ip, statusNetId, targetNetId);
+                if (sa.verdict != null) {
                     // **不再强制 netId 必须等于「命令后 400ms 取到的那个值」。**
                     //
                     // 那个值是时序敏感的：系统若还没把配置建好，取到 -1，
@@ -1261,13 +1263,29 @@ public final class CrackEngine {
                     //
                     // netId 只在拿得到时作为**加分确认**记录，不作阻断。
                     long ms = SystemClock.uptimeMillis() - t0;
+                    if (sa.verdict == Verdict.UNKNOWN) {
+                        // 协议层看到「目标 + 握手完成 + 有 IP」，但 netId 与本次新建配置
+                        // 不一致 → 归属存疑：既不当成功（可能是旧配置/同名网络回连），
+                        // 也不当失败（可能只是一步慢了的真实命中）。如实报「未确认」。
+                        android.util.Log.i(TAG, "成功帧但归属冲突: " + info
+                                + " (statusNetId=" + statusNetId
+                                + " this=" + targetNetId + ")");
+                        Attempt conflict = new Attempt(password, Verdict.UNKNOWN, ms,
+                                L.s("握手完成且已获取 IP，但其 netId 与本次新建配置不一致，"
+                                                + "无法确认归属（不等于密码错误）",
+                                    "handshake completed with an IP, but its netId differs "
+                                            + "from the one created by this attempt - "
+                                            + "attribution unconfirmed (not a wrong passphrase)"),
+                                sa.evidence);
+                        conflict.reason = sa.reason;
+                        return conflict;
+                    }
                     android.util.Log.i(TAG, "命中: " + info
                             + " (targetNetId=" + targetNetId + ")");
-                    String by = SuccessRule.evidence(statusNetId, targetNetId);
                     return new Attempt(password, Verdict.SUCCESS, ms,
                             L.s("握手完成且已获取 IP（确认连上）",
                                 "handshake completed and IP obtained"),
-                            by);
+                            sa.evidence);
                 } else {
                     /*
                      * ---- 失败加速：系统已经回连到别的网络 ----

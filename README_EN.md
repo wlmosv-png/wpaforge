@@ -42,10 +42,13 @@ candidate quality beats quantity: a hundred thousand blind attempts is measured 
 days, a few hundred targeted ones usually finish in minutes.
 
 **Success has exactly one definition: a completed 4-Way Handshake.** SSID, supplicant
-state, IP and netId must all come from the same line of output; miss one and it does
-not count. It would rather report "uncertain" than report a false hit — that rule came
-from an incident where the system popped "could not connect to BTWIFL_0923" while the
-app claimed it had connected.
+state and IP must all come from the *same line* of output; miss one and it does not
+count. netId is *attribution evidence*, not a requirement: only when both this attempt
+and the status frame report a valid non-zero netId that disagree does the result drop
+to "unconfirmed" (neither a success nor a wrong passphrase); missing or zero netId never
+vetoes. It would rather report "uncertain" than report a false hit — that rule came from
+an incident where the system popped "could not connect to BTWIFL_0923" while the app
+claimed it had connected.
 
 **Lock the screen and it keeps going; kill it and it resumes.** Progress is persisted
 continuously (throttled to at most one write per 20 attempts).

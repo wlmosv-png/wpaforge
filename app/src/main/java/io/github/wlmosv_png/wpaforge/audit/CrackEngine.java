@@ -2058,10 +2058,15 @@ public final class CrackEngine {
                 if (a.isSuccess()) {
                     // 明文口令**不进日志文件**（用户既定决策：明文只允许在命中卡片里
                     // 由用户主动开启）。日志里给可对照的脱敏标签（顺序号 + 哈希前 6 位）。
-                    l.onLog(L.f("⚡ 密钥命中：%s（证据: %s）",
-                            "candidate %s connected (via %s)",
+                    // 复核补齐（2026-10-24）：**命中也是终态结论**，其持久化记录同样要能
+                    // 回溯到具体尝试。原实现只在"未命中"时写判词尾巴，命中这行却不带
+                    // attemptId → 一次成功破解在文件日志里无法对应到哪一次尝试。
+                    l.onLog(L.f("⚡ 密钥命中：%s（证据: %s · 尝试 %s）",
+                            "candidate %s connected (via %s, attempt %s)",
                             io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(cursor, c.password),
-                            a.confirmedBy));
+                            a.confirmedBy,
+                            a.attemptId == null || a.attemptId.isEmpty()
+                                    ? "<id-invalid>" : a.attemptId));
                     l.onAttemptResult(a);
                     hit = c.password;
                     reported = true;

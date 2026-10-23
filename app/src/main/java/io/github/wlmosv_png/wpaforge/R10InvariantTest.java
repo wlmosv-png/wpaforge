@@ -188,8 +188,26 @@ public class R10InvariantTest {
             while ((at = code.indexOf("hit = c.password", at)) >= 0) { assign++; at++; }
             eq("命中赋值点唯一（不可能被后续分支改写）", 1, assign);
             int hitIdx = code.indexOf("hit = c.password");
-            String around = hitIdx > 0 ? code.substring(Math.max(0, hitIdx - 600), hitIdx + 80) : "";
-            ok("赋值在 a.isSuccess() 守卫内", around.contains("if (a.isSuccess())"));
+            // 用**括号配平**判定"是否在守卫块内"，不再用固定长度窗口 ——
+            // 窗口法会因为块内新增几行而误报（复核时被自己的修复打破过一次）。
+            int guardIdx = code.indexOf("if (a.isSuccess())");
+            int guardEnd = -1;
+            if (guardIdx > 0) {
+                int open = code.indexOf('{', guardIdx);
+                if (open > 0) {
+                    int depth = 0;
+                    for (int k = open; k < code.length(); k++) {
+                        char ch = code.charAt(k);
+                        if (ch == '{') depth++;
+                        else if (ch == '}') {
+                            depth--;
+                            if (depth == 0) { guardEnd = k; break; }
+                        }
+                    }
+                }
+            }
+            ok("赋值在 a.isSuccess() 守卫块内（按括号配平判定）",
+                    guardIdx > 0 && guardEnd > guardIdx && hitIdx > guardIdx && hitIdx < guardEnd);
             ok("赋值后立即 break（终态不再接受本轮后续事件）",
                     code.substring(hitIdx, Math.min(code.length(), hitIdx + 120)).contains("break;"));
         }
@@ -270,6 +288,14 @@ public class R10InvariantTest {
             ok("窗口状态与 attemptId 同处一条判词尾巴",
                     code.contains("verdictTag(a.attemptId, cursor, c.password"));
             ok("attemptId 进判词（不是只在 detail）", code.contains("verdictTag(a.attemptId"));
+            // 复核补齐：**命中**（SUCCESS）也是终态结论，其持久化记录同样必须带 attemptId。
+            // 原实现只有"未命中时"才写判词尾巴，而命中那行日志不带 attemptId →
+            // 一次成功破解在文件日志里无法回溯到具体尝试。
+            int hitLog = code.indexOf("⚡ 密钥命中");
+            String hitSeg = hitLog > 0 ? code.substring(hitLog,
+                    Math.min(code.length(), hitLog + 400)) : "";
+            ok("命中日志行带 attemptId（成功结论可回溯到尝试）",
+                    !hitSeg.isEmpty() && hitSeg.contains("a.attemptId"));
         }
         ok("窗口状态的四种取值可枚举（不撒谎）",
                 "ok".equals(AttemptMarker.evaluate(MINE, true, true, mk(MINE) + "\nx").reason)

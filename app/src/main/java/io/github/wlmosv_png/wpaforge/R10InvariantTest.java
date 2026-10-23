@@ -226,6 +226,8 @@ public class R10InvariantTest {
         } else {
             ok("编译清单排除 *Test.java", build.contains("! -name \"*Test.java\""));
             ok("编译清单排除 R3AuditProbe.java", build.contains("! -name \"R3AuditProbe.java\""));
+            ok("编译清单排除 MarkerSelfCheck.java（自检工具无运行期入口）",
+                    build.contains("! -name \"MarkerSelfCheck.java\""));
             ok("没有用 \"*Probe.java\" 这种会误伤 LanProbe.java 的写法",
                     !build.contains("! -name \"*Probe.java\""));
             // 按同一规则模拟一遍：谁进 dex、谁不进
@@ -233,18 +235,23 @@ public class R10InvariantTest {
             java.util.List<java.io.File> all = new java.util.ArrayList<>();
             collect(dir, all);
             int included = 0, excludedTest = 0, excludedProbe = 0, lanProbeIncluded = 0;
+            int excludedSelfCheck = 0;
             for (java.io.File f : all) {
                 String n = f.getName();
                 if (n.endsWith("Test.java")) { excludedTest++; continue; }
                 if (n.equals("R3AuditProbe.java")) { excludedProbe++; continue; }
+                if (n.equals("MarkerSelfCheck.java")) { excludedSelfCheck++; continue; }
                 included++;
                 if (n.equals("LanProbe.java")) lanProbeIncluded++;
             }
             ok("测试类全部被排除（当前 " + excludedTest + " 个，且不少于 50）",
                     excludedTest >= 50 && excludedTest == countEndingWith(all, "Test.java"));
             eq("审计探针被排除（1 个）", 1, excludedProbe);
-            eq("生产源码文件数 = 总数 - 测试类 - 探针",
-                    all.size() - excludedTest - 1, included);
+            eq("自检工具被排除（1 个）", 1, excludedSelfCheck);
+            ok("生产代码里没有 MarkerSelfCheck 的运行期引用（所以可安全排除）",
+                    !productionContains("MarkerSelfCheck."));
+            eq("生产源码文件数 = 总数 - 测试类 - 探针 - 自检工具",
+                    all.size() - excludedTest - 1 - 1, included);
             eq("编译清单里没有任何 *Test.java",
                     0, countIncludedEndingWith(all, "Test.java"));
             eq("生产类 scan/LanProbe.java 仍在编译清单里（未被误伤）", 1, lanProbeIncluded);

@@ -240,9 +240,13 @@ public class R10InvariantTest {
                 included++;
                 if (n.equals("LanProbe.java")) lanProbeIncluded++;
             }
-            eq("测试类全部被排除（50 个）", 50, excludedTest);
+            ok("测试类全部被排除（当前 " + excludedTest + " 个，且不少于 50）",
+                    excludedTest >= 50 && excludedTest == countEndingWith(all, "Test.java"));
             eq("审计探针被排除（1 个）", 1, excludedProbe);
-            eq("生产源码文件数 = 总数 - 51", all.size() - 51, included);
+            eq("生产源码文件数 = 总数 - 测试类 - 探针",
+                    all.size() - excludedTest - 1, included);
+            eq("编译清单里没有任何 *Test.java",
+                    0, countIncludedEndingWith(all, "Test.java"));
             eq("生产类 scan/LanProbe.java 仍在编译清单里（未被误伤）", 1, lanProbeIncluded);
             ok("判定链核心类仍在编译清单里",
                     included > 0 && includesFile(all, "CrackEngine.java")
@@ -299,6 +303,23 @@ public class R10InvariantTest {
             sb.append(k >= 0 ? l.substring(0, k) : l).append('\n');
         }
         return sb.toString();
+    }
+
+    private static int countEndingWith(java.util.List<java.io.File> all, String suffix) {
+        int n = 0;
+        for (java.io.File f : all) if (f.getName().endsWith(suffix)) n++;
+        return n;
+    }
+
+    /** 按构建规则筛过后（排除 *Test.java 与探针），清单里还有多少个以该后缀结尾的文件。 */
+    private static int countIncludedEndingWith(java.util.List<java.io.File> all, String suffix) {
+        int n = 0;
+        for (java.io.File f : all) {
+            String name = f.getName();
+            boolean excluded = name.endsWith("Test.java") || name.equals("R3AuditProbe.java");
+            if (!excluded && name.endsWith(suffix)) n++;
+        }
+        return n;
     }
 
     /** 某个文件名是否在「按构建规则筛过」的编译清单里。 */

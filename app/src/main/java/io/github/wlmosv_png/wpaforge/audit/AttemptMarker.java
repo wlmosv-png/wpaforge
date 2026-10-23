@@ -40,7 +40,54 @@ public final class AttemptMarker {
 
     // ------------------------------------------------------------ 构造
 
-    /** 标记行（不含换行）。attemptId 非法时返回 {@code null}。 */
+    /**
+     * 标记在**真实日志输出**里能存活并被匹配的 token：{@code attempt=<id>}。
+     *
+     * <h3>为什么不能用 {@link #line} 去匹配（2026-10-24 设备实证）</h3>
+     * {@code line()} 是「tag|message」这种**合成**写法。真实 logcat 输出是：
+     * <pre>
+     *   10-24 05:39:29.215 28234 28234 I WPF_PROBE: "attempt=1792791569-60578b9b-0#1"
+     * </pre>
+     * 即 {@code TAG: "message"} —— 那个 {@code |} 根本不存在。用 {@code line()} 去
+     * {@code contains()} 会**永远匹配不上**：isolated 恒为 no-marker，日志类判据集体
+     * 失效（只慢不误判，但等于整套 R6/R3 机制白装）。设备自检抓到了这一点。
+     *
+     * <p>因此匹配一律走本方法给出的 token：id 唯一，token 天然唯一。
+     */
+    public static String token(String attemptId) {
+        if (!AttemptId.wellFormed(attemptId)) return null;
+        return FIELD + attemptId;
+    }
+
+    /**
+     * id 里允许出现的字符 = {@link AttemptId} 的字母表：**base36**（0-9 + a-z）
+     * 加上分隔符 {@code -} 与 {@code #}。
+     *
+     * <p>注意必须是 base36 而不是 hex：runId 的时间段是 {@code Long.toString(sec, 36)}，
+     * 会含 g–z（测试用过 hex 字母表，结果把所有 runId 都截断了）。
+     */
+    private static boolean isIdChar(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                || c == '-' || c == '#';
+    }
+
+    /**
+     * 在文本里定位 token，并要求**右边界干净**：紧随其后不能还是 id 成分 ——
+     * 否则 {@code #1} 会误匹配到 {@code #11}。
+     */
+    static int indexOfToken(String text, String tok) {
+        if (text == null || tok == null || tok.isEmpty()) return -1;
+        int from = 0;
+        while (true) {
+            int i = text.indexOf(tok, from);
+            if (i < 0) return -1;
+            int end = i + tok.length();
+            if (end >= text.length() || !isIdChar(text.charAt(end))) return i;
+            from = i + 1;
+        }
+    }
+
+    /** 标记行（**合成**写法：用于写命令的消息体与文档/合成用例；匹配请用 {@link #token}）。 */
     public static String line(String attemptId) {
         if (!AttemptId.wellFormed(attemptId)) return null;
         return TAG + "|" + FIELD + attemptId;
@@ -65,10 +112,10 @@ public final class AttemptMarker {
 
     /** 文本里是否出现**本条候选**的标记行（逐行精确匹配）。 */
     public static boolean present(String logText, String attemptId) {
-        String want = line(attemptId);
-        if (want == null || logText == null || logText.isEmpty()) return false;
+        String tok = token(attemptId);
+        if (tok == null || logText == null || logText.isEmpty()) return false;
         for (String raw : logText.split("\n")) {
-            if (raw.contains(want)) return true;
+            if (indexOfToken(raw, tok) >= 0) return true;
         }
         return false;
     }
@@ -80,12 +127,12 @@ public final class AttemptMarker {
      * 本身不构成污染证据。
      */
     public static boolean foreignMarkerAfter(String logText, String attemptId) {
-        String want = line(attemptId);
-        if (want == null || logText == null) return false;
+        String tok = token(attemptId);
+        if (tok == null || logText == null) return false;
         String[] lines = logText.split("\n");
         int at = -1;
         for (int i = 0; i < lines.length; i++) {
-            if (lines[i].contains(want)) { at = i; break; }
+            if (indexOfToken(lines[i], tok) >= 0) { at = i; break; }
         }
         if (at < 0) return false;                     // 连自己的都没有 → 由 present 负责
         for (int i = at + 1; i < lines.length; i++) {
@@ -120,19 +167,12 @@ public final class AttemptMarker {
      *         —— 空切片等于「没有可用日志证据」，判据函数在其上只会得到 false。
      */
     public static String sliceAfter(String logText, String attemptId) {
-        String want = line(attemptId);
-        if (want == null || logText == null) return "";
-        int at = 0;
-        boolean found = false;
-        for (String raw : logText.split("\n", -1)) {
-            int len = raw.length() + 1;
-            if (found) { /* 已过标记行 */ }
-            else if (raw.contains(want)) { found = true; at += len; continue; }
-            if (found) break;
-            at += len;
-        }
-        if (!found) return "";
-        return at <= logText.length() ? logText.substring(at) : "";
+        String tok = token(attemptId);
+        if (tok == null || logText == null) return "";
+        int i = indexOfToken(logText, tok);
+        if (i < 0) return "";
+        int nl = logText.indexOf('\n', i);
+        return nl < 0 ? "" : logText.substring(nl + 1);
     }
 
     /** 文本里**最后一个**标记的 attemptId；没有标记返回 {@code null}。诊断用。 */
@@ -226,13 +266,16 @@ public final class AttemptMarker {
         if (oneLine == null) return null;
         int k = oneLine.indexOf(FIELD);
         if (k < 0) return null;
-        String rest = oneLine.substring(k + FIELD.length()).trim();
-        int end = rest.length();
-        for (int i = 0; i < rest.length(); i++) {
-            char c = rest.charAt(i);
-            if (c <= ' ') { end = i; break; }
-        }
-        String cand = rest.substring(0, end);
+        // 2026-10-24 设备实证修正：原来按**空白**截断，而真实 logcat 行是
+        //   `I WPF_PROBE: "attempt=<id>"` —— id 后面紧跟的是引号/行尾标点，
+        // 不是空白，于是截出来带着引号、wellFormed=false → idIn 恒为 null，
+        // 连带 foreignMarkerAfter/lastId 一起失效。
+        // 现在按 **id 字符集**截断（[0-9a-z#-]，与 AttemptId 的字母表一致）。
+        int s0 = k + FIELD.length();
+        int e = s0;
+        while (e < oneLine.length() && isIdChar(oneLine.charAt(e))) e++;
+        if (e <= s0) return null;
+        String cand = oneLine.substring(s0, e);
         return AttemptId.wellFormed(cand) ? cand : null;
     }
 }

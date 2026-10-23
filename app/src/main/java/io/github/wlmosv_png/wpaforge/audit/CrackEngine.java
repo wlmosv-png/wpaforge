@@ -309,6 +309,17 @@ public final class CrackEngine {
      * 最后 6 条的判词会写进文件日志，这种事自己就能说清。
      */
     /**
+     * 候选是否是**可尝试**的口令（WPA-PSK 要求 8..63 个字符）。纯函数，可离线测。
+     *
+     * <p>字典装载侧已有三处同规则过滤（{@code DictStore:336} / {@code DictStore:399} /
+     * {@code DictGenerator:57}），这里是判定链入口的**防御性校验**：任何绕过上游过滤的
+     * 候选都必须落到「未尝试」，而不是「密码错误」。
+     */
+    public static boolean isValidLength(String password) {
+        return password != null && password.length() >= 8 && password.length() <= 63;
+    }
+
+    /**
      * 带尝试标识的判词（R6）：让每条判词都能追到具体尝试。
      *
      * <p>标识缺失或非法时输出 {@code <id-invalid>} —— **显式无效**，
@@ -330,7 +341,9 @@ public final class CrackEngine {
             case AUTH_FAIL: return pw + "=✗" + (by == null || by.isEmpty() ? "auth" : by);
             case TIMEOUT: return pw + "=超时";
             case TARGET_GONE: return pw + "=目标不在";
-            case ERROR: return pw + "=!通道";
+            // 归因码优先：ERROR 类里既有"通道出错"，也有"候选不合法/未尝试"，
+            // 只写"通道"会把后者说错。by 为空时保持原样（兼容既有断言）。
+            case ERROR: return pw + "=!" + (by == null || by.isEmpty() ? "通道" : by);
             case ABORTED: return pw + "=⏹中断";
             default: return pw + "=?不明";
         }
@@ -876,10 +889,20 @@ public final class CrackEngine {
                           long timeoutMs, String attemptId) {
         long t0 = SystemClock.uptimeMillis();
 
-        if (password == null || password.length() < 8 || password.length() > 63) {
-            Attempt a = new Attempt(password, Verdict.AUTH_FAIL,
+        if (!isValidLength(password)) {
+            // 复核修正（2026-10-24）：这条**不是**认证失败，而是「候选本身不合法、
+            // 从未被尝试」。原来标 AUTH_FAIL 有两个后果：
+            //   ① 就「无证据不得判失败」而言，它是一条绕过六阶段新规则的旧分支；
+            //   ② BackoffPolicy.countable(AUTH_FAIL)=true，于是 0ms 的无效候选会被
+            //      当成「AP 的响应样本」喂进退避统计。
+            // 现在归 ERROR + reason=invalid-candidate（非失败类），且不计入退避样本。
+            Attempt a = new Attempt(password, Verdict.ERROR,
                     SystemClock.uptimeMillis() - t0,
-                    L.s("长度不合法（WPA 要求 8-63）", "illegal length (WPA needs 8-63)"), "");
+                    L.s("候选本身不合法（WPA 要求 8-63）—— 未尝试，不是密码错误",
+                        "the candidate itself is invalid (WPA needs 8-63) - "
+                                + "not attempted, not a wrong passphrase"),
+                    "invalid");
+            a.reason = "invalid-candidate";
             a.attemptId = AttemptId.wellFormed(attemptId) ? attemptId : "";
             return a;
         }

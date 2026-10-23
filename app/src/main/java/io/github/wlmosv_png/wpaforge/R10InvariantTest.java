@@ -126,20 +126,24 @@ public class R10InvariantTest {
         if (code == null) {
             System.out.println("  N/RUN I1 源码守卫（源码不可读）");
         } else {
-            int loopFrom = code.indexOf("while (SystemClock.uptimeMillis() < deadline)");
-            int loopTo = code.indexOf("DeadlineOutcome out = classifyDeadline(");
-            String loop = (loopFrom > 0 && loopTo > loopFrom) ? code.substring(loopFrom, loopTo) : "";
+            // 复核加强：范围从「循环内」扩到**整个文件** —— 否则会漏掉
+            // tryOne 里那条长度校验（复核时确实漏过，已修为 ERROR/invalid-candidate）。
             int auth = 0, noCode = 0, at = 0;
-            while ((at = loop.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at)) >= 0) {
+            while ((at = code.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at)) >= 0) {
                 auth++;
-                int j = loop.indexOf(')', at);
-                String callArgs = j > at ? loop.substring(at, j + 1) : "";
-                // 归因码是最后一个实参：必须是**非空字符串字面量**
+                int j = code.indexOf(')', at);
+                String callArgs = j > at ? code.substring(at, j + 1) : "";
                 if (callArgs.contains("\"\"") || !callArgs.contains("\"")) noCode++;
                 at++;
             }
-            ok("循环内至少有 4 个带归因码的 AUTH_FAIL 证据出口（实到 " + auth + "）", auth >= 4);
+            eq("全文件的 AUTH_FAIL 出口数 = 4（全部是证据路径）", 4, auth);
             eq("每个 AUTH_FAIL 都带非空归因码（没有匿名失败）", 0, noCode);
+            ok("命令前的「候选不合法」不再是 AUTH_FAIL（复核修正）",
+                    code.contains("if (!isValidLength(password)) {")
+                            && code.contains("Attempt a = new Attempt(password, Verdict.ERROR,"));
+            ok("无效候选带机器可读归类码", code.contains("a.reason = \"invalid-candidate\""));
+            ok("无效候选不计入退避样本（ERROR 不可计数）",
+                    !BackoffPolicy.countable(CrackEngine.Verdict.ERROR));
         }
 
         // ─────────── I2 ───────────
@@ -199,6 +203,40 @@ public class R10InvariantTest {
                 AttemptMarker.sliceAfter(oldWindow, OTHER).isEmpty()
                         && !AttemptMarker.evaluate(OTHER, true, true, oldWindow).evidenceUsable());
 
+        // ─────────── I7（复核新增）───────────
+        System.out.println("== I7 未尝试的候选不得算作认证失败 ==");
+        ok("合法长度 8/9/63 通过", CrackEngine.isValidLength("12345678")
+                && CrackEngine.isValidLength("123456789")
+                && CrackEngine.isValidLength("x".repeat(63)));
+        ok("非法长度 null/7/64 被拒", !CrackEngine.isValidLength(null)
+                && !CrackEngine.isValidLength("1234567")
+                && !CrackEngine.isValidLength("x".repeat(64)));
+        eq("非法候选的判词标为 invalid（不是通道错）",
+                "#1 #2d7116(len=1)=!invalid",
+                CrackEngine.verdictTag(1, "x", CrackEngine.Verdict.ERROR, "invalid"));
+        eq("通道类 ERROR 的判词保持不变（兼容既有断言）",
+                "#1 #2d7116(len=1)=!通道",
+                CrackEngine.verdictTag(1, "x", CrackEngine.Verdict.ERROR, ""));
+
+        // ─────────── I8（复核新增）───────────
+        System.out.println("== I8 未加固的旁路判定链不得被接线 ==");
+        String[] banned = {"RootProber.tryOne", "RootProber.probe", "RootProber.crack",
+                "RootProber.audit", "RootProber.judge"};
+        int wired = 0;
+        for (String b : banned) {
+            if (productionContains(b)) wired++;
+        }
+        eq("生产代码里没有任何 RootProber 判定入口的调用（4 处判定出口处于死代码状态）", 0, wired);
+        String rp = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                + "wpaforge/audit/RootProber.java");
+        if (rp != null) {
+            int calls = 0, i2 = 0;
+            while ((i2 = rp.indexOf("tryOne(", i2)) >= 0) { calls++; i2++; }
+            eq("RootProber 自己的 tryOne 也只有声明、没有调用（不会被误当生产链）", 1, calls);
+            ok("它仍产出自己的 AUTH_FAIL/TIMEOUT（因此一旦被接线就绕过全部新规则）",
+                    rp.contains("Verdict.AUTH_FAIL") && rp.contains("Verdict.TIMEOUT"));
+        }
+
         System.out.println();
         System.out.println("=== R10 不变量测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
@@ -212,6 +250,40 @@ public class R10InvariantTest {
             sb.append(k >= 0 ? l.substring(0, k) : l).append('\n');
         }
         return sb.toString();
+    }
+
+    /** 在生产源码里搜一个符号（排除测试类与探针本身）。 */
+    private static boolean productionContains(String needle) {
+        java.io.File dir = new java.io.File("/workspace/promo-wpaforge/app/src/main/java");
+        java.util.List<java.io.File> all = new java.util.ArrayList<>();
+        collect(dir, all);
+        for (java.io.File f : all) {
+            String n = f.getName();
+            if (n.endsWith("Test.java") || n.startsWith("R3AuditProbe") || n.endsWith("RootProber.java")) {
+                continue;
+            }
+            String t = readFile(f);
+            if (t != null && t.contains(needle)) return true;
+        }
+        return false;
+    }
+
+    private static void collect(java.io.File f, java.util.List<java.io.File> out) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            java.io.File[] kids = f.listFiles();
+            if (kids != null) for (java.io.File k : kids) collect(k, out);
+        } else if (f.getName().endsWith(".java")) {
+            out.add(f);
+        }
+    }
+
+    private static String readFile(java.io.File f) {
+        try {
+            return new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private static String read(String p) {

@@ -141,6 +141,20 @@ public class R3VerdictTest {
         ok("空文本不崩", AttemptMarker.sliceAfter(null, MID).isEmpty());
         ok("切片不含标记本身", !slice.contains(marker(MID)));
 
+        System.out.println("== R3-7b 窗口不可用时：7 个日志判据**全部**为 false ==");
+        // 这是「窗口闸」能取代显式布尔条件的**承载性理由**：切片为空时，
+        // 所有日志判据都必须返回 false，否则空切片也能得出结论。
+        AttemptMarker.Window dead = AttemptMarker.evaluate(MID, true, true, "no marker here\n");
+        String emptySlice = dead.evidenceUsable() ? AttemptMarker.sliceAfter("no marker here\n", MID) : "";
+        ok("窗口不可用 → 切片为空", !dead.evidenceUsable() && emptySlice.isEmpty());
+        ok("判据 1 关联行为 false", !WpaLogReader.sawAssociateFor(emptySlice, T));
+        ok("判据 2 协商完成为 false", !WpaLogReader.sawNegotiatedFor(emptySlice, BSSID));
+        ok("判据 3 M1 存在为 false", !WpaLogReader.sawHandshakeM1(emptySlice));
+        ok("判据 4 M1 计数为 0", WpaLogReader.countHandshakeM1For(emptySlice, BSSID) == 0);
+        ok("判据 5 wrong_key 为 false", !WpaLogReader.sawWrongKeyFor(emptySlice, T));
+        ok("判据 6 握手失败为 false", !WpaLogReader.sawHandshakeFailure(emptySlice));
+        ok("判据 7 关联被拒为 false", !WpaLogReader.sawAssocReject(emptySlice));
+
         System.out.println("== R3-7 接线守卫：闸门被删即红 ==");
         String eng = readFile("/workspace/promo-wpaforge/app/src/main/java/"
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");

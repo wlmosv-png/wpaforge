@@ -497,13 +497,24 @@ public final class R3AuditProbe {
         if (eng == null || svc == null) { notRun("源码扫描", "源码不可读"); return; }
 
         // 明文进日志：找 onLog(... c.password ...)
+        // 复核修正：原来用「onLog 之后 4 行」的窗口扫描 —— 会把
+        // `Redact.pwAt(cursor, c.password)` 这种**已脱敏**的实参误判成明文。
+        // 现在按括号配平取 onLog(...) 的实参段，并先剥掉 Redact.pw/pwAt 调用。
         int leak = 0;
-        String[] engLines = eng.split("\n");
-        for (int i = 0; i < engLines.length; i++) {
-            if (!engLines[i].contains("onLog(")) continue;
-            StringBuilder win = new StringBuilder();
-            for (int k = i; k < Math.min(engLines.length, i + 4); k++) win.append(engLines[k]).append(' ');
-            if (win.toString().contains("c.password") || win.toString().contains("a.password")) leak++;
+        int scanAt = 0;
+        while ((scanAt = eng.indexOf("onLog(", scanAt)) >= 0) {
+            int open = scanAt + "onLog(".length() - 1;
+            int depth = 0;
+            StringBuilder arg = new StringBuilder();
+            for (int k = open; k < eng.length() && k < open + 600; k++) {
+                char c = eng.charAt(k);
+                if (c == '(') depth++;
+                arg.append(c);
+                if (c == ')') { depth--; if (depth == 0) break; }
+            }
+            String a = stripRedacted(arg.toString());
+            if (a.contains("c.password") || a.contains("a.password")) leak++;
+            scanAt++;
         }
         if (leak > 0) {
             violation("S7-1", "明文口令进入任务日志文件（生产代码 " + leak + " 处）",
@@ -642,6 +653,27 @@ public final class R3AuditProbe {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** 剥掉 Redact.pw(...) / Redact.pwAt(...) 的整段调用（那些是允许的脱敏形式）。 */
+    private static String stripRedacted(String arg) {
+        StringBuilder out = new StringBuilder();
+        int i = 0;
+        while (i < arg.length()) {
+            int k = arg.indexOf("Redact.pw", i);
+            if (k < 0) { out.append(arg.substring(i)); break; }
+            out.append(arg, i, k);
+            int j = arg.indexOf('(', k);
+            if (j < 0) { out.append(arg.substring(k)); break; }
+            int depth = 0, m = j;
+            for (; m < arg.length(); m++) {
+                char c = arg.charAt(m);
+                if (c == '(') depth++;
+                else if (c == ')') { depth--; if (depth == 0) break; }
+            }
+            i = Math.min(m + 1, arg.length());
+        }
+        return out.toString();
     }
 
     private static int count(String hay, String needle) {

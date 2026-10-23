@@ -2004,8 +2004,13 @@ public final class CrackEngine {
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
                 costMeter.record(itemMs, a.verdict.name(), a.confirmedBy,
                         statPrepMs, statProbeMs, statPollMs, statLogMs, statRounds);
+                // 复核补充：把本条候选的**窗口隔离状态**一并写进判词尾巴。
+                // 原来 isolated 只进 detail（界面），任务日志里看不到 ——
+                // 事后无法回答「这次日志通道到底可不可用、有没有被污染」。
                 recentVerdicts.addLast(verdictTag(a.attemptId, cursor, c.password,
-                        a.verdict, a.confirmedBy));
+                        a.verdict, a.confirmedBy)
+                        + L.s("·窗口", "·win")
+                        + (a.logWindow == null ? "未采集" : a.logWindow.reason));
                 while (recentVerdicts.size() > 6) recentVerdicts.removeFirst();
                 String costLine = costMeter.takeSummary();
                 if (costLine != null) l.onLog("  " + costLine);

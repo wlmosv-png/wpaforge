@@ -218,6 +218,22 @@ public class R10InvariantTest {
                 "#1 #2d7116(len=1)=!通道",
                 CrackEngine.verdictTag(1, "x", CrackEngine.Verdict.ERROR, ""));
 
+        // ─────────── I9（复核补充）───────────
+        System.out.println("== I9 窗口隔离状态必须进持久化判词（不只在 detail/界面）==");
+        if (code != null) {
+            ok("判词尾巴带窗口状态（可事后判断日志通道是否可用/被污染）",
+                    code.contains("a.logWindow == null ? \"未采集\" : a.logWindow.reason"));
+            ok("窗口状态与 attemptId 同处一条判词尾巴",
+                    code.contains("verdictTag(a.attemptId, cursor, c.password"));
+            ok("attemptId 进判词（不是只在 detail）", code.contains("verdictTag(a.attemptId"));
+        }
+        ok("窗口状态的四种取值可枚举（不撒谎）",
+                "ok".equals(AttemptMarker.evaluate(MINE, true, true, mk(MINE) + "\nx").reason)
+                        && "no-marker".equals(AttemptMarker.evaluate(MINE, true, true, "x").reason)
+                        && "foreign".equals(AttemptMarker.evaluate(MINE, true, true,
+                                mk(MINE) + "\n" + mk(OTHER) + "\n").reason)
+                        && "id-invalid".equals(AttemptMarker.evaluate(null, true, true, "x").reason));
+
         // ─────────── I8（复核新增）───────────
         System.out.println("== I8 未加固的旁路判定链不得被接线 ==");
         String[] banned = {"RootProber.tryOne", "RootProber.probe", "RootProber.crack",

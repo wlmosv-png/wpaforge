@@ -91,6 +91,19 @@ public class CrackService extends Service {
     private android.view.WindowManager keepAliveWm;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
+    /**
+     * 保活静音音轨。
+     *
+     * <p>为什么需要它（2026-10-23 实测定论）：ColorOS 15 会冻结「没有可见窗口」
+     * 的后台进程 —— 实测后台时进程 CPU 10 秒消耗 0 ticks，su 调用随之超时，
+     * 任务停滞。前台服务 + WakeLock + 待机桶 EXEMPTED 全都拦不住。
+     *
+     * <p>而**正在播放媒体**的进程属于另一个待遇档位，系统不冻它。
+     * 这里持续写入全 0（完全无声）的 PCM，不申请音频焦点，不会影响其它 App 出声。
+     */
+    private android.media.AudioTrack silentTrack;
+    private Thread silentThread;
+    private volatile boolean silentRunning = false;
     private List<Candidate> currentDict = new ArrayList<>();
     private long taskStartAt;
     /** 上次把 offset 写盘的时刻（节流用） */
@@ -138,7 +151,17 @@ public class CrackService extends Service {
         // 这里捕获它并降级为普通后台服务 —— 功能仍可用，只是不如
         // 前台服务稳（系统可能更早回收）。
         try {
-            startForeground(NOTI_ID, buildNotification(L.s("准备中", "Preparing"), L.s("正在初始化…", "Initialising…"), 0, 0));
+            Notification pre = buildNotification(L.s("准备中", "Preparing"),
+                    L.s("正在初始化…", "Initialising…"), 0, 0);
+            if (Build.VERSION.SDK_INT >= 29) {
+                // 必须与 manifest 的 foregroundServiceType 一致；
+                // mediaPlayback 是为了让系统把本进程当「正在放媒体」，避免后台被冻结。
+                startForeground(NOTI_ID, pre,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                                | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(NOTI_ID, pre);
+            }
             foregroundOk = true;
         } catch (Exception e) {
             foregroundOk = false;
@@ -310,6 +333,86 @@ public class CrackService extends Service {
                 wifiLock.acquire();
             }
         } catch (Throwable ignored) {}
+
+        startSilentAudio();
+    }
+
+    /**
+     * 启动静音音轨（保活最后一层）。
+     *
+     * <p>实测（2026-10-23）：ColorOS 15 会把「没有可见窗口」的后台进程冻死 ——
+     * 后台时进程 CPU 10 秒消耗 0 ticks，su 调用随之超时、任务停滞。
+     * 前台服务 + WakeLock + 待机桶 EXEMPTED 全都拦不住；而本机的
+     * 1x1 悬浮窗 addView 一直抛异常（不可用）。
+     *
+     * <p>持续播放**无声** PCM 让进程被系统归入「媒体播放」档位，从而不被冻结。
+     * 不申请音频焦点，不会打断其它 App 的播放。
+     *
+     * <p>任何一步失败都静默降级 —— 它只是加分项，绝不能影响主流程。
+     */
+    private void startSilentAudio() {
+        if (silentRunning) return;
+        try {
+            if (silentTrack == null) {
+                int sr = 8000;
+                int minBuf = android.media.AudioTrack.getMinBufferSize(sr,
+                        android.media.AudioFormat.CHANNEL_OUT_MONO,
+                        android.media.AudioFormat.ENCODING_PCM_16BIT);
+                if (minBuf <= 0) minBuf = 4096;
+                silentTrack = new android.media.AudioTrack.Builder()
+                        .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                                .build())
+                        .setAudioFormat(new android.media.AudioFormat.Builder()
+                                .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                                .setSampleRate(sr)
+                                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                                .build())
+                        .setBufferSizeInBytes(minBuf)
+                        .setTransferMode(android.media.AudioTrack.MODE_STREAM)
+                        .build();
+            }
+            silentTrack.play();
+            silentRunning = true;
+            final short[] buf = new short[400];
+            silentThread = new Thread(() -> {
+                while (silentRunning) {
+                    try {
+                        silentTrack.write(buf, 0, buf.length);
+                    } catch (Throwable t) {
+                        break;
+                    }
+                }
+            }, "wpaforge-silent-audio");
+            silentThread.setDaemon(true);
+            silentThread.start();
+            log(L.s("已启用静音音频保活（防止后台被系统冻结）",
+                    "silent-audio keep-alive enabled (prevents background freeze)"));
+        } catch (Throwable t) {
+            silentRunning = false;
+            log(L.s("静音音频保活不可用: ", "silent-audio keep-alive unavailable: ")
+                    + t.getClass().getSimpleName());
+        }
+    }
+
+    private void stopSilentAudio() {
+        silentRunning = false;
+        try {
+            if (silentThread != null) {
+                silentThread.interrupt();
+                silentThread = null;
+            }
+        } catch (Throwable ignored) {}
+        try {
+            if (silentTrack != null) {
+                if (silentTrack.getPlayState() == android.media.AudioTrack.PLAYSTATE_PLAYING) {
+                    silentTrack.stop();
+                }
+                silentTrack.release();
+                silentTrack = null;
+            }
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -335,31 +438,55 @@ public class CrackService extends Service {
                 keepAliveWm = (android.view.WindowManager)
                         getSystemService(android.content.Context.WINDOW_SERVICE);
             }
-            if (keepAliveWm == null) return;
-            keepAliveOverlay = new android.view.View(this);
-            android.view.WindowManager.LayoutParams lp =
-                    new android.view.WindowManager.LayoutParams(
-                            1, 1,
-                            android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                                    | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                                    | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                            android.graphics.PixelFormat.TRANSPARENT);
-            lp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
-            lp.x = 0;
-            lp.y = 0;
-            keepAliveWm.addView(keepAliveOverlay, lp);
-            log(L.s("已显示保活悬浮窗（1×1 透明，防止后台被系统冻结）",
-                    "keep-alive overlay shown (1x1 transparent)"));
+            // ★ 关键修复（2026-10-23 实测定论）★
+            // 本方法从工作线程 wpaforge-crack 调用，而 WindowManager.addView()
+            // 内部会 new ViewRootImpl -> new Handler，要求线程已 Looper.prepare()。
+            // 工作线程没有 Looper，因此稳定抛：
+            //   java.lang.RuntimeException: Can't create handler inside thread
+            //   Thread[wpaforge-crack,5,main] that has not called Looper.prepare()
+            // 异常被 catch(Throwable) 吞成一行「悬浮窗不可用: RuntimeException」——
+            // 于是保活悬浮窗从上线起一次都没成功，后台无可见窗口 -> ColorOS 冻死进程
+            // -> su 调用超时 -> 任务停滞（用户现象：切出去就不跑了）。
+            // 正解：addView 一律 post 到主线程执行。
+            final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+            main.post(() -> {
+                try {
+                    if (keepAliveOverlay != null) return;
+                    if (keepAliveWm == null) return;
+                    keepAliveOverlay = new android.view.View(CrackService.this);
+                    android.view.WindowManager.LayoutParams lp =
+                            new android.view.WindowManager.LayoutParams(
+                                    1, 1,
+                                    android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                                    android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                            | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                            | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                                    android.graphics.PixelFormat.TRANSPARENT);
+                    lp.gravity = android.view.Gravity.TOP | android.view.Gravity.START;
+                    lp.x = 0;
+                    lp.y = 0;
+                    keepAliveWm.addView(keepAliveOverlay, lp);
+                    log(L.s("已显示保活悬浮窗（1×1 透明，防止后台被系统冻结）",
+                            "keep-alive overlay shown (1x1 transparent)"));
+                } catch (Throwable t) {
+                    log(L.s("悬浮窗不可用: ", "overlay unavailable: ")
+                            + android.util.Log.getStackTraceString(t));
+                }
+            });
         } catch (Throwable t) {
-            log(L.s("悬浮窗不可用: ", "overlay unavailable: ") + t.getClass().getSimpleName());
+            log(L.s("悬浮窗不可用: ", "overlay unavailable: ")
+                    + android.util.Log.getStackTraceString(t));
         }
     }
 
     private void hideKeepAliveOverlay() {
         try {
-            if (keepAliveWm != null && keepAliveOverlay != null) {
-                keepAliveWm.removeView(keepAliveOverlay);
+            // 与 addView 同理：removeView 也必须在有 Looper 的线程。
+            final android.view.View v = keepAliveOverlay;
+            final android.view.WindowManager wm = keepAliveWm;
+            if (wm != null && v != null) {
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .post(() -> { try { wm.removeView(v); } catch (Throwable ignored) {} });
             }
         } catch (Throwable ignored) {
         } finally {
@@ -369,6 +496,7 @@ public class CrackService extends Service {
 
     private void releaseLocks() {
         hideKeepAliveOverlay();
+        stopSilentAudio();
         try {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();

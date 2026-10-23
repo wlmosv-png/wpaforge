@@ -26,7 +26,7 @@ public class BackoffPolicyTest {
         ok("只有 2 条", BackoffPolicy.suggestDelayMs(new long[]{9999, 9999}, 2) == 0);
 
         System.out.println("== 连续偏慢触发 ==");
-        long[] slow = {7000, 8000, 9000};
+        long[] slow = {13000, 14000, 15000};
         long d = BackoffPolicy.suggestDelayMs(slow, 3);
         ok("连续 3 条慢 -> 有冷却", d > 0);
         ok("冷却落在 [下限, 上限]",

@@ -233,6 +233,16 @@ public final class CrackEngine {
      * @param m1Count     本次尝试里收到 M1 的次数
      * @param successSeen 是否已看到**属于目标 BSSID** 的握手完成（Key negotiation completed）
      */
+    /**
+     * 每条候选的耗时分解串（定位「时快时慢」用）。
+     * 形如 {@code  [关联 5200ms / M1 5400ms / 广播 -] }
+     */
+    static String timing(long tAssocMs, long tM1Ms, long tAuthMs) {
+        return "  [关联 " + (tAssocMs < 0 ? "-" : tAssocMs + "ms")
+                + " / M1 " + (tM1Ms < 0 ? "-" : tM1Ms + "ms")
+                + " / 广播 " + (tAuthMs < 0 ? "-" : tAuthMs + "ms") + "]";
+    }
+
     public static boolean m1RetryImpliesWrongKey(int m1Count, boolean successSeen) {
         return !successSeen && m1Count >= 2;
     }
@@ -1075,6 +1085,12 @@ public final class CrackEngine {
         long m1FirstSeenAt = 0L;
         // 认证失败广播的“武装”时刻（第三级早退的 120ms 复核用）
         long authArmedAt = 0L;
+        // ---- 每条候选的耗时分解（2026-10-23 加：用来定位“时快时慢”）----
+        // 记三个关键节点，判定时附在结果里，界面/日志直接可见：
+        //   关联 = 看到「目标 SSID 正在关联」的时刻
+        //   M1   = 收到握手第 1 帧的时刻
+        //   广播 = 收到系统「认证失败」广播的时刻
+        long tAssocMs = -1L, tM1Ms = -1L, tAuthMs = -1L;
         // 是否已观察到「系统离开了命令前的那条连接」——回连判据的前置条件
         boolean leftBaseline = false;
         // 是否出现过「连着目标但 netId 对不上」——只用于收尾时把话说清楚，不作否决
@@ -1295,7 +1311,10 @@ public final class CrackEngine {
                     }
                     logRounds++;
                     boolean tried = WpaLogReader.sawAssociateFor(wlog, target.ssid);
-                    if (tried) sawAttempt = true;
+                    if (tried) {
+                        sawAttempt = true;
+                        if (tAssocMs < 0) tAssocMs = SystemClock.uptimeMillis() - t0;
+                    }
 
                     // 捕获握手第 1 帧 (RX message 1 of 4-Way Handshake) -> 动态延长看门狗，给握手完成留足时间
                     if (tried && !m1Extended && WpaLogReader.sawHandshakeM1(wlog)) {
@@ -1336,6 +1355,7 @@ public final class CrackEngine {
                                     target.ssid)
                                 && WifiAuthFailureWatcher.authErrorImpliesWrongKey(
                                     authWatch.lastErrorAt(), commandAt, succ)) {
+                            if (tAuthMs < 0) tAuthMs = SystemClock.uptimeMillis() - t0;
                             if (authArmedAt == 0L) {
                                 authArmedAt = SystemClock.uptimeMillis();
                             } else if (SystemClock.uptimeMillis() - authArmedAt >= 120L) {
@@ -1343,7 +1363,8 @@ public final class CrackEngine {
                                 android.util.Log.i(TAG, "早期失败(第三级): 系统广播认证失败");
                                 return new Attempt(password, Verdict.AUTH_FAIL, ms,
                                         L.s("系统报告认证失败 → 密码错误",
-                                            "system reported auth failure -> wrong passphrase"),
+                                            "system reported auth failure -> wrong passphrase")
+                                                + timing(tAssocMs, tM1Ms, tAuthMs),
                                         "authcast");
                             }
                         }
@@ -1367,6 +1388,7 @@ public final class CrackEngine {
                             : (tried ? WpaLogReader.countHandshakeM1(wlog) : 0);
 
                     if (m1SeenForTarget) {
+                        if (tM1Ms < 0) tM1Ms = SystemClock.uptimeMillis() - t0;
                         if (m1FirstSeenAt == 0L) m1FirstSeenAt = SystemClock.uptimeMillis();
                         boolean negotiated = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
                         if (m1SilentImpliesWrongKey(true, negotiated,
@@ -1377,7 +1399,8 @@ public final class CrackEngine {
                                     + EARLY_FAIL_SILENCE_MS + "ms 无握手进展");
                             return new Attempt(password, Verdict.AUTH_FAIL, ms,
                                     L.s("M1 之后握手无进展 → 密码错误",
-                                        "no handshake progress after M1 -> wrong passphrase"),
+                                        "no handshake progress after M1 -> wrong passphrase")
+                                            + timing(tAssocMs, tM1Ms, tAuthMs),
                                     "m1silent");
                         }
                     }
@@ -1399,7 +1422,8 @@ public final class CrackEngine {
                                     + " 次（握手无进展）");
                             return new Attempt(password, Verdict.AUTH_FAIL, ms,
                                     L.s("M1 被重发（握手无进展）→ 密码错误",
-                                        "M1 retransmitted (no handshake progress) -> wrong passphrase"),
+                                        "M1 retransmitted (no handshake progress) -> wrong passphrase")
+                                            + timing(tAssocMs, tM1Ms, tAuthMs),
                                     "m1retry");
                         }
                     }

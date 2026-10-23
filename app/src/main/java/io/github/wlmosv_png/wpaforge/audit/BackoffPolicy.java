@@ -14,8 +14,20 @@ package io.github.wlmosv_png.wpaforge.audit;
  */
 public final class BackoffPolicy {
 
-    /** 单条超过这个时长视为「偏慢」 */
-    public static final long SLOW_MS = 6000L;
+    /**
+     * 单条超过这个时长视为「偏慢」。
+     *
+     * <p><b>2026-10-23 实测修正：原值 6000ms 定错了，反而制造了「越跑越慢」。</b>
+     * 真机数据：本机一条候选的**正常**净耗时就是 6~7 秒（connect→M1 约 3.8s，
+     * 加上前置 forget/netId/logcat 清空 ~0.5s、判定复核 0.6s、收尾若干）。
+     * 于是「连续 3 条 >= 6 秒」这个条件在正常运行时**必然成立**，
+     * 每条都被插 0.4~1.5 秒冷却 → 耗时更长 → 更容易再次触发 —— 恶性循环。
+     * 用户日志实证：20 秒内触发 2 次冷却。
+     *
+     * <p>新值取 12000ms：显著高于正常耗时（约 1.8 倍），也高于单发时限 10 秒，
+     * 只有真正出现 AP 侧退避（握手迟迟不回、关联被拒后重试）才会命中。
+     */
+    public static final long SLOW_MS = 12000L;
     /** 至少攒够这么多条才判断 */
     public static final int MIN_SAMPLES = 3;
     /** 冷却下限 / 上限（随机取值，避免固定节奏被 AP 侧规律识别） */

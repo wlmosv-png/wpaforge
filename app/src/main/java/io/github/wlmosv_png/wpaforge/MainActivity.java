@@ -468,7 +468,9 @@ public class MainActivity extends Activity {
                     : L.s("▶ 开始破解", "▶ Start"));
         }
         if (pauseBtn != null) {
-            boolean canPause = running;
+            // paused 时按钮文案会变成「继续」，但旧写法只按 running 判断可用性，
+            // 于是「已暂停」的任务永远点不动「继续」——用户被卡死在暂停态。
+            boolean canPause = running || paused;
             pauseBtn.setEnabled(canPause);
             pauseBtn.setAlpha(canPause ? 1f : 0.4f);
             pauseBtn.setText(paused

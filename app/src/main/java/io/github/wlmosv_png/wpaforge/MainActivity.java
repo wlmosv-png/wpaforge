@@ -4315,8 +4315,12 @@ public class MainActivity extends Activity {
             meta.append(ms).append("ms");
         }
         if (lastTotal > 0) {
-            meta.append(L.s(" · 第 ", " · #")).append(lastTested)
-                    .append(" / ").append(lastTotal);
+            // lastTested 是「命中之前已完成的条数」，命中那条自己是第 +1 条
+            // （onProgress 在命中那条上不会被调用，所以它没被计入）。
+            // 2026-10-24 排查时就是这里先把我误导了一次：卡片写「第 10」，
+            // 而字典里第 10 条是 trustno1、第 11 条才是命中的那条。
+            meta.append(L.s(" · 第 ", " · #")).append(lastTested + 1)
+                    .append(" / ").append(lastTotal).append(L.s(" 条", ""));
         }
         hitMeta.setText(meta.toString());
         hitCard.setVisibility(View.VISIBLE);

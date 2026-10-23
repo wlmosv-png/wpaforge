@@ -314,12 +314,29 @@ public final class WpaLogReader {
     public static int countHandshakeM1For(String logcatOutput, String bssid) {
         if (bssid == null || bssid.isEmpty()) return 0;
         String want = bssid.trim().toLowerCase();
-        int n = 0;
+        // R2（2026-10-24）：按**不同时间戳**去重后计数 —— 重复事件（同一行被日志系统
+        // 重复投递、或被读取两次）不得被当成 AP 的重发。没有可识别时间戳的行按条计数
+        // （保留旧行为，便于合成用例）。
+        java.util.LinkedHashSet<String> stamps = new java.util.LinkedHashSet<>();
+        int noStamp = 0;
         for (LogEvent e : parse(logcatOutput)) {
             if (!"handshake_m1".equals(e.kind)) continue;
-            if (e.bssid != null && want.equalsIgnoreCase(e.bssid.trim())) n++;
+            if (e.bssid == null || !want.equalsIgnoreCase(e.bssid.trim())) continue;
+            String ts = timestampOf(e.raw);
+            if (ts == null) noStamp++;
+            else stamps.add(ts);
         }
-        return n;
+        return stamps.size() + noStamp;
+    }
+
+    /** logcat 行前缀时间戳 {@code MM-DD HH:MM:SS.mmm}；取不到返回 null。 */
+    private static final Pattern P_TS =
+            Pattern.compile("\\b\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\b");
+
+    static String timestampOf(String raw) {
+        if (raw == null) return null;
+        Matcher m = P_TS.matcher(raw);
+        return m.find() ? m.group(0) : null;
     }
 
     public static boolean sawNegotiated(String logcatOutput) {

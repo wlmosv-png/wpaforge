@@ -1055,8 +1055,6 @@ public final class CrackEngine {
         // 上面的成功判据会先返回 SUCCESS，不会造成漏判。
         boolean m1RetryArmed = false;
         long m1RetryArmedAt = 0L;
-        // 首次看到 M1 的时刻（第二级早退用）
-        long m1FirstSeenAt = 0L;
         // 认证失败广播的“武装”时刻（第三级早退的 120ms 复核用）
         long authArmedAt = 0L;
         // ---- 每条候选的耗时分解（2026-10-23 加：用来定位“时快时慢”）----
@@ -1441,21 +1439,17 @@ public final class CrackEngine {
                             : (tried ? WpaLogReader.countHandshakeM1(wlogSlice) : 0);
 
                     if (m1SeenForTarget) {
+                        // R2（2026-10-24）：这里原来会在「M1 之后静默 1200ms」时直接
+                        // 返回 AUTH_FAIL —— 那是**纯时间判据**：它只能证明「这段时间
+                        // 没观察到证据」，不能证明「观察到失败证据」（审计 S4-1：
+                        // 成功证据晚到 100ms 就被吞掉，把正确密码判负）。
+                        //
+                        // 现在这一段只留耗时/诊断记录，**不结案**。失败结论一律由下面
+                        // 的证据路径给出：AP 重发 M1（协议层观察）+ 120ms 复核窗口
+                        // （留给「那条 M1 只是丢包重传、密码其实正确」的余地）。
+                        // 谓词 m1SilentImpliesWrongKey / EARLY_FAIL_SILENCE_MS 保留，
+                        // 单测用它们表达「为什么不能单独用」。
                         if (tM1Ms < 0) tM1Ms = SystemClock.uptimeMillis() - t0;
-                        if (m1FirstSeenAt == 0L) m1FirstSeenAt = SystemClock.uptimeMillis();
-                        boolean negotiated = WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
-                        if (m1SilentImpliesWrongKey(true, negotiated,
-                                SystemClock.uptimeMillis() - m1FirstSeenAt,
-                                EARLY_FAIL_SILENCE_MS)) {
-                            long ms = SystemClock.uptimeMillis() - t0;
-                            android.util.Log.i(TAG, "早期失败(第二级): M1 后 "
-                                    + EARLY_FAIL_SILENCE_MS + "ms 无握手进展");
-                            return new Attempt(password, Verdict.AUTH_FAIL, ms,
-                                    L.s("M1 之后握手无进展 → 密码错误",
-                                        "no handshake progress after M1 -> wrong passphrase")
-                                            + timing(tAssocMs, tM1Ms, tAuthMs),
-                                    "m1silent");
-                        }
                     }
 
                     // ── 早期失败：M1 被重发（2026-10-23 真机实测定论）─────────────

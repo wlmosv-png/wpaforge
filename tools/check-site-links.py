@@ -93,7 +93,22 @@ elif mt.group(1) != "v" + name:
 else:
     ok("RELEASE.md tag = v%s" % name)
 
-# ---- 6) 可选：联网核对 Release 与资产 ----
+# ---- 6) 链接预览卡片：og:image 必须是绝对地址 ----
+# Telegram / Twitter / 微信抓链都要求绝对 URL；写成 content="og.png"
+# 会导致**投稿出去链接不出图**（点进去的人少一大截），而且不报错、很难发现。
+og = re.search(r'<meta property="og:image" content="([^"]+)"', page)
+if not og:
+    bad("落地页缺 og:image（投稿抓链不会出图）")
+elif not og.group(1).startswith("http"):
+    bad("og:image 是相对地址（%s）—— 抓链不认，必须绝对 URL" % og.group(1))
+else:
+    ok("og:image 是绝对地址")
+if 'property="og:title"' not in page:
+    bad("落地页缺 og:title")
+if 'property="og:url"' not in page:
+    bad("落地页缺 og:url")
+
+# ---- 7) 可选：联网核对 Release 与资产 ----
 if "--online" in sys.argv:
     import json, urllib.request
     tok = ""

@@ -1997,9 +1997,12 @@ public final class CrackEngine {
                 //   综上：收益小、副作用大、还会造成假失败，直接去掉。
                 boolean reported = false;
                 if (a.isSuccess()) {
+                    // 明文口令**不进日志文件**（用户既定决策：明文只允许在命中卡片里
+                    // 由用户主动开启）。日志里给可对照的脱敏标签（顺序号 + 哈希前 6 位）。
                     l.onLog(L.f("⚡ 密钥命中：%s（证据: %s）",
                             "candidate %s connected (via %s)",
-                            c.password, a.confirmedBy));
+                            io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(cursor, c.password),
+                            a.confirmedBy));
                     l.onAttemptResult(a);
                     hit = c.password;
                     reported = true;

@@ -86,7 +86,64 @@ public class RedactTest {
         eq("中文口令标签稳定", Redact.pw(cn), Redact.pw(cn));
 
         System.out.println();
+        System.out.println("== 明文不得进入日志（用户既定决策）==");
+        String eng = null;
+        try {
+            eng = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(
+                    "/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                            + "wpaforge/audit/CrackEngine.java")),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable ignored) {}
+        if (eng == null) {
+            System.out.println("  N/RUN 日志明文守卫（源码不可读）");
+        } else {
+            // 精确取 onLog(...) 的**实参括号段**（按括号配平），再看里面有没有明文变量。
+            // 不能用"附近几行"来判：邻近代码里的 c.password 会造成假阳性。
+            boolean leak = false;
+            int at = 0;
+            while ((at = eng.indexOf("onLog(", at)) >= 0) {
+                int i = at + "onLog(".length() - 1;
+                int depth = 0;
+                StringBuilder arg = new StringBuilder();
+                for (int k = i; k < eng.length() && k < i + 600; k++) {
+                    char c = eng.charAt(k);
+                    if (c == '(') depth++;
+                    arg.append(c);
+                    if (c == ')') { depth--; if (depth == 0) break; }
+                }
+                // 先剥掉 Redact.pw(...)/Redact.pwAt(...) 的整段调用（那是允许的脱敏形式），
+                // 再看实参里还有没有裸的明文变量 —— 只看"有没有 .password"会假阳性。
+                String a = stripRedactedCalls(arg.toString());
+                if (a.contains("c.password") || a.contains("a.password")) leak = true;
+                at++;
+            }
+            check("引擎的 onLog 实参不含明文口令", !leak);
+            check("命中判词改用脱敏标签", eng.contains("Redact.pwAt(cursor, c.password)"));
+        }
+
         System.out.println("口令脱敏: pass=" + pass + " fail=" + fail);
         if (fail > 0) System.exit(1);
+    }
+
+    /** 去掉 Redact.pw(...) / Redact.pwAt(...) 的整段调用（按括号配平）。 */
+    private static String stripRedactedCalls(String arg) {
+        StringBuilder out = new StringBuilder();
+        int i = 0;
+        while (i < arg.length()) {
+            int k = arg.indexOf("Redact.pw", i);
+            if (k < 0) { out.append(arg.substring(i)); break; }
+            out.append(arg, i, k);
+            int j = arg.indexOf('(', k);
+            if (j < 0) { out.append(arg.substring(k)); break; }
+            int depth = 0;
+            int m = j;
+            for (; m < arg.length(); m++) {
+                char c = arg.charAt(m);
+                if (c == '(') depth++;
+                else if (c == ')') { depth--; if (depth == 0) break; }
+            }
+            i = Math.min(m + 1, arg.length());
+        }
+        return out.toString();
     }
 }

@@ -72,7 +72,13 @@ public final class CrackEngine {
         AUTH_FAIL,
         /** 超时，没等到结论 → **不判成功** */
         TIMEOUT,
-        /** 目标不在扫描范围 → 这条无意义 */
+        /**
+         * 目标不在扫描范围 → 这条无意义。
+         *
+         * <p><b>当前没有生产出口</b>（历史遗留，仅测试引用）。保留是因为枚举是
+         * 内部契约、删除会影响既有测试；但**不要假设它会出现** ——
+         * 目标消失目前表现为 {@link #TIMEOUT} 或 {@link #UNKNOWN}。
+         */
         TARGET_GONE,
         /**
          * 当前确实连着目标，但**无法确认是不是这条候选造成的**。
@@ -102,6 +108,13 @@ public final class CrackEngine {
          * 显式无效状态，不允许被下游当成「某条合法尝试」。由 {@link #tryOne} 回填。
          */
         public String attemptId = "";
+        /**
+         * 窗口结束时的**归类码**（机器可读）：{@code not-attempted} /
+         * {@code on-target-unattributed} / {@code netid-conflict} /
+         * {@code channel-no-response} / {@code status-unclear} / {@code no-evidence}。
+         * 循环内提前结案的出口用 {@link #confirmedBy} 表示触发规则，此处留空。
+         */
+        public String reason = "";
         /**
          * 日志窗口元数据（R6）。{@code null} = 本阶段未采集。
          *
@@ -325,6 +338,52 @@ public final class CrackEngine {
     /** 供界面做环境诊断时取当前通道（可能为 null）。 */
     public ShellChannel getShellChannelForDiag() {
         return shell;
+    }
+
+    // -------------------------------------------------- 观察窗口结束后的归类（纯函数）
+
+    /** 看门狗到期时的归类结果：业务结论 + 机器可读的理由码。 */
+    public static final class DeadlineOutcome {
+        public final Verdict verdict;
+        /**
+         * 理由码：{@code not-attempted} / {@code on-target-unattributed} /
+         * {@code netid-conflict} / {@code channel-no-response} /
+         * {@code status-unclear} / {@code no-evidence}。
+         */
+        public final String reason;
+
+        DeadlineOutcome(Verdict v, String r) { this.verdict = v; this.reason = r; }
+    }
+
+    /**
+     * 观察窗口（看门狗）结束时的归类 —— **纯逻辑，可离线逐格穷举**。
+     *
+     * <h3>R3 的关键修正：到期 ≠ 密码错</h3>
+     * 旧实现在「等满时限、什么都没观察到」时也返回 {@code AUTH_FAIL}，
+     * 等于把「没有成功证据」当成「失败已被证明」。那条路径在整个引擎里
+     * 是**唯一**会产出「无证据失败结论」的地方，故单独抽成纯函数钉死。
+     *
+     * <p>现在它返回 {@link Verdict#TIMEOUT}（观察窗口结束、没有明确结论），
+     * 与「有可归因失败证据的 {@code AUTH_FAIL}」严格区分；
+     * 该值早已在枚举、判词标签与消费方（{@code BackoffPolicy} 明确把它排除在
+     * 「AP 的响应样本」之外）中存在，本次只是**给它接上真实生产路径**。
+     *
+     * @param notAttempted         命令未生效、本条候选没有被有效执行
+     * @param onTargetNow          结束时仍显示连着目标（无本次归属证据）
+     * @param suspectNetIdConflict 见过目标已连但与本次新建配置的 netId 不符
+     * @param channelDead          未见尝试且通道无响应
+     * @param statusShowsTarget    通道正常但结束时 status 显示目标、证据不足
+     */
+    public static DeadlineOutcome classifyDeadline(boolean notAttempted, boolean onTargetNow,
+                                                   boolean suspectNetIdConflict,
+                                                   boolean channelDead,
+                                                   boolean statusShowsTarget) {
+        if (notAttempted) return new DeadlineOutcome(Verdict.ERROR, "not-attempted");
+        if (onTargetNow) return new DeadlineOutcome(Verdict.UNKNOWN, "on-target-unattributed");
+        if (suspectNetIdConflict) return new DeadlineOutcome(Verdict.UNKNOWN, "netid-conflict");
+        if (channelDead) return new DeadlineOutcome(Verdict.UNKNOWN, "channel-no-response");
+        if (statusShowsTarget) return new DeadlineOutcome(Verdict.UNKNOWN, "status-unclear");
+        return new DeadlineOutcome(Verdict.TIMEOUT, "no-evidence");
     }
 
     // ------------------------------------------------------------------ 前置检查
@@ -1092,6 +1151,29 @@ public final class CrackEngine {
             // 实测**反而更慢**：合并后 79ms/轮，分开只要 44ms/轮。
             // 原因是日志那一半有 33KB，塞进同一个管道会和 status 抢缓冲、互相等。
             // 回退成两条独立调用。（日志本身改用服务端预过滤，见 WpaLogReader。）
+            // ---- R3：本轮日志事实，与 status 同轮一起看 ----
+            //
+            // 为什么必须读在状态判据之前：同一个轮次里，「系统回连了别的网络」与
+            // 「日志里目标的握手已完成」可能同时成立（日志是窗口，status 是瞬时）。
+            // 原来日志段排在回连出口之后，本轮日志还没读就已经 return AUTH_FAIL ——
+            // 成功证据被失败判据抢答（审计 S2-3）。现在证据先读齐、再按优先级判。
+            long statLog0 = SystemClock.uptimeMillis();
+            String wlog = WpaLogReader.read(shell, 400);
+            lastWindow = AttemptMarker.evaluate(attemptId, clearRes.ok(), markerWritten, wlog);
+            statLogMs += SystemClock.uptimeMillis() - statLog0;
+            // 窗口证据是否可用：**必要条件**，不是任何结论的充分条件。
+            // 为假时不得使用日志证据（更不得把「没看到失败行」当成认证失败）。
+            boolean logWinUsable = lastWindow != null && lastWindow.evidenceUsable();
+            // R3：日志类判据**只在切片上跑** —— 切片 = 本条候选起点标记之后的部分。
+            // 这样「清空失败留下的陈旧行」「别人窗口的行」都不再可能被算到本条头上；
+            // 窗口不可用时切片为空，判据函数在其上只会得到 false（= 无证据，而非失败）。
+            String wlogSlice = logWinUsable ? AttemptMarker.sliceAfter(wlog, attemptId) : "";
+            /** R3：本条候选是否真的被有效执行过（轮级，失败类结论的归属前提） */
+            boolean exercised = false;
+            // 本轮是否已出现「目标的握手完成」——用于阻止失败判据抢答成功证据
+            boolean negotiatedThisRound = !wlogSlice.isEmpty()
+                    && WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
+
             String st = null;
             long statStatus0 = SystemClock.uptimeMillis();
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
@@ -1152,6 +1234,16 @@ public final class CrackEngine {
                                 + statusNetId + " this=" + targetNetId);
                     }
                 }
+                // ---- R3：归属基础 —— 「本条候选到底有没有被有效执行过」----
+                //
+                // 两条独立证据任一成立即可：
+                //   · 框架为本条命令建出了配置（targetNetId >= 0）= 命令确实生效
+                //   · 本次见过目标进入状态（sawAttempt，来自 status 或本窗口日志）
+                // 失败类结论都必须以它为前提：否则「系统自己回连了别的网络」「上一条
+                // 候选留下的失败广播」这类与本次无关的事件，会把一条**从未被执行**的
+                // 候选判成认证失败（审计 S2-2 / S6-1）。
+                exercised = sawAttempt || targetNetId >= 0;
+
                 // 成功判定走唯一的纯逻辑入口（SuccessRule）—— netId 不参与，
                 // 避免它因时序问题否决一次真实的命中（漏判）。
                 if (SuccessRule.isSuccess(target.ssid, info.ssid, info.state, info.ip)) {
@@ -1202,7 +1294,11 @@ public final class CrackEngine {
                     if (!onOtherNetwork) {
                         leftBaseline = true;
                     } else if (FailoverRule.looksLikeFailover(target.ssid, info.ssid, info.state,
-                            leftBaseline, SystemClock.uptimeMillis() - commandAt)) {
+                            leftBaseline, SystemClock.uptimeMillis() - commandAt,
+                            // 归属：本条候选确实被尝试过
+                            exercised,
+                            // 证据冲突：本轮已有目标的成功证据 → 交给成功判据，不抢答失败
+                            negotiatedThisRound)) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(回连): 系统已连上 " + info.ssid);
                         return new Attempt(password, Verdict.AUTH_FAIL, ms,
@@ -1234,12 +1330,6 @@ public final class CrackEngine {
             // 相当于每条候选白白多等一个轮询周期。
             // 一次 logcat 读只要 239ms（真机实测），付得起。
             {
-                long statLog0 = SystemClock.uptimeMillis();
-                String wlog = WpaLogReader.read(shell, 400);
-                // R6：本轮的窗口元数据（证据质量标注，不参与任何判定）
-                lastWindow = AttemptMarker.evaluate(attemptId, clearRes.ok(),
-                        markerWritten, wlog);
-                statLogMs += SystemClock.uptimeMillis() - statLog0;
                 if (wlog != null && !wlog.isEmpty()) {
                     // 预过滤之后输出里不会再有 "wpa_supplicant" 这个字样
                     // （那是 tag，-s 过滤后不打印），能读到非空行本身就是
@@ -1249,14 +1339,17 @@ public final class CrackEngine {
                         android.util.Log.i(TAG, "日志通道确认可读");
                     }
                     logRounds++;
-                    boolean tried = WpaLogReader.sawAssociateFor(wlog, target.ssid);
+                    // 日志事实一律受窗口闸约束：窗口不可用时，这条「关联行」
+                    // 可能来自上一条候选（审计 S3-2）。
+                    boolean tried = logWinUsable && WpaLogReader.sawAssociateFor(
+                            wlogSlice, target.ssid);
                     if (tried) {
                         sawAttempt = true;
                         if (tAssocMs < 0) tAssocMs = SystemClock.uptimeMillis() - t0;
                     }
 
                     // 捕获握手第 1 帧 (RX message 1 of 4-Way Handshake) -> 动态延长看门狗，给握手完成留足时间
-                    if (tried && !m1Extended && WpaLogReader.sawHandshakeM1(wlog)) {
+                    if (tried && !m1Extended && WpaLogReader.sawHandshakeM1(wlogSlice)) {
                         deadline = Math.max(deadline, SystemClock.uptimeMillis() + 2500L);
                         m1Extended = true;
                         android.util.Log.i(TAG, "捕获握手第 1 帧，看门狗延长 2.5s");
@@ -1265,7 +1358,7 @@ public final class CrackEngine {
                     // 必须校验**这个握手是目标的**：日志里同一时刻常常还有
                     // 系统回连别的网络并握手成功的记录，只判断「出现过协商完成」
                     // 会把别的网络算成命中（2026-10-22 假阳性事故）。
-                    if (tried && WpaLogReader.sawNegotiatedFor(wlog, target.bssid)) {
+                    if (tried && WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid)) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "命中(日志): 关联目标后完成协商");
                         return new Attempt(password, Verdict.SUCCESS, ms,
@@ -1289,8 +1382,11 @@ public final class CrackEngine {
                     // 再等 120ms 复核一次 —— 万一这条候选其实是对的，
                     // 这 120ms 里的成功判据会先返回 SUCCESS，不会漏判。
                     if (authWatch != null && authWatch.isRegistered()) {
-                        boolean succ = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
-                        if (WifiAuthFailureWatcher.ssidMatches(authWatch.lastErrorSsid(),
+                        boolean succ = WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
+                        // R3：同样要求「本条确实被尝试过」——上一条候选留下的认证失败
+                        // 广播可能恰好落进本条的窗口，若本条根本没被执行过，就不能采信。
+                        if (exercised
+                                && WifiAuthFailureWatcher.ssidMatches(authWatch.lastErrorSsid(),
                                     target.ssid)
                                 && WifiAuthFailureWatcher.authErrorImpliesWrongKey(
                                     authWatch.lastErrorAt(), commandAt, succ)) {
@@ -1318,18 +1414,18 @@ public final class CrackEngine {
                     // BSSID 缺失时才退回「见过目标的关联行」。
                     boolean targetBssidKnown = target.bssid != null && !target.bssid.isEmpty();
                     int m1ForTarget = targetBssidKnown
-                            ? WpaLogReader.countHandshakeM1For(wlog, target.bssid) : 0;
+                            ? WpaLogReader.countHandshakeM1For(wlogSlice, target.bssid) : 0;
                     boolean m1SeenForTarget = targetBssidKnown
                             ? (m1ForTarget >= 1)
-                            : (tried && WpaLogReader.sawHandshakeM1(wlog));
+                            : (tried && WpaLogReader.sawHandshakeM1(wlogSlice));
                     int m1CountForTarget = targetBssidKnown
                             ? m1ForTarget
-                            : (tried ? WpaLogReader.countHandshakeM1(wlog) : 0);
+                            : (tried ? WpaLogReader.countHandshakeM1(wlogSlice) : 0);
 
                     if (m1SeenForTarget) {
                         if (tM1Ms < 0) tM1Ms = SystemClock.uptimeMillis() - t0;
                         if (m1FirstSeenAt == 0L) m1FirstSeenAt = SystemClock.uptimeMillis();
-                        boolean negotiated = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
+                        boolean negotiated = WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
                         if (m1SilentImpliesWrongKey(true, negotiated,
                                 SystemClock.uptimeMillis() - m1FirstSeenAt,
                                 EARLY_FAIL_SILENCE_MS)) {
@@ -1350,7 +1446,7 @@ public final class CrackEngine {
                     // 归属保护：要求本次见过「目标 SSID 的关联行」，避免把
                     // 系统回连**别的**网络时产生的 M1 算到这条候选头上。
                     int m1Count = m1CountForTarget;
-                    boolean successSeen = WpaLogReader.sawNegotiatedFor(wlog, target.bssid);
+                    boolean successSeen = WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
                     if (m1RetryImpliesWrongKey(m1Count, successSeen)) {
                         if (!m1RetryArmed) {
                             m1RetryArmed = true;
@@ -1367,9 +1463,10 @@ public final class CrackEngine {
                         }
                     }
 
-                    if (WpaLogReader.sawWrongKeyFor(wlog, target.ssid)
-                            || (tried && (WpaLogReader.sawHandshakeFailure(wlog)
-                                    || WpaLogReader.sawAssocReject(wlog)))) {
+                    if (logWinUsable
+                            && (WpaLogReader.sawWrongKeyFor(wlogSlice, target.ssid)
+                                    || (tried && (WpaLogReader.sawHandshakeFailure(wlogSlice)
+                                            || WpaLogReader.sawAssocReject(wlogSlice))))) {
                         long ms = SystemClock.uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
                         return new Attempt(password, Verdict.AUTH_FAIL, ms,
@@ -1398,20 +1495,32 @@ public final class CrackEngine {
                 currentOnTarget = false;
             }
         }
+        // R3：归类走纯函数（可离线逐格穷举），失败/未知/无结论三类严格分开。
+        //   · not-attempted  → ERROR（命令没生效，**不是**密码错）
+        //   · 各类「证据不足」 → UNKNOWN
+        //   · 到期且无证据    → TIMEOUT（观察窗口结束，没有明确结论）
+        // 旧实现在最后一种情形返回 AUTH_FAIL —— 那是把「没有成功证据」当成
+        // 「失败已被证明」，是本次修复的核心根因之一。
+        DeadlineOutcome out = classifyDeadline(
+                targetNetId < 0 && !sawAttempt && channelAlive,          // 命令未生效
+                currentOnTarget,
+                suspectNetIdConflict,
+                !sawAttempt && !channelAlive,                            // 通道无响应
+                !sawAttempt && channelAlive && lastStatusSsid != null
+                        && target.ssid.equals(lastStatusSsid));
+
         String detail;
-        Verdict verdict;
-        // 「命令根本没生效」先摘出来：过了 4 轮（>400ms）框架都没给这个 SSID
-        // 建出配置，说明 connect-network 被悄悄丢掉了（它在忙时就是这样，
-        // 连输出都没有）。这条**不能当密码错** —— 真机表现为「对着正确的密码
-        // 跳过去」（2026-10-24 实报）。归到通道异常，用户能看出是环境问题。
-        if (targetNetId < 0 && !sawAttempt && channelAlive) {
+        if ("not-attempted".equals(out.reason)) {
+            // 「命令根本没生效」先摘出来：过了 4 轮（>400ms）框架都没给这个 SSID
+            // 建出配置，说明 connect-network 被悄悄丢掉了（它在忙时就是这样，
+            // 连输出都没有）。这条**不能当密码错** —— 真机表现为「对着正确的密码
+            // 跳过去」（2026-10-24 实报）。归到通道异常，用户能看出是环境问题。
             detail = L.s("连接命令似乎未生效：框架没有为本条候选建出配置"
                             + "（通道忙时 cmd wifi 会静默丢弃请求）。换个 AP 或稍后重试。",
                     "the connect command did not take effect: the framework created no "
                             + "config for this candidate (cmd wifi drops requests silently "
                             + "when busy). Try another AP, or retry later.");
-            verdict = Verdict.ERROR;
-        } else if (currentOnTarget) {
+        } else if ("on-target-unattributed".equals(out.reason)) {
             // **不能因为「现在连着目标」就判成功**。
             //
             // 这正是那批假阳性的来源：系统回连、旧连接残留、缓存凭据……
@@ -1420,32 +1529,31 @@ public final class CrackEngine {
             detail = L.s("当前连着目标，但没有本次连接的证据（可能是原有连接或缓存凭据）",
                     "on target now, but no evidence of a fresh connection "
                             + "(possibly pre-existing or cached credentials)");
-            verdict = Verdict.UNKNOWN;
-        } else if (suspectNetIdConflict) {
+        } else if ("netid-conflict".equals(out.reason)) {
             // 出现过「目标 + COMPLETED + IP，但 netId 对不上」。
             // 不判成功（可能是同名网络的回连或残留），但也不能当作「密码错」——
             // 如实报成不确定，让用户自己复核，而不是悄悄丢掉一次可能的命中。
             detail = L.s("出现过目标已连接的状态，但与本次新建配置的 netId 不符，无法确认归因",
                     "target showed connected, but its netId differs from the one created "
                             + "by this attempt - attribution unconfirmed");
-            verdict = Verdict.UNKNOWN;
-        } else if (!sawAttempt && !channelAlive) {
+        } else if ("channel-no-response".equals(out.reason)) {
             // 既没看到尝试、通道又完全不响应 —— 是通道/命令问题，不是密码错。
             // 归 UNKNOWN，避免把正确密码误报成错误。
             detail = L.s("命令未生效（通道无响应）",
                     "command had no effect (channel unresponsive)");
-            verdict = Verdict.UNKNOWN;
-        } else if (!sawAttempt && channelAlive
-                && lastStatusSsid != null && target.ssid.equals(lastStatusSsid)) {
+        } else if ("status-unclear".equals(out.reason)) {
             // 通道活着，但结束时 status 显示连着目标却始终没判定成功 ——
             // 可能是连接太慢或状态机没给出证据，保守归 UNKNOWN。
             detail = L.s("连接状态不明（通道正常但证据不足）",
                     "inconclusive (channel ok, insufficient evidence)");
-            verdict = Verdict.UNKNOWN;
         } else {
-            detail = L.s("未连上（已尝试）", "not connected (attempted)");
-            verdict = Verdict.AUTH_FAIL;
+            // R3：**不得**把「等满时限、没有可归因的失败证据」写成 AUTH_FAIL。
+            // 这一条只说明「本次观察窗口结束，没有得出结论」。
+            detail = L.s("观察窗口结束：未连上，且没有可归因的失败证据（这不等于密码错误）",
+                    "observation window ended: not connected and no attributable failure "
+                            + "evidence (this is NOT a proven wrong passphrase)");
         }
+        Verdict verdict = out.verdict;
 
         android.util.Log.i(TAG, "tryOneShell end: " + total + "ms sawAttempt=" + sawAttempt
                 + " channelAlive=" + channelAlive + " lastStatusSsid=" + lastStatusSsid
@@ -1459,7 +1567,9 @@ public final class CrackEngine {
                 statusRounds, channelAlive ? "通" : "断",
                 watcherHits);
 
-        return new Attempt(password, verdict, total, detail, "");
+        Attempt fin = new Attempt(password, verdict, total, detail, "");
+        fin.reason = out.reason;
+        return fin;
     }
 
     private boolean watcherRegistered() {
@@ -1930,11 +2040,15 @@ public final class CrackEngine {
                 if (a.verdict == Verdict.TIMEOUT) {
                     consecutiveTimeouts++;
                     if (consecutiveTimeouts == TIMEOUT_ALERT) {
+                        // 到期无结论（TIMEOUT）现在有真实生产路径：它既可能是通道问题，
+                        // 也可能只是这些候选没给出可归因的证据 —— 两种都要说清楚。
                         l.onLog(L.s(
-                                "连续多条超时 —— 通道可能没真正生效。"
+                                "连续多条「观察窗口结束、无结论」—— 可能是通道没真正生效，"
+                                + "也可能是这几条没有产生可归因的证据。"
                                 + "请检查授权/权限，或换一种执行方式。",
-                                "Several timeouts in a row - the channel may not be working. "
-                                + "Check permissions or switch execution mode."));
+                                "Several inconclusive attempts in a row - the channel may not "
+                                + "be working, or these candidates produced no attributable "
+                                + "evidence. Check permissions or switch execution mode."));
                     }
                 } else {
                     consecutiveTimeouts = 0;

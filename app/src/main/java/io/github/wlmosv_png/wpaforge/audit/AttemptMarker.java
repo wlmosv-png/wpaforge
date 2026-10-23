@@ -105,6 +105,36 @@ public final class AttemptMarker {
         return present(logText, attemptId) && !foreignMarkerAfter(logText, attemptId);
     }
 
+    /**
+     * 取「本候选起点标记**之后**」的日志切片 —— 日志类判据必须只在切片上跑。
+     *
+     * <h3>为什么光有 isolated 还不够</h3>
+     * {@code logcat -c} 失败时，缓冲里会留着**上一条候选**的行；这些行位于
+     * 本候选标记**之前**。只判断「有没有外来标记」看不出它们，判据函数又是对
+     * 整段文本做子串匹配（例如 {@code CTRL-EVENT-SSID-TEMP-DISABLED ssid="目标"}），
+     * 于是陈旧失败行照样能被算到本条候选头上（审计 S3-2）。
+     *
+     * <p>切片把归属变成**结构**而非假设：只有标记之后的行才可能属于本次尝试。
+     *
+     * @return 标记之后的部分（不含标记行本身）；找不到标记或 id 非法时返回 {@code ""}
+     *         —— 空切片等于「没有可用日志证据」，判据函数在其上只会得到 false。
+     */
+    public static String sliceAfter(String logText, String attemptId) {
+        String want = line(attemptId);
+        if (want == null || logText == null) return "";
+        int at = 0;
+        boolean found = false;
+        for (String raw : logText.split("\n", -1)) {
+            int len = raw.length() + 1;
+            if (found) { /* 已过标记行 */ }
+            else if (raw.contains(want)) { found = true; at += len; continue; }
+            if (found) break;
+            at += len;
+        }
+        if (!found) return "";
+        return at <= logText.length() ? logText.substring(at) : "";
+    }
+
     /** 文本里**最后一个**标记的 attemptId；没有标记返回 {@code null}。诊断用。 */
     public static String lastId(String logText) {
         if (logText == null) return null;

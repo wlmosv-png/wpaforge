@@ -1,5 +1,8 @@
 package io.github.wlmosv_png.wpaforge;
 
+import io.github.wlmosv_png.wpaforge.audit.AttemptId;
+import io.github.wlmosv_png.wpaforge.audit.BackoffPolicy;
+import io.github.wlmosv_png.wpaforge.audit.AttemptMarker;
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.FailoverRule;
 import io.github.wlmosv_png.wpaforge.audit.StatusParser;
@@ -87,6 +90,16 @@ public final class R3AuditProbe {
     }
 
     // ---------------------------------------------------------------- 合成素材
+    /**
+     * 模型里"本条候选"的固定 attemptId 与其标记行。
+     *
+     * <p>用来让**生产函数**（{@link AttemptMarker#sliceAfter} /
+     * {@link AttemptMarker#evaluate}）真正参与模型推演，而不是在模型里另写一套。
+     */
+    private static final String MID = AttemptId.of(
+            AttemptId.newRunId(1_764_000_000_000L, "LAB-TARGET", 0), 1);
+    private static String mk() { return AttemptMarker.line(MID); }
+
     private static final String TARGET = "LAB-TARGET";
     private static final String TARGET_BSSID = "02:00:00:00:00:0a";
 
@@ -202,10 +215,13 @@ public final class R3AuditProbe {
         // 来源 3：认证失败广播。只保留「最后一次」，无队列、无候选维度。
         ok("S1-c","广播源：判据是纯函数", WifiAuthFailureWatcher.authErrorImpliesWrongKey(2000, 1000, false));
         ok("S1-d","广播源：成功证据可压制它", !WifiAuthFailureWatcher.authErrorImpliesWrongKey(2000, 1000, true));
-        violation("S1-2", "广播源按「最近一次」取值，没有候选/任务维度",
+        // 已缓解（R3）：广播判据现在另加「本条确实被尝试过」前置（exercised），
+        // 因此"上一条候选的广播落在本条窗口 + 本条根本没执行"这条最危险的组合被堵住。
+        // 但广播本身仍无候选维度（只有 lastErrorAt/lastErrorSsid），故仍登记为残余。
+        violation("S1-2", "广播源仍按「最近一次」取值（已加 exercise 前置缓解）",
                 "WifiAuthFailureWatcher 只有 lastErrorAt/lastErrorSsid 两个 volatile；"
-                        + "归属仅靠 errorAt > commandAt + SSID 文本（SSID 读不到时 ssidMatches 直接放行）。"
-                        + "它是 ERROR，不是审计结论：任务维度归属缺失是设计缺口（R6）");
+                        + "归属 = errorAt > commandAt + 可选 SSID 文本（读不到 SSID 时不过滤）"
+                        + " + 本条已 exercise。仍无法把广播精确绑到某条候选（残余）");
 
         // 来源 4：ConnectivityManager 回调（NetworkWatcher）—— 已不参与判定。
         violation("S1-3", "判定已不读 watcher，但日志仍称「判定完全依赖系统回调」",
@@ -214,8 +230,11 @@ public final class R3AuditProbe {
                         + "「判定完全依赖系统回调…若回调拿不到 SSID，所有密码都会被判为无法确认」"
                         + "→ 用户据这条说明排查会走错方向");
 
-        ok("S1-4", "全部来源都没有 attemptId/runId（SCANNED：源码 0 命中）",
-                !sourceContains(projectRootOfThisRun(), "attemptId"));
+        // 已修复（R6 接线）：不再是「缺失」，而是「必须有」——接线被删即判红。
+        boolean wired = engineSrc().contains("AttemptId.newRunId(")
+                && engineSrc().contains("AttemptId.of(currentRunId, cursor)")
+                && engineSrc().contains("verdictTag(a.attemptId, cursor");
+        ok("S1-4", "尝试标识已接线（runId/attemptId 进判词；接线被删即红）", wired);
     }
 
     // ================================================================ S2
@@ -241,38 +260,33 @@ public final class R3AuditProbe {
         //   if (!onOtherNetwork) leftBaseline = true;
         boolean left = transcribeLeftBaseline(new String[]{ST_OFF, ST_OFF});
         note("命令时未连接（status=\"Wifi is not connected\"）→ leftBaseline", left);
-        if (left) {
-            violation("S2-1", "leftBaseline 在第 1 轮就为真：护栏形同虚设",
-                    "源码把「本轮没看到『连着别的网络且 COMPLETED』」当成「系统离开过原连接」。"
-                            + "手机在命令时本就未连接（本工具常态：先断开/重置 Wi-Fi）时，"
-                            + "该条件第 1 轮即成立 → 回连判据只剩「≥2.5 秒 + 别的网络 COMPLETED」两个条件");
-        }
+        // 已修复（R3）：leftBaseline 依然**不是**「离开过命令前那条连接」的证明，
+        // 但回连判据现在另有归属前置（attemptExercised）与成功证据抢答闸，
+        // 「护栏空转」不再直接导致错误结论。这里钉住修复后的契约本身。
+        ok("S2-1", "无 exercise 证据时回连判据一律不成立（护栏空转不再致错）",
+                left && !FailoverRule.looksLikeFailover(TARGET, "HomeWiFi", "COMPLETED",
+                        left, 5000, false, false));
+        note("残余（设计取舍，非违规）", "leftBaseline 仍是弱观测；归属改由"
+                + " attemptExercised（命令生效 / 见过目标）承担");
 
         // 2.3 最坏组合：命令根本没生效 + 系统回连自家网络 → 该候选被记为「密码错」
         Result r = Loop.run(TARGET, TARGET_BSSID, 10_000L, -1L,
                 new Round(0, ST_OFF, null),
                 new Round(500, ST_OFF, ""),
-                new Round(3000, ST_OTHER, ""),
-                new Round(6000, ST_OTHER, ""));
+                Round.w(3000, ST_OTHER, ""),
+                Round.w(6000, ST_OTHER, ""));
         note("合成场景（命令被静默丢弃 + 3s 后回连自家网络）判定", r);
-        if (r.verdict == CrackEngine.Verdict.AUTH_FAIL) {
-            violation("S2-2", "「本条候选从未被尝试」也会被判成 AUTH_FAIL",
-                    "没有 targetNetId（配置没建出来）、没有 sawAttempt（日志里没有目标的关联行），"
-                            + "但 failover 出口在循环内、早于循环后的「未尝试→ERROR」分支"
-                            + "（CrackEngine:1135 vs 1325）→ 在「命令被静默丢弃 + 系统自行回连其它网络」"
-                            + "这一组合下，「未尝试」出口不可达，候选被记成「密码错」");
-        }
+        ok("S2-2", "「本条候选从未被尝试」不再被判成 AUTH_FAIL（改为 not-attempted/ERROR）",
+                r.verdict == CrackEngine.Verdict.ERROR
+                        && r.why.contains("not-attempted"));
 
         // 2.4 同一轮内 AUTH_FAIL 出口排在 SUCCESS 出口之前
         Result r2 = Loop.run(TARGET, TARGET_BSSID, 10_000L, -1L,
                 new Round(0, ST_OFF, ""),
-                new Round(3000, ST_OTHER, assoc() + m1(1) + negotiated()));
+                Round.w(3000, ST_OTHER, assoc() + m1(1) + negotiated()));
         note("同一轮同时含「回连证据」与「目标握手完成日志」", r2);
-        if (r2.verdict == CrackEngine.Verdict.AUTH_FAIL) {
-            violation("S2-3", "同一轮内 failover(AUTH_FAIL) 先于日志(SUCCESS) 判定",
-                    "循环体里 status 段（含 failover 出口）排在日志段（含 negotiated 出口）之前，"
-                            + "本轮日志内容还没被读取就已经 return AUTH_FAIL");
-        }
+        ok("S2-3", "同轮内成功证据优先，失败判据不得抢答",
+                r2.verdict == CrackEngine.Verdict.SUCCESS && "wpalog".equals(r2.by));
     }
 
     /** 转写 CrackEngine:1125-1133 的 leftBaseline 推导。 */
@@ -304,13 +318,23 @@ public final class R3AuditProbe {
                 WpaLogReader.sawAssociateFor(stale, TARGET)
                         && WpaLogReader.sawHandshakeFailure(stale));
 
-        violation("S3-1", "「缓冲里就是本次尝试」是未经校验的前提",
-                "WifiStateLog.clear() 返回 void、异常被吞、调用方不看结果（CrackEngine:877 附近）；"
-                        + "而全部日志类判据（成功/失败/M1 计数）都建立在这个前提上。"
-                        + "一旦某次清空失败，污染会延续到任务结束（缓冲累积）");
-        violation("S3-2", "陈旧缓冲的最短路径：第 1 轮就判 AUTH_FAIL",
-                "缓冲残留上一条候选的 wrong_key / 两次 M1 → round 1 即命中判据，"
-                        + "候选被记为「密码错」，实际上它还没被尝试过");
+        // 已修复（R6+R3）：① 清理结果现在被检查（clearChecked）；② 归属不再建立
+        // 在"缓冲已清空"这个假设上，而是建立在**起点标记的切片**上 —— 即使清空失败，
+        // 标记之前的陈旧行也会被切片排除。这里钉住这两条。
+        ok("S3-1", "清理结果被检查，且归属改由标记切片承担（不再依赖清空假设）",
+                engineSrc().contains("WifiStateLog.clearChecked(")
+                        && !engineSrc().contains("WifiStateLog.clear(shell);")
+                        && engineSrc().contains("AttemptMarker.sliceAfter("));
+        // 已修复（R3）：日志判据只在「本候选起点标记之后」的切片上跑，
+        // 标记之前（= 上一条候选残留）的失败行被结构性排除。
+        String staleRaw = wrongKey() + m1(1) + m1(2) + assoc() + mk() + "\n" + assoc();
+        String staleSlice = AttemptMarker.sliceAfter(staleRaw, MID);
+        ok("S3-2", "陈旧行（标记之前）不再能被算到本条候选头上",
+                !WpaLogReader.sawWrongKeyFor(staleSlice, TARGET)
+                        && WpaLogReader.countHandshakeM1For(staleSlice, TARGET_BSSID) == 0
+                        && WpaLogReader.sawAssociateFor(staleSlice, TARGET));
+        ok("S3-2b", "标记缺失时切片为空 → 日志证据一律不可用",
+                AttemptMarker.sliceAfter(staleRaw.replace(mk(), ""), MID).isEmpty());
 
         // 3.2 缺失 vs 未发生无法区分
         String empty = "";
@@ -339,9 +363,9 @@ public final class R3AuditProbe {
         // 时序：成功证据比静默阈值晚到时，候选已被判负
         Result late = Loop.run(TARGET, TARGET_BSSID, 10_000L, -1L,
                 new Round(0, ST_OFF, ""),
-                new Round(400, ST_TARGET_ASSOC, assoc() + m1(1)),
-                new Round(1650, ST_TARGET_ASSOC, assoc() + m1(1)),          // 静默阈值到
-                new Round(1750, stTarget(613), assoc() + m1(1) + negotiated())); // 真证据稍晚
+                Round.w(400, ST_TARGET_ASSOC, assoc() + m1(1)),
+                Round.w(1650, ST_TARGET_ASSOC, assoc() + m1(1)),           // 静默阈值到
+                Round.w(1750, stTarget(613), assoc() + m1(1) + negotiated())); // 真证据稍晚
         note("成功证据比静默阈值晚 100ms 到", late);
         if (late.verdict == CrackEngine.Verdict.AUTH_FAIL) {
             violation("S4-1", "正确密码的候选可被静默判据提前判负（漏判窗口）",
@@ -358,20 +382,24 @@ public final class R3AuditProbe {
         // 看门狗到期后的分类（TRANSCRIBED 末尾分支）
         Result silent = Loop.run(TARGET, TARGET_BSSID, 10_000L, 613L,
                 new Round(0, ST_OFF, ""),
-                new Round(2000, ST_OFF, assoc()),
-                new Round(5000, ST_OFF, assoc()),
-                new Round(9500, ST_OFF, assoc()));
+                Round.w(2000, ST_OFF, assoc()),
+                Round.w(5000, ST_OFF, assoc()),
+                Round.w(9500, ST_OFF, assoc()));
         note("看门狗到期：配置已建出、日志只看到目标关联行、无任何失败证据", silent);
-        if (silent.verdict == CrackEngine.Verdict.AUTH_FAIL) {
-            violation("S4-2", "「等满时限且无证据」被归类为 AUTH_FAIL",
-                    "循环后的 else 分支给出「未连上（已尝试）」→ AUTH_FAIL（CrackEngine:1365）。"
-                            + "这是把「没有成功证据」当成「失败已被证明」；"
-                            + "而 Verdict.TIMEOUT 在全仓已无生产者 → 超时语义被静默吞掉");
-        }
-        violation("S4-3", "TIMEOUT 是死枚举，run() 里仍在判它",
-                "Verdict.TIMEOUT / TARGET_GONE 无任何生产出口（仅测试引用）；"
-                        + "run() 的 consecutiveTimeouts/TIMEOUT_ALERT 分支永不执行（死代码），"
-                        + "BackoffPolicy.countable() 反而把「无证据的 AUTH_FAIL」当成 AP 的响应样本");
+        // 已修复（R3）：到期且无证据 → TIMEOUT（观察窗口结束），**不是**认证失败。
+        ok("S4-2", "「等满时限且无证据」归 TIMEOUT，不再冒充认证失败",
+                silent.verdict == CrackEngine.Verdict.TIMEOUT
+                        && silent.why.contains("no-evidence"));
+        // 已修复（R3）：TIMEOUT 有了**唯一且明确的生产出口** ——
+        // classifyDeadline 的 no-evidence 分支（观察窗口结束、没有明确结论）。
+        // 它不再与 AUTH_FAIL 混为一谈；BackoffPolicy 明确把 TIMEOUT 排除在
+        // 「AP 的响应样本」之外，run() 的连续超时告警因此变为可达。
+        CrackEngine.DeadlineOutcome noEv = CrackEngine.classifyDeadline(
+                false, false, false, false, false);
+        ok("S4-3", "TIMEOUT 有真实生产出口（到期且无证据），语义与 AUTH_FAIL 分离",
+                noEv.verdict == CrackEngine.Verdict.TIMEOUT
+                        && "no-evidence".equals(noEv.reason)
+                        && !BackoffPolicy.countable(CrackEngine.Verdict.TIMEOUT));
     }
 
     // ================================================================ S5
@@ -427,14 +455,16 @@ public final class R3AuditProbe {
         ok("S6-b","SSID 读不到时不作过滤（真实函数）",
                 WifiAuthFailureWatcher.ssidMatches(null, TARGET)
                         && WifiAuthFailureWatcher.ssidMatches("", TARGET));
-        violation("S6-1", "广播归属只有「时刻晚于命令」+ 可选 SSID，没有候选/任务标识",
-                "上一条候选命名的连接如果仍在重试，其认证失败广播会落在下一条候选的窗口内 → "
-                        + "被记成下一条的结果（无法从现有日志证明其归属）");
+        violation("S6-1", "广播归属仍无候选标识（已加 exercise 前置，残余同上）",
+                "上一条候选的认证失败广播若落进本条窗口，且本条确实被尝试过，"
+                        + "仍会被记成本条的结果 —— 现有信号里没有可用的候选维度");
 
         // 日志：陈旧缓冲（S3 已证）跨越候选甚至跨任务
-        violation("S6-2", "日志通道的隔离单位是「缓冲」而不是「候选」",
-                "logcat -c 是每条候选唯一且从未校验的隔离动作；清空失败一次即污染本任务后续全部候选"
-                        + "（缓冲只会累积）；跨任务只是同一前提的延长，没有额外的任务边界校验");
+        // 已修复（R3）：隔离单位从「缓冲」变成「标记之后的窗口切片」，
+        // 且起点标记带 attemptId → 归属到候选，而不是靠"刚才清过缓冲"这句话。
+        ok("S6-2", "日志隔离单位是「候选窗口切片」（带 attemptId），不再是缓冲",
+                engineSrc().contains("wlogSlice")
+                        && AttemptMarker.sliceAfter(mk() + "\nx", MID).contains("x"));
 
         // NetworkWatcher 的 events 有 run 级 clear（对比说明为什么它是唯一的正确做法）
         ok("S6-c","对照：NetworkWatcher 有 run 级 clear + 事件自带时刻（可归因）",
@@ -543,6 +573,17 @@ public final class R3AuditProbe {
 
     private static String projectRootOfThisRun() { return root; }
 
+    /** 引擎源码（懒加载，供多处断言共用）。 */
+    private static String ENG;
+    private static String engineSrc() {
+        if (ENG == null) {
+            ENG = readFile(root + "/app/src/main/java/io/github/wlmosv_png/wpaforge/"
+                    + "audit/CrackEngine.java");
+            if (ENG == null) ENG = "";
+        }
+        return ENG;
+    }
+
     private static boolean sourceContains(String root, String needle) {
         String s = readFile(root + "/app/src/main/java/io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (s == null) return false;
@@ -612,7 +653,19 @@ public final class R3AuditProbe {
         final long tMs;        // 相对命令发出的毫秒
         final String status;   // 该轮 cmd wifi status 输出（null = 该轮没读到，视为空）
         final String wlog;     // 该轮 logcat 预过滤输出（null = 没读到）
-        Round(long t, String status, String wlog) { this.tMs = t; this.status = status; this.wlog = wlog; }
+        /**
+         * 该轮**日志窗口是否可用**（R6 起生产会用 AttemptMarker.evaluate 算出来）。
+         * false = 起点标记不可见 / 检测到外来标记 → 日志证据一律不可用。
+         */
+        final boolean win;
+        Round(long t, String status, String wlog) { this(t, status, wlog, true); }
+        Round(long t, String status, String wlog, boolean win) {
+            this.tMs = t; this.status = status; this.wlog = wlog; this.win = win;
+        }
+        /** 便捷：把本候选的起点标记拼到日志文本前面（模拟"窗口从标记开始"）。 */
+        static Round w(long t, String status, String body) {
+            return new Round(t, status, mk() + "\n" + body);
+        }
     }
 
     static final class Result {
@@ -647,6 +700,14 @@ public final class R3AuditProbe {
                 r++;
                 if (round.tMs >= deadline) break;
 
+                // ---- 本轮日志切片（CrackEngine:1150-1170 转写）----
+                // 直接调用生产实现：先按标记算窗口元数据，再取「标记之后」的切片。
+                // 于是模型与生产在归属规则上是同一份代码，不是两份相似逻辑。
+                String raw = round.wlog == null ? "" : round.wlog;
+                AttemptMarker.Window win = AttemptMarker.evaluate(MID, true, true, raw);
+                boolean logWinUsable = win.evidenceUsable();
+                String slice = logWinUsable ? AttemptMarker.sliceAfter(raw, MID) : "";
+
                 // ---- status 段（CrackEngine:1020-1160）----
                 SupplicantParser.Info info = SupplicantParser.parse(
                         round.status == null ? "" : round.status);
@@ -670,13 +731,17 @@ public final class R3AuditProbe {
                 if (!onOtherNetwork) {
                     leftBaseline = true;                                 // CrackEngine:1130
                 } else if (FailoverRule.looksLikeFailover(target, info.ssid, info.state,
-                        leftBaseline, round.tMs)) {
+                        leftBaseline, round.tMs,
+                        // R3：归属前置 —— 本条候选确实被尝试过
+                        sawAttempt || targetNetId >= 0,
+                        // R3：本轮已有目标的成功证据 → 失败判据不得抢答
+                        !slice.isEmpty() && WpaLogReader.sawNegotiatedFor(slice, targetBssid))) {
                     return new Result(CrackEngine.Verdict.AUTH_FAIL, "failover",
-                            round.tMs, "回连判据（循环内，早于循环后分类）");
+                            round.tMs, "回连判据（已证明本条被尝试过，且本轮无目标成功证据）");
                 }
 
-                // ---- 日志段（CrackEngine:1165-1305）----
-                String wlog = round.wlog == null ? "" : round.wlog;
+                // ---- 日志段（CrackEngine:1310-1450）----
+                String wlog = slice;
                 if (!wlog.isEmpty()) {
                     boolean tried = WpaLogReader.sawAssociateFor(wlog, target);
                     if (tried) sawAttempt = true;
@@ -726,15 +791,14 @@ public final class R3AuditProbe {
             boolean channelAlive = false;
             for (Round round : rounds) if (round.status != null && !round.status.trim().isEmpty()) channelAlive = true;
 
-            if (targetNetId < 0 && !sawAttempt && channelAlive) {
-                return new Result(CrackEngine.Verdict.ERROR, "", timeoutMs, "未尝试（配置没建出来）");
-            } else if (currentOnTarget) {
-                return new Result(CrackEngine.Verdict.UNKNOWN, "", timeoutMs, "连着目标但无本次证据");
-            } else if (!sawAttempt && !channelAlive) {
-                return new Result(CrackEngine.Verdict.UNKNOWN, "", timeoutMs, "通道无响应");
-            } else {
-                return new Result(CrackEngine.Verdict.AUTH_FAIL, "", timeoutMs, "未连上（已尝试）");
-            }
+            // 与生产同源：直接调用 CrackEngine.classifyDeadline（纯函数）
+            CrackEngine.DeadlineOutcome out = CrackEngine.classifyDeadline(
+                    targetNetId < 0 && !sawAttempt && channelAlive,
+                    currentOnTarget,
+                    false,
+                    !sawAttempt && !channelAlive,
+                    !sawAttempt && channelAlive && target.equals(last.ssid));
+            return new Result(out.verdict, "", timeoutMs, "classifyDeadline:" + out.reason);
         }
     }
 

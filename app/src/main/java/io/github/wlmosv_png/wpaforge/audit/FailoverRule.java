@@ -33,16 +33,43 @@ public final class FailoverRule {
     private FailoverRule() {}
 
     /**
-     * @param targetSsid       目标 SSID
-     * @param statusSsid       本轮 status 读到的当前 SSID
-     * @param supplicantState  本轮 status 读到的 supplicant 状态
-     * @param leftBaseline     是否已观察到「系统离开了命令前那条连接」
-     * @param sinceCommandMs   距命令发出已过多少毫秒
-     * @return true = 判定为「目标这次没连上」
+     * **归属未知**的旧入口（保留兼容）。
+     *
+     * <p>它不看「本条候选是否真的被尝试过」，也不看「本轮是否已有目标的成功证据」——
+     * 生产判定**不得**再调用它，请用七参版本。
+     * 保留只为兼容历史调用点与既有测试；用 {@code looksLikeFailoverRaw} 的语义。
      */
     public static boolean looksLikeFailover(String targetSsid, String statusSsid,
                                             String supplicantState, boolean leftBaseline,
                                             long sinceCommandMs) {
+        return looksLikeFailover(targetSsid, statusSsid, supplicantState, leftBaseline,
+                sinceCommandMs, true, false);
+    }
+
+    /**
+     * R3 起使用的完整入口：把**归属前置条件**显式作为输入。
+     *
+     * <h3>为什么必须加这两个参数（2026-10-24 审计 S2-1/S2-2/S2-3）</h3>
+     * <ol>
+     *   <li><b>{@code attemptExercised}</b>：本判据的结论是「目标这次没连上」——
+     *       只有先证明「这次真的试过」，这句话才成立。否则「系统自己回连了别的网络」
+     *       这种与本次候选无关的事件，会把一条**从未被执行的候选**判成认证失败。</li>
+     *   <li><b>{@code targetNegotiatedThisRound}</b>：同一轮里若已出现「目标的握手完成」，
+     *       成功证据优先 —— 不得让失败判据抢在它前面结案（证据冲突时不得猜失败）。</li>
+     * </ol>
+     *
+     * @param leftBaseline  观测到过「至少一轮不是『连着别的网络且 COMPLETED』」。
+     *                      <b>注意</b>：它不是「离开了命令前那条连接」的证明 ——
+     *                      手机在命令时本就未连接（本工具常态）时它第一轮即为真，
+     *                      所以它**必须**与 {@code attemptExercised} 一起用。
+     * @return true = 判定为「目标这次没连上」
+     */
+    public static boolean looksLikeFailover(String targetSsid, String statusSsid,
+                                            String supplicantState, boolean leftBaseline,
+                                            long sinceCommandMs, boolean attemptExercised,
+                                            boolean targetNegotiatedThisRound) {
+        if (!attemptExercised) return false;                  // 没证明「试过」，就不能说「没连上」
+        if (targetNegotiatedThisRound) return false;          // 已有成功证据，交给成功判据
         if (!leftBaseline) return false;                      // 还没离开原连接，可能只是没切换完
         if (sinceCommandMs < MIN_WAIT_MS) return false;        // 给握手留出时间
         if (targetSsid == null || statusSsid == null || statusSsid.isEmpty()) return false;

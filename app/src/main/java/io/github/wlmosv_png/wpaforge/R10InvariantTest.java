@@ -218,6 +218,39 @@ public class R10InvariantTest {
                 "#1 #2d7116(len=1)=!通道",
                 CrackEngine.verdictTag(1, "x", CrackEngine.Verdict.ERROR, ""));
 
+        // ─────────── I10（打包范围）───────────
+        System.out.println("== I10 生产 dex 不得包含测试类与审计探针 ==");
+        String build = read("/workspace/promo-wpaforge/2-build-dex.sh");
+        if (build == null) {
+            System.out.println("  N/RUN 打包守卫（脚本不可读）");
+        } else {
+            ok("编译清单排除 *Test.java", build.contains("! -name \"*Test.java\""));
+            ok("编译清单排除 R3AuditProbe.java", build.contains("! -name \"R3AuditProbe.java\""));
+            ok("没有用 \"*Probe.java\" 这种会误伤 LanProbe.java 的写法",
+                    !build.contains("! -name \"*Probe.java\""));
+            // 按同一规则模拟一遍：谁进 dex、谁不进
+            java.io.File dir = new java.io.File("/workspace/promo-wpaforge/app/src/main/java");
+            java.util.List<java.io.File> all = new java.util.ArrayList<>();
+            collect(dir, all);
+            int included = 0, excludedTest = 0, excludedProbe = 0, lanProbeIncluded = 0;
+            for (java.io.File f : all) {
+                String n = f.getName();
+                if (n.endsWith("Test.java")) { excludedTest++; continue; }
+                if (n.equals("R3AuditProbe.java")) { excludedProbe++; continue; }
+                included++;
+                if (n.equals("LanProbe.java")) lanProbeIncluded++;
+            }
+            eq("测试类全部被排除（50 个）", 50, excludedTest);
+            eq("审计探针被排除（1 个）", 1, excludedProbe);
+            eq("生产源码文件数 = 总数 - 51", all.size() - 51, included);
+            eq("生产类 scan/LanProbe.java 仍在编译清单里（未被误伤）", 1, lanProbeIncluded);
+            ok("判定链核心类仍在编译清单里",
+                    included > 0 && includesFile(all, "CrackEngine.java")
+                            && includesFile(all, "AttemptMarker.java")
+                            && includesFile(all, "SuccessRule.java")
+                            && includesFile(all, "FailoverRule.java"));
+        }
+
         // ─────────── I9（复核补充）───────────
         System.out.println("== I9 窗口隔离状态必须进持久化判词（不只在 detail/界面）==");
         if (code != null) {
@@ -266,6 +299,17 @@ public class R10InvariantTest {
             sb.append(k >= 0 ? l.substring(0, k) : l).append('\n');
         }
         return sb.toString();
+    }
+
+    /** 某个文件名是否在「按构建规则筛过」的编译清单里。 */
+    private static boolean includesFile(java.util.List<java.io.File> all, String name) {
+        for (java.io.File f : all) {
+            String n = f.getName();
+            if (n.equals(name) && !n.endsWith("Test.java") && !n.equals("R3AuditProbe.java")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 在生产源码里搜一个符号（排除测试类与探针本身）。 */

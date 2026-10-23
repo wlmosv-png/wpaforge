@@ -68,7 +68,16 @@ echo "==> javac 编译"
 rm -rf "$OUT/classes"
 mkdir -p "$OUT/classes"
 # 源码 + aapt2 生成的 R.java（资源引用需要）
-SRC="$(find "$APP/src/main/java" -name "*.java") $(find "$OUT/gen" -name "*.java" 2>/dev/null)"
+#
+# 生产 dex **只编译应用代码**，排除两类不进发行包的源文件：
+#   · *Test.java        —— 50 个测试类（由门禁 /workspace/wpf-gate.sh 单独编译执行）
+#   · R3AuditProbe.java —— 判定链审计探针（审计工具，非产品功能）
+# 它们仍留在源码树里，门禁照常收集并执行（不从门禁排除、不删源文件），
+# 只是不再被编进 classes.dex。
+# 注意：**不能用 "*Probe.java"** —— 会误伤生产类 scan/LanProbe.java。
+SRC="$(find "$APP/src/main/java" -name "*.java" \
+        ! -name "*Test.java" ! -name "R3AuditProbe.java") \
+     $(find "$OUT/gen" -name "*.java" 2>/dev/null)"
 javac --release 17 -encoding UTF-8 \
   -cp "$ANDROID_JAR" \
   -d "$OUT/classes" $SRC

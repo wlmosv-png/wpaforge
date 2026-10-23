@@ -12,8 +12,8 @@
 | 项目（Linux） | `/workspace/promo-wpaforge` |
 | 同一目录（Android） | `/data/local/tmp/eta/promo-wpaforge`（**同一挂载**，Linux 改完 Android 立即可见） |
 | 分支 / HEAD | `main`（`git log -1` = 本轮 commit，**尚未推送远端**） |
-| 版本号 | `92` / `1.9.22`（`1-aapt2.sh` 里 `WP_VERSION_CODE` / `WP_VERSION_NAME`） |
-| 已装机 | `/data/local/tmp/wp.apk`（= `build/out/wpaforge-signed.apk`，2,947,896 B；92/1.9.22） |
+| 版本号 | `93` / `1.9.23`（唯一来源是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`；APK 清单不写 versionName，`Ver.java` 一律读 PackageManager，所以只改这一处） |
+| 已装机 | `/data/local/tmp/wp.apk`（2,947,896 B；sha256 `a50b12af…`；**93/1.9.23**） |
 | 门禁 | 41 个测试类 / **1003 例全过**（`/workspace/wpf-gate.sh`） |
 
 ---
@@ -166,9 +166,12 @@ framework 在 **11 毫秒内**就去连 B212/B214（该环境 38 个保存网络
 
 ### C. 其他
 - 本轮 commit **已推远端**（用户 2026-10-23 明确说「先 commit」）
-- 若发 Release：已查 GitHub releases，线上最新是 **`v1.9.21`** → `1.9.22 / 92` 正是
-  「线上 + 1」，不涨版本号也对；四处同步（`1-aapt2.sh` 的 VER_CODE/VER_NAME、
-  `UpdateChecker`、`module.prop` 若有、`CHANGELOG.md`）
+- **版本号现状**：线上最新 Release 是 `v1.9.21`；`1.9.22 / 92` 已出包装机但**没发过 Release**；
+  本轮改代码后升到 **`1.9.23 / 93`**（不重号）。发布口径 = `v1.9.21 → 1.9.23`，
+  说明在 `CHANGELOG.md` 里（`## [1.9.23]` = 本轮，`## [1.9.22]` = 上一轮）。
+- 要发 Release 的话：打 tag `v1.9.23`，标题 `WPAForge 1.9.23`，正文直接取
+  `CHANGELOG.md` 的 1.9.23 + 1.9.22 两段；版本号四处（构建脚本 / CHANGELOG /
+  README 出包示例 / GitHub Release）唯一的真相是 `1-aapt2.sh`。
 
 ### D. 新发现：应用不在前台时 WifiInfo / NetworkCallback 拿不到 SSID（**未修**）
 用 `am start-foreground-service` 起任务（界面没开）时，通道自检报

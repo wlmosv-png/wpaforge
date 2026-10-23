@@ -11,7 +11,7 @@
 | 设备 | OnePlus PJX110 / Android 15 / ColorOS 15，Magisk root，**不要重启** |
 | 项目（Linux） | `/workspace/promo-wpaforge` |
 | 同一目录（Android） | `/data/local/tmp/eta/promo-wpaforge`（**同一挂载**，Linux 改完 Android 立即可见） |
-| 分支 / HEAD | `main` / **`b31db27`**（本轮 commit，**尚未推送远端**） |
+| 分支 / HEAD | `main`（`git log -1` = 本轮 commit，**尚未推送远端**） |
 | 版本号 | `92` / `1.9.22`（`1-aapt2.sh` 里 `WP_VERSION_CODE` / `WP_VERSION_NAME`） |
 | 已装机 | `/data/local/tmp/wp.apk`（= `build/out/wpaforge-signed.apk`，2,931,512 B） |
 | 门禁 | 37 个测试类 / **947 例全过** |

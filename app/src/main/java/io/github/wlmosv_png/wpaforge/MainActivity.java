@@ -123,6 +123,26 @@ public class MainActivity extends Activity {
     private Button stopBtn;
     private io.github.wlmosv_png.wpaforge.ui.StagedProgress connectProgress;
     private TextView connectTargetView;
+
+    // ── 方案 A（驾驶舱）新增：候选窗口 / 命中卡片 / 日志分级 ──
+    /** 最近几条候选（正在试 + 上两条） */
+    private final io.github.wlmosv_png.wpaforge.ui.CandidateTicker candTicker =
+            new io.github.wlmosv_png.wpaforge.ui.CandidateTicker(3);
+    private TextView candLabel;
+    private TextView candNow;
+    private TextView candPrev;
+    private LinearLayout candBox;
+    /** 命中卡片：产品的巅峰时刻，值得单独一块 */
+    private LinearLayout hitCard;
+    private TextView hitPw;
+    private TextView hitMeta;
+    /** 日志全量（含被筛掉的）；streamBuffer 只是它的「可见视图」 */
+    private final java.util.List<LogLine> streamLines = new java.util.ArrayList<>();
+    /** true = 只看关键（里程碑 + 失败原因），默认开 */
+    private boolean streamKeyOnly = true;
+    private TextView chipKey;
+    private TextView chipAll;
+    private int lastTested = 0, lastTotal = 0;
     private TextView connectStatsView;
     private TextView connectStreamView;
     /** 候选流折叠：头部、箭头、行数、布局参数 */
@@ -362,17 +382,18 @@ public class MainActivity extends Activity {
         // 顶部标题条
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(px(26), px(48), px(22), px(8));
+        // 方案 A：这一条压扁一点，把纵向空间让给破解页的主区
+        header.setPadding(px(22), px(34), px(22), px(2));
         TextView title = new TextView(this);
         title.setText("WPAForge");
-        title.setTextSize(24);
+        title.setTextSize(20);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         title.setLetterSpacing(0.04f);
         header.addView(title);
         TextView sub = new TextView(this);
         sub.setText(L.s("WPA 密码破解工具 · 仅限自有网络", "WPA password cracker · authorised networks only"));
-        sub.setTextSize(11.5f);
+        sub.setTextSize(10.5f);
         sub.setTextColor(TEXT_DIM);
         header.addView(sub);
         root.addView(header);
@@ -380,7 +401,7 @@ public class MainActivity extends Activity {
         // 页签
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setPadding(px(10), px(4), px(10), px(10));
+        tabs.setPadding(px(10), px(2), px(10), px(6));
         tabObserve = makeTab(L.s("观测", "Observe"), 0);
         tabAudit = makeTab(L.s("审计", "Audit"), 1);
         tabConnect = makeTab(L.s("破解", "Crack"), 2);
@@ -559,10 +580,9 @@ public class MainActivity extends Activity {
         // 回到破解页：刷新队列与日志（内容不用重建）
         if (index == 2) {
             refreshQueue();
-            if (connectStreamView != null && streamBuffer.length() > 0) {
-                // 用 Spannable 版重设，否则切回来颜色全丢。
-                connectStreamView.setText(streamBuffer,
-                        android.widget.TextView.BufferType.SPANNABLE);
+            if (connectStreamView != null && !streamLines.isEmpty()) {
+                // 用渲染器重设：既保住每行的颜色，也保持当前筛选一致。
+                renderStream();
             }
             updateConnectDict();
             updateConnectMode();
@@ -2826,6 +2846,98 @@ public class MainActivity extends Activity {
         connectProgress.setVisibility(View.GONE);
         pageConnect.addView(connectProgress, plp);
 
+        // ============ 「正在试」：等宽大字 + 上两条 ============
+        //
+        // 改版前这一行是进度条脚下的「当前载荷: 62696e676f」，
+        // 既是小字又没有标签 —— 而它其实是全页最该显眼的信息。
+        candLabel = new TextView(this);
+        candLabel.setTextSize(11.5f);
+        candLabel.setTextColor(TEXT_DIM);
+        candLabel.setLetterSpacing(0.12f);
+        candLabel.setText(L.s("正在试", "TRYING"));
+
+        candNow = new TextView(this);
+        candNow.setTextSize(22);
+        candNow.setTextColor(TEXT);
+        candNow.setTypeface(Typeface.MONOSPACE);
+        candNow.setLineSpacing(px(2), 1f);
+        candNow.setPadding(0, px(4), 0, 0);
+
+        candPrev = new TextView(this);
+        candPrev.setTextSize(11.5f);
+        candPrev.setTextColor(TEXT_DIM);
+        candPrev.setTypeface(Typeface.MONOSPACE);
+        candPrev.setLineSpacing(px(2), 1f);
+        candPrev.setPadding(0, px(4), 0, 0);
+        candPrev.setVisibility(View.GONE);
+
+        candBox = new LinearLayout(this);
+        candBox.setOrientation(LinearLayout.VERTICAL);
+        candBox.setPadding(px(4), px(14), px(4), px(2));
+        candBox.setVisibility(View.GONE);
+        candBox.addView(candLabel);
+        candBox.addView(candNow);
+        candBox.addView(candPrev);
+        pageConnect.addView(candBox);
+
+        // ============ 命中卡片 ============
+        // 命中是产品的巅峰时刻，以前它只是日志里的一行。
+        hitCard = new LinearLayout(this);
+        hitCard.setOrientation(LinearLayout.VERTICAL);
+        hitCard.setPadding(px(16), px(14), px(16), px(14));
+        hitCard.setBackground(roundBg(Color.parseColor("#12251A"), 16));
+        hitCard.setVisibility(View.GONE);
+
+        LinearLayout hitTop = new LinearLayout(this);
+        hitTop.setOrientation(LinearLayout.HORIZONTAL);
+        hitTop.setGravity(Gravity.CENTER_VERTICAL);
+        TextView hitTitle = new TextView(this);
+        hitTitle.setTextSize(13);
+        hitTitle.setTextColor(OK_GREEN);
+        hitTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        hitTop.addView(hitTitle, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView hitCopy = new TextView(this);
+        hitCopy.setText(L.s("复制", "Copy"));
+        hitCopy.setTextSize(11.5f);
+        hitCopy.setTextColor(ACCENT);
+        hitCopy.setPadding(px(10), px(4), px(10), px(4));
+        hitCopy.setBackground(roundBg(Color.parseColor("#2A2410"), 10));
+        hitCopy.setClickable(true);
+        hitCopy.setFocusable(true);
+        hitCopy.setOnClickListener(v -> {
+            String pw = hitPw == null ? "" : hitPw.getText().toString();
+            if (pw.isEmpty()) return;
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("WPAForge", pw));
+                Toast.makeText(this, L.s("口令已复制", "Passphrase copied"),
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        hitTop.addView(hitCopy);
+        hitCard.addView(hitTop);
+        hitCard.setTag(hitTitle);      // 标题文字在命中时才填（带 SSID）
+
+        hitPw = new TextView(this);
+        hitPw.setTextSize(26);
+        hitPw.setTextColor(TEXT);
+        hitPw.setTypeface(Typeface.MONOSPACE);
+        hitPw.setPadding(0, px(6), 0, px(2));
+        hitPw.setTextIsSelectable(true);
+        hitCard.addView(hitPw);
+
+        hitMeta = new TextView(this);
+        hitMeta.setTextSize(11.5f);
+        hitMeta.setTextColor(TEXT_DIM);
+        hitCard.addView(hitMeta);
+
+        LinearLayout.LayoutParams hclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hclp.topMargin = px(12);
+        pageConnect.addView(hitCard, hclp);
+
         // 提示条（权限、错误等）
         observeNotice = new TextView(this);
         observeNotice.setTextSize(12);
@@ -2865,6 +2977,42 @@ public class MainActivity extends Activity {
         fcp.rightMargin = px(12);
         flowHeader.addView(flowCount, fcp);
 
+        // 分级切换：关键（默认）/ 全部。
+        // 启动自检（保活、目标派生、引擎模式…）都是 DETAIL，默认不显示 ——
+        // 改版前它们占了大半屏，真正的运行信息被淹在里面。
+        chipKey = new TextView(this);
+        chipKey.setText(L.s("关键", "Key"));
+        chipKey.setTextSize(11);
+        chipKey.setPadding(px(9), px(4), px(9), px(4));
+        chipKey.setClickable(true);
+        chipKey.setFocusable(true);
+        chipKey.setOnClickListener(v -> {
+            streamKeyOnly = true;
+            styleFlowChips();
+            renderStream();
+        });
+        LinearLayout.LayoutParams ckp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ckp.rightMargin = px(6);
+        flowHeader.addView(chipKey, ckp);
+
+        chipAll = new TextView(this);
+        chipAll.setText(L.s("全部", "All"));
+        chipAll.setTextSize(11);
+        chipAll.setPadding(px(9), px(4), px(9), px(4));
+        chipAll.setClickable(true);
+        chipAll.setFocusable(true);
+        chipAll.setOnClickListener(v -> {
+            streamKeyOnly = false;
+            styleFlowChips();
+            renderStream();
+        });
+        LinearLayout.LayoutParams chp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        chp.rightMargin = px(10);
+        flowHeader.addView(chipAll, chp);
+        styleFlowChips();
+
         // 清空：暂停/停止后旧日志砍在那里很碍眼，
         // 给一个明确的清掉入口。这个动作**不会**影响任务状态。
         flowClear = new TextView(this);
@@ -2876,6 +3024,7 @@ public class MainActivity extends Activity {
         flowClear.setOnClickListener(v -> {
             streamBuffer.clear();          // SpannableStringBuilder 用 clear()
             streamBuffer.clearSpans();     // 一起清掉残留的颜色 span
+            streamLines.clear();           // 全量列表也清，否则切「全部」会又冒出来
             if (connectStreamView != null) connectStreamView.setText("");
             updateFlowHeader();
             updateJumpLatest();
@@ -3277,38 +3426,40 @@ public class MainActivity extends Activity {
             // onProgress 用的 tested 是两套计数，交替刷新会让进度条来回跳。
             // 统一由 onProgress 负责，这里只报当前在试什么。
             ui.post(() -> {
-                if (connectProgress == null) return;
-                connectProgress.setVisibility(View.VISIBLE);
-                // 这里必须也设一次 stages。
-                //
-                // 以前只 setText —— 而 stages 为空时 onMeasure 只给
-                // dp(20) 的高度，三条轨道画不全（被裁掉），看起来就是
-                // 「第一条候选没有进度条，第二条才出来」。原因在于
-                // 首次 onProgress 要等引擎跑完一轮（约 0.3 秒）才回调。
-                // 用 index/total 立刻给个形，与 onProgress 同口径。
-                float p = total > 0 ? (float) (index - 1) / total : 0f;
-                java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> s0 =
-                        new java.util.ArrayList<>();
-                s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        p, L.f("整个字典 %.1f%%", "whole %.1f%%", p * 100f)));
-                s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        p, L.f("已试 %d / %d", "tried %d / %d", index - 1, total)));
-                s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(p, ""));
-                connectProgress.setStages(s0);
-                connectProgress.setDone(false);
-                connectProgress.setText(
-                        L.f("运行中 %d / %d", "Trying %d / %d", index, total),
-                        L.f("当前载荷: %s", "Current: %s", candidate));
+                // 方案 A：候选不再塞在进度条脚下的小字里，
+                // 而是独立的「正在试」区（等宽大字 + 上两条）。
+                candTicker.push(candidate);
+                renderCandidates();
+                if (connectProgress != null) {
+                    connectProgress.setVisibility(View.VISIBLE);
+                    // 首帧也得给个形：stages 为空时 onMeasure 只给 dp(20)，
+                    // 轨道画不全（表现为「第一条候选没有进度条」）。
+                    float p = total > 0 ? (float) (index - 1) / total : 0f;
+                    java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> s0 =
+                            new java.util.ArrayList<>();
+                    s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                            p, io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                    .percentLabel(index - 1, total)));
+                    connectProgress.setStages(s0);
+                    connectProgress.setDone(false);
+                    connectProgress.setText("",
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                    .footnote(index - 1, total, 0));
+                }
             });
         }
 
         @Override
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail) {
             ui.post(() -> {
-                appendStreamColored(
-                        (hit ? "✓ 成功" : "✗") + "  " + candidate
-                                + "  (" + ms + "ms " + detail + ")",
-                        hit ? OK_GREEN : TEXT_DIM);
+                if (hit) {
+                    appendStreamColored("✓ 成功  " + candidate
+                            + "  (" + ms + "ms " + detail + ")", OK_GREEN);
+                    showHitCard(candidate, ms, detail);
+                } else {
+                    appendStreamDetail("✗  " + candidate
+                            + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
+                }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
                 updateConnectMode();
             });
@@ -3317,24 +3468,22 @@ public class MainActivity extends Activity {
         @Override
         public void onProgress(int tested, int total, double rate, long etaMs) {
             ui.post(() -> {
+                lastTested = tested;
+                lastTotal = total;
                 if (connectProgress == null) return;
                 connectProgress.setVisibility(View.VISIBLE);
                 float outer = total > 0 ? (float) tested / total : 0f;
-                String eta = etaMs < 0 ? "计算中" : formatDuration(etaMs);
+                // 方案 A：进度只留一条轨道（原来三条轨道把同一件事说了三遍），
+                // 主视觉是「剩多久」，副标题是「已试多少 · 多快」。
                 java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
                         new java.util.ArrayList<>();
                 st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        outer, L.f("整个字典 %.0f%%", "whole %.0f%%", outer * 100)));
-                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        outer, L.f("已试 %d / %d", "tried %d / %d", tested, total)));
-                st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        outer, L.f("%.2f 条/秒", "%.2f/s", rate)));
+                        outer, io.github.wlmosv_png.wpaforge.ui.CrackHud.percentLabel(tested, total)));
                 connectProgress.setStages(st);
                 connectProgress.setDone(false);
                 connectProgress.setText(
-                        L.f("已试 %d / %d", "Tried %d / %d", tested, total),
-                        L.f("速率 %.2f 条/秒   预计剩余 %s",
-                            "%.2f/s   %s remaining", rate, eta));
+                        io.github.wlmosv_png.wpaforge.ui.CrackHud.etaLabel(etaMs),
+                        io.github.wlmosv_png.wpaforge.ui.CrackHud.footnote(tested, total, rate));
             });
         }
 
@@ -3866,6 +4015,9 @@ public class MainActivity extends Activity {
                     sampled ? L.s("实测", "measured") : L.s("默认", "default"), rate));
         }
 
+        // 新的一轮：清掉上一轮的候选窗口与命中卡片，别让旧结果看着像新的
+        resetCrackHud();
+
         // 记下原网络，跑完连回去
         rememberCurrentWifi();
 
@@ -3986,11 +4138,19 @@ public class MainActivity extends Activity {
             flowChevron.setText(streamCollapsed ? "▸" : "▾");
         }
         if (flowCount != null) {
-            int lines = 0;
+            int shown = 0;
             for (int i = 0; i < streamBuffer.length(); i++) {
-                if (streamBuffer.charAt(i) == '\n') lines++;
+                if (streamBuffer.charAt(i) == '\n') shown++;
             }
-            flowCount.setText(lines > 0 ? (lines + " 行") : "");
+            int all = streamLines.size();
+            if (shown <= 0) {
+                flowCount.setText("");
+            } else if (streamKeyOnly && all > shown) {
+                // 缩在「关键」时把总量也报出来，用户知道还有多少被折叠着
+                flowCount.setText(L.f("%d / %d 行", "%d / %d", shown, all));
+            } else {
+                flowCount.setText(L.f("%d 行", "%d lines", shown));
+            }
         }
     }
 
@@ -4011,39 +4171,57 @@ public class MainActivity extends Activity {
      * @param line  行内容（null 直接忽略）
      * @param color 这一行的颜色；为 0 时用默认灰
      */
+    /**
+     * 日志的一行（全量留存，含被当前筛选挡住的）。
+     *
+     * <p>改版前只有 {@code streamBuffer} 一个 Spannable —— 行是「写进去就没法再筛」的。
+     * 现在留一份结构化副本：筛「关键 / 全部」时从它重建即可，
+     * 顺便把原来那段「找截断点、逐 span 删除」的脆弱代码换成列表裁剪。
+     */
+    private static final class LogLine {
+        final CharSequence text;
+        final int color;
+        final io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind;
+
+        LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind) {
+            this.text = text;
+            this.color = color;
+            this.kind = kind;
+        }
+    }
+
     private void appendStreamColored(String line, int color) {
+        appendStreamColored(line, color, null);
+    }
+
+    /**
+     * 逐条候选结果专用入口：**强制标成明细**。
+     *
+     * <p>为什么不靠 {@code LogFilter} 自己认：「✗  88888888  (5123ms 系统已回连到……)」
+     * 这句里带「回连」「超时」，按关键词会被判成「关键」—— 于是一跑就是几千行关键行，
+     * 筛选等于没筛。所以这类行在写入时就把级别定死。
+     */
+    private void appendStreamDetail(String line, int color) {
+        appendStreamColored(line, color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.DETAIL);
+    }
+
+    private void appendStreamColored(String line, int color,
+                                     io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind forceKind) {
         if (line == null) return;
         int c = (color == 0) ? TEXT_DIM : color;
+        io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind = forceKind != null
+                ? forceKind
+                : io.github.wlmosv_png.wpaforge.ui.LogFilter.classify(line.toString());
 
-        int start = streamBuffer.length();
-        streamBuffer.append(line).append('\n');
-        streamBuffer.setSpan(
-                new android.text.style.ForegroundColorSpan(c),
-                start, streamBuffer.length(),
-                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        streamLines.add(new LogLine(line, c, kind));
+        while (streamLines.size() > MAX_LOG_LINES) streamLines.remove(0);
 
-        // 只保留最近 400 行，避免无限增长。
-        // 上限从 200 提到 400：用户反馈「看不到前面的日志」，
-        // 而 400 行的 Spannable 内存开销可忽略（每行 span 几十字节）。
-        int lines = countLines(streamBuffer);
-        if (lines > MAX_LOG_LINES) {
-            // SpannableStringBuilder 没有 indexOf(String,int)。
-            // 用纯文本副本定位，再把偏移映射回来 —— 到这一步还没删过任何
-            // 字符，两者长度一致，偏移可以直接用。
-            String plain = streamBuffer.toString();
-            int from1 = plain.length() / 3;
-            int cut = plain.indexOf('\n', from1);
-            if (cut > 0) {
-                // 同时要清掉被裁掉那段的 span，否则 span 会错位。
-                android.text.style.ForegroundColorSpan[] old =
-                        streamBuffer.getSpans(0, cut,
-                                android.text.style.ForegroundColorSpan.class);
-                for (android.text.style.ForegroundColorSpan sp : old) {
-                    streamBuffer.removeSpan(sp);
-                }
-                streamBuffer.delete(0, cut + 1);
-            }
+        if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(kind, streamKeyOnly)) {
+            // 被筛掉的行照样留在全量列表里，切「全部」时能看到
+            updateFlowHeader();
+            return;
         }
+        appendBuffer(line, c);
 
         if (connectStreamView != null) {
             // 用 Spannable 版本 setText，TextView 直接吃 span。
@@ -4055,6 +4233,105 @@ public class MainActivity extends Activity {
                         streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
             }
         }
+    }
+
+    private void appendBuffer(CharSequence line, int color) {
+        int start = streamBuffer.length();
+        streamBuffer.append(line).append('\n');
+        streamBuffer.setSpan(
+                new android.text.style.ForegroundColorSpan(color),
+                start, streamBuffer.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
+    /** 按当前筛选从全量列表重建可见日志。切筛选、清空、回到本页时调用。 */
+    private void renderStream() {
+        streamBuffer.clear();
+        streamBuffer.clearSpans();
+        for (LogLine l : streamLines) {
+            if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly)) continue;
+            appendBuffer(l.text, l.color);
+        }
+        if (connectStreamView != null) {
+            connectStreamView.setText(streamBuffer, android.widget.TextView.BufferType.SPANNABLE);
+        }
+        updateFlowHeader();
+        updateJumpLatest();
+        if (streamAutoScroll && streamScroll != null) {
+            streamScroll.post(() -> streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+        }
+    }
+
+    /** 日志分级 chip 的选中态 */
+    private void styleFlowChips() {
+        if (chipKey == null || chipAll == null) return;
+        chipKey.setTextColor(streamKeyOnly ? ACCENT : TEXT_DIM);
+        chipKey.setBackground(roundBg(
+                Color.parseColor(streamKeyOnly ? "#2A2410" : "#1A1A20"), 10));
+        chipAll.setTextColor(streamKeyOnly ? TEXT_DIM : ACCENT);
+        chipAll.setBackground(roundBg(
+                Color.parseColor(streamKeyOnly ? "#1A1A20" : "#2A2410"), 10));
+    }
+
+    /** 刷新「正在试」区：当前候选等宽大字，上面两条淡出 */
+    private void renderCandidates() {
+        if (candBox == null || candNow == null) return;
+        String cur = candTicker.current();
+        if (cur == null) {
+            candBox.setVisibility(View.GONE);
+            return;
+        }
+        candBox.setVisibility(View.VISIBLE);
+        candNow.setText(cur);
+        java.util.List<String> prev = candTicker.previous(2);
+        StringBuilder sb = new StringBuilder();
+        for (String p : prev) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(p);
+        }
+        candPrev.setText(sb.toString());
+        candPrev.setVisibility(sb.length() == 0 ? View.GONE : View.VISIBLE);
+    }
+
+    /**
+     * 命中卡片 —— 整个产品的巅峰时刻。
+     *
+     * <p>改版前「命中」只是日志里的一行绿字。现在给它一块卡：
+     * 口令等宽大字 + 一键复制 + 证据与位置。
+     */
+    private void showHitCard(String password, long ms, String detail) {
+        if (hitCard == null || hitPw == null) return;
+        String ssid = targetNet == null ? "" : targetNet.displayName();
+        Object tag = hitCard.getTag();
+        if (tag instanceof TextView) {
+            ((TextView) tag).setText(L.s("⚡ 命中 · ", "★ HIT · ") + ssid);
+        }
+        hitPw.setText(password == null ? "" : password);
+        StringBuilder meta = new StringBuilder();
+        meta.append(detail == null ? "" : detail);
+        if (ms > 0) {
+            if (meta.length() > 0) meta.append(" · ");
+            meta.append(ms).append("ms");
+        }
+        if (lastTotal > 0) {
+            meta.append(L.s(" · 第 ", " · #")).append(lastTested)
+                    .append(" / ").append(lastTotal);
+        }
+        hitMeta.setText(meta.toString());
+        hitCard.setVisibility(View.VISIBLE);
+        // 命中时把日志展开到「关键」，让上下文里的任务节点一起出现
+        if (streamCollapsed) toggleStream();
+    }
+
+    /** 开始一次新的破解：清掉上一轮的候选窗口与命中卡片 */
+    private void resetCrackHud() {
+        candTicker.clear();
+        if (candBox != null) candBox.setVisibility(View.GONE);
+        if (hitCard != null) hitCard.setVisibility(View.GONE);
+        if (candNow != null) candNow.setText("");
+        if (candPrev != null) candPrev.setText("");
+        lastTested = 0;
+        lastTotal = 0;
     }
 
     /** 最多保留的日志行数 */

@@ -219,12 +219,15 @@ public class StagedProgress extends View {
 
         float y = 0;
 
-        // ---- 顶行说明 ----
+        // ---- 顶行说明：方案 A 之后这里是「还剩多久」，全页的主视觉，
+        //      所以字号从 dp(13) 提到 dp(18) 并用 medium 字重。
         if (!headline.isEmpty()) {
-            pHead.setTextSize(dp(13));
+            pHead.setTextSize(dp(18));
+            pHead.setTypeface(android.graphics.Typeface.create(
+                    "sans-serif-medium", android.graphics.Typeface.NORMAL));
             pHead.setColor(done ? okGreen : textMain);
-            cv.drawText(headline, 0, y + dp(13), pHead);
-            y += dp(20);
+            cv.drawText(headline, 0, y + dp(18), pHead);
+            y += dp(26);
         }
 
         // ---- 三层轨道 ----
@@ -292,7 +295,7 @@ public class StagedProgress extends View {
             return;
         }
         float h = 0;
-        if (!headline.isEmpty()) h += dp(20);
+        if (!headline.isEmpty()) h += dp(26);
         h += stages.size() * (dp(9) + dp(6));
         if (!footnote.isEmpty()) h += dp(16);
         if (h < dp(20)) h = dp(20);

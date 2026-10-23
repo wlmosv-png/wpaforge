@@ -1933,6 +1933,17 @@ public final class CrackEngine {
                 long itemT0 = SystemClock.uptimeMillis();
                 Attempt a = tryOne(target, security, c.password, perItem);
                 long itemMs = SystemClock.uptimeMillis() - itemT0;
+
+                // 挂起/中断发生在这一条执行到一半 —— 它**没有**得到结论。
+                // 不能把它算成「试过了」：cursor 已经推进，续跑时会静默跳过
+                // 一条从未真正验证过的候选（漏判）。回退游标，下次重试它。
+                if (a.verdict == Verdict.ABORTED) {
+                    tested--;
+                    testedCount = tested;
+                    cursor = i;
+                    l.onAttemptResult(a);
+                    break;
+                }
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;
 

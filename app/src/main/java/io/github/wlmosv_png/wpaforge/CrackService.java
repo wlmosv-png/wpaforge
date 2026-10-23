@@ -227,9 +227,27 @@ public class CrackService extends Service {
     }
 
     /** 开始/继续执行队列 */
+    /**
+     * 用户在 worker 仍活着时点过「继续」—— 收尾时补一次启动。
+     *
+     * <p>场景：点「暂停」后马上又点「继续」（或通知栏按钮连按）。那一刻
+     * 引擎正在收尾、worker 线程还没退出，{@link #startQueue()} 会被
+     * 「已有任务在运行」挡回去并**静默失效** —— 任务停在 PENDING，
+     * 没有任何线程会去跑它，用户看到的就是「点了继续没反应」。
+     */
+    private volatile boolean restartWanted = false;
+
+    /** 开始/继续执行队列 */
     public void startQueue() {
         if (worker != null && worker.isAlive()) {
-            log(L.s("已有任务在运行", "A task is already running"));
+            if (TaskQueue.hasPending(this)) {
+                // 队列里有 PENDING（＝有人点过继续）：记一笔，收尾时接上。
+                restartWanted = true;
+                log(L.s("上一轮正在收尾，「继续」已记下，收尾后自动开始",
+                        "Previous run is wrapping up; resume queued"));
+            } else {
+                log(L.s("已有任务在运行", "A task is already running"));
+            }
             return;
         }
         if (!TaskQueue.hasWork(this)) {
@@ -247,6 +265,17 @@ public class CrackService extends Service {
     public void pause() {
         if (prober != null) prober.pause();
         safeInvoke("pause");
+        // ★ 最关键的一步：把「暂停」真正送到引擎。
+        //
+        // 历史事故（2026-10-23 实机复现）：这里以前**只**通知免-root
+        // 执行器（prober.pause() 与反射调 sugProberRef），而 Root / Shizuku 模式下
+        // 那两个引用都是 null —— 于是 pause() 退化成纯 UI 动作：队列标成
+        // PAUSED、日志写「正在暂停…」，引擎毫不知情、继续逐条往下跑。
+        //
+        // 当天实测：08:38:21 点暂停，日志仍每 2~6 秒一条推进到 08:40:33，
+        // 队列 offset 25 秒里从 82 涨到 88 —— 界面「已暂停」，实际全速。
+        CrackEngine eng = engineRef;
+        if (eng != null) eng.pause();
         // 立刻把当前任务标 PAUSED，UI 马上能看到
         TaskQueue.Task cur = currentTask;
         if (cur != null && cur.state == TaskQueue.State.RUNNING) {
@@ -567,10 +596,22 @@ public class CrackService extends Service {
             log(L.f("队列执行异常: %s", "Queue error: %s", String.valueOf(e)));
         } finally {
             releaseLocks();
-            running = false;
             currentTask = null;
-            log(L.s("队列已结束", "Queue finished"));
             notifyQueue();
+            // 收尾前补一次：用户在 worker 还活着时点过「继续」，
+            // 那一次 startQueue 被上面的分支挡下了。不补这一下，
+            // 任务会永远停在 PENDING（用户看到「点了继续没反应」）。
+            boolean wantRestart = restartWanted;
+            restartWanted = false;   // 一次性：判定过就清，免得日后误触发
+            if (!stopRequested && wantRestart && TaskQueue.hasPending(this)) {
+                log(L.s("接上「继续」请求，重新开始队列",
+                        "Picking up the resume request, restarting the queue"));
+                worker = new Thread(this::runQueue, "wpaforge-crack");
+                worker.start();
+                return;
+            }
+            running = false;
+            log(L.s("队列已结束", "Queue finished"));
             stopSelfSafe();
         }
     }
@@ -877,7 +918,10 @@ public class CrackService extends Service {
         if (!force && (!changed || !due)) return;
         ft.offset = offset;
         ft.elapsedMs = now - taskStartAt;
-        TaskQueue.update(this, ft);
+        // 只写进度字段：盘上的 state 才是用户最新的操作。
+        // 旧写法拿内存快照整对象回写，会把用户点的「继续」（PENDING）
+        // 又改回 PAUSED —— 就是「点了继续没反应」的最后一层原因。
+        TaskQueue.updateProgress(this, ft.id, ft.offset, ft.elapsedMs);
         lastOffsetSaveAt = now;
         lastSavedOffset = offset;
     }
@@ -898,8 +942,24 @@ public class CrackService extends Service {
                 Prefs.recordRate(this, rateSampleMs(tested), tested);
             }
         } else if ("PAUSED".equals(outcomeName)) {
-            ft.state = TaskQueue.State.PAUSED;
-            log(L.f("已暂停，进度 %d/%d", "Paused at %d/%d", offset, ft.dictSize));
+            // 以**盘上状态**为准：引擎收尾要花十几到几百毫秒，
+            // 用户可能就在这个窗口里点了「继续」（盘上状态已改成 PENDING）。
+            // 这时直接写回 PAUSED 就把那次点击吞了：界面又变回「已暂停」，
+            // 用户看到的是「点了继续没反应」（必须再点一次）。
+            // 实测：2026-10-23 08:49:20 暂停+继续连按，日志已打「「继续」已记下」，
+            // 队列却仍停在 173/PAUSED —— 就是这里写回去的。
+            TaskQueue.Task onDisk = null;
+            for (TaskQueue.Task t : TaskQueue.load(this)) {
+                if (t.id.equals(ft.id)) { onDisk = t; break; }
+            }
+            if (onDisk != null && onDisk.state == TaskQueue.State.PENDING) {
+                ft.state = TaskQueue.State.PENDING;
+                log(L.s("暂停收尾期间已点过「继续」，保持待运行",
+                        "resume was clicked while pausing; keeping it queued"));
+            } else {
+                ft.state = TaskQueue.State.PAUSED;
+                log(L.f("已暂停，进度 %d/%d", "Paused at %d/%d", offset, ft.dictSize));
+            }
         } else if ("STOPPED".equals(outcomeName)) {
             ft.state = TaskQueue.State.STOPPED;
             log(L.f("已停止，进度 %d/%d", "Stopped at %d/%d", offset, ft.dictSize));

@@ -303,4 +303,37 @@ public final class TaskQueue {
         }
         return false;
     }
+
+    /**
+     * 只更新进度字段（offset / elapsedMs），**不碰 state**。
+     *
+     * <p>为什么必须单独开一个入口：任务运行期间盘上的 state 可能已经被 UI 改过
+     * （用户点暂停 / 继续）。拿内存里那个**任务开始时的快照**整对象回写，
+     * 就会把用户刚点出来的新状态覆盖回旧值 —— 实测表现就是
+     * 「暂停收尾期点了继续，却没反应」（2026-10-23 08:52:38 实机）。
+     */
+    public static boolean updateProgress(Context ctx, String id, int offset, long elapsedMs) {
+        List<Task> list = load(ctx);
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).id.equals(id)) {
+                list.get(i).offset = offset;
+                list.get(i).elapsedMs = elapsedMs;
+                return save(ctx, list);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 是否**确实有人点了继续**（只有 PENDING 才算）。
+     *
+     * <p>与 {@link #hasWork} 的区别：hasWork 把 PAUSED / RUNNING 也算「有事可做」，
+     * 拿它判断「要不要补一次启动」会把普通的重复 start 也算进去，导致空转。
+     */
+    public static boolean hasPending(Context ctx) {
+        for (Task t : load(ctx)) {
+            if (t.state == State.PENDING) return true;
+        }
+        return false;
+    }
 }

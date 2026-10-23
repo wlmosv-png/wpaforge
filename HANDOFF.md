@@ -11,10 +11,10 @@
 | 设备 | OnePlus PJX110 / Android 15 / ColorOS 15，Magisk root，**不要重启** |
 | 项目（Linux） | `/workspace/promo-wpaforge` |
 | 同一目录（Android） | `/data/local/tmp/eta/promo-wpaforge`（**同一挂载**，Linux 改完 Android 立即可见） |
-| 分支 / HEAD | `main` / **`3f349a7`**（本轮 commit，**尚未推送远端**） |
+| 分支 / HEAD | `main` / **`b31db27`**（本轮 commit，**尚未推送远端**） |
 | 版本号 | `92` / `1.9.22`（`1-aapt2.sh` 里 `WP_VERSION_CODE` / `WP_VERSION_NAME`） |
-| 已装机 | `/data/local/tmp/wpaforge-v2.apk`（用户手上跑的就是它） |
-| 门禁 | 37 个测试类全部通过 |
+| 已装机 | `/data/local/tmp/wp.apk`（= `build/out/wpaforge-signed.apk`，2,931,512 B） |
+| 门禁 | 37 个测试类 / **947 例全过** |
 
 ---
 
@@ -60,6 +60,37 @@ java.lang.RuntimeException: Can't create handler inside thread
 
 ---
 
+## 二·补、本轮下半场：**暂停从来没停过**（真机复现 → 五处修掉）
+
+**用户点「暂停」，界面显示已暂停，引擎一刻没停。**
+
+**根因**：`CrackService.pause()` 只通知了免-root 执行器（`prober.pause()` 与反射调
+`sugProberRef`），**从来没有调 `engineRef.pause()`**。Root / Shizuku 模式下这两个引用都是
+`null` → 暂停退化成纯 UI 动作：队列状态写成 PAUSED、日志写「正在暂停…」，引擎毫不知情。
+
+**修复前实测（同一次运行）**：08:38:21 点暂停 → 日志仍每 2~6 秒一条推进到 08:40:33，
+队列 offset **82 → 158**（多跑了 76 条）。
+
+| # | 位置 | 改了什么 |
+|---|---|---|
+| ① | `CrackService.pause()` | 补 `engineRef.pause()` —— 暂停真正到达引擎 |
+| ② | `finishTask` 的 PAUSED 分支 | **以盘上状态为准**：收尾期用户点了继续（盘上已 PENDING）就不再写回 PAUSED |
+| ③ | `saveProgress` → `TaskQueue.updateProgress` | 进度落盘**只写 offset/elapsedMs**，不再拿内存快照整对象回写（旧写法会把用户刚点出来的 PENDING 盖回 PAUSED） |
+| ④ | `startQueue` + `runQueue` 收尾 | worker 还活着时点继续会被「已有任务在运行」静默吞掉 → 一次性 `restartWanted`，收尾时接上 |
+| ⑤ | `CrackEngine` 主循环 | 中断发生在候选执行到一半时**回退游标**，不再把它算作「试过了」（属漏判） |
+
+**修后实测**（受控，全程免 GUI，靠 `am start-foreground-service -a ...PAUSE/START` + 改 queue.json）：
+
+- 暂停：08:48:31 点暂停 → 08:48:32「已暂停，进度 173/3336」→「任务处于暂停，跳过」→
+  「队列已结束」，offset 连续 24 秒不动
+- 收尾期点继续：日志出现「暂停收尾期间已点过「继续」，保持待运行」→「===== 开始任务」→
+  「从第 184 条继续」，offset 184 → 189 继续涨
+- 单测 37 类 / **947 例 / 0 失败**
+
+**顺带修掉门禁假绿**：旧 `wpf-test.sh` 只认「N 通过 / N 失败」，而早退/广播两类输出的是
+`pass=24 fail=0` → 这两类恒记 0/0，**连它们的失败也一起漏判**。新版 `/workspace/wpf-gate.sh`
+（可传项目根参数）两种格式都认，且**解析不到任何结果就判红**。
+
 ## 三、没做完的（下一轮直接从这里开始）
 
 ### A. 速度：单条仍 ~7 秒，理论下限 3.9 秒
@@ -88,9 +119,26 @@ framework 在 **11 毫秒内**就去连 B212/B214（该环境 38 个保存网络
 2. 破解期间临时压制其他保存网络，结束恢复（需谨慎，别弄丢用户配置）。
 
 ### C. 其他
-- commit `3f349a7` **未推远端**（用户未表态，推之前先问）
-- 若发 Release，版本号按铁律「线上已发布 + 1」，并**四处同步**
-  （`1-aapt2.sh` 的 VER_CODE/VER_NAME、`UpdateChecker`、`module.prop` 若有、`CHANGELOG.md`）
+- 本轮 commit **未推远端**（用户未表态，推之前先问）
+- 若发 Release：已查 GitHub releases，线上最新是 **`v1.9.21`** → `1.9.22 / 92` 正是
+  「线上 + 1」，不涨版本号也对；四处同步（`1-aapt2.sh` 的 VER_CODE/VER_NAME、
+  `UpdateChecker`、`module.prop` 若有、`CHANGELOG.md`）
+
+### D. 新发现：应用不在前台时 WifiInfo / NetworkCallback 拿不到 SSID（**未修**）
+用 `am start-foreground-service` 起任务（界面没开）时，通道自检报
+`WifiInfo 信号: 读不到`，`NetworkWatcher` 的诊断是
+`SSID unavailable every time (getTransportInfo also unavailable)` —— **事件监听这一层等于瞎的**。
+同一台机器同一天，用户开着界面跑的那次（08:34）是正常的（`✓ WifiInfo 信号: B212`，
+日志有「事件 N: B212↑ B212↓」）。
+已排除：权限都 granted（`inspect_app`），系统定位总开关是开的（`get_device_state`）。
+怀疑是「仅在使用时允许」的定位授权 + 后台进程被框架隐去 SSID。
+**主判定链走 root 的 `cmd wifi status`，不受影响**（08:46~08:57 那几轮照样判、照样推进），
+但日志的「事件 N」行会消失、有的一层证据失效。方案待定。
+
+### E. 另外注意：任务日志会被切成多个文件
+`executeTask` 每次进任务会新开一个 `WPAForge-log-*.txt`，所以一轮实验的日志可能分散在
+两三个文件里（08:56:15 与 08:56:22 就是同一轮的两段）。**看日志要按 mtime 连着看几个**，
+只 `head -1` 会漏掉「正在暂停」「开始任务」这些关键行。
 
 ---
 

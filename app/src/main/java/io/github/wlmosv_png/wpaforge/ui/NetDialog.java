@@ -53,7 +53,9 @@ public final class NetDialog {
 
         LinearLayout root = new LinearLayout(ctx);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackground(round(SURFACE, AmberTheme.RADIUS_CARD));
+        root.setBackground(io.github.wlmosv_png.wpaforge.ui.UiKit.roundStroked(
+                SURFACE, AmberTheme.EDGE,
+                px(AmberTheme.RADIUS_CARD), Math.max(1f, dp * 0.8f)));
         root.setPadding(px(22), px(22), px(22), px(16));
 
         if (title != null && !title.isEmpty()) {

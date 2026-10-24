@@ -37,6 +37,16 @@ public final class UiKit {
     }
 
     /**
+     * 静态圆角 + 描边（卡片、列表行）。
+     *
+     * <p>近黑底上两块同色矩形之间没有边界，看起来是一片 —— 加一条极低对比的描边，
+     * 卡片的范围才立得住。这条边是「卡片分组」这件事唯一的视觉载体。
+     */
+    public static Drawable roundStroked(int fill, int edge, float radiusPx, float strokePx) {
+        return roundRectStroked(fill, edge, radiusPx, strokePx);
+    }
+
+    /**
      * 可点背景：按下有水波纹，禁用时整体压暗。
      *
      * @param color    常态底色

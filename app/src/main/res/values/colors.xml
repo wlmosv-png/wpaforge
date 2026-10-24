@@ -8,9 +8,9 @@
   并且由 CrackPageLayoutTest / ThemeConsistencyTest 钉住一致性。
 -->
 <resources>
-    <color name="wpf_bg">#FF101014</color>
-    <color name="wpf_card">#FF1B1B22</color>
-    <color name="wpf_card_2">#FF24242D</color>
+    <color name="wpf_bg">#FF0B0B0F</color>
+    <color name="wpf_card">#FF1C1C24</color>
+    <color name="wpf_card_2">#FF262630</color>
     <color name="wpf_accent">#FFFFB800</color>
     <color name="wpf_on_accent">#FF14141A</color>
     <color name="wpf_text">#FFF5F5F7</color>

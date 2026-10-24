@@ -225,6 +225,8 @@ public class MainActivity extends Activity {
 
     private int currentTab = 0;
     private float dp;
+    /** 列表里的小字档（BSSID / 等级 / 胶囊）：比正文再小一档。 */
+    private static final float FS_TINY = 10f;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -709,23 +711,26 @@ public class MainActivity extends Activity {
 
         pageWps.addView(sectionLabel(L.s("目标 AP", "Target AP")));
 
+        // 目标卡：扫描 / 手动添加 / 体检 / 范围开关 / 目标列表 / 当前选中 —— 同一块内容
+        LinearLayout wpsTargetCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+
         Button scanBtn = btnSecondary(L.s("扫描支持 WPS 的 AP", "Scan for WPS APs"));
         scanBtn.setOnClickListener(v -> doWpsScan());
-        pageWps.addView(scanBtn);
+        wpsTargetCard.addView(scanBtn);
 
         wpsBusy = new android.widget.ProgressBar(this);
         wpsBusy.setVisibility(View.GONE);
-        pageWps.addView(wpsBusy);
+        wpsTargetCard.addView(wpsBusy);
 
         Button addTargetBtn = btnSecondary(L.s("手动添加目标（扫不到的弱信号 AP 用这个）",
                 "Add target by BSSID (for weak APs the scan misses)"));
         addTargetBtn.setOnClickListener(v -> showAddTargetDialog());
-        pageWps.addView(addTargetBtn);
+        wpsTargetCard.addView(addTargetBtn);
 
         Button reconBtn = btnSecondary(L.s("体检全部目标（各发一次探测 PIN，判断谁真能打）",
                 "Recon all targets (one probe PIN each - who is really attackable)"));
         reconBtn.setOnClickListener(v -> doWpsRecon());
-        pageWps.addView(reconBtn);
+        wpsTargetCard.addView(reconBtn);
 
         wpsReconAllBtn = btnSecondary("");
         wpsReconAllBtn.setOnClickListener(v -> {
@@ -733,24 +738,30 @@ public class MainActivity extends Activity {
             refreshReconScope();
         });
         refreshReconScope();
-        pageWps.addView(wpsReconAllBtn);
+        wpsTargetCard.addView(wpsReconAllBtn);
 
         wpsTargetList = new LinearLayout(this);
         wpsTargetList.setOrientation(LinearLayout.VERTICAL);
-        pageWps.addView(wpsTargetList);
+        wpsTargetCard.addView(wpsTargetList);
 
         wpsPickedLine = new TextView(this);
         wpsPickedLine.setTextSize(12f);
         wpsPickedLine.setTextColor(TEXT_DIM);
         wpsPickedLine.setPadding(px(4), px(8), px(4), px(8));
         wpsPickedLine.setText(L.s("未选择目标", "No target selected"));
-        pageWps.addView(wpsPickedLine);
+        LinearLayout.LayoutParams wplp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wplp.topMargin = px(8);
+        wpsTargetCard.addView(wpsPickedLine, wplp);
+
+        pageWps.addView(wpsTargetCard);
 
         pageWps.addView(sectionLabel(L.s("策略", "Strategy")));
 
+        LinearLayout wpsModeCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         wpsModeList = new LinearLayout(this);
         wpsModeList.setOrientation(LinearLayout.VERTICAL);
-        pageWps.addView(wpsModeList);
+        wpsModeCard.addView(wpsModeList);
         renderWpsModeList();
 
         if (wpsImportRow == null) {
@@ -774,30 +785,33 @@ public class MainActivity extends Activity {
             Toast.makeText(this, L.s("已清空我的列表", "List cleared"), Toast.LENGTH_SHORT).show();
         });
         wpsImportRow.addView(clearBtn, gapWeight(0));
-        pageWps.addView(wpsImportRow);
+        wpsModeCard.addView(wpsImportRow);
 
         wpsImportLine = new TextView(this);
         wpsImportLine.setTextSize(11.5f);
         wpsImportLine.setTextColor(TEXT_DIM);
         wpsImportLine.setPadding(px(4), px(6), px(4), px(2));
-        pageWps.addView(wpsImportLine);
+        wpsModeCard.addView(wpsImportLine);
         refreshWpsImportLine();
+
+        pageWps.addView(wpsModeCard);
 
 
 
         pageWps.addView(sectionLabel(L.s("进度", "Progress")));
 
+        LinearLayout wpsProgressCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         wpsStatusLine = new TextView(this);
-        wpsStatusLine.setTextSize(13f);
+        wpsStatusLine.setTextSize(AmberTheme.FS_STATE);
         wpsStatusLine.setTextColor(TEXT);
         wpsStatusLine.setPadding(px(2), px(6), px(2), px(2));
-        pageWps.addView(wpsStatusLine);
+        wpsProgressCard.addView(wpsStatusLine);
 
         wpsProgressLine = new TextView(this);
         wpsProgressLine.setTextSize(12f);
         wpsProgressLine.setTextColor(TEXT_DIM);
         wpsProgressLine.setPadding(px(2), px(2), px(2), px(8));
-        pageWps.addView(wpsProgressLine);
+        wpsProgressCard.addView(wpsProgressLine);
 
         LinearLayout wpsBtns = new LinearLayout(this);
         wpsBtns.setOrientation(LinearLayout.HORIZONTAL);
@@ -817,7 +831,9 @@ public class MainActivity extends Activity {
         wpsStopBtn.setOnClickListener(v -> resetWps());
         wpsBtns.addView(wpsStopBtn, gapWeight(0));
         refreshWpsButtons();
-        pageWps.addView(wpsBtns);
+        wpsProgressCard.addView(wpsBtns);
+
+        pageWps.addView(wpsProgressCard);
 
         pageWps.addView(sectionLabel(L.s("日志", "Log")));
 
@@ -825,7 +841,7 @@ public class MainActivity extends Activity {
         wpsLogView.setTextSize(11f);
         wpsLogView.setTextColor(TEXT_DIM);
         wpsLogView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        wpsLogView.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        wpsLogView.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         wpsLogView.setPadding(px(16), px(14), px(16), px(14));
         wpsLogView.setLineSpacing(px(2), 1f);
         wpsLogView.setTextIsSelectable(true);
@@ -1770,22 +1786,48 @@ public class MainActivity extends Activity {
         runOnUiThread(MainActivity.this::refreshWpsProgress);
     }
 
+    /**
+     * 观测页 —— Obsidian Amber 重构。
+     *
+     * <h3>结构（自上而下六段）</h3>
+     * <pre>
+     *   ① 扫描卡      雷达 + 中心大数字（N 个网络）
+     *   ② 侦察入口    局域网设备探测（保留原入口与回调）
+     *   ③ 信号分布    柱状图卡
+     *   ④ 信道占用    占用条 + 信道建议卡（标题单独一行）
+     *   ⑤ 本机已存    一行卡片，点开看详情（回调不变）
+     *   ⑥ 发现网络    筛选片（选中态实心琥珀）+ 卡片化列表 / 空状态
+     * </pre>
+     *
+     * <p>数据来源、筛选语义、扫描频率与全部回调**与改版前一致**；这一版只重排布局、
+     * 统一配色与尺寸，并把「当前生效的筛选」显示出来（改版前筛选片没有选中态）。
+     */
     private void buildObserveTab() {
+        // ① 扫描卡：雷达放进卡片，中心数字仍由 RadarSweep 自己画
+        LinearLayout radarCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         radar = new RadarSweep(this);
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(240));
-        rp.bottomMargin = px(12);
-        pageObserve.addView(radar, rp);
-        radar.setCenterText(L.s("扫描中", "Scanning"), L.s("正在探测周边网络", "Probing nearby networks"));
+        radarCard.addView(radar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(232)));
+        radar.setCenterText(L.s("扫描中", "Scanning"),
+                L.s("正在探测周边网络", "Probing nearby networks"));
+        LinearLayout.LayoutParams rcp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rcp.bottomMargin = px(AmberTheme.GAP_CARD);
+        pageObserve.addView(radarCard, rcp);
 
         observeNotice = new TextView(this);
-        observeNotice.setTextSize(12);
+        observeNotice.setTextSize(AmberTheme.FS_BODY);
         observeNotice.setTextColor(DANGER);
-        observeNotice.setPadding(0, 0, 0, px(8));
+        observeNotice.setLineSpacing(px(4), 1f);
+        observeNotice.setBackground(roundBg(AmberTheme.DANGER_SOFT_BG, AmberTheme.RADIUS_CARD));
+        observeNotice.setPadding(px(14), px(12), px(14), px(12));
         observeNotice.setVisibility(View.GONE);
-        pageObserve.addView(observeNotice);
+        LinearLayout.LayoutParams onlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        onlp.bottomMargin = px(AmberTheme.GAP_CARD);
+        pageObserve.addView(observeNotice, onlp);
 
-        // 网络侦察入口: 终端式局域网设备探测(需 root)。
+        // ② 网络侦察入口: 终端式局域网设备探测(需 root)。
         Button lanProbe = btnSecondary(L.s("网络侦察 ▸ 探测当前 WiFi 设备",
                 "LAN recon ▸ probe devices on WiFi"));
         lanProbe.setOnClickListener(v -> {
@@ -1799,51 +1841,67 @@ public class MainActivity extends Activity {
         });
         pageObserve.addView(lanProbe);
 
-
+        // ③ 信号分布
         pageObserve.addView(sectionLabel(L.s("信号分布", "Signal distribution")));
-
+        LinearLayout barsCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         bars = new SignalBars(this);
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(150));
-        bp.bottomMargin = px(16);
-        pageObserve.addView(bars, bp);
-
-        // 信道占用：横向条，一眼看出哪个信道空、哪个挤
-        pageObserve.addView(sectionLabel(L.s("信道占用", "Channel occupancy")));
-        channelBars = new ChannelBars(this);
-        LinearLayout.LayoutParams cbp = new LinearLayout.LayoutParams(
+        barsCard.addView(bars, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(150)));
+        LinearLayout.LayoutParams bcp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        cbp.bottomMargin = px(16);
-        pageObserve.addView(channelBars, cbp);
+        bcp.bottomMargin = px(AmberTheme.GAP_CARD);
+        pageObserve.addView(barsCard, bcp);
 
+        // ④ 信道占用：横向条，一眼看出哪个信道空、哪个挤
+        pageObserve.addView(sectionLabel(L.s("信道占用", "Channel occupancy")));
+        LinearLayout chanCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        channelBars = new ChannelBars(this);
+        chanCard.addView(channelBars, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams ccp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ccp.bottomMargin = px(AmberTheme.GAP_CARD);
+        pageObserve.addView(chanCard, ccp);
+
+        // 建议卡：标题单独一行（琥珀小字），正文才是建议内容
+        LinearLayout adviceBox = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        adviceTitle = AmberTheme.label(this, L.s("信道建议", "CHANNEL ADVICE"));
+        adviceTitle.setTextColor(ACCENT);
+        adviceBox.addView(adviceTitle);
         adviceCard = new TextView(this);
-        adviceCard.setTextSize(12);
+        adviceCard.setTextSize(AmberTheme.FS_BODY);
         adviceCard.setTextColor(TEXT);
-        adviceCard.setLineSpacing(px(4), 1f);
-        adviceCard.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
-        adviceCard.setPadding(px(16), px(14), px(16), px(14));
+        adviceCard.setLineSpacing(px(5), 1f);
+        LinearLayout.LayoutParams atlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        atlp.topMargin = px(6);
+        adviceBox.addView(adviceCard, atlp);
+        adviceBox.setVisibility(View.GONE);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        alp.bottomMargin = px(16);
-        adviceCard.setLayoutParams(alp);
-        adviceCard.setVisibility(View.GONE);
-        pageObserve.addView(adviceCard);
+        alp.bottomMargin = px(AmberTheme.GAP_CARD);
+        adviceBox.setLayoutParams(alp);
+        adviceBoxRef = adviceBox;
+        pageObserve.addView(adviceBox);
 
+        // ⑤ 本机已存 WiFi：一行卡片，点开看详情
         pageObserve.addView(sectionLabel(L.s("本机已存 WiFi", "Saved Wi-Fi on this device")));
         savedWifiCard = new TextView(this);
-        savedWifiCard.setTextSize(12.5f);
-        savedWifiCard.setTextColor(TEXT_DIM);
-        savedWifiCard.setLineSpacing(px(4), 1f);
-        savedWifiCard.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
-        savedWifiCard.setPadding(px(16), px(14), px(16), px(14));
+        savedWifiCard.setTextSize(AmberTheme.FS_BODY);
+        savedWifiCard.setTextColor(TEXT);
+        savedWifiCard.setLineSpacing(px(5), 1f);
+        savedWifiCard.setBackground(roundBgStroked(AmberTheme.CARD, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
+        savedWifiCard.setPadding(px(AmberTheme.PAD_H), px(AmberTheme.PAD_V),
+                px(AmberTheme.PAD_H), px(AmberTheme.PAD_V));
         LinearLayout.LayoutParams swlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        swlp.bottomMargin = px(16);
+        swlp.bottomMargin = px(AmberTheme.GAP_CARD);
         savedWifiCard.setLayoutParams(swlp);
         savedWifiCard.setOnClickListener(v -> showSavedWifi());
         pageObserve.addView(savedWifiCard);
         updateSavedWifiCard();
 
+        // ⑥ 发现网络
         pageObserve.addView(sectionLabel(L.s("发现网络", "Networks found")));
 
         // 筛选行
@@ -1861,6 +1919,7 @@ public class MainActivity extends Activity {
         fb.addView(filterChip("WPS", FILTER_WPS));
         filterBar.addView(fb);
         pageObserve.addView(filterBar);
+        renderFilterChips();
 
         netList = new LinearLayout(this);
         netList.setOrientation(LinearLayout.VERTICAL);
@@ -1878,24 +1937,51 @@ public class MainActivity extends Activity {
             FILTER_OPEN = 2, FILTER_HIDDEN = 3, FILTER_WPS = 4;
     private int netFilter = FILTER_ALL;
     private LinearLayout filterRow;
+    /** 筛选片集合（下标与 {@link #filterChipModes} 对齐，用于刷新选中态）。 */
+    private final java.util.List<TextView> filterChips = new java.util.ArrayList<>();
+    private final java.util.List<Integer> filterChipModes = new java.util.ArrayList<>();
+    /** 信道建议卡的容器（有建议才显示）与它的标题。 */
+    private LinearLayout adviceBoxRef;
+    private TextView adviceTitle;
 
+    /**
+     * 筛选片。选中态＝实心琥珀 + 深色字；未选中＝暗底 + 描边 + 弱字。
+     *
+     * <p>改版前这里没有任何选中反馈：点了「开放」之后片子长得一模一样，
+     * 用户只能靠列表内容猜当前生效的是哪个筛选。
+     */
     private TextView filterChip(String label, int mode) {
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextSize(12);
-        t.setTextColor(TEXT_DIM);
-        t.setPadding(px(14), px(8), px(14), px(8));
-        t.setBackground(roundBgStroked(AmberTheme.CARD_2,
-                BTN_2ND_EDGE, AmberTheme.RADIUS_CHIP, 0.8f));
+        t.setTextSize(AmberTheme.FS_BODY);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setPadding(px(14), px(9), px(14), px(9));
         t.setOnClickListener(v -> {
             netFilter = mode;
+            renderFilterChips();
             renderRecords(lastRecords);
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = px(8);
         t.setLayoutParams(lp);
+        filterChips.add(t);
+        filterChipModes.add(mode);
         return t;
+    }
+
+    /** 按当前 netFilter 刷新筛选片外观。 */
+    private void renderFilterChips() {
+        for (int i = 0; i < filterChips.size(); i++) {
+            TextView t = filterChips.get(i);
+            boolean on = filterChipModes.get(i) == netFilter;
+            t.setTextColor(on ? ON_ACCENT : AmberTheme.TEXT_DIM);
+            t.setBackground(on
+                    ? io.github.wlmosv_png.wpaforge.ui.UiKit.ripple(
+                            ACCENT, dp(AmberTheme.RADIUS_CHIP))
+                    : io.github.wlmosv_png.wpaforge.ui.UiKit.rippleStroked(
+                            AmberTheme.CARD_2, BTN_2ND_EDGE, dp(AmberTheme.RADIUS_CHIP), dp(0.8f)));
+        }
     }
 
     private boolean passFilter(NetRecord r) {
@@ -1915,13 +2001,21 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 小节标题：琥珀小字 + 拉开字距。
+     *
+     * <p>改版前是灰色正文色，页面上六段内容连成一片，滚动时看不出"这是新的一段"。
+     * 现在统一走 {@link AmberTheme} 的强调色与字号档位（五个页面共用这一个方法，
+     * 所以观感天然一致）。
+     */
     private TextView sectionLabel(String s) {
         TextView t = new TextView(this);
         t.setText(s);
-        t.setTextSize(11.5f);
-        t.setTextColor(TEXT_DIM);
-        t.setLetterSpacing(0.12f);
-        t.setPadding(px(4), px(14), 0, px(10));
+        t.setTextSize(AmberTheme.FS_LABEL);
+        t.setTextColor(ACCENT);
+        t.setLetterSpacing(0.16f);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setPadding(px(4), px(20), 0, px(10));
         return t;
     }
 
@@ -1982,15 +2076,13 @@ public class MainActivity extends Activity {
             }
         }
         if (visible.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText(netFilter == FILTER_ALL
-                    ? emptyTextWithDiag()
-                    : L.s("当前筛选下没有匹配的网络。", "No networks match the current filter."));
-            empty.setTextSize(12.5f);
-            empty.setTextColor(TEXT_DIM);
-            empty.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
-            empty.setPadding(px(16), px(18), px(16), px(18));
-            empty.setLineSpacing(px(3), 1f);
+            LinearLayout empty = AmberTheme.emptyBox(this, dp,
+                    netFilter == FILTER_ALL
+                            ? emptyTextWithDiag()
+                            : L.s("当前筛选下没有匹配的网络。", "No networks match the current filter."),
+                    netFilter == FILTER_ALL
+                            ? L.s("点上面的「全部」可清除筛选", "Tap “All” above to clear the filter")
+                            : L.s("换个筛选看看", "Try another filter"));
             netList.addView(empty);
         }
 
@@ -2010,14 +2102,13 @@ public class MainActivity extends Activity {
      * 某频段一个 AP 都没有时不显示对应行，不用"无数据"占位。
      */
     private void renderChannelAdvice(ChannelAnalyzer.Report rep) {
-        if (adviceCard == null) return;
+        if (adviceCard == null || adviceBoxRef == null) return;
         if (rep == null) {
-            adviceCard.setVisibility(View.GONE);
+            adviceBoxRef.setVisibility(View.GONE);
             return;
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append(L.s("信道建议", "Channel advice")).append('\n');
 
         int shown = 0;
         if (rep.recommended24 > 0) {
@@ -2036,7 +2127,7 @@ public class MainActivity extends Activity {
         }
 
         if (shown == 0) {
-            adviceCard.setVisibility(View.GONE);
+            adviceBoxRef.setVisibility(View.GONE);
             return;
         }
 
@@ -2044,7 +2135,7 @@ public class MainActivity extends Activity {
                 "(Rescan after changing your router channel)"));
 
         adviceCard.setText(sb.toString().trim());
-        adviceCard.setVisibility(View.VISIBLE);
+        adviceBoxRef.setVisibility(View.VISIBLE);
     }
 
     /** 某信道的拥挤度描述 */
@@ -2063,6 +2154,13 @@ public class MainActivity extends Activity {
      * SSID 组头。只有一个 AP 时返回零高度空 View（退化成原平铺列表）；
      * 多 AP 时显示 "名称 · N 个 AP · 跨 M 个信道 · 信号差 X dB"。
      */
+    /**
+     * SSID 组头。只有一个 AP 时返回零高度空 View（退化成原平铺列表）；
+     * 多 AP 时显示 "名称 · N 个 AP · 跨 M 个信道 · 信号差 X dB"。
+     *
+     * <p>改版后上方加一条极淡分隔线：同 SSID 的多 AP 与前后条目分开，
+     * 长列表里更容易看出"这一组到哪儿结束"。
+     */
     private View groupHeader(SsidGroup.Group g) {
         if (!g.isMesh()) return new TextView(this);
 
@@ -2070,9 +2168,11 @@ public class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bp.topMargin = px(10);
-        bp.bottomMargin = px(4);
+        bp.topMargin = px(12);
+        bp.bottomMargin = px(6);
         box.setLayoutParams(bp);
+
+        box.addView(AmberTheme.divider(this, dp));
 
         TextView t = new TextView(this);
         StringBuilder sb = new StringBuilder(g.ssid);
@@ -2085,9 +2185,10 @@ public class MainActivity extends Activity {
             sb.append(" · ").append(L.f("信号差 %d dB", "delta %d dB", spread));
         }
         t.setText(sb.toString());
-        t.setTextSize(12);
+        t.setTextSize(AmberTheme.FS_BODY);
         t.setTextColor(ACCENT);
-        t.setPadding(px(4), 0, 0, 0);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        t.setPadding(px(4), px(6), 0, 0);
         box.addView(t);
         return box;
     }
@@ -2129,15 +2230,35 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
+    /**
+     * 单个网络一行（卡片样式）。
+     *
+     * <h3>改了什么</h3>
+     * <ul>
+     *   <li>左侧多一条 3dp 的**信号色条** —— 列表能竖着扫一眼看强弱；</li>
+     *   <li>右侧 dBm 用等宽字体（数字对齐、可比较），等级文字降为辅助；</li>
+     *   <li>安全类型改成胶囊：无保护＝红胶囊，已加密＝绿胶囊，扫列表时不再靠读字。</li>
+     * </ul>
+     * <p>展示的信息与改版前**逐项相同**（BSSID / 信道 / 频段 / 安全 / WPS / 厂商 /
+     * 估算距离 / 带宽代际），一个字段都没少。
+     */
     private View netRow(NetRecord r) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
-        row.setPadding(px(16), px(14), px(16), px(14));
+        row.setBackground(roundBgStroked(AmberTheme.CARD, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
+        row.setPadding(px(14), px(13), px(14), px(13));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rp.bottomMargin = px(6);
+        rp.bottomMargin = px(7);
         row.setLayoutParams(rp);
+
+        // 信号色条：等级色，一眼看强弱
+        View sigBar = new View(this);
+        sigBar.setBackground(roundBgStatic(levelColor(r.signalLevel()), 2f));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                px(3), ViewGroup.LayoutParams.MATCH_PARENT);
+        slp.rightMargin = px(12);
+        row.addView(sigBar, slp);
 
         // 左：名称 + 细节
         LinearLayout left = new LinearLayout(this);
@@ -2145,8 +2266,9 @@ public class MainActivity extends Activity {
 
         TextView name = new TextView(this);
         name.setText(r.displayName());
-        name.setTextSize(14);
+        name.setTextSize(AmberTheme.FS_TITLE);
         name.setTextColor(TEXT);
+        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         name.setSingleLine(true);
         name.setEllipsize(TextUtils.TruncateAt.END);
         left.addView(name);
@@ -2165,50 +2287,69 @@ public class MainActivity extends Activity {
         }
         detail.setText(r.bssid + "  ·  ch" + r.channel
                 + (r.is5Ghz ? " (5G)" : " (2.4G)")
-                + "  ·  " + securityLabel(r.security)
                 + (r.wpsSupported ? "  ·  WPS" : "")
                 + (vendor != null && !vendor.isEmpty()
                     ? "  ·  " + vendor : "")
                 + (!r.isHidden() && r.estimatedDistanceMeters() > 0
                     ? "  ·  ≈" + r.estimatedDistanceMeters() + "m" : ""));
-        detail.setTextSize(10);
-        detail.setTextColor(TEXT_DIM);
-        left.addView(detail);
+        detail.setTextSize(FS_TINY);
+        detail.setTextColor(AmberTheme.TEXT_DIM);
+        detail.setTypeface(Typeface.MONOSPACE);
+        detail.setSingleLine(true);
+        detail.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dlp.topMargin = px(4);
+        left.addView(detail, dlp);
 
-        // 第二行细节：带宽 / Wi-Fi 代际。拿不到就不加这一行，不占位。
+        // 带宽 / Wi-Fi 代际。拿不到就不加这一行，不占位。
         ScanDetail sd = scanner == null ? ScanDetail.UNKNOWN : scanner.detailOf(r);
         if (!sd.isEmpty()) {
             TextView phy = new TextView(this);
             phy.setText(sd.label());
-            phy.setTextSize(10);
+            phy.setTextSize(FS_TINY);
             phy.setTextColor(ACCENT);
-            phy.setPadding(0, px(2), 0, 0);
+            phy.setPadding(0, px(3), 0, 0);
             left.addView(phy);
         }
 
         row.addView(left, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 右：信号等级 + 加密徽标
+        // 右：dBm（等宽）+ 等级 + 安全胶囊
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
         right.setGravity(Gravity.END);
 
+        TextView dbm = new TextView(this);
+        dbm.setText(r.rssi + " dBm");
+        dbm.setTextSize(13f);
+        dbm.setTextColor(levelColor(r.signalLevel()));
+        dbm.setTypeface(Typeface.MONOSPACE);
+        dbm.setGravity(Gravity.END);
+        right.addView(dbm);
+
         TextView lvl = new TextView(this);
         lvl.setText(levelText(r.signalLevel()));
-        lvl.setTextSize(11);
-        lvl.setTextColor(levelColor(r.signalLevel()));
+        lvl.setTextSize(FS_TINY);
+        lvl.setTextColor(AmberTheme.TEXT_DIM);
         lvl.setGravity(Gravity.END);
         right.addView(lvl);
 
         TextView sec = new TextView(this);
         boolean weak = r.security == NetRecord.Security.OPEN
                 || r.security == NetRecord.Security.WEP;
-        sec.setText(weak ? L.s("无保护", "No protection") : L.s("已加密", "Secured"));
-        sec.setTextSize(10);
+        sec.setText(weak ? L.s("无保护", "No protection") : securityLabel(r.security));
+        sec.setTextSize(FS_TINY);
         sec.setTextColor(weak ? DANGER : OK_GREEN);
-        sec.setGravity(Gravity.END);
-        right.addView(sec);
+        sec.setGravity(Gravity.CENTER);
+        sec.setBackground(roundBg(weak ? AmberTheme.DANGER_SOFT_BG : AmberTheme.OK_BG,
+                AmberTheme.RADIUS_CHIP));
+        sec.setPadding(px(8), px(3), px(8), px(3));
+        LinearLayout.LayoutParams sclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sclp.topMargin = px(6);
+        right.addView(sec, sclp);
 
         row.addView(right);
         return row;
@@ -2250,21 +2391,26 @@ public class MainActivity extends Activity {
 
         pageAudit.addView(sectionLabel(L.s("字典", "Dictionary")));
 
+        // 字典卡：当前字典 + 四个入口在同一张卡里 —— 滚动时是一块内容，而不是四块
+        LinearLayout dictCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+
         dictStatus = new TextView(this);
-        dictStatus.setTextSize(13);
+        dictStatus.setTextSize(AmberTheme.FS_TITLE);
         dictStatus.setTextColor(TEXT);
-        dictStatus.setPadding(0, 0, 0, px(10));
+        dictStatus.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        dictStatus.setLineSpacing(px(4), 1f);
+        dictStatus.setPadding(0, 0, 0, px(6));
         updateDictStatus();
-        pageAudit.addView(dictStatus);
+        dictCard.addView(dictStatus);
 
         Button manage = btnPrimary(L.s("打开字典管理", "Manage dictionaries"));
         manage.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, DictActivity.class)));
-        pageAudit.addView(manage);
+        dictCard.addView(manage);
 
         Button load = btnSecondary(L.s("加载字典文件", "Load dictionary file"));
         load.setOnClickListener(v -> showDictPicker());
-        pageAudit.addView(load);
+        dictCard.addView(load);
 
         Button gen = btnSecondary(L.s("内置生成器（快速）", "Built-in generator (quick)"));
         gen.setOnClickListener(v -> {
@@ -2282,7 +2428,7 @@ public class MainActivity extends Activity {
                 });
             }).start();
         });
-        pageAudit.addView(gen);
+        dictCard.addView(gen);
 
         // 按 SSID 派生：审计页以前只能「加载文件」和「内置生成器」，
         // 想按目标网络现场造候选必须跑到破解页 —— 两个页面本是一件事。
@@ -2290,18 +2436,22 @@ public class MainActivity extends Activity {
         Button derive = btnSecondary(L.s("按 SSID 派生（选目标）",
                 "Derive from SSID (pick a target)"));
         derive.setOnClickListener(v -> pickTargetForDerive());
-        pageAudit.addView(derive);
+        dictCard.addView(derive);
+
+        pageAudit.addView(dictCard);
 
         pageAudit.addView(sectionLabel(L.s("口令强度检查", "Passphrase strength check")));
 
+        LinearLayout checkCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         EditText input = new EditText(this);
         input.setHint(L.s("输入一个口令，看它在字典里的位置", "Enter a passphrase to see its position in the dictionary"));
         input.setTextColor(TEXT);
         input.setHintTextColor(TEXT_DIM);
-        input.setTextSize(13);
-        input.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
-        input.setPadding(px(16), px(14), px(16), px(14));
-        pageAudit.addView(input);
+        input.setTextSize(AmberTheme.FS_STATE);
+        input.setSingleLine(true);
+        input.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        input.setPadding(px(14), px(13), px(14), px(13));
+        checkCard.addView(input);
 
         Button check = btnPrimary("评估");
         check.setOnClickListener(v -> {
@@ -2321,10 +2471,14 @@ public class MainActivity extends Activity {
                 appendLog("未命中: \"" + pw + "\" 不在当前字典里");
             }
         });
-        pageAudit.addView(check);
+        checkCard.addView(check);
+
+        pageAudit.addView(checkCard);
 
         // ---------------- 离线校验（外部抓包材料） ----------------
         pageAudit.addView(sectionLabel(L.s("离线校验（外部材料）", "Offline check (external capture)")));
+
+        LinearLayout offCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
         TextView offHint = new TextView(this);
         offHint.setText(L.s(
@@ -2334,17 +2488,19 @@ public class MainActivity extends Activity {
                 "Material comes from a desktop capture tool; the phone only compares locally.\n"
                 + "hashcat 22000 format (.hc22000 / .22000) supported — drop it in Download or Download/WPAForge-hc/.\n"
                 + "PMKID needs only PBKDF2 + one HMAC, about twice as fast as EAPOL — ask for it when capturing."));
-        offHint.setTextSize(11.5f);
+        offHint.setTextSize(AmberTheme.FS_BODY);
         offHint.setTextColor(TEXT_DIM);
         offHint.setLineSpacing(px(4), 1f);
-        offHint.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
-        offHint.setPadding(px(18), px(16), px(18), px(16));
-        pageAudit.addView(offHint);
+        offHint.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        offHint.setPadding(px(14), px(13), px(14), px(13));
+        offCard.addView(offHint);
 
         Button offPick = btnSecondary(L.s("选择材料文件，跑当前字典",
                 "Pick a capture file, run the current dictionary"));
         offPick.setOnClickListener(v -> showOfflinePicker());
-        pageAudit.addView(offPick);
+        offCard.addView(offPick);
+
+        pageAudit.addView(offCard);
 
         pageAudit.addView(sectionLabel(L.s("日志", "Log")));
 
@@ -2352,7 +2508,7 @@ public class MainActivity extends Activity {
         auditLog.setTextSize(11);
         auditLog.setTextColor(TEXT_DIM);
         auditLog.setTypeface(Typeface.MONOSPACE);
-        auditLog.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        auditLog.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         auditLog.setPadding(px(16), px(16), px(16), px(16));
         auditLog.setMinLines(6);
         // 空状态：一块纯空白会让人以为功能坏了 —— 先说清这里会出现什么。
@@ -3585,7 +3741,7 @@ public class MainActivity extends Activity {
             smartToggle.setText("智能排序: 已关闭\n"
                     + L.s("按字典原始顺序依次尝试", "Try in the dictionary's original order"));
             smartToggle.setTextColor(TEXT_DIM);
-            smartToggle.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+            smartToggle.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         }
     }
 
@@ -3601,7 +3757,7 @@ public class MainActivity extends Activity {
             targetDictToggle.setText("目标派生: 已关闭\n"
                     + L.s("只用字典里已有的候选", "Use only candidates already in the dictionary"));
             targetDictToggle.setTextColor(TEXT_DIM);
-            targetDictToggle.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+            targetDictToggle.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         }
     }
 
@@ -3937,7 +4093,7 @@ public class MainActivity extends Activity {
         t.setText(sb.toString().trim());
         t.setTextSize(12);
         t.setTextColor(running > 0 ? OK_GREEN : (paused > 0 ? AMBER : TEXT_DIM));
-        t.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
+        t.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CHIP, 0.8f));
         t.setPadding(px(14), px(10), px(14), px(10));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -4970,7 +5126,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         modeInfo = new TextView(this);
         modeInfo.setTextSize(12);
         modeInfo.setLineSpacing(px(4), 1f);
-        modeInfo.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        modeInfo.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         modeInfo.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(modeInfo);
 
@@ -5009,7 +5165,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         permLabel.setTextSize(11.5f);
         permLabel.setTextColor(TEXT_DIM);
         permLabel.setLineSpacing(px(4), 1f);
-        permLabel.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        permLabel.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         permLabel.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(permLabel);
         refreshPermLabel();
@@ -5030,7 +5186,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         keepAliveLabel.setTextSize(11.5f);
         keepAliveLabel.setTextColor(TEXT_DIM);
         keepAliveLabel.setLineSpacing(px(4), 1f);
-        keepAliveLabel.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        keepAliveLabel.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         keepAliveLabel.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(keepAliveLabel);
         refreshKeepAlive();
@@ -5083,7 +5239,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         diagHint.setTextSize(11.5f);
         diagHint.setTextColor(TEXT_DIM);
         diagHint.setLineSpacing(px(4), 1f);
-        diagHint.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        diagHint.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         diagHint.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(diagHint);
 
@@ -5126,7 +5282,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         pinHint.setTextSize(11.5f);
         pinHint.setTextColor(TEXT_DIM);
         pinHint.setLineSpacing(px(4), 1f);
-        pinHint.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        pinHint.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         pinHint.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(pinHint);
 
@@ -5157,7 +5313,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         connHint.setTextSize(11.5f);
         connHint.setTextColor(TEXT_DIM);
         connHint.setLineSpacing(px(4), 1f);
-        connHint.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        connHint.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         connHint.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(connHint);
 
@@ -5174,7 +5330,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         speedInfo.setTextSize(12);
         speedInfo.setTextColor(TEXT_DIM);
         speedInfo.setLineSpacing(px(4), 1f);
-        speedInfo.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        speedInfo.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         speedInfo.setPadding(px(18), px(16), px(18), px(16));
         pageSettings.addView(speedInfo);
 
@@ -5276,7 +5432,7 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
     private View infoBlock(String title, String body) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        box.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         box.setPadding(px(18), px(16), px(18), px(16));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);

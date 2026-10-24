@@ -1,6 +1,7 @@
 package io.github.wlmosv_png.wpaforge.ui;
 
 import android.content.Context;
+import android.graphics.drawable.Drawable;
 import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
@@ -37,17 +38,17 @@ public final class AmberTheme {
     // ---------------------------------------------------------------- 背景与表面
 
     /** 页面背景。 */
-    public static final int BG = 0xFF101014;
+    public static final int BG = 0xFF0B0B0F;
     /** 卡片背景（比页面亮一档，把「一块内容」托起来）。 */
-    public static final int CARD = 0xFF1B1B22;
+    public static final int CARD = 0xFF1C1C24;
     /** 次级表面（卡片里的分区、未选中的胶囊）。 */
-    public static final int CARD_2 = 0xFF24242D;
+    public static final int CARD_2 = 0xFF262630;
     /** 抬起的次级表面（列表项、工具条上的小胶囊底）。 */
     public static final int CARD_3 = 0xFF232330;
     /** 凹陷面（日志区、输入框底）。比页面还暗，形成「凹进去」的层次。 */
-    public static final int SUNKEN = 0xFF14141A;
+    public static final int SUNKEN = 0xFF131318;
     /** 卡片描边：极低对比，只在近黑底上勾一条边。 */
-    public static final int EDGE = 0x1FFFFFFF;
+    public static final int EDGE = 0x24FFFFFF;
     /** 卡内分隔线。 */
     public static final int LINE = 0x14FFFFFF;
 
@@ -155,7 +156,7 @@ public final class AmberTheme {
     public static LinearLayout card(Context c, float density, float radiusDp) {
         LinearLayout v = new LinearLayout(c);
         v.setOrientation(LinearLayout.VERTICAL);
-        v.setBackground(UiKit.round(CARD, radiusDp * density));
+        v.setBackground(UiKit.roundStroked(CARD, EDGE, radiusDp * density, Math.max(1f, density * 0.8f)));
         int ph = Math.round(PAD_H * density), pv = Math.round(PAD_V * density);
         v.setPadding(ph, pv, ph, pv);
         return v;
@@ -202,6 +203,21 @@ public final class AmberTheme {
         t.setTextColor(TEXT_DIM);
         t.setGravity(Gravity.CENTER);
         return t;
+    }
+
+    /** 卡片/列表行的统一底色：卡片色 + 一条极淡描边（分组靠它立住）。 */
+    public static Drawable rowBg(Context c, float density, float radiusDp) {
+        return UiKit.roundStroked(CARD, EDGE, radiusDp * density, Math.max(1f, density * 0.8f));
+    }
+
+    /** 列表行：横向、卡片底、统一内边距（各页共用，行高才不会一处一个样）。 */
+    public static LinearLayout row(Context c, float density) {
+        LinearLayout v = new LinearLayout(c);
+        v.setOrientation(LinearLayout.HORIZONTAL);
+        v.setBackground(rowBg(c, density, RADIUS_CARD));
+        int ph = Math.round(14 * density), pv = Math.round(13 * density);
+        v.setPadding(ph, pv, ph, pv);
+        return v;
     }
 
     /** 卡片内的一行分隔线（左右不缩进，宽度由父容器决定）。 */

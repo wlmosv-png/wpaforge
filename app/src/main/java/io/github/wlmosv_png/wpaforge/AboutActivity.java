@@ -167,7 +167,7 @@ public class AboutActivity extends Activity {
         t.setTextSize(12.5f);
         t.setTextColor(TEXT_DIM);
         t.setLineSpacing(px(5), 1f);
-        t.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        t.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         t.setPadding(px(18), px(16), px(18), px(16));
         return t;
     }
@@ -179,7 +179,7 @@ public class AboutActivity extends Activity {
         b.setTextSize(12);
         b.setTextColor(ACCENT);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        b.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CARD));
+        b.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         b.setMinWidth(0); b.setMinimumWidth(0);
         b.setMinHeight(0); b.setMinimumHeight(0);
         b.setStateListAnimator(null);
@@ -196,7 +196,7 @@ public class AboutActivity extends Activity {
                              String[] tags, View.OnClickListener onClick) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+        box.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         box.setPadding(px(18), px(16), px(18), px(16));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -255,6 +255,13 @@ public class AboutActivity extends Activity {
         g.setColor(color);
         g.setCornerRadius(px(radiusDp));
         return g;
+    }
+
+    /** 同 {@link #roundBg}，外加一条极淡描边 —— 近黑底上「卡片/行」的分组靠它立住。 */
+    private android.graphics.drawable.Drawable roundBgStroked(int fill, int edge,
+                                                             float radiusDp, float strokeDp) {
+        return io.github.wlmosv_png.wpaforge.ui.UiKit.roundStroked(
+                fill, edge, px(radiusDp), Math.max(1f, px(strokeDp)));
     }
 
     private void open(String url) {

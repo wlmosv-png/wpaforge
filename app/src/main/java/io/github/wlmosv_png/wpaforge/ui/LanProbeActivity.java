@@ -161,7 +161,9 @@ public class LanProbeActivity extends Activity {
 
         termWrap = new LinearLayout(this);
         termWrap.setOrientation(LinearLayout.VERTICAL);
-        termWrap.setBackgroundColor(AmberTheme.TERM_BG);
+        // 终端区：下沉底 + 一条极淡描边，与卡片同族（布局不动）
+        termWrap.setBackground(roundStroke(AmberTheme.TERM_BG,
+                (int) AmberTheme.RADIUS_CARD, AmberTheme.EDGE, 0.8f));
         termScroll = new ScrollView(this);
         termScroll.setBackgroundColor(AmberTheme.TERM_BG);
         termScroll.setVerticalScrollBarEnabled(true);
@@ -556,7 +558,7 @@ public class LanProbeActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         card.setBackground(isNew
-                ? roundStroke(SURFACE, 16, AmberTheme.DANGER_EDGE, 1.5f)
+                ? roundStroke(SURFACE, (int) AmberTheme.RADIUS_CARD, AmberTheme.DANGER_EDGE, 1.5f)
                 : round(SURFACE, 16));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);

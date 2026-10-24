@@ -162,6 +162,29 @@ public class ThemeConsistencyTest {
         ok("弹窗按钮走 AmberTheme.action（不再自己拼色）",
                 net.contains("AmberTheme.action(") && !net.contains("Color.WHITE"));
 
+        System.out.println("== T7 页面分组（卡片化）==");
+        String maFull = read(SRC + "MainActivity.java");
+        for (String card : new String[]{"radarCard", "barsCard", "chanCard", "adviceBoxRef",
+                "dictCard", "checkCard", "offCard", "wpsTargetCard", "wpsModeCard",
+                "wpsProgressCard"}) {
+            ok("MainActivity 有分组卡 " + card, maFull != null && maFull.contains(card));
+        }
+        ok("筛选片有选中态刷新（renderFilterChips）",
+                maFull != null && maFull.contains("private void renderFilterChips()"));
+        ok("小节标题走主题字号与强调色",
+                maFull != null && maFull.contains("t.setTextSize(AmberTheme.FS_LABEL);")
+                        && maFull.contains("t.setTextColor(ACCENT);"));
+        String rows = maFull == null ? "" : maFull;
+        int i = rows.indexOf("private View netRow(NetRecord r) {");
+        int j = rows.indexOf("private String levelText(int lv) {");
+        String netRow = (i >= 0 && j > i) ? rows.substring(i, j) : "";
+        ok("网络行有信号色条", netRow.contains("sigBar"));
+        ok("网络行安全类型是胶囊", netRow.contains("AmberTheme.RADIUS_CHIP"));
+        ok("网络行仍展示 BSSID/信道/厂商/距离（信息未减）",
+                netRow.contains("r.bssid") && netRow.contains("r.channel")
+                        && netRow.contains("estimatedDistanceMeters")
+                        && netRow.contains("OuiLookup"));
+
         System.out.println();
         System.out.println("=== 主题一致性测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

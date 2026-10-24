@@ -325,7 +325,7 @@ public class DictActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CARD));
+        box.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
         box.setPadding(px(8), px(14), px(8), px(14));
         box.setClickable(true);
         box.setOnClickListener(l);
@@ -517,7 +517,7 @@ public class DictActivity extends Activity {
             LinearLayout bar = new LinearLayout(this);
             bar.setOrientation(LinearLayout.HORIZONTAL);
             bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            bar.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CARD));
+            bar.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
             bar.setPadding(px(14), px(10), px(14), px(10));
             LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -548,7 +548,7 @@ public class DictActivity extends Activity {
             empty.setTextSize(13);
             empty.setTextColor(TEXT_DIM);
             empty.setLineSpacing(px(6), 1f);
-            empty.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
+            empty.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
             empty.setPadding(px(20), px(22), px(20), px(22));
             listBox.addView(empty);
             statLabel.setText(L.s("共 0 个字典", "0 dictionaries"));
@@ -691,6 +691,13 @@ public class DictActivity extends Activity {
     /** 圆角背景 —— 走 UiKit：可点元素自带水波纹与禁用态压暗 */
     private android.graphics.drawable.Drawable roundBg(int color, float radiusDp) {
         return io.github.wlmosv_png.wpaforge.ui.UiKit.ripple(color, px(radiusDp));
+    }
+
+    /** 同 {@link #roundBg}，外加一条极淡描边 —— 近黑底上「卡片/行」的分组靠它立住。 */
+    private android.graphics.drawable.Drawable roundBgStroked(int fill, int edge,
+                                                             float radiusDp, float strokeDp) {
+        return io.github.wlmosv_png.wpaforge.ui.UiKit.roundStroked(
+                fill, edge, px(radiusDp), Math.max(1f, px(strokeDp)));
     }
 
     // ---------------- 查看 ----------------

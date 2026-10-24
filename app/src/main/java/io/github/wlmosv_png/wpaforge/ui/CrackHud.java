@@ -45,9 +45,19 @@ public final class CrackHud {
         return Math.min(100d, p);
     }
 
-    /** 「6.2%」 */
+    /**
+     * 「6.2%」——精度随量级走。
+     *
+     * <p>为什么不能一律一位小数：字典动辄几万到二十万条，跑到第 1 条时
+     * 「0.0%」会**一直**显示「0.0%」（几十分钟都不动），看着像卡死。
+     * 现在：&lt;0.1% 给三位小数、&lt;1% 给两位、其余一位。
+     */
     public static String percentLabel(int tested, int total) {
-        return String.format(Locale.US, "%.1f%%", percent(tested, total));
+        double p = percent(tested, total);
+        if (p <= 0d) return "0.0%";                      // 还没开始：保持原来的 0.0%
+        if (p < 0.1d) return String.format(Locale.US, "%.3f%%", p);
+        if (p < 1d) return String.format(Locale.US, "%.2f%%", p);
+        return String.format(Locale.US, "%.1f%%", p);
     }
 
     /** 「1,204 / 13,255」 */
@@ -86,6 +96,10 @@ public final class CrackHud {
         if (s < 60) return "剩 " + s + " 秒";
         long m = s / 60;
         if (m < 60) return "剩 " + m + " 分";
-        return "剩 " + (m / 60) + " 小时 " + (m % 60) + " 分";
+        long h = m / 60;
+        // 超过一天就说天数：二十万条字典跑起来 ETA 是 200 小时往上，
+        // 「剩 211 小时 36 分」既读不出量级，也让整行数字长得离谱。
+        if (h >= 24) return "剩 " + (h / 24) + " 天 " + (h % 24) + " 小时";
+        return "剩 " + h + " 小时 " + (m % 60) + " 分";
     }
 }

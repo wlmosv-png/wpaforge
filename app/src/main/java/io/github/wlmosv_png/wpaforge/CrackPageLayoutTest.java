@@ -138,7 +138,9 @@ public class CrackPageLayoutTest {
                 nResume >= 4);
 
         System.out.println("== 2c. 速率/ETA 用最近 20 条滑窗（不是被拖住的整轮平均）==");
-        ok("界面上写明了口径（近 20 条）", ma.contains("（近 20 条）"));
+        ok("界面上写明了口径（近 20 条）", ma.contains("近 20 条"));
+        ok("这行允许折两行（不再被 ellipsize 截断）",
+                ma.contains("connectModeView.setMaxLines(2);"));
         ok("服务优先给滑窗均值", svc != null
                 && svc.contains("long recent = e.liveRecentAvgMs();"));
         String eng = read(ROOT + "audit/CrackEngine.java");

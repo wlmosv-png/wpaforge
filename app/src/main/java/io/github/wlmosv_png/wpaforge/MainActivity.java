@@ -3427,8 +3427,8 @@ public class MainActivity extends Activity {
         connectModeView = new TextView(this);
         connectModeView.setTextSize(AmberTheme.FS_BODY);
         connectModeView.setTextColor(TEXT_DIM);
-        connectModeView.setSingleLine(true);
-        connectModeView.setEllipsize(TextUtils.TruncateAt.END);
+        connectModeView.setSingleLine(false);
+        connectModeView.setMaxLines(2);
         // 不可点：只有一种执行方式，点开弹「仅支持 Root」是噪音。
         connectModeView.setClickable(false);
         connectModeView.setFocusable(false);
@@ -4225,17 +4225,17 @@ public class MainActivity extends Activity {
         long live = 0;
         CrackService svc = liveService();
         if (svc != null) live = svc.currentRateMs();
+        // 口径要写清楚（这是最近 20 条的实时节奏，不是整轮平均），但**不能写太长** ——
+        // 这一行在真机上会被 ellipsize 截成「（近 20…」（2026-10-24 用户截图）。
+        // 所以：短标签 + 短单位；同时允许折两行兜底（窄屏/大字号不会再被切掉）。
         if (live > 0) {
-            // 口径必须写在界面上：这是**最近 20 条**的实时节奏，不是整轮平均 ——
-            // 逐条耗时本来就随判定路径摆动（快判 ~2s / 等满窗口 ~5s），
-            // 只给一个数字而不说口径，用户会以为在骗他。
-            connectModeView.setText(L.f("Root 通道   ·   本次每条约 %.1f 秒（近 20 条）",
-                    "Root channel   ·   %.1fs per attempt (last 20)",
+            connectModeView.setText(L.f("Root 通道 · %.1f 秒/条 · 近 20 条",
+                    "Root channel · %.1fs/attempt · last 20",
                     live / 1000.0));
         } else {
             long ms = Prefs.avgMsPerItem(this);
-            connectModeView.setText(L.f("Root 通道   ·   上次每条约 %.1f 秒",
-                    "Root channel   ·   ~%.1fs per attempt (last run)",
+            connectModeView.setText(L.f("Root 通道 · 上次 %.1f 秒/条",
+                    "Root channel · %.1fs/attempt (last run)",
                     ms / 1000.0));
         }
         connectModeView.setTextColor(ACCENT);

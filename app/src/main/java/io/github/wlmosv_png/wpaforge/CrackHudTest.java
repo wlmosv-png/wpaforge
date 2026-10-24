@@ -83,9 +83,13 @@ public class CrackHudTest {
         eq("负数按 0", "0", CrackHud.thousands(-5));
         eq("0", "0", CrackHud.thousands(0));
 
-        eq("百分比 2/13255", "0.0%", CrackHud.percentLabel(2, 13255));
+        // 精度随量级：极小进度不再恒显示 0.0%（不然几十分钟看着像卡死）
+        eq("百分比 2/13255（<0.1% → 三位小数）", "0.015%", CrackHud.percentLabel(2, 13255));
+        eq("百分比 1/200000（三位小数）", "0.001%", CrackHud.percentLabel(1, 200000));
+        eq("百分比 3/1000（<1% → 两位小数）", "0.30%", CrackHud.percentLabel(3, 1000));
         eq("百分比 662/13255", "5.0%", CrackHud.percentLabel(662, 13255));
         eq("百分比 total=0 不除零", "0.0%", CrackHud.percentLabel(5, 0));
+        eq("百分比 0 条 → 0.0%", "0.0%", CrackHud.percentLabel(0, 200000));
         eq("百分比封顶 100", "100.0%", CrackHud.percentLabel(999, 100));
         eq("百分比负数夹到 0", "0.0%", CrackHud.percentLabel(-3, 100));
 
@@ -102,6 +106,9 @@ public class CrackHudTest {
         eq("ETA 45 秒", "剩 45 秒", CrackHud.etaLabel(45_000));
         eq("ETA 9 分", "剩 9 分", CrackHud.etaLabel(9 * 60_000L));
         eq("ETA 2 小时 09 分", "剩 2 小时 9 分", CrackHud.etaLabel(2 * 3600_000L + 9 * 60_000L));
+        // 超过一天说天数（二十万条字典的 ETA 就是这样）
+        eq("ETA 211 小时 36 分 → 天", "剩 8 天 19 小时",
+                CrackHud.etaLabel(211 * 3600_000L + 36 * 60_000L));
         eq("ETA 未知给空串", "", CrackHud.etaLabel(-1));
 
         // ══════════ LogFilter ══════════

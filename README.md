@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
 [![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-**中文** · [English](README_EN.md) · [🎬 完整演示](https://wlmosv-png.github.io/wpaforge/#demo) · [B站](https://www.bilibili.com/video/BV1b1np6YE7U) · [官网](https://wlmosv-png.github.io/wpaforge/) · [下载](https://github.com/wlmosv-png/wpaforge/releases/latest) · [讨论](https://github.com/wlmosv-png/wpaforge/discussions)
+**中文** · [English](README_EN.md) · [🎬 完整演示](https://wlmosv.dpdns.org/wpaforge/#demo) · [B站](https://www.bilibili.com/video/BV1b1np6YE7U) · [官网](https://wlmosv.dpdns.org/wpaforge/) · [下载](https://github.com/wlmosv-png/wpaforge/releases/latest) · [讨论](https://github.com/wlmosv-png/wpaforge/discussions)
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
@@ -47,9 +47,9 @@
 **锁屏继续跑，中断能接上。** 进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。
 
 <p align="center">
-  <a href="https://wlmosv-png.github.io/wpaforge/#demo"><img src="docs/demo-hit.gif" alt="真机录屏：第 11 条候选命中" width="46%"></a>
+  <a href="https://wlmosv.dpdns.org/wpaforge/#demo"><img src="docs/demo-hit.gif" alt="真机录屏：第 11 条候选命中" width="46%"></a>
 </p>
-<p align="center"><sub>▶ 真机录屏 · 第 11 条候选命中（10 秒试看）—— <a href="https://wlmosv-png.github.io/wpaforge/#demo">完整 60 秒带配乐版</a> ｜ <a href="https://www.bilibili.com/video/BV1b1np6YE7U">B站（带弹幕）</a></sub></p>
+<p align="center"><sub>▶ 真机录屏 · 第 11 条候选命中（10 秒试看）—— <a href="https://wlmosv.dpdns.org/wpaforge/#demo">完整 60 秒带配乐版</a> ｜ <a href="https://www.bilibili.com/video/BV1b1np6YE7U">B站（带弹幕）</a></sub></p>
 
 ## 还有什么
 

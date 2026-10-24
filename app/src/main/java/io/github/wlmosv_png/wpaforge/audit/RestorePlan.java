@@ -31,7 +31,12 @@ public final class RestorePlan {
         /** 用**原口令**把目标加回去。 */
         READD_ORIGINAL,
         /** 读回状态确认。 */
-        VERIFY
+        VERIFY,
+        /**
+         * 命中收尾：**保留**目标当前那条配置（它就是刚验证过的正确口令），
+         * 全程不做任何删除。见 {@link #steps(RestoreJournal.Entry, boolean)}。
+         */
+        KEEP_HIT_CONFIG
     }
 
     /** 结果码（机器可读，进日志与队列）。 */
@@ -48,6 +53,15 @@ public final class RestorePlan {
      * 前者是「配置根本没写回去」。把前者当后者报，会把「配置丢了」说成「网络没连上」。
      */
     public static final String READD_NOT_WRITTEN = "READD-NOT-WRITTEN";
+
+    /** 命中口令已**保留**为目标配置（回读确认配置在已保存列表里）。 */
+    public static final String KEPT = "KEPT";
+
+    /**
+     * 保留条件不成立（回读不到目标配置）—— 调用方必须退回标准恢复。
+     * 与 {@link #KEPT} 严格区分：前者是「没留下东西」，后者是「正确口令留住了」。
+     */
+    public static final String KEEP_NOT_WRITTEN = "KEEP-NOT-WRITTEN";
 
     /**
      * 重建原配置这一步的结果（F5）。
@@ -98,14 +112,43 @@ public final class RestorePlan {
      * @param e 记录；{@code null} 或已恢复 → 空列表
      */
     public static List<Step> steps(RestoreJournal.Entry e) {
-        if (e == null || e.restored()) return Collections.emptyList();
+        return steps(e, false);
+    }
+
+    /**
+     * 需要执行的步骤（区分「命中保留」与「标准恢复」）。
+     *
+     * <p><b>keepHit=true（命中收尾）</b>：系统里留下的那条配置就是**刚验证过的正确口令**
+     * —— 它正是用户要的结果，所以这里一步删除都不做，只读回确认"配置确实在已保存列表里"，
+     * 然后由 {@link RestoreRunner#applyStage} 把 journal 结掉（不清记录的话，
+     * 下次启动的"补做"会把它删掉，保留就白做了）。
+     *
+     * <p><b>keepHit=false（未命中 / 暂停 / 取消 / 异常 / 启动补做）</b>：旧行为，
+     * 候选留下的口令是错的（或状态未知），必须先删干净。
+     *
+     * @param e       记录；{@code null} 或已恢复 → 空列表
+     * @param keepHit 本轮是否命中
+     */
+    public static List<Step> steps(RestoreJournal.Entry e, boolean keepHit) {
+        if (e == null || e.settled()) return Collections.emptyList();
         List<Step> out = new ArrayList<>(3);
+        if (keepHit) {
+            out.add(Step.KEEP_HIT_CONFIG);
+            out.add(Step.VERIFY);
+            return out;
+        }
         // 第一步永远是删 —— 无论后面能不能加回去，
         // “错误候选口令不许留在系统里”这条都必须先满足。
         out.add(Step.REMOVE_WRONG_CONFIG);
         if (e.canReadd()) out.add(Step.READD_ORIGINAL);
         out.add(Step.VERIFY);
         return out;
+    }
+
+    /** 本轮要不要走「命中保留」这条路（纯判断，与 shell 无关）。 */
+    public static boolean keepsHitConfig(RestoreJournal.Entry e, boolean keepHit) {
+        if (!keepHit || e == null || e.settled()) return false;
+        return steps(e, true).contains(Step.KEEP_HIT_CONFIG);
     }
 
     /** 读回验证的输入快照（由 shell 侧采集，纯数据）。 */
@@ -152,6 +195,8 @@ public final class RestorePlan {
 
     /** 恢复结论。 */
     public static final class Outcome {
+        /** 命中口令是否已被**保留**为目标配置（回读确认在已保存列表里）。 */
+        public final boolean kept;
         /** 原配置是否已还原**并读回验证**。 */
         public final boolean restored;
         /** 是否已确认“系统里没有留下错误候选口令”。 */
@@ -161,6 +206,12 @@ public final class RestorePlan {
         public final String detail;
 
         Outcome(boolean restored, boolean noWrongLeft, String code, Step failedAt, String detail) {
+            this(false, restored, noWrongLeft, code, failedAt, detail);
+        }
+
+        Outcome(boolean kept, boolean restored, boolean noWrongLeft,
+                String code, Step failedAt, String detail) {
+            this.kept = kept;
             this.restored = restored;
             this.noWrongLeft = noWrongLeft;
             this.code = code;
@@ -168,11 +219,15 @@ public final class RestorePlan {
             this.detail = detail == null ? "" : detail;
         }
 
-        /** 能不能对用户说“你的网络配置已经恢复”。 */
-        public boolean acceptable() { return restored; }
+        /** 终态是否已妥善处理（原配置还原了，或正确口令按命中策略留住了）。 */
+        public boolean resolved() { return restored || kept; }
+
+        /** 能不能对用户说“你的网络配置已经处理好了”。 */
+        public boolean acceptable() { return resolved(); }
 
         /** 供日志/界面用的一行结论。 */
         public String summary() {
+            if (kept) return "已保留命中口令：" + code + (detail.isEmpty() ? "" : "（" + detail + "）");
             if (restored) return "已恢复：" + code;
             if (noWrongLeft) return "未能还原原配置，但已清除候选残留：" + code
                     + (detail.isEmpty() ? "" : "（" + detail + "）");
@@ -251,8 +306,36 @@ public final class RestorePlan {
         return judge(e, v, removeStageOk, ReaddResult.notIssued());
     }
 
-    /** 失败之后要不要再补一次“删除残留”（清不掉就只剩可见故障，好过静默故障）。 */
+    /**
+     * 判定「命中保留」的结果。**纯判断，不动系统**。
+     *
+     * <p>唯一的成功判据：回读确认目标配置**在已保存列表里** ——
+     * 那正是命中口令写进去的那条配置。读不到就不算保留成立，
+     * 调用方必须退回 {@link #steps(RestoreJournal.Entry)} 的标准恢复
+     * （宁可回到「删干净 + 手动重连」的可见故障，也不留一个说不清的中间态）。
+     *
+     * @param e 记录；{@code null} → {@link #NO_RECORD}
+     * @param v 读回快照
+     */
+    public static Outcome judgeKept(RestoreJournal.Entry e, Verify v) {
+        if (e == null) {
+            return new Outcome(false, false, false, NO_RECORD, null,
+                    "没有恢复记录，无法判断保留状态");
+        }
+        if (v == null) v = Verify.unknown();
+        if (!v.listPresent) {
+            return new Outcome(false, false, false, KEEP_NOT_WRITTEN, Step.KEEP_HIT_CONFIG,
+                    "回读不到目标配置，保留不成立（退回标准恢复）：" + v.describe());
+        }
+        boolean up = v.connectedTo(e.ssid);
+        return new Outcome(true, false, true, KEPT, null,
+                up ? "此刻正连着目标，配置留着，以后会自动重连"
+                   : "目标配置在已保存列表里，系统会按策略自动连");
+    }
+
+    /** 失败之后要不要再补一次“删除残留”（清不掉就只剩可见故障，好过静默故障）。
+     *  已处置（还原 / 命中保留）一律不再补删 —— 否则会把刚保留的正确配置删掉。 */
     public static boolean needsCleanupRetry(Outcome o) {
-        return o != null && !o.restored && !o.noWrongLeft;
+        return o != null && !o.resolved() && !o.noWrongLeft;
     }
 }

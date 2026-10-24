@@ -209,21 +209,38 @@ public class CrackService extends Service {
      *
      * @param taskId 当前任务 id —— 记录归属不符时**不动**目标配置
      */
-    private void restoreAfterRun(String taskId, String outcome) {
+    /**
+     * 收尾恢复。**每一个终态都必须走到这里**：命中、未命中、暂停、取消、异常。
+     *
+     * <p>两条路（1.9.25 起）：
+     * <ul>
+     *   <li><b>命中</b>（{@code hit=true}）→ 系统里那条配置就是**正确口令**，
+     *       走「保留」：一步删除都不做，手机会保持连着、以后自动重连；</li>
+     *   <li><b>其余终态</b> → 标准恢复：删掉候选残留，再用原口令把目标加回去。</li>
+     * </ul>
+     * 保留条件不成立（回读不到目标配置）时自动退回标准恢复，不会留下中间态。
+     *
+     * @param hit 本轮是否命中 —— 由任务状态给出，**判定链本身不参与**
+     */
+    private void restoreAfterRun(String taskId, String outcome, boolean hit) {
         try {
             io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry mine = restoreEntry;
             if (mine == null) return;
-            log(L.s("收尾恢复（", "restoring after ") + outcome + L.s("）…", ")…"));
+            log(hit
+                    ? L.s("收尾保留（命中）：那条配置就是正确口令，不删除…",
+                          "keeping hit config (it is the correct passphrase), no deletion…")
+                    : L.s("收尾恢复（", "restoring after ") + outcome + L.s("）…", ")…"));
             io.github.wlmosv_png.wpaforge.audit.RestorePlan.Outcome o =
                     io.github.wlmosv_png.wpaforge.audit.RestoreRunner.runExclusiveForTask(
-                            mine, taskId, io.github.wlmosv_png.wpaforge.audit.ConfigRestorer::restore);
+                            mine, taskId,
+                            e2 -> io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.settle(hit, e2));
             if (o == null) {
                 log(L.s("本次未执行收尾恢复: ", "no restore this time: ")
                         + io.github.wlmosv_png.wpaforge.audit.RestoreRunner.lastSummary());
                 return;
             }
             restoreEntry = mine;
-            log(L.s("配置恢复结论: ", "Restore result: ") + o.summary());
+            log(L.s("配置收尾结论: ", "Config settle result: ") + o.summary());
         } catch (Throwable t) {
             log(L.s("配置恢复异常（不影响任务本身）: ",
                     "restore threw (task itself unaffected): ") + t);
@@ -1003,7 +1020,7 @@ public class CrackService extends Service {
                 engineRef = null;
                 ft.state = TaskQueue.State.STOPPED;
                 TaskQueue.update(CrackService.this, ft);
-                restoreAfterRun(ft.id, "BLOCKED");
+                restoreAfterRun(ft.id, "BLOCKED", false);
                 running = false;
                 notifyQueue();
                 stopSelfSafe();
@@ -1140,10 +1157,10 @@ public class CrackService extends Service {
         }
 
         TaskQueue.update(this, ft);
-        // R11：**所有终态**（命中 / 未命中 / 暂停 / 取消）都要走恢复。
-        // 命中时留的本来就是正确口令，恢复会把它确认一遍并清掉 journal；
-        // 其余情况则把候选留下的错误口令换成用户原来的配置。
-        restoreAfterRun(ft.id, ft.state.name());
+        // R11：**所有终态**（命中 / 未命中 / 暂停 / 取消）都要走收尾。
+        // 命中时系统里留下的就是**正确口令** —— 保留它（不删），手机保持连着、
+        // 以后自动重连；其余情况则把候选留下的错误口令换成用户原来的配置。
+        restoreAfterRun(ft.id, ft.state.name(), ft.state == TaskQueue.State.DONE_HIT);
         for (UiCallback cb : callbacks) cb.onTaskDone(ft, hitPassword, ft.state.name());
         notifyQueue();
 

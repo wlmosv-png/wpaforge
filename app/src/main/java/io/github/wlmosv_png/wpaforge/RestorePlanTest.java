@@ -195,10 +195,11 @@ public class RestorePlanTest {
                     svc.indexOf("RestoreGuard.Decision gate = armRestore(task);") > 0
                             && svc.indexOf("RestoreGuard.Decision gate = armRestore(task);")
                             < svc.indexOf("runViaEngine(task, startOffset);"));
-            ok("收尾按**盘上状态**统一恢复（命中/未命中/暂停/取消都在这里）",
-                    svc.contains("restoreAfterRun(ft.id, ft.state.name());"));
-            ok("被拦下（onBlocked）也要恢复",
-                    svc.contains("restoreAfterRun(ft.id, \"BLOCKED\");"));
+            ok("收尾按**盘上状态**统一收尾（命中/未命中/暂停/取消都在这里）",
+                    svc.contains("restoreAfterRun(ft.id, ft.state.name(), "
+                            + "ft.state == TaskQueue.State.DONE_HIT);"));
+            ok("被拦下（onBlocked）也要收尾，且不按命中处理",
+                    svc.contains("restoreAfterRun(ft.id, \"BLOCKED\", false);"));
             ok("启动补做改为异步单飞（不再在主线程同步跑）",
                     svc.contains("RestoreRunner.requestStartupRecovery(\"service-start\")")
                             && !svc.contains("recoverRestore();"));
@@ -207,7 +208,10 @@ public class RestorePlanTest {
                             + "wpaforge/App.java").contains("requestStartupRecovery(\"app-start\")"));
             ok("失败写入 STAGE_FAILED 而不是丢掉",
                     runner != null && runner.contains("RestoreJournal.STAGE_FAILED"));
-            ok("成功才清记录", runner != null && runner.contains("RestoreJournal.clear();"));
+            ok("终态（已还原 / 已保留）才清记录；清不掉就写终态留档",
+                    runner != null
+                            && runner.contains("if (!RestoreJournal.clear()) "
+                                    + "RestoreJournal.save(e);"));
             ok("引擎提供删除目标配置的唯一入口",
                     eng.contains("public boolean removeTargetConfig("));
             ok("ShellChannel 上的删配置入口已降级为弃用空实现",

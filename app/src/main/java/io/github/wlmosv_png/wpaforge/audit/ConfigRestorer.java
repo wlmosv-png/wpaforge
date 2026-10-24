@@ -13,6 +13,8 @@ import java.util.List;
  * 跑完之后系统里留下的是“最后一条候选的口令”。本类负责把这一切收回来：
  * <ol>
  *   <li>{@link #snapshot} —— 在**任何破坏性动作之前**记下原 netId + 原口令（加密后）；</li>
+ *   <li>{@link #settle} —— 收尾入口：**命中保留**（配置就是正确口令，不删）、
+ *       其余终态走 {@link #restore}；</li>
  *   <li>{@link #restore} —— 删掉候选残留，再用原口令把目标加回去，最后**读回验证**。</li>
  * </ol>
  *
@@ -174,6 +176,50 @@ public final class ConfigRestorer {
             }
         }
         return out;
+    }
+
+    // ---------------------------------------------------------------- 命中保留
+
+    /**
+     * 命中收尾：**保留**目标当前那条配置（= 刚验证过的正确口令），全程不做删除。
+     *
+     * <h3>为什么可以保留</h3>
+     * 命中是「目标 SSID + 握手完成 + 有 IP + netId 对得上」四条件同行判出来的，
+     * 而系统里那条配置正是**这一条候选口令**写进去的 —— 它就是要的结果。
+     * 走标准恢复把它删掉（旧行为）才会让用户困惑：明明破解出来了，
+     * 手机却掉线、下次还得再破一遍。
+     *
+     * <h3>唯一判据</h3>
+     * 回读确认目标**在已保存列表里**（{@link #targetPresent}）。读不到就不算保留成立。
+     *
+     * @return 结论；**返回 {@code null} 表示保留条件不成立**，调用方必须退回
+     *         {@link #restore(RestoreJournal.Entry)}（旧行为：删干净 + 还原原配置）
+     */
+    public static RestorePlan.Outcome keepHit(RestoreJournal.Entry e) {
+        if (e == null) return RestorePlan.judgeKept(null, null);
+        // 配置根本没写进系统 → 没什么可保留的，交给标准恢复（它会如实报告）。
+        if (!e.restored() && !targetPresent(e.ssid)) {
+            android.util.Log.i(TAG, "命中保留不成立（列表里没有 " + e.ssid + "），退回标准恢复");
+            return null;
+        }
+        return RestorePlan.judgeKept(e, verify(e.ssid));
+    }
+
+    /**
+     * 收尾总入口（1.9.25）：命中 → 保留；其余终态 → 标准恢复。
+     *
+     * <p>保留条件不成立时**自动退回标准恢复** —— 不允许出现
+     * 「既没保留、也没清理」的第三种结局。
+     *
+     * @param hit 本轮是否命中
+     * @param e   恢复记录
+     */
+    public static RestorePlan.Outcome settle(boolean hit, RestoreJournal.Entry e) {
+        if (RestorePlan.keepsHitConfig(e, hit)) {
+            RestorePlan.Outcome kept = keepHit(e);
+            if (kept != null) return kept;
+        }
+        return restore(e);
     }
 
     // ---------------------------------------------------------------- shell 层

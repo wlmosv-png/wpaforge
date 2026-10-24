@@ -57,7 +57,7 @@ public final class RestoreRunner {
 
     /** 这条记录是否需要动手（不存在 / 已恢复 → 不需要）。 */
     public static boolean shouldRecover(RestoreJournal.Entry e) {
-        return e != null && !e.restored();
+        return e != null && !e.settled();
     }
 
     /** 这条记录是不是**指定任务**的。taskId 缺失的历史记录一律判否（不猜）。 */
@@ -156,15 +156,24 @@ public final class RestoreRunner {
         t.start();
     }
 
-    /** 把结论写回记录：成功清记录，失败留痕（可被下次启动重试）。 */
-    static void applyStage(RestoreJournal.Entry e, RestorePlan.Outcome o) {
+    /**
+     * 把结论写回记录：终态（已还原 / 已保留）清记录，失败留痕（可被下次启动重试）。
+     *
+     * <p>**必须把"命中保留"也算终态**：保留的正是刚写进系统的正确配置，
+     * 记录不清掉的话，下次启动的"补做"会把它当候选残留删掉 —— 保留就白做了。
+     *
+     * <p>包可见改公开：收尾路径与测试都要用。
+     */
+    public static void applyStage(RestoreJournal.Entry e, RestorePlan.Outcome o) {
         if (e == null || o == null) return;
         e.finishedAt = System.currentTimeMillis();
-        if (o.restored) {
-            e.stage = RestoreJournal.STAGE_RESTORED;
+        if (o.resolved()) {
+            e.stage = o.kept ? RestoreJournal.STAGE_KEPT : RestoreJournal.STAGE_RESTORED;
             e.failStep = "";
             e.failDetail = "";
-            RestoreJournal.clear();
+            // 清记录失败时退而求其次：把它写成**终态**再落盘，
+            // 否则盘上留着的还是 ARMED，下次启动的补做会把刚保留的正确配置删掉。
+            if (!RestoreJournal.clear()) RestoreJournal.save(e);
         } else {
             e.stage = RestoreJournal.STAGE_FAILED;
             e.failStep = o.failedAt == null ? "" : o.failedAt.name();

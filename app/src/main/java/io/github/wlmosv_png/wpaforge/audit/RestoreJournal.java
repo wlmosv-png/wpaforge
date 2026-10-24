@@ -11,7 +11,9 @@ import java.util.List;
  * 再用候选口令把它加回来（{@code cmd wifi forget-network} → {@code cmd wifi connect-network}）。
  * 于是任务跑完之后，系统里保存的是**最后一条候选的口令**：
  * <ul>
- *   <li>命中收尾 → 留的是正确口令 → 恰好等于恢复；</li>
+ *   <li>命中收尾 → 留的就是**正确口令** → 不再删除，直接保留（1.9.25 起；
+ *       见 {@link RestorePlan.Step#KEEP_HIT_CONFIG}）—— 手机会保持连着、
+ *       以后也会自动重连；</li>
  *   <li>未命中 / 暂停 / 取消 / 异常收尾 → 留的是**错误口令**，
  *       而用户原来的配置已经被删掉 → 手机连不上自己的网络，必须手输口令。</li>
  * </ul>
@@ -44,6 +46,13 @@ public final class RestoreJournal {
     public static final String STAGE_ARMED = "ARMED";
     /** 恢复完成并已读回验证。 */
     public static final String STAGE_RESTORED = "RESTORED";
+    /**
+     * 命中收尾：**保留**了目标那条配置（它就是正确口令），因此没有做任何删除。
+     *
+     * <p>它同样是一个**终态**：记录会被清掉，下次启动不会再有待办 ——
+     * 否则“启动补做”会把刚保留的正确配置当成候选残留删掉。
+     */
+    public static final String STAGE_KEPT = "KEPT";
     /** 恢复尝试过但失败 —— 必须保留记录与原因，不许静默丢弃。 */
     public static final String STAGE_FAILED = "FAILED";
 
@@ -91,6 +100,15 @@ public final class RestoreJournal {
 
         public boolean armed() { return STAGE_ARMED.equals(stage); }
         public boolean restored() { return STAGE_RESTORED.equals(stage); }
+
+        /**
+         * 是否已经是**终态**（已还原 / 已按命中策略保留）。
+         *
+         * <p>两者都表示「这条记录没有待办了」：命中保留时系统里留下的是**正确口令**，
+         * 绝不能让"启动补做"把它当候选残留删掉。所以判断"还要不要动手"一律用本方法，
+         * 不要只看 {@link #restored()}。
+         */
+        public boolean settled() { return restored() || STAGE_KEPT.equals(stage); }
 
         /** 能不能真的把原配置加回来（有口令 + 有加密通道）。 */
         public boolean canReadd() { return hadPsk && sealedPsk != null && !sealedPsk.isEmpty(); }
@@ -229,10 +247,11 @@ public final class RestoreJournal {
     /**
      * 是否存在**未完成**的恢复记录（进程被杀后下次启动要靠它补做）。
      * {@code FAILED} 也算未完成 —— 失败必须留下可追踪状态，不能自己消失。
+     * {@code KEPT}（命中保留成功）是终态，不算待办。
      */
     public static boolean hasPending() {
         Entry e = load();
-        return e != null && !e.restored();
+        return e != null && !e.settled();
     }
 
     /**

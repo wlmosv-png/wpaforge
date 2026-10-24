@@ -378,6 +378,32 @@ sh /data/local/tmp/eta/wp-queue.sh in     # 写回（cat 覆写保 inode + chown
   `keytool -storepasswd -keystore release.jks` 与 `keytool -keypasswd -alias wlmosv -keystore release.jks`
 - 轮换后把新口令写进本机未入库的 env 文件；本仓库与记忆都不再记录口令。
 
+## 收尾策略更新：命中保留（R11-9，2026-10-24）
+
+**旧行为**：任务结束一律走标准恢复（删候选残留 → 按原口令重建）。目标本来没存过
+（`hadPsk=false`）时，判据把「目标不在列表里」当成正确结果 —— 于是**命中那一下刚连上的网，
+跑完立刻被删**：手机掉线、不自动重连，下次还得再破一遍。
+现场证据：历史里 `B212` / `hdhd` 有命中记录，`cmd wifi list-networks` 那 78 条里却没有它们。
+
+**新行为**：收尾按本轮结果分流 ——
+
+| 本轮结果 | 收尾动作 | journal |
+|---|---|---|
+| 命中（`DONE_HIT`） | `KEEP_HIT_CONFIG`：不删，只读回确认配置在列表里 | 写 `STAGE_KEPT` 并清记录 |
+| 未命中 / 暂停 / 取消 / 异常 / 启动补做 | 标准恢复：删候选残留 → 原口令重建 → 读回 | 成功清、失败留 `FAILED` |
+
+**代码位置**：`RestorePlan.steps(e, keepHit)` / `judgeKept`、`ConfigRestorer.keepHit` / `settle(hit, e)`、
+`RestoreJournal.STAGE_KEPT` + `Entry.settled()`、`RestoreRunner.applyStage`（终态判 `resolved()`，
+清记录失败就写终态落盘）、`CrackService.restoreAfterRun(taskId, outcome, hit)`。
+**hit 只由任务状态给出（`ft.state == TaskQueue.State.DONE_HIT`），`CrackEngine` 一行未动。**
+
+**两个必须记住的坑**：
+1. 保留**必须**把 journal 结掉（`settled()` 认 `KEPT`）。只保留不清记录 → 下次启动的补做会把刚留下的正确配置删掉；
+2. 保留路径里**不许出现任何删除动作**（`RestoreKeepHitTest` 有源码级守卫）；
+   保留不成立（回读不到配置）时必须退回标准恢复，不许留「既没保留也没清理」的中间态。
+
+**测试**：`RestoreKeepHitTest`（52 项，纯逻辑 + 源码接线守卫）；门禁 2232 通过 / 0 失败。
+
 ## 恢复机制的真机验证方案（2026-10-24，最终审计 P1；已实跑 A/B 两例）
 
 **脚本（可重复）**：`/data/local/tmp/eta/restore-selftest.sh A|B`（Android root；文件操作走 `nsenter -t 1 -m --`，因为 Eta 自己的 NS 看不到别的包）

@@ -233,6 +233,47 @@ public class PlaintextHygieneTest {
                     !mig.contains("delete()") || !mig.contains("qf.delete"));
         }
 
+        System.out.println("== R12-9 明文备份：可核查、可显式清理、不自动删（P0-2）==");
+        try {
+            java.io.File dir = java.nio.file.Files.createTempDirectory("wpf-bak").toFile();
+            eq("空目录 → 没有备份", 0, PlaintextMigration.backupsIn(dir).length);
+            java.io.File h = new java.io.File(dir, PlaintextMigration.HISTORY_BAK);
+            java.io.File q = new java.io.File(dir, PlaintextMigration.QUEUE_BAK);
+            java.io.File fl = new java.io.File(dir, "history.csv");
+            java.nio.file.Files.write(h.toPath(), "legacy\n".getBytes(StandardCharsets.UTF_8));
+            java.nio.file.Files.write(q.toPath(), "[{\"hit\":\"x\"}]".getBytes(StandardCharsets.UTF_8));
+            java.nio.file.Files.write(fl.toPath(), "live\n".getBytes(StandardCharsets.UTF_8));
+            eq("列出两个备份", 2, PlaintextMigration.backupsIn(dir).length);
+            eq("第一个是 history 备份", PlaintextMigration.HISTORY_BAK,
+                    PlaintextMigration.backupsIn(dir)[0].getName());
+            eq("正式文件不在备份列表里", false,
+                    PlaintextMigration.backupsIn(dir)[0].getName().equals("history.csv"));
+
+            eq("清理返回删除数", 2, PlaintextMigration.purgeIn(dir));
+            eq("清完就没了", 0, PlaintextMigration.backupsIn(dir).length);
+            ok("**正式文件没被动**（只删备份）", fl.isFile());
+            eq("空目录再清一次返回 0（幂等）", 0, PlaintextMigration.purgeIn(dir));
+            eq("null 目录不炸", 0, PlaintextMigration.backupsIn(null).length);
+            fl.delete();
+            dir.delete();
+        } catch (Throwable ex) {
+            ok("临时目录用例未抛异常: " + ex.getClass().getSimpleName(), false);
+        }
+
+        String mig2 = read("audit/PlaintextMigration.java");
+        String ma2 = read("MainActivity.java");
+        ok("迁移本身不删备份（用户没点就不删）",
+                mig2.contains("backupsIn") && !mig2.contains("purgeIn(getFilesDir())"));
+        ok("启动路径不会自动清理（App 只调用 needed/run）",
+                !read("App.java").contains("purgeIn("));
+        ok("清理只在用户点击时发生",
+                ma2.contains("plainBakBtn.setOnClickListener(v -> confirmPurgePlaintextBackups())"));
+        ok("确认文案如实说明「含明文口令」", ma2.contains("里面**含明文口令**"));
+        ok("确认文案**不承诺**彻底清除（说明闪存层面无法保证）",
+                ma2.contains("删除不等于在闪存层面被彻底抹除"));
+        ok("删除按钮用危险样式，默认动作是「保留」",
+                ma2.contains("d.setDanger(L.s(\"删除这两个文件\""));
+
         System.out.println();
         System.out.println("=== R12 明文卫生测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

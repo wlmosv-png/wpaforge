@@ -146,6 +146,51 @@ public final class PlaintextMigration {
         return new Report(hm, qm, hr, qt, hb, qb, note.toString());
     }
 
+    // ------------------------------------------------------------ 备份的去留
+
+    /**
+     * 列出**当前存在**的明文备份（迁移前那份含明文口令的旧文件）。
+     *
+     * <h3>它们是什么（2026-10-24 最终审计 P0-2 核查过）</h3>
+     * 迁移把旧版明文命中口令改写成「脱敏标签 + Keystore 密文」之前，先把原文件整份复制成
+     * {@code *.plain.bak} —— 内容里**确实有明文口令**（实测 queue.json.plain.bak 里有
+     * {@code "hit":"…"}，history.csv.plain.bak 第 9 列是明文）。权限是应用私有目录下的 0600，
+     * 只有本应用（root 也能）读到。
+     *
+     * <p>保留它们的唯一理由是**回滚**：万一迁移把文件写坏了，还能拿旧文件顶回去。
+     * 删除与否由用户显式决定（不做自动清理）—— 这是数据销毁，不能替用户做主。
+     *
+     * @param dir 应用 files 目录
+     * @return 存在的那几个文件（顺序固定：history 在前）；目录不可读时返回空数组
+     */
+    public static java.io.File[] backupsIn(java.io.File dir) {
+        java.util.List<java.io.File> out = new java.util.ArrayList<>();
+        if (dir == null) return new java.io.File[0];
+        java.io.File h = new java.io.File(dir, HISTORY_BAK);
+        java.io.File q = new java.io.File(dir, QUEUE_BAK);
+        if (h.isFile()) out.add(h);
+        if (q.isFile()) out.add(q);
+        return out.toArray(new java.io.File[0]);
+    }
+
+    /**
+     * 删除明文备份（**用户显式触发**时才调用）。
+     *
+     * <p>刻意不承诺"彻底清除"：文件系统删除只是把目录项摘掉，闪存层面是否残留由
+     * 主控的 TRIM / 磨损均衡决定，应用层无法保证。要在文案里如实说明。
+     *
+     * @return 实际删掉的文件数（删失败的不计入）
+     */
+    public static int purgeIn(java.io.File dir) {
+        int n = 0;
+        for (java.io.File f : backupsIn(dir)) {
+            try {
+                if (f.delete() && !f.exists()) n++;
+            } catch (Throwable ignored) {}
+        }
+        return n;
+    }
+
     // ------------------------------------------------------------ 工具
 
     /** 复制备份；目标已存在则**不覆盖**并返回 false。 */

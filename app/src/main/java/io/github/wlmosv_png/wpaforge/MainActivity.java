@@ -123,6 +123,8 @@ public class MainActivity extends Activity {
     private AuditEngine engine;
 
     // 试连页组件
+/** 明文备份清理行（只在备份存在时创建）。 */
+    private Button plainBakBtn;
     private Button languageBtn;
     private ScrollView mainScroll;
     private TextView connectModeView;
@@ -5941,6 +5943,21 @@ public class MainActivity extends Activity {
         exp.setOnClickListener(v -> doExport());
         toolsCard.addView(groupDivider(2));
         toolsCard.addView(exp);
+
+        // 迁移遗留的明文备份：**只在存在时**出现一行，删不删由用户定（P0-2）。
+        // 不做自动清理：那是数据销毁，且会同时丢掉唯一的回滚依据。
+        java.io.File[] plainBaks =
+                io.github.wlmosv_png.wpaforge.audit.PlaintextMigration.backupsIn(getFilesDir());
+        if (plainBaks.length > 0) {
+            long bytes = 0;
+            for (java.io.File f : plainBaks) bytes += f.length();
+            plainBakBtn = rowAction(L.f("清理明文备份（%d 个 · %.1f KB）",
+                    "Purge plaintext backups (%d files, %.1f KB)",
+                    plainBaks.length, bytes / 1024.0));
+            plainBakBtn.setOnClickListener(v -> confirmPurgePlaintextBackups());
+            toolsCard.addView(groupDivider(2));
+            toolsCard.addView(plainBakBtn);
+        }
         pageSettings.addView(toolsCard);
 
         // ---------------- 使用边界 ----------------
@@ -6043,6 +6060,44 @@ public class MainActivity extends Activity {
     }
 
     /** 语言行的文字（点开选择器后由 refreshLanguageRow 刷新）。 */
+    /**
+     * 清理明文备份的确认框（P0-2）。
+     *
+     * <p>三件事必须说清楚，不能含糊：① 里面是什么（含**明文**口令的迁移前旧文件）；
+     * ② 删了之后失去什么（唯一回滚依据；当前文件已是脱敏+密文，功能不受影响）；
+     * ③ **不承诺彻底清除** —— 删除只是摘目录项，闪存层面是否残留不由应用决定。
+     */
+    private void confirmPurgePlaintextBackups() {
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d = new io.github.wlmosv_png.wpaforge.ui.NetDialog(
+                this, L.s("清理明文备份", "Purge plaintext backups"),
+                L.s("这两个文件是「明文口令 → 密文」迁移之前留下的整份拷贝，"
+                                + "里面**含明文口令**（应用私有目录 0600，别的应用读不到）。\n\n"
+                                + "保留它们的唯一理由是回滚：万一当初的迁移把文件写坏，还能拿它顶回去。"
+                                + "当前的历史与队列已经是「脱敏标签 + Keystore 密文」，功能不受影响。\n\n"
+                                + "删除后不再有回滚依据。注意：删除不等于在闪存层面被彻底抹除 —— "
+                                + "这只是摘掉目录项，物理介质是否残留由主控决定，应用无法保证。",
+                        "These two files are the pre-migration copies and contain **plaintext** "
+                                + "passphrases (app-private dir, mode 0600).\n\n"
+                                + "They are kept only as a rollback path in case that migration "
+                                + "corrupted a file; the live files are tag + Keystore-sealed now.\n\n"
+                                + "Deleting removes the rollback path. Note: deletion does not "
+                                + "guarantee forensic erasure on flash - that is up to the controller."));
+        d.setDanger(L.s("删除这两个文件", "Delete both files"), dd -> {
+            int n = io.github.wlmosv_png.wpaforge.audit.PlaintextMigration.purgeIn(getFilesDir());
+            if (plainBakBtn != null) {
+                plainBakBtn.setText(n > 0
+                        ? L.s("明文备份已清理", "Plaintext backups purged")
+                        : L.s("清理失败（文件仍在）", "purge failed (files remain)"));
+                plainBakBtn.setEnabled(false);
+            }
+            Toast.makeText(this, n > 0
+                    ? L.s("已删除 " + n + " 个明文备份", "Deleted " + n + " plaintext backup(s)")
+                    : L.s("没有删除成功", "Nothing deleted"), Toast.LENGTH_LONG).show();
+        });
+        d.setNegative(L.s("保留", "Keep"), null);
+        d.show();
+    }
+
     private void refreshLanguageRow() {
         if (languageBtn == null) return;
         languageBtn.setText(L.f("语言 · 当前 %s", "Language · currently %s",

@@ -377,3 +377,23 @@ sh /data/local/tmp/eta/wp-queue.sh in     # 写回（cat 覆写保 inode + chown
 - 轮换 keystore 口令（**不改密钥，签名指纹不变，老用户仍可覆盖安装**）：
   `keytool -storepasswd -keystore release.jks` 与 `keytool -keypasswd -alias wlmosv -keystore release.jks`
 - 轮换后把新口令写进本机未入库的 env 文件；本仓库与记忆都不再记录口令。
+
+## 恢复机制的真机验证方案（2026-10-24，最终审计 P1；已实跑 A/B 两例）
+
+**脚本（可重复）**：`/data/local/tmp/eta/restore-selftest.sh A|B`（Android root；文件操作走 `nsenter -t 1 -m --`，因为 Eta 自己的 NS 看不到别的包）
+
+**为什么这个方案安全**：目标用**虚构 SSID**（`WPF-SELFTEST-NOPE`）—— 它不是任何已保存网络，
+记录里 `originalNetId=-1`；收尾的「删候选残留」对不存在的 netId 是空操作，并会回读确认目标不在列表里。
+全程不碰真实网络配置、不跑候选口令。
+
+| 例 | 盘上造什么 | 期望 | 实测（2026-10-24 11:12） |
+|---|---|---|---|
+| A | `stage=ARMED`、`hadPsk=0` | 判「原本就无需还原」并**清掉**记录 | `WPAForgeRestore: recovery(app-start): 已恢复：OK`，记录被清除 ✓ |
+| B | `stage=ARMED`、`hadPsk=1`、密文为空 | 判 `NO-SECRET`，记录**留在盘上** | 记录保留：`stage=FAILED` / `failStep=READD_ORIGINAL` / `failDetail=NO-SECRET · 原口令未能安全保存…`；日志 `未能还原原配置，但已清除候选残留：NO-SECRET（…）` ✓ |
+
+两例都在 `am force-stop` 之后的**冷启动**里由 `RestoreRunner.requestStartupRecovery("app-start")` 完成，
+同时覆盖「进程不在、记录在盘上 → 下次启动补做」；跑完删除测试记录，设备恢复原状（复查无残留）。
+
+**仍未验证（保留 NOT RUN，不用单测冒充）**：
+- 「用**原口令重建**」分支（`hadPsk=1` + 真密文 + 真实已保存网络）——需要改动真实网络配置，执行边界禁止；
+- 恢复**执行过程中**进程被杀（本方案覆盖的是"记录在盘上 + 进程不在"这一等价前提）。

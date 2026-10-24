@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- WPAForge 自适应图标：靶心 + 穿刺箭头 -->
+<!-- WPAForge 自适应图标：金色 W + 信号弧 + 雷达环（黑底） -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@mipmap/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />

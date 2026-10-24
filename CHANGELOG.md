@@ -180,6 +180,14 @@ Activity 是新建的 —— 字段为空。也就是**显示没有单一权威*
 
 **未动**：`audit/SavedWifiReader`（读取/解析/评分口径）零 diff；root 校验、统计回填与观测页入口保持原样。
 
+### 换新图标（金色 W + 信号弧 + 雷达环）
+
+- 用你给的那张 1254² 图重做全部图标资源：自适应图标的 `foreground`（整幅缩到 0.78 画布居中，
+  外圈雷达环直径 ≈72dp，落在常见遮罩可见区内）+ `background`（纯黑，与源图四角实测色一致，
+  无缝相接）；旧式 `ic_launcher.png` / `ic_launcher_round.png`（圆形裁切）也一并生成。
+- 五档密度全部重出（mdpi 108/48 → xxxhdpi 432/192）；`mipmap-anydpi-v26` 的 XML 只更新了注释。
+- 包体 +190 KB（新 artwork 是渐变图，PNG 比原来大）——总量仍不到 3 MB。
+
 **不改功能边界**：网络命令、判定算法、恢复机制、加密与迁移、设置键与数据格式全部零改动
 （本次提交的业务层 diff 为空）。验收：`CrackPageLayoutTest` 48 项结构回归 +
 `ThemeConsistencyTest` 52 项（配色单出处、Java 常量与资源同值、主题已接上、原有接线未被带走）。

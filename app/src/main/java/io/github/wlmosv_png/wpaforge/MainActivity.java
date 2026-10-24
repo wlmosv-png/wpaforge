@@ -6393,6 +6393,242 @@ public class MainActivity extends Activity {
         overridePendingTransition(0, 0);
     }
 
+    // ─────────────────────────── 本机已存 WiFi：列表 UI（2026-10-24 重做）───────────
+
+    /** 最近一次读到的已存网络（过滤时重绘用；不改变读取与评分）。 */
+    private java.util.List<SavedWifiReader.Saved> savedWifiList = new java.util.ArrayList<>();
+    /** 列表容器（过滤只重建它的子视图）。 */
+    private LinearLayout savedWifiListBox;
+    /** 过滤模式：0 全部 / 1 弱口令(≥50) / 2 开放网络。 */
+    private int savedWifiFilter = 0;
+    private final TextView[] savedWifiChips = new TextView[3];
+    private final int[] savedWifiChipCounts = new int[3];
+
+    /**
+     * 本机已存 WiFi —— 列表重做（用户反馈：口令一长就看不到）。
+     *
+     * <h3>改前的问题</h3>
+     * 条目是 {@code NetDialog.addItem(...)} 的一行文本，而 addItem 会
+     * {@code setSingleLine(true)} + {@code ellipsize(MIDDLE)} —— 于是
+     * {@code fast_2345abcdef} 显示成 {@code fast_...2345}，**口令根本看不清**；
+     * 39 个网络堆起来也没有任何层级。
+     *
+     * <h3>现在</h3>
+     * 每行一张卡：SSID（可截断）+ 强度胶囊（分数档位色）；口令**独占一行、等宽、
+     * 最多折三行、绝不省略**；第三行小字给长度与安全类型；点整行复制口令。
+     * 顶部三枚过滤胶囊（全部 / 弱口令 ≥50 / 开放网络）只是本地过滤，读盘与评分不变。
+     */
+    private void showSavedWifiList(java.util.List<SavedWifiReader.Saved> list) {
+        savedWifiList = list == null ? new java.util.ArrayList<>() : list;
+        savedWifiFilter = 0;
+        savedWifiChipCounts[0] = savedWifiList.size();
+        savedWifiChipCounts[1] = 0;
+        savedWifiChipCounts[2] = 0;
+        for (SavedWifiReader.Saved sw : savedWifiList) {
+            if (!sw.hasPassword()) {
+                savedWifiChipCounts[2]++;
+            } else if (SavedWifiReader.weaknessScore(sw.password) >= 50) {
+                savedWifiChipCounts[1]++;
+            }
+        }
+
+        NetDialog d = new NetDialog(this,
+                L.f("本机已存 WiFi（%d 个）", "Saved Wi-Fi (%d)", savedWifiList.size()),
+                L.s("口令由系统明文保存，这里只做本地展示、不上传。点任意一行可复制口令。",
+                        "Passphrases are stored in plaintext by the system. "
+                                + "Shown locally only, never uploaded. Tap a row to copy."));
+
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        String[] names = {L.s("全部", "All"), L.s("弱口令 ≥50", "Weak ≥50"), L.s("开放网络", "Open")};
+        for (int i = 0; i < 3; i++) {
+            final int mode = i;
+            TextView c = new TextView(this);
+            c.setText(names[i] + " " + savedWifiChipCounts[i]);
+            c.setTextSize(AmberTheme.FS_LABEL);
+            c.setPadding(px(10), px(5), px(10), px(5));
+            c.setOnClickListener(v -> {
+                savedWifiFilter = mode;
+                renderSavedWifiRows();
+            });
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp.rightMargin = px(6);
+            chips.addView(c, clp);
+            savedWifiChips[i] = c;
+        }
+        d.addView(chips);
+
+        savedWifiListBox = new LinearLayout(this);
+        savedWifiListBox.setOrientation(LinearLayout.VERTICAL);
+        d.addView(savedWifiListBox);
+        renderSavedWifiRows();
+
+        d.addHint(L.f("共 %d 个网络：弱口令 %d、开放 %d。分数越高越容易被猜中；口令只在本机显示。",
+                "%d networks: %d weak, %d open. Higher score = easier to guess. Shown locally only.",
+                savedWifiChipCounts[0], savedWifiChipCounts[1], savedWifiChipCounts[2]));
+        d.setNegative(L.s("关闭", "Close"), null);
+        d.show();
+    }
+
+    /** 过滤胶囊外观（选中＝实心琥珀）。 */
+    private void refreshSavedWifiChips() {
+        for (int i = 0; i < savedWifiChips.length; i++) {
+            TextView c = savedWifiChips[i];
+            if (c == null) continue;
+            boolean on = (i == savedWifiFilter);
+            c.setTextColor(on ? ON_ACCENT : AmberTheme.TEXT_DIM);
+            c.setBackground(on
+                    ? io.github.wlmosv_png.wpaforge.ui.UiKit.ripple(ACCENT, dp(AmberTheme.RADIUS_CHIP))
+                    : io.github.wlmosv_png.wpaforge.ui.UiKit.rippleStroked(
+                            AmberTheme.CARD_2, BTN_2ND_EDGE, dp(AmberTheme.RADIUS_CHIP), dp(0.8f)));
+        }
+    }
+
+    /** 按当前过滤重建行（**只影响显示**，不动读取与评分）。 */
+    private void renderSavedWifiRows() {
+        if (savedWifiListBox == null) return;
+        savedWifiListBox.removeAllViews();
+        int shown = 0;
+        for (SavedWifiReader.Saved sw : savedWifiList) {
+            boolean keep;
+            if (savedWifiFilter == 1) {
+                keep = sw.hasPassword() && SavedWifiReader.weaknessScore(sw.password) >= 50;
+            } else if (savedWifiFilter == 2) {
+                keep = !sw.hasPassword();
+            } else {
+                keep = true;
+            }
+            if (!keep) continue;
+            savedWifiListBox.addView(savedWifiRow(sw));
+            shown++;
+        }
+        if (shown == 0) {
+            savedWifiListBox.addView(AmberTheme.emptyBox(this, dp,
+                    L.s("这个筛选下没有网络", "Nothing under this filter"),
+                    L.s("点「全部」看完整列表", "Tap All for the full list")));
+        }
+        refreshSavedWifiChips();
+    }
+
+    /**
+     * 一行已存网络。
+     *
+     * <p>口令那行**必须**允许折行：这是这页存在的意义（看清自己在用的口令），
+     * 所以刻意不设 singleLine、也不设省略号 —— 长口令最多折三行，绝不变成 `xx…yy`。
+     */
+    private View savedWifiRow(SavedWifiReader.Saved sw) {
+        boolean open = !sw.hasPassword();
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(AmberTheme.rowBg(this, dp, AmberTheme.RADIUS_CARD));
+        card.setPadding(px(14), px(12), px(14), px(12));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.bottomMargin = px(8);
+        card.setLayoutParams(clp);
+
+        // 第一行：SSID + 强度胶囊
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView ssid = new TextView(this);
+        ssid.setText(sw.ssid);
+        ssid.setTextSize(AmberTheme.FS_TITLE);
+        ssid.setTextColor(TEXT);
+        ssid.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        ssid.setSingleLine(true);
+        ssid.setEllipsize(TextUtils.TruncateAt.END);   // 名字可以截断：右边还有胶囊
+        head.addView(ssid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        int score = open ? -1 : SavedWifiReader.weaknessScore(sw.password);
+        TextView chip = new TextView(this);
+        chip.setText(open ? L.s("开放网络", "Open") : (SavedWifiReader.weaknessLabel(score) + " " + score));
+        chip.setTextSize(AmberTheme.FS_LABEL);
+        chip.setTextColor(open ? AmberTheme.TEXT_DIM : savedWifiScoreColor(score));
+        chip.setBackground(roundBg(open ? AmberTheme.CARD_3 : savedWifiScoreBg(score),
+                AmberTheme.RADIUS_CHIP));
+        chip.setPadding(px(8), px(3), px(8), px(3));
+        LinearLayout.LayoutParams chlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        chlp.leftMargin = px(8);
+        head.addView(chip, chlp);
+        card.addView(head);
+
+        // 第二行：口令本体（完整显示，最多折三行）
+        TextView pw = new TextView(this);
+        if (open) {
+            pw.setText(L.s("（开放网络，无口令）", "(open network, no passphrase)"));
+            pw.setTextSize(AmberTheme.FS_BODY);
+            pw.setTextColor(AmberTheme.TEXT_FAINT);
+        } else {
+            pw.setText(sw.password);
+            pw.setTextSize(13.5f);
+            pw.setTextColor(TEXT);
+            pw.setTypeface(Typeface.MONOSPACE);
+        }
+        pw.setSingleLine(false);      // ← 关键：不截断
+        pw.setMaxLines(3);
+        pw.setLineSpacing(px(3), 1f);
+        pw.setTextIsSelectable(true);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        plp.topMargin = px(6);
+        card.addView(pw, plp);
+
+        // 第三行：长度 / 安全类型 / 复制提示
+        TextView meta = new TextView(this);
+        String sec = sw.security == null || sw.security.isEmpty() ? "-" : sw.security;
+        meta.setText(open
+                ? L.f("安全类型 %s · 无需口令", "Security %s · no passphrase", sec)
+                : L.f("长度 %d · 安全类型 %s · 点这一行复制口令",
+                        "Length %d · %s · tap to copy", sw.password.length(), sec));
+        meta.setTextSize(AmberTheme.FS_LABEL);
+        meta.setTextColor(AmberTheme.TEXT_FAINT);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = px(4);
+        card.addView(meta, mlp);
+
+        if (!open) {
+            card.setBackground(io.github.wlmosv_png.wpaforge.ui.UiKit.rippleStroked(
+                    AmberTheme.CARD, AmberTheme.EDGE, dp(AmberTheme.RADIUS_CARD), dp(0.8f)));
+            card.setOnClickListener(v -> copySavedWifiPassword(sw.ssid, sw.password));
+        }
+        return card;
+    }
+
+    /** 强度分档色（与观测页的信号档位色同风格：越弱越刺眼）。 */
+    private int savedWifiScoreColor(int score) {
+        if (score >= 70) return DANGER;
+        if (score >= 50) return ACCENT;
+        if (score >= 30) return AmberTheme.TEXT_DIM;
+        return OK_GREEN;
+    }
+
+    private int savedWifiScoreBg(int score) {
+        if (score >= 70) return AmberTheme.DANGER_SOFT_BG;
+        if (score >= 50) return AmberTheme.WARN_BG;
+        return AmberTheme.CARD_3;
+    }
+
+    /** 点整行复制口令（只写系统剪贴板，不落盘、不上传）。 */
+    private void copySavedWifiPassword(String ssid, String pw) {
+        try {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            if (cm == null) throw new IllegalStateException("no clipboard");
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("wifi-passphrase", pw));
+            Toast.makeText(this, L.f("已复制「%s」的口令", "Passphrase copied (%s)", ssid),
+                    Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, L.s("复制失败: ", "Copy failed: ")
+                    + t.getClass().getSimpleName(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
     /** 刷新观测页的已存 WiFi 卡片文案 */
     private void updateSavedWifiCard() {
         if (savedWifiCard == null) return;
@@ -6463,23 +6699,7 @@ public class MainActivity extends Activity {
                     NetDialog.info(this, L.s("本机已存 WiFi", "Saved Wi-Fi"), L.s("没有读到任何已保存的网络。", "No saved networks found."));
                     return;
                 }
-                NetDialog d = new NetDialog(this, L.f("本机已存 WiFi（ %s 个）", "Saved Wi-Fi ( %s )", list.size()),
-                        L.s("口令是系统明文保存的，这里只做本地展示，不会上传。", "Passphrases are stored in plaintext by the system. Shown locally only, never uploaded."));
-                int weak = 0;
-                for (SavedWifiReader.Saved sw : list) {
-                    if (!sw.hasPassword()) {
-                        d.addItem(sw.ssid + L.s("   [开放网络]", "   [open network]"), null);
-                        continue;
-                    }
-                    int score = SavedWifiReader.weaknessScore(sw.password);
-                    String label = SavedWifiReader.weaknessLabel(score);
-                    if (score >= 50) weak++;
-                    d.addItem(sw.ssid + "\n" + sw.password + "   " + label
-                            + " (" + score + ")", null);
-                }
-                d.addHint(L.s("共 ", "Total ") + list.size() + L.f(" 个网络，其中 %s 个属于偏弱或极弱口令（分数 ≥50）。", " networks total, %s of them weak or very weak (score ≥50).", weak));
-                d.setNegative(L.s("关闭", "Close"), null);
-                d.show();
+                showSavedWifiList(list);
             });
         }).start();
     }

@@ -676,19 +676,41 @@ public final class WpsHelper {
     //
     // 对拆半攻击尤其关键：PIN 前 4 位对/错，只体现在「M2D 之后还有没有消息」上。
 
+    /**
+     * 本轮日志窗口的**起点锚点**（毫秒）。
+     *
+     * <h3>2026-10-24 最终审计 P0-3：不再清空全局缓冲</h3>
+     * 原来这里是 {@code logcat -c} —— 那是**全局**副作用：把整机所有组件的
+     * 日志缓冲一起清掉（用户随后想抓任何现场都没了），而且清空是否成功从不校验。
+     * 现在只记一个时刻，读取时用 {@code -t '<时刻>'} 切片：本轮之后的行才要，
+     * 别人的日志一条不动。
+     */
+    private static volatile long logAnchorMs = 0L;
+
     static void logClear() {
-        exec("logcat -c", 3000);
+        logAnchorMs = System.currentTimeMillis();
     }
 
     /**
      * 抓本轮 supplicant 日志，压平成一行。
      *
+     * <h3>窗口起点＝时间锚点（不再依赖清空全局缓冲）</h3>
+     * {@code logcat -d -s wpa_supplicant:V -t '<MM-DD HH:MM:SS.mmm>'} 只输出该时刻之后的
+     * 行（见 {@link Lc}），所以既不用清空全局缓冲，也不会把上一轮的行算进本轮。
+     * 锚点缺失（异常路径）时退回旧的「最近 5000 行」，行为与改前一致。
+     *
      * 坑：`-t N` 限制的是**过滤前**的原始行数。系统日志刷得很快，
      * 用 `-t 200` 时 wpa_supplicant 的行会被别人的日志挤掉（我踩过，
      * 结果只剩两行 timeout，看着像「AP 没响应」，其实 M2D 一直都有）。
+     * 换成时间锚点后这个问题不存在：窗口内该有的行都会在。
      */
     static String logTail() {
-        String out = exec("logcat -d -s wpa_supplicant:V -t 5000", 8000);
+        long anchor = logAnchorMs;
+        String cmd = anchor > 0
+                ? io.github.wlmosv_png.wpaforge.audit.Lc.withSince(
+                        "logcat -d -s wpa_supplicant:V", anchor)
+                : "logcat -d -s wpa_supplicant:V -t 5000";
+        String out = exec(cmd, 8000);
         StringBuilder sb = new StringBuilder();
         if (out != null) {
             for (String ln : out.split("\n")) {

@@ -131,6 +131,38 @@ public class LogWindowTest {
         ok("旧签名（无锚点）行为不变 —— 既有测试与调用点不受影响",
                 oldSig.evidenceUsable() && !oldSig.timeAnchored);
 
+        System.out.println("== R11L-6b WPS 路径也不再清空全局缓冲（最终审计 P0-3）==");
+        String wpsBase = "/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/wpaforge/";
+        String wps = read(wpsBase + "wps/WpsHelper.java");
+        if (wps == null) {
+            System.out.println("  N/RUN WPS 接线守卫（源码不可读）");
+        } else {
+            ok("WPS 不再执行 logcat -c", !wps.contains("exec(\"logcat -c\""));
+            ok("窗口起点改成记锚点", wps.contains("logAnchorMs = System.currentTimeMillis();"));
+            ok("读取走时间锚点切片（Lc.withSince）",
+                    wps.contains("io.github.wlmosv_png.wpaforge.audit.Lc.withSince("));
+            ok("锚点缺失时仍有兜底（最近 5000 行）",
+                    wps.contains("\"logcat -d -s wpa_supplicant:V -t 5000\""));
+        }
+        // 生产代码里除两处 @Deprecated helper 外，不应再有任何 logcat -c 执行点
+        String[][] prod = {
+                {"audit/WpaLogReader.java", read(wpsBase + "audit/WpaLogReader.java")},
+                {"audit/WifiStateLog.java", read(wpsBase + "audit/WifiStateLog.java")},
+                {"MainActivity.java", read(wpsBase + "MainActivity.java")},
+        };
+        for (String[] f : prod) {
+            String src = f[1];
+            if (src == null) { System.out.println("  N/RUN " + f[0]); continue; }
+            int calls = 0, scan = 0;
+            while ((scan = src.indexOf("exec(\"logcat -c\"", scan)) >= 0) { calls++; scan++; }
+            if ("MainActivity.java".equals(f[0])) {
+                eq(f[0] + " 无 logcat -c", 0, calls);
+            } else {
+                ok(f[0] + " 仅剩弃用 helper 里那一处（且被 @Deprecated 标注）",
+                        calls <= 1 && src.contains("@Deprecated"));
+            }
+        }
+
         System.out.println("== R11L-6 接线守卫：生产主循环不再清空全局缓冲 ==");
         String eng = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
                 + "wpaforge/audit/CrackEngine.java");

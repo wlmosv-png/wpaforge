@@ -132,7 +132,7 @@
 - 门禁命令：`sh /workspace/wpf-gate.sh`
 - 结果：**javac 通过（warning 0）**，源码 152 文件 / 285 class，**2180 通过 / 0 失败**，无跳过项
 - 新增测试类（25）：`CrackHudTest`、`CrackPageLayoutTest`、`LogPipelineTest`、`LogWindowTest`、`MarkerSelfCheckTest`、`PlaintextHygieneTest`、`R1EvidenceTest`、`R2TimeoutTest`、`R3VerdictTest`、`R6AttemptIdTest`、`R6WiringTest`、`R7RecoveryTest`、`R10InvariantTest`、`RateWindowTest`、`RedactTest`、`RestoreConcurrencyTest`、`RestoreFailClosedTest`、`RestoreJournalTest`、`RestorePlanTest`、`SavedWifiUiTest`、`SelfTestSafetyTest`、`ThemeConsistencyTest`、`VerdictContractTest`、`VerdictTallyTest`、`R3AuditProbe`（探针，不进包）
-- 构建产物（**当前候选**，换新图标后重出）：`WPAForge-1.9.25-95.apk`，2,612,430 B，sha256 `2b1979fc1506bab7ae8c7425ca6b57829671b7586db1b0e22b4af069d528b85d`，证书 `af5524cd…25c8`，versionCode 95 / versionName 1.9.25；装机后设备侧哈希一致、`firstInstallTime` 未变。与上一候选包（2,968,782 B / `eeda6dc8…4940`）**41 条目同名同数，`classes.dex` / `AndroidManifest.xml` / `resources.arsc` 三件 md5 完全一致**，差异只有 20 个 mipmap PNG（图标换成「开锁 + wifi」）与 3 个签名文件。
+- 构建产物（**当前候选**，图标＋R11-9 之后重出）：`WPAForge-1.9.25-95.apk`，2,620,622 B，sha256 `e2628927468dbb87cdace32a009c3088e70d1cc94735059a36abcca8863d0cc1`，证书 `af5524cd…25c8`，versionCode 95 / versionName 1.9.25；`classes.dex` 675,632 B（md5 `e5e36ae5…`），`resources.arsc` 3,996 B / `AndroidManifest.xml` 5,820 B 与上一候选包一致（STOPED 三件不变）；装机后 `firstInstallTime` 未变（数据保留）。图标与源码包内 mipmap 逐像素核对：不透明/半透明像素 RGB 与仓库源文件**完全一致**（最大差 0）。
 - 真机已验证（有记录）：恢复启动补做/成功分支/失败留痕（A/B）、Keystore 加解密自检、日志时间锚点四态、口令迁移已执行、图标与构建一致、速率显示口径
 
 ## 7. 被排除在公开日志之外的内部变更
@@ -166,6 +166,14 @@
 - `CrackService.restoreAfterRun(taskId, outcome, hit)`：hit 由**任务状态**给出（`DONE_HIT`），
   `CrackEngine` 一行未改。
 
-**测试**：新增 `RestoreKeepHitTest`（52 项）：保留路径无删除动作、保留必清 journal、
-保留不成立必退回标准恢复、判定链里不出现保留逻辑、连接自测仍走标准恢复。
-门禁 **2232 通过 / 0 失败**（原 2180 + 新增 52）。
+**测试**：新增 `RestoreKeepHitTest`（63 项）——纯逻辑（步骤计划 / 判据 / journal 终态）
+＋ 源码接线守卫（保留路径无删除动作、命中必清 journal、保留不成立必退回、
+判定链里不出现保留逻辑、连接自测仍走标准恢复）＋ **shell 层**：给 `ConfigRestorer`
+加了 `Shell` 注入口（与 `RestoreJournal.install` 同一套路子），假壳真跑 `keepHit` / `settle`，
+断言「保留路径一次 `forget-network` 都没发」。
+门禁 **2243 通过 / 0 失败**（原 2180 + 新增 63）。
+
+**已知边界（未修，按「不动判定链」保持原样）**：`cmd wifi list-networks` 会把个别 SSID
+打印成带引号的形式（真机见过 `"B208"`），而 `ListNetworksParser` 只认不带引号的形式；
+这类目标保留判不出来 → 退回标准恢复（＝改动前的行为），不会留中间态。
+该解析器同时是判定链的假阳性防线，故不去动它。

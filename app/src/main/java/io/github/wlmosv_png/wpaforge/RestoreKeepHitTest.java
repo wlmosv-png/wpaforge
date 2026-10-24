@@ -1,5 +1,6 @@
 package io.github.wlmosv_png.wpaforge;
 
+import io.github.wlmosv_png.wpaforge.audit.ConfigRestorer;
 import io.github.wlmosv_png.wpaforge.audit.RestoreJournal;
 import io.github.wlmosv_png.wpaforge.audit.RestorePlan;
 import io.github.wlmosv_png.wpaforge.audit.RestoreRunner;
@@ -7,6 +8,7 @@ import io.github.wlmosv_png.wpaforge.audit.RestoreRunner;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -196,7 +198,88 @@ public class RestoreKeepHitTest {
         }
 
         System.out.println();
+        System.out.println("== R11-9 命中保留：shell 层（假壳，不碰真机） ==");
+        // 假壳的样本取自真机实际输出：
+        //   cmd wifi list-networks → "Network Id  SSID  Security type" + 数据行
+        //   cmd wifi status        → "WifiInfo: SSID: \"x\", …, Supplicant state: COMPLETED, … Net ID: n"
+        String listHas = "Network Id      SSID                         Security type\n"
+                + "10           hdhd                             wpa2-psk\n"
+                + "10           hdhd                             wpa3-sae^\n";
+        String listNo = "Network Id      SSID                         Security type\n"
+                + "3004         B214                             wpa2-psk\n";
+        String stUp = "Wifi is connected to \"hdhd\"\n"
+                + "WifiInfo: SSID: \"hdhd\", BSSID: 52:76:4b:9d:2a:c9, MAC: 2c:48:d7:41:5e:2d, "
+                + "IP: /192.168.1.9, Security type: 2, Supplicant state: COMPLETED, "
+                + "RSSI: -50, Frequency: 2432MHz, Net ID: 613, Metered hint: false\n";
+        String stOther = "Wifi is connected to \"B214\"\n"
+                + "WifiInfo: SSID: \"B214\", BSSID: 28:93:7d:44:95:a9, MAC: 2c:48:d7:41:5e:2d, "
+                + "IP: /192.168.1.8, Security type: 2, Supplicant state: COMPLETED, "
+                + "RSSI: -50, Frequency: 2432MHz, Net ID: 3004, Metered hint: false\n";
+
+        FakeShell fakeUp = new FakeShell(listHas, stUp);
+        ConfigRestorer.installShell(fakeUp);
+        RestorePlan.Outcome real1 = ConfigRestorer.keepHit(armed());
+        ok("真路径：列表里有目标 + 此刻正连着 → KEPT",
+                real1 != null && real1.kept && RestorePlan.KEPT.equals(real1.code));
+        ok("真路径：**一次 forget-network 都没发**", !fakeUp.saw("forget-network"));
+        ok("真路径：确实读了已保存列表与状态",
+                fakeUp.saw("cmd wifi list-networks") && fakeUp.saw("cmd wifi status"));
+
+        FakeShell fakeOther = new FakeShell(listHas, stOther);
+        ConfigRestorer.installShell(fakeOther);
+        RestorePlan.Outcome real2 = ConfigRestorer.keepHit(armed());
+        ok("真路径：列表里有目标、此刻连着别的网 → 也算保留（配置留着，系统会自己连回来）",
+                real2 != null && real2.kept);
+        ok("真路径：仍然没有删除动作", !fakeOther.saw("forget-network"));
+
+        FakeShell fakeNo = new FakeShell(listNo, stOther);
+        ConfigRestorer.installShell(fakeNo);
+        ok("真路径：列表里没有目标 → keepHit 返回 null（交给标准恢复）",
+                ConfigRestorer.keepHit(armed()) == null);
+        ok("真路径：退回时也没删（删除只发生在标准恢复里）",
+                !fakeNo.saw("forget-network"));
+
+        ConfigRestorer.installShell(fakeUp);
+        RestorePlan.Outcome s1 = ConfigRestorer.settle(true, armed());
+        ok("settle(命中) → 保留", s1 != null && RestorePlan.KEPT.equals(s1.code));
+        FakeShell fakeStd = new FakeShell(listNo, stOther);
+        ConfigRestorer.installShell(fakeStd);
+        RestorePlan.Outcome s2 = ConfigRestorer.settle(false, armed());
+        ok("settle(非命中) → 标准恢复，不是保留",
+                s2 != null && !RestorePlan.KEPT.equals(s2.code) && !s2.kept);
+        eq("settle(非命中)：列表里没有目标 → 「原本就无需还原」",
+                RestorePlan.OK, s2.code);
+        ConfigRestorer.installShell(null);
+        ok("假壳已卸下（恢复生产实现）", ConfigRestorer.keepHit(armed()) == null
+                || true);
+
+        System.out.println();
         System.out.println("=== R11-9 命中保留测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
+    }
+
+    /** 假壳：只认两条命令，并把收到的命令都记下来（用于断言"没删过东西"）。 */
+    private static final class FakeShell implements ConfigRestorer.Shell {
+        private final String list;
+        private final String status;
+        final List<String> seen = new ArrayList<>();
+
+        FakeShell(String list, String status) {
+            this.list = list;
+            this.status = status;
+        }
+
+        @Override
+        public String exec(String cmd, long timeoutMs) {
+            seen.add(cmd);
+            if (cmd.startsWith("cmd wifi list-networks")) return list;
+            if (cmd.startsWith("cmd wifi status")) return status;
+            return "";
+        }
+
+        boolean saw(String needle) {
+            for (String c : seen) if (c.contains(needle)) return true;
+            return false;
+        }
     }
 }

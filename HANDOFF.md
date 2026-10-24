@@ -402,7 +402,13 @@ sh /data/local/tmp/eta/wp-queue.sh in     # 写回（cat 覆写保 inode + chown
 2. 保留路径里**不许出现任何删除动作**（`RestoreKeepHitTest` 有源码级守卫）；
    保留不成立（回读不到配置）时必须退回标准恢复，不许留「既没保留也没清理」的中间态。
 
-**测试**：`RestoreKeepHitTest`（52 项，纯逻辑 + 源码接线守卫）；门禁 2232 通过 / 0 失败。
+**测试**：`RestoreKeepHitTest`（63 项）= 纯逻辑（步骤计划 / 判据 / journal 终态）
++ 源码接线守卫 + **shell 层**（给 `ConfigRestorer` 加了 `Shell` 注入口，假壳真跑
+`keepHit` / `settle`，断言「保留路径一次 `forget-network` 都没发」）；门禁 **2243 通过 / 0 失败**。
+
+**已知边界（未修）**：`cmd wifi list-networks` 会把个别 SSID 打成带引号的 `"B208"`，
+而 `ListNetworksParser` 只认不带引号的形式 → 这类目标保留判不出来，退回标准恢复
+（＝改动前行为）。该解析器同时是判定链的假阳性防线，按「不动判定链」保持原样。
 
 ## 恢复机制的真机验证方案（2026-10-24，最终审计 P1；已实跑 A/B 两例）
 

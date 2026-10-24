@@ -198,11 +198,19 @@ public final class ConfigRestorer {
     public static RestorePlan.Outcome keepHit(RestoreJournal.Entry e) {
         if (e == null) return RestorePlan.judgeKept(null, null);
         // 配置根本没写进系统 → 没什么可保留的，交给标准恢复（它会如实报告）。
-        if (!e.restored() && !targetPresent(e.ssid)) {
-            android.util.Log.i(TAG, "命中保留不成立（列表里没有 " + e.ssid + "），退回标准恢复");
+        if (!e.settled() && !targetPresent(e.ssid)) {
+            logQuiet("命中保留不成立（列表里没有 " + e.ssid + "），退回标准恢复");
             return null;
         }
         return RestorePlan.judgeKept(e, verify(e.ssid));
+    }
+
+    /** 日志不许成为故障源：JVM 单测里 {@code android.util.Log} 是 stub（调用即抛）。 */
+    private static void logQuiet(String msg) {
+        try {
+            android.util.Log.i(TAG, msg);
+        } catch (Throwable ignored) {
+        }
     }
 
     /**
@@ -224,7 +232,32 @@ public final class ConfigRestorer {
 
     // ---------------------------------------------------------------- shell 层
 
+    /**
+     * shell 执行接缝。
+     *
+     * <p>生产恒为 {@code su -c <cmd>}（见 {@link RootProber#exec}）；测试装一个假壳，
+     * 就能把 {@link #keepHit} / {@link #settle} 这条**真路径**（含
+     * `cmd wifi list-networks` 的解析、保留不成立的退回）在 JVM 里断言，
+     * 而不是只测纯逻辑。与 {@link RestoreJournal#install} 同一套路子。
+     */
+    public interface Shell {
+        String exec(String cmd, long timeoutMs);
+    }
+
+    private static volatile Shell shell = null;
+
+    /** 装/卸假壳（测试专用；传 {@code null} 恢复生产实现）。 */
+    public static void installShell(Shell s) { shell = s; }
+
     private static String sh(String cmd, long timeoutMs) {
+        Shell s = shell;
+        if (s != null) {
+            try {
+                return s.exec(cmd, timeoutMs);
+            } catch (Throwable t) {
+                return null;
+            }
+        }
         try {
             return RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
         } catch (Throwable t) {

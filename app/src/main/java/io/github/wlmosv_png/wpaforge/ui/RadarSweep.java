@@ -12,33 +12,63 @@ import android.util.AttributeSet;
 import android.view.View;
 
 /**
- * 雷达扫掠视图。同心圆 + 旋转扫描线 + 命中点。
- * 这是主界面的视觉核心，形态上和任何"卡片+进度条"的界面都不像。
+ * 雷达扫掠视图。同心圆 + 旋转扫描线 + 每个 AP 一个跳动点。
+ *
+ * <h3>每个点就是一台 AP（2026-10-24 用户要求后重做）</h3>
+ * <ul>
+ *   <li><b>一 AP 一点</b>：调用方按「可见网络」逐个构造，不做采样、不合并；</li>
+ *   <li><b>越强越靠里</b>：信号强度归一化后映射到「离圆心越近」——
+ *       圆心＝贴着你的那台 AP，外圈＝几乎听不见的；</li>
+ *   <li><b>越强越大、越亮</b>：档位色 {@link AmberTheme#signalColor}，
+ *       半径按档位递增，最强的还带一圈光晕；</li>
+ *   <li><b>会跳动</b>：每个点有自己的相位，半径与透明度随时间轻微起伏 ——
+ *       画面是活的，而不是一张静态散点图。</li>
+ * </ul>
+ *
+ * <p>跳动与扫描是两件事：扫描线只在 {@link #startSpin()} 后转；
+ * 落点只要还在前台就会一直轻轻起伏（{@link #stopSpin()} 不会让点僵住）。
  */
 public class RadarSweep extends View {
 
+    /**
+     * 一个落点。
+     *
+     * @param angleDeg 方位角（0..360），由调用方给定，决定它在圆周上的方向
+     * @param distance 离圆心的比例（0..1）；**0.30 以下会被夹住**，避免压住中心数字
+     * @param level    信号档位 0..4（0 最弱）
+     * @param secured  是否加密（未加密的点描一圈红边）
+     * @param phase    跳动相位 0..1：调用方按索引给，保证各点不同步
+     */
     public static final class Blip {
-        public final float angleDeg;   // 0..360
-        public final float distance;  // 0..1
-        public final boolean strong;
-        public final boolean locked;
-        public Blip(float angleDeg, float distance, boolean strong, boolean locked) {
+        public final float angleDeg;
+        public final float distance;
+        public final int level;
+        public final boolean secured;
+        public final float phase;
+
+        public Blip(float angleDeg, float distance, int level, boolean secured, float phase) {
             this.angleDeg = angleDeg;
             this.distance = distance;
-            this.strong = strong;
-            this.locked = locked;
+            this.level = level;
+            this.secured = secured;
+            this.phase = phase;
         }
     }
+
+    /** 落点允许的最近半径比例：再往里就会盖住中心的大数字。 */
+    private static final float MIN_DIST = 0.30f;
 
     private Blip[] blips = new Blip[0];
     private final Paint pRing = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pSweep = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pBlip = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pText = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    private final int accent = AmberTheme.ACCENT;
     private float sweepAngle = 0f;
     private boolean spinning = false;
+    /** 只要有点就保持轻微跳动（不依赖扫描是否在转）。 */
+    private boolean pulsing = false;
     private long lastFrame = 0;
     private String centerText = "";
     private String subText = "";
@@ -51,6 +81,10 @@ public class RadarSweep extends View {
         pRing.setStrokeWidth(dp(1.2f));
         pRing.setColor(AmberTheme.BTN_2ND_EDGE);
 
+        pEdge.setStyle(Paint.Style.STROKE);
+        pEdge.setStrokeWidth(dp(1.2f));
+        pEdge.setColor(AmberTheme.DANGER);
+
         pText.setTextAlign(Paint.Align.CENTER);
         pText.setColor(AmberTheme.TEXT);
     }
@@ -61,7 +95,9 @@ public class RadarSweep extends View {
 
     public void setBlips(Blip[] b) {
         this.blips = b == null ? new Blip[0] : b;
-        invalidate();
+        pulsing = blips.length > 0;
+        lastFrame = SystemClock.uptimeMillis();
+        kick();
     }
 
     public void setCenterText(String t, String sub) {
@@ -71,44 +107,46 @@ public class RadarSweep extends View {
     }
 
     public void startSpin() {
-        boolean wasStopped = !spinning;
         spinning = true;
-        // 关键：即使已经是 spinning，也要重置时间基准并重新投递动画回调。
-        // 从后台切回来时 View 的 invalidate 链条会断，不重投就永远停住。
         lastFrame = SystemClock.uptimeMillis();
-        if (wasStopped || !isAttachedToWindow()) {
-            postInvalidateOnAnimation();
-        } else {
-            // 已经附着但可能动画停了，强制再投一次
-            postInvalidateOnAnimation();
-        }
+        kick();
     }
 
     public void stopSpin() {
         spinning = false;
-        // 移除待处理的动画回调，避免后台空转
-        removeCallbacks(spinTick);
+        kick();
     }
 
-    /** 自定义一帧推进，便于在可见性变化时重新接管 */
-    private final Runnable spinTick = this::postInvalidateOnAnimation;
+    /** 是否需要继续出帧（转 or 跳）。 */
+    private void kick() {
+        if (spinning || pulsing) postInvalidateOnAnimation();
+        else invalidate();
+    }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        if (spinning) {
-            lastFrame = SystemClock.uptimeMillis();
-            postInvalidateOnAnimation();
-        }
+        lastFrame = SystemClock.uptimeMillis();
+        kick();
     }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        // 离开窗口就不要再排队出帧了（后台空转是耗电大户）
+        removeCallbacks(tick);
+    }
+
+    private final Runnable tick = this::postInvalidateOnAnimation;
 
     @Override
     protected void onWindowVisibilityChanged(int visibility) {
         super.onWindowVisibilityChanged(visibility);
-        if (visibility == VISIBLE && spinning) {
-            // 回到前台：重置时间基准，继续转
+        if (visibility == VISIBLE) {
             lastFrame = SystemClock.uptimeMillis();
-            postInvalidateOnAnimation();
+            kick();
+        } else {
+            removeCallbacks(tick);
         }
     }
 
@@ -118,18 +156,23 @@ public class RadarSweep extends View {
         int w = getWidth(), h = getHeight();
         if (w == 0 || h == 0) return;
 
+        long now = SystemClock.uptimeMillis();
+        float dt = lastFrame == 0 ? 0f : (now - lastFrame) / 1000f;
+        lastFrame = now;
+        if (dt > 0.25f) dt = 0.25f;          // 切回前台时不要跳一大步
+        float t = now / 1000f;
+
         float cx = w / 2f, cy = h / 2f;
         float radius = Math.min(w, h) / 2f - dp(14);
 
-        // 同心圆环
+        // 同心圆环 + 十字准线
         for (int i = 1; i <= 4; i++) {
             cv.drawCircle(cx, cy, radius * i / 4f, pRing);
         }
-        // 十字准线
         cv.drawLine(cx - radius, cy, cx + radius, cy, pRing);
         cv.drawLine(cx, cy - radius, cx, cy + radius, pRing);
 
-        // 扫描扇形：一段渐变弧 + 拖尾线
+        // 扫描扇形 + 扫描线（只在扫描进行时转）
         RectF oval = new RectF(cx - radius, cy - radius, cx + radius, cy + radius);
         pSweep.setShader(new LinearGradient(cx, cy, cx + radius, cy,
                 new int[]{Color.TRANSPARENT, AmberTheme.ACCENT_GLOW},
@@ -137,28 +180,44 @@ public class RadarSweep extends View {
         cv.drawArc(oval, sweepAngle - 40, 40, true, pSweep);
         pSweep.setShader(null);
 
-        // 扫描线
         double rad = Math.toRadians(sweepAngle);
         float ex = cx + (float) Math.cos(rad) * radius;
         float ey = cy + (float) Math.sin(rad) * radius;
-        pSweep.setColor(accent);
+        pSweep.setColor(AmberTheme.ACCENT);
         pSweep.setStrokeWidth(dp(2f));
         cv.drawLine(cx, cy, ex, ey, pSweep);
 
-        // 命中点
+        // 落点：一 AP 一点，越强越靠里、越大、越亮，并随时间跳动
         for (Blip b : blips) {
             double a = Math.toRadians(b.angleDeg);
-            float d = radius * Math.max(0.05f, Math.min(1f, b.distance));
+            float d = radius * Math.max(MIN_DIST, Math.min(1f, b.distance));
             float bx = cx + (float) Math.cos(a) * d;
             float by = cy + (float) Math.sin(a) * d;
 
-            // 越新扫到的越亮：用角度差做淡出
-            float diff = Math.abs(((sweepAngle - b.angleDeg) % 360 + 360) % 360);
-            float alpha = diff < 60 ? 1f : Math.max(0.25f, 1f - (diff - 60) / 300f);
+            // 跳动：半径 ±18%、透明度 ±15%，各点相位不同 → 整片"活着"
+            float pulse = (float) Math.sin((t * 1.6f + b.phase) * 2 * Math.PI);
+            float baseR = dp(2.4f + b.level * 0.95f);
+            float r = Math.max(dp(1.8f), baseR * (1f + 0.18f * pulse));
 
-            pBlip.setColor(b.locked ? accent : AmberTheme.DANGER);
-            pBlip.setAlpha((int) (255 * alpha));
-            cv.drawCircle(bx, by, b.strong ? dp(5f) : dp(3.2f), pBlip);
+            int color = AmberTheme.signalColor(b.level);
+            int alpha = (int) (255 * Math.min(1f, 0.86f + 0.14f * pulse));
+
+            // 强信号：外圈光晕
+            if (b.level >= 3) {
+                pBlip.setColor(color);
+                pBlip.setAlpha((int) (alpha * 0.28f));
+                cv.drawCircle(bx, by, r * 2.1f, pBlip);
+            }
+
+            pBlip.setColor(color);
+            pBlip.setAlpha(alpha);
+            cv.drawCircle(bx, by, r, pBlip);
+
+            // 未加密：描一圈红边（与列表里的红胶囊同一套语义）
+            if (!b.secured) {
+                pEdge.setAlpha((int) (alpha * 0.9f));
+                cv.drawCircle(bx, by, r + dp(1.6f), pEdge);
+            }
         }
 
         // 中心文字
@@ -171,12 +230,7 @@ public class RadarSweep extends View {
             cv.drawText(subText, cx, cy + dp(16), pText);
         }
 
-        if (spinning) {
-            long now = SystemClock.uptimeMillis();
-            float dt = (now - lastFrame) / 1000f;
-            lastFrame = now;
-            sweepAngle = (sweepAngle + dt * 70f) % 360f; // 约 5.1 秒一圈
-            postInvalidateOnAnimation();
-        }
+        if (spinning) sweepAngle = (sweepAngle + dt * 70f) % 360f;   // 约 5.1 秒一圈
+        if (spinning || pulsing) postInvalidateOnAnimation();
     }
 }

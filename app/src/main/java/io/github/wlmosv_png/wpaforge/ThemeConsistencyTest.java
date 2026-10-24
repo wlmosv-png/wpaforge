@@ -61,7 +61,7 @@ public class ThemeConsistencyTest {
             "MainActivity.java", "DictActivity.java", "AboutActivity.java",
             "ui/AmberTheme.java", "ui/NetDialog.java", "ui/UiKit.java",
             "ui/CrackHud.java", "ui/StagedProgress.java", "ui/ThinProgress.java",
-            "ui/SignalBars.java", "ui/ChannelBars.java", "ui/RadarSweep.java",
+            "ui/ChannelBars.java", "ui/RadarSweep.java",
             "ui/AuthorCard.java", "ui/CandidateTicker.java", "ui/LanProbeActivity.java",
     };
 
@@ -125,7 +125,7 @@ public class ThemeConsistencyTest {
         System.out.println("== T4 各页仍在引用主题（而不是回到本地色表） ==");
         for (String rel : new String[]{"MainActivity.java", "DictActivity.java",
                 "AboutActivity.java", "ui/LanProbeActivity.java", "ui/NetDialog.java",
-                "ui/SignalBars.java", "ui/ChannelBars.java", "ui/RadarSweep.java",
+                "ui/ChannelBars.java", "ui/RadarSweep.java",
                 "ui/ThinProgress.java", "ui/StagedProgress.java", "ui/AuthorCard.java"}) {
             String code = stripComments(read(SRC + rel));
             ok(rel + " 引用 AmberTheme", code.contains("AmberTheme."));
@@ -184,6 +184,49 @@ public class ThemeConsistencyTest {
                 netRow.contains("r.bssid") && netRow.contains("r.channel")
                         && netRow.contains("estimatedDistanceMeters")
                         && netRow.contains("OuiLookup"));
+
+        System.out.println("== T8 设置页行式结构 / 雷达一 AP 一点 / 信号分布板 ==");
+        String set = maFull == null ? "" : maFull;
+        int s0 = set.indexOf("private void buildSettingsTab() {");
+        int s1 = set.indexOf("/** 组内分隔线（上方留白由调用方给）。 */");
+        String settings = (s0 >= 0 && s1 > s0) ? set.substring(s0, s1) : "";
+        ok("设置页用分组卡", settings.contains("AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD)")
+                && settings.contains("modeCard") && settings.contains("permCard")
+                && settings.contains("aliveCard") && settings.contains("diagCard")
+                && settings.contains("lockCard") && settings.contains("connCard")
+                && settings.contains("toolsCard") && settings.contains("verCard"));
+        ok("设置行是扁平行（rowAction + 箭头）",
+                set.contains("private Button rowAction(String label)")
+                        && set.contains("private LinearLayout arrowRow(Button b)"));
+        ok("组内行之间有分隔线（groupDivider）",
+                set.contains("private View groupDivider(int topGapDp)"));
+        ok("设置键与读写方式未改（PIN / 随机 MAC / 锁定 AP / 版本）",
+                settings.contains("Prefs.pinEnabled(this)")
+                        && settings.contains("Prefs.setPinBssid(this, !Prefs.pinBssid(this))")
+                        && settings.contains("Prefs.setMacRotate(this, !Prefs.macRotate(this))")
+                        && settings.contains("Ver.labeled(this)"));
+        ok("一键修复仍是原来的两条 su 命令",
+                settings.contains("dumpsys deviceidle whitelist +")
+                        && settings.contains("lspdoze.deepsleep.whitelist"));
+
+        String radar = read(SRC + "ui/RadarSweep.java");
+        ok("雷达点按信号档位取色", radar != null && radar.contains("AmberTheme.signalColor(b.level)"));
+        ok("雷达点会跳动（相位 + 脉动）", radar != null
+                && radar.contains("public final float phase;")
+                && radar.contains("float pulse = (float) Math.sin(")
+                && radar.contains("pulsing"));
+        ok("雷达越强越靠里（由调用方取 1 - t）",
+                set.contains("float dist = 1f - t;"));
+        ok("雷达方位角用黄金角铺开（不叠成一坨）", set.contains("137.508f"));
+        ok("雷达一 AP 一点：blips 长度＝可见网络数",
+                set.contains("RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()]"));
+
+        ok("信号分布板存在（五档统计 + 最强若干台）",
+                set.contains("private void renderSignalBoard(List<NetRecord> visible)")
+                        && set.contains("private View signalBoardRow(NetRecord r)")
+                        && set.contains("bandRow"));
+        ok("单调柱状图 SignalBars 已移除（无调用者不留死代码）",
+                read(SRC + "ui/SignalBars.java") == null);
 
         System.out.println();
         System.out.println("=== 主题一致性测试: " + pass + " 通过, " + fail + " 失败 ===");

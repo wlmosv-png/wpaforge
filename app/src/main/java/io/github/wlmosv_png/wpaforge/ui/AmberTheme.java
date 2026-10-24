@@ -82,6 +82,30 @@ public final class AmberTheme {
     /** 极淡白：图表网格线与轨道。 */
     public static final int GRID = 0x22FFFFFF;
 
+    /**
+     * 信号档位色（0 最弱 → 4 最强）。
+     *
+     * <p>雷达上的点、列表里的信号条与 dBm 数字都用这一套 ——
+     * 同一个网络在哪儿看都是同一个颜色，「强/弱」不需要看数字就能判断。
+     * 越强越亮越暖，弱信号压暗（不是换色相，避免变成彩虹）。
+     */
+    public static final int SIG_4 = 0xFFFFE08A;
+    public static final int SIG_3 = 0xFFFFC24D;
+    public static final int SIG_2 = 0xFFE89B1F;
+    public static final int SIG_1 = 0xFF8A6A1E;
+    public static final int SIG_0 = 0xFF5C4A18;
+
+    /** 档位 → 颜色；越界自动夹到 0..4。 */
+    public static int signalColor(int level) {
+        switch (level <= 0 ? 0 : Math.min(level, 4)) {
+            case 4: return SIG_4;
+            case 3: return SIG_3;
+            case 2: return SIG_2;
+            case 1: return SIG_1;
+            default: return SIG_0;
+        }
+    }
+
     /** 成功。 */
     public static final int OK = 0xFF4CAF50;
     /** 成功的暗/中两档（成功态进度条分层）。 */

@@ -353,3 +353,27 @@ sh /data/local/tmp/eta/wp-queue.sh in     # 写回（cat 覆写保 inode + chown
 2. **宁可漏判，绝不误判**（不假阳性优先于不漏判）
 3. **不重启设备**（用户明确要求）
 4. 用户没同意的重大操作不做
+
+## 安全：签名口令曾在公开历史里（2026-10-24 最终审计 P0-4）
+
+**结论（有据可查）**：keystore 口令曾以明文写进仓库并**已公开** ——
+`HANDOFF.md` 第 107 行 `WP_FORGE_KS_PASS="…"`，所在提交 `3b488fc` **在 `origin/main` 上**。
+另有一处更早的本地提交 `9aaa21e`（0.5.0，`2-build-dex.sh` 内联）**未推到远端**。
+
+**泄露范围**：
+- 泄的是**口令**，不是密钥。仓库从未提交过 `.jks`（只有 `signing.env.example` 模板），
+  所以要伪造本应用的更新包，攻击者还需要那份 keystore 文件本身。
+- 含义：一旦 keystore 文件外泄，口令即已知；且该口令同时是 store 与 key 的口令。
+
+**已做的处置**：
+- 仓库内：`7f7c1e4` 起源码/文档里已无该口令（`.gitignore` 覆盖 `*.jks` / `signing.env`）。
+- 本机非仓库副本：19 个文件（含构建脚本、skill 文档、我的 diff 快照）已改为从环境变量读
+  （`TGAS_KS_PASS` / `WP_FORGE_KS_PASS`），不再内联。
+- Eta 记忆：5 处已改写为「口令不写进记忆 + 待轮换」（复查残留 0）。
+- **未做且不建议做**：用字节替换去抹 SQLite 副本里的口令 —— 实测会破坏数据库结构
+  （同一份副本：替换前 `PRAGMA quick_check` = ok，替换后 = corrupt；已逐字节还原）。
+
+**待你决定（需要一次显式操作，不能替你选新口令）**：
+- 轮换 keystore 口令（**不改密钥，签名指纹不变，老用户仍可覆盖安装**）：
+  `keytool -storepasswd -keystore release.jks` 与 `keytool -keypasswd -alias wlmosv -keystore release.jks`
+- 轮换后把新口令写进本机未入库的 env 文件；本仓库与记忆都不再记录口令。

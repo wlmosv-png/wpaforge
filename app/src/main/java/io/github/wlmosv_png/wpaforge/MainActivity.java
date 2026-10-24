@@ -2049,21 +2049,17 @@ public class MainActivity extends Activity {
 
         radar.setCenterText(String.valueOf(visible.size()), L.s("个网络", "networks"));
 
-        // 雷达：**一 AP 一点**。半径＝「越强越靠里」（-100dBm 在外圈，-30dBm 贴圆心）；
-        // 方位角用黄金角铺开（36 台也不会叠成一坨，且每次刷新位置稳定）；
-        // 相位按索引错开 → 每个点的跳动不同步，看起来才是"活的"。
+        // 雷达：**一 AP 一点**，每点落在自己档位的那道环上（越强越靠里），
+        // 同一道环内由视图沿圆周均匀铺开 —— 既不会重叠，也不会堆在圆心。
+        // 这里只交「档位 + 是否加密」，方位角仅用于同档内的稳定排序。
         List<NetRecord> byStrong = new ArrayList<>(visible);
         java.util.Collections.sort(byStrong, (a, b) -> b.rssi - a.rssi);
         RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()];
         for (int i = 0; i < byStrong.size(); i++) {
             NetRecord r = byStrong.get(i);
-            float t = Math.max(0f, Math.min(1f, (r.rssi + 100f) / 70f));
-            float dist = 1f - t;                       // 越强越靠里
-            float angle = (i * 137.508f) % 360f;       // 黄金角
-            blips[i] = new RadarSweep.Blip(angle, dist, r.signalLevel(),
+            blips[i] = new RadarSweep.Blip(i * 137.508f, r.signalLevel(),
                     r.security != NetRecord.Security.OPEN
-                            && r.security != NetRecord.Security.WEP,
-                    (i * 0.137f) % 1f);
+                            && r.security != NetRecord.Security.WEP);
         }
         radar.setBlips(blips);
         renderSignalBoard(visible);
@@ -2319,13 +2315,15 @@ public class MainActivity extends Activity {
         row.addView(name, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1.1f));
 
-        float t = Math.max(0f, Math.min(1f, (r.rssi + 100f) / 70f));
+        // 条长按**档位**取（与雷达上那道环一一对应），不是连续比例 ——
+        // 实测环境里大多数 AP 都在 -40~-60，连续比例会让所有条看起来一样长。
+        int level = r.signalLevel();
         FrameLayout track = new FrameLayout(this);
         track.setBackground(roundBg(AmberTheme.SUNKEN, 4f));
         View fill = new View(this);
-        fill.setBackground(roundBg(AmberTheme.signalColor(r.signalLevel()), 4f));
+        fill.setBackground(roundBg(AmberTheme.signalColor(level), 4f));
         track.addView(fill, new FrameLayout.LayoutParams(
-                px((int) (10 + 82 * t)), ViewGroup.LayoutParams.MATCH_PARENT));
+                px((int) (10 + 82 * (level + 1) / 5f)), ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(px(94), px(9));
         tlp.leftMargin = px(8);
         tlp.rightMargin = px(8);

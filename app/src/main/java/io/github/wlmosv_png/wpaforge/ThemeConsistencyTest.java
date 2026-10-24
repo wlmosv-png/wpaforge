@@ -210,14 +210,19 @@ public class ThemeConsistencyTest {
                         && settings.contains("lspdoze.deepsleep.whitelist"));
 
         String radar = read(SRC + "ui/RadarSweep.java");
-        ok("雷达点按信号档位取色", radar != null && radar.contains("AmberTheme.signalColor(b.level)"));
-        ok("雷达点会跳动（相位 + 脉动）", radar != null
-                && radar.contains("public final float phase;")
-                && radar.contains("float pulse = (float) Math.sin(")
-                && radar.contains("pulsing"));
-        ok("雷达越强越靠里（由调用方取 1 - t）",
-                set.contains("float dist = 1f - t;"));
-        ok("雷达方位角用黄金角铺开（不叠成一坨）", set.contains("137.508f"));
+        ok("雷达点按信号档位取色", radar != null && radar.contains("AmberTheme.signalColor(level)"));
+        ok("雷达是五道信号环刻度盘（越强越靠里 + 环上标 dBm）", radar != null
+                && radar.contains("private static final float[] RING")
+                && radar.contains("private static final String[] RING_LABEL"));
+        ok("同档内的点沿圆周均匀铺开（永不重叠、不挤圆心）", radar != null
+                && radar.contains("float angle = (360f * idx / n) + level * 26f;")
+                && radar.contains("int[] bucketSize = new int[RING.length];"));
+        ok("点不再抖动（没有相位/脉动，只有扫描余辉）", radar != null
+                && !radar.contains("phase")
+                && !radar.contains("pulse")
+                && radar.contains("GLOW_MIN"));
+        ok("停下不再画指针（扫描结束就是干净刻度盘）", radar != null
+                && radar.contains("if (spinning) {\n            RectF oval"));
         ok("雷达一 AP 一点：blips 长度＝可见网络数",
                 set.contains("RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()]"));
 

@@ -153,9 +153,14 @@ public class R2TimeoutTest {
                 if (l.contains("SystemClock.uptimeMillis")) uptime++;
             }
             eq("判定路径全部用单调时钟（uptimeMillis 大量使用）", true, uptime > 30);
-            eq("墙钟只用在生成 runId（1 处）", 1, wall);
-            ok("墙钟那一处确实是 runId 生成",
+            // R11 起墙钟多了一处合法用途：**日志窗口起点**（`-t <时间>` 需要墙钟时刻，
+            // 单调时钟没法喂给 logcat）。除这两处外，判定路径必须全部用 uptimeMillis。
+            eq("墙钟只用在 runId 与日志窗口起点（2 处）", 2, wall);
+            ok("其中一处是 runId 生成",
                     code.contains("AttemptId.newRunId(System.currentTimeMillis()"));
+            ok("另一处是日志窗口起点（且只用于读日志，不参与时间比较）",
+                    code.contains("final long windowFromMs = System.currentTimeMillis();")
+                            && code.contains("WpaLogReader.readEx(shell, 400, windowFromMs)"));
         }
 
         System.out.println();

@@ -231,7 +231,16 @@ public final class CrackEngine {
     /** shell 通道抽象 */
     public interface ShellChannel {
         String exec(String cmd, long timeoutMs);
-        void forgetTarget(String ssid);
+        /**
+         * @deprecated F4：唯一调用者 {@code verifyHit()} 已删除。
+         *
+         * <p>这里刻意留下一个**空默认实现**，而不是继续保留原来的「删净目标配置」
+         * 实现 —— 收尾恢复现在由 {@code RestoreRunner} 统一负责，
+         * 若还有人把删除逻辑接回来，两处各删一次会把刚恢复好的配置再删掉。
+         * 需要删配置请走 {@code ConfigRestorer.removeTarget}。
+         */
+        @Deprecated
+        default void forgetTarget(String ssid) {}
         String name();
         /** 收尾钩子：常驻会话（su -c sh）必须在这里关掉，别把 root shell 留在后台。 */
         default void close() {}
@@ -596,6 +605,18 @@ public final class CrackEngine {
      *
      * @return true = 确认已清干净
      */
+    /**
+     * 对外暴露的「删掉目标在系统里的配置」入口（R11 恢复流程用）。
+     *
+     * <p>恢复阶段必须把候选留下的配置删掉，而这段逻辑必须与判定阶段用的是
+     * **同一份实现** —— 否则“删干净”这件事在两处会给出不同答案。
+     *
+     * @return true = 确认目标已不在已保存列表里
+     */
+    public boolean removeTargetConfig(String ssid) {
+        return forgetTargetByShell(ssid);
+    }
+
     private boolean forgetTargetByShell(String ssid) {
         if (shell == null || ssid == null) return false;
         // 两轮足够：第一轮删净即返回；第二轮兜「删了又被系统重建」的罕见情况。
@@ -1015,15 +1036,20 @@ public final class CrackEngine {
             }
         }
 
-        // 清日志缓冲。判定完全依赖命令之后新产生的日志行，
-        // 所以这一步是归因的前提，不能省。
+        // 确立**日志窗口起点**。
         //
-        // R6：不再「清完就当它清了」——
-        //   ① 记录清理动作是否真的拿到帧（exec 返回 null = 超时/失联）
-        //   ② 清完立刻写一行**起点标记**，作为「窗口从这里开始」的可验证证据
-        //   ③ 每轮读日志时用 readCommand() 把标记与证据一起读回来，
-        //      由 AttemptMarker.evaluate 算出窗口元数据（只记录，不改判定）
-        WifiStateLog.ClearResult clearRes = WifiStateLog.clearChecked(shell);
+        // R11 变更（原来在这里 `logcat -c` 清空全局缓冲）：
+        //   · 清空是**全局副作用** —— 把整机其它组件的缓冲一起清掉，
+        //     用户随后想抓任何现场都没了；
+        //   · 清空结果从来没被校验过（R3 记为高风险假设），清失败时
+        //     上一条候选的失败行会留在缓冲里被算到本条头上；
+        //   · ColorOS 有日志配额，清完常常一条都读不到，日志判据整体失效。
+        //
+        // 现在改成两道**独立**的窗口证据：
+        //   ① 时间锚点 `logcat -d -t '<MM-DD HH:MM:SS.mmm>'` —— 只读本时刻之后的行；
+        //   ② 起点标记 `WPF_PROBE|attempt=<id>` —— 切片必须从**本条**标记之后开始。
+        // 两者都不动全局缓冲，也不依赖“清空是否成功”。
+        final long windowFromMs = System.currentTimeMillis();
         String markerCmd = AttemptMarker.writeCommand(attemptId);
         boolean markerWritten = false;
         if (markerCmd != null) {
@@ -1032,6 +1058,9 @@ public final class CrackEngine {
                 markerWritten = true;   // 只表示命令已发出；可见性由 evaluate 判断
             } catch (Throwable ignored) {}
         }
+        // 窗口起点是否已确立（时间锚点已给 + 标记已发）。
+        // 它只进诊断串，不进 Window.isolated —— 判定永远只认标记。
+        final boolean windowStartOk = markerWritten;
 
         // **命令发出时刻**：判定以此为界。
         // 之后出现的「目标 SSID 已连上」才可能是这条候选的功劳。
@@ -1130,7 +1159,7 @@ public final class CrackEngine {
         // 日志可读性：**不能一次性探测**（2026-10-23 实测翻车）。
         //
         // 旧写法是在这里读一次 `logcat -d -s wpa_supplicant`，看输出里有没有
-        // "wpa_supplicant" 字样。但此刻缓冲刚被 `logcat -c` 清空、连接命令才发出
+        // "wpa_supplicant" 字样。R11 起窗口由「时间锚点 + 起点标记」划定，不再清空缓冲；但此刻连接命令才发出
         // 几毫秒，日志里**必然还没有任何行** → 探测失败 → logReadable 恒为 false
         // → 下面整段日志判据（含快速失败）被永久跳过，只能干等状态机。
         //
@@ -1193,12 +1222,23 @@ public final class CrackEngine {
             // 原来日志段排在回连出口之后，本轮日志还没读就已经 return AUTH_FAIL ——
             // 成功证据被失败判据抢答（审计 S2-3）。现在证据先读齐、再按优先级判。
             long statLog0 = SystemClock.uptimeMillis();
-            String wlog = WpaLogReader.read(shell, 400);
-            lastWindow = AttemptMarker.evaluate(attemptId, clearRes.ok(), markerWritten, wlog);
+            // P0-3：读取返回**结构化状态**，不再只看 stdout 空不空。
+            // 「上游 logcat 失败」「窗口里真没日志」「grep 坏了」必须分开：
+            // 前两者都不可判、只有第三种才是可信的「空」。
+            LogcatCmd.Result lr = WpaLogReader.readEx(shell, 400, windowFromMs);
+            String wlog = lr == null ? null : lr.body;
+            boolean logReadOk = lr != null && lr.logUsable();
+            lastWindow = AttemptMarker.evaluate(attemptId, windowStartOk, markerWritten,
+                    wlog, true, logReadOk);
+            if (!logReadOk) {
+                android.util.Log.i(TAG, "日志不可判: "
+                        + (lr == null ? "no-frame" : lr.describe()));
+            }
             statLogMs += SystemClock.uptimeMillis() - statLog0;
             // 窗口证据是否可用：**必要条件**，不是任何结论的充分条件。
             // 为假时不得使用日志证据（更不得把「没看到失败行」当成认证失败）。
-            boolean logWinUsable = lastWindow != null && lastWindow.evidenceUsable();
+            // usableForVerdict = 通道可读 **且** 窗口隔离成立 —— 两者缺一都不许判。
+            boolean logWinUsable = lastWindow != null && lastWindow.usableForVerdict();
             // R3：日志类判据**只在切片上跑** —— 切片 = 本条候选起点标记之后的部分。
             // 这样「清空失败留下的陈旧行」「别人窗口的行」都不再可能被算到本条头上；
             // 窗口不可用时切片为空，判据函数在其上只会得到 false（= 无证据，而非失败）。
@@ -1376,7 +1416,7 @@ public final class CrackEngine {
             //   CTRL-EVENT-ASSOC-REJECT
             // 见到就直接判密码错，不用傻等超时。
             //
-            // 前提：命令发出前已 logcat -c，所以这里读到的都是本次的行。
+            // 前提（R11 起）：读取带时间锚点，且切片从本条标记之后开始 —— 不依赖清空。
             // 每轮都读日志。原来这里是 `logRound++ % 3 == 0` ——
             // 每 3 轮（约 1.2 秒）才读一次，而「握手失败 / 关联被拒」
             // 恰恰是**最快**的失败信号。等 1.2 秒才看一眼，
@@ -1532,7 +1572,11 @@ public final class CrackEngine {
         // R6：循环里一次日志都没读到（例如通道不吐日志）时也要留下窗口状态，
         // 不能让「没读到日志」和「没采集元数据」在记录里长得一样。
         if (lastWindow == null) {
-            lastWindow = AttemptMarker.evaluate(attemptId, clearRes.ok(), markerWritten, null);
+            // 这条路径表示「循环里压根没走到日志读取」（在它之前就 return 了），
+            // 所以日志维度**未被评估**：logReadOk 传 true 以免把责任错误地推给 logcat；
+            // 此时窗口必然不可用（没有标记），结论不受影响。
+            lastWindow = AttemptMarker.evaluate(attemptId, windowStartOk, markerWritten,
+                    null, true, true);
         }
 
         // 超时后的归类
@@ -1634,156 +1678,21 @@ public final class CrackEngine {
 
     // ------------------------------------------------------------------ 批量交给系统
 
-    // ------------------------------------------------------------------ 命中复核
+    // ------------------------------------------------------------------ 命中复核（已删除）
 
-    /** 复核结果 */
-    public static final class VerifyResult {
-        /** 复验是否成功复现 */
-        public final boolean reproduced;
-        /** 复验耗时 */
-        public final long elapsedMs;
-        public final String detail;
-        VerifyResult(boolean reproduced, long ms, String detail) {
-            this.reproduced = reproduced;
-            this.elapsedMs = ms;
-            this.detail = detail == null ? "" : detail;
-        }
-    }
-
-    /**
-     * 命中之后做一次**独立复验**。
+    /*
+     * F4：这里原来有 `verifyHit()`（断开重连式复验）与它的返回类型 `VerifyResult`。
+     * 它**没有任何调用者**（判定链早已改为「命中即命中，不做断开重连复验」），
+     * 但包内保留了三段破坏性动作：一条把 netId 写死为 0 的删配置命令、
+     * 一次直接断开连接、以及一次按 SSID 删掉目标已保存配置的调用。
+     * 任何一次「把它接回去」的改动，都会与收尾恢复互相拆台
+     * （恢复刚把原配置写回，复验又把它删掉）。
      *
-     * <p>步骤：
-     * <ol>
-     *   <li>断开当前连接，并确认断开了（目标保持未连 3 秒以上）</li>
-     *   <li>用**同一个密码**再连一次</li>
-     *   <li>只有这次也成功，才算「可复现」</li>
-     * </ol>
-     *
-     * <p>为什么需要它：单次「连上了」无法区分两种情况 ——
-     * 真是这条密码连上的，还是系统自己重连的。这两者在日志里长得一样。
-     * <b>能被复现的才算数。</b>
-     *
-     * @param timeoutMs 复验最长等待
+     * 已整体删除：这套「断开重连式复验」的入口与返回类型在本文件（以及全部生产源码）中
+     * 都不再存在 —— 守卫测试按可执行形状断言，注释里也不再出现它们的名字。
+     * 需要「复验」语义时请新建独立入口，并复用 ConfigRestorer / RestorePlan，
+     * 不要在引擎里重新引入删配置的代码。
      */
-    public VerifyResult verifyHit(NetRecord target, String security, String password, long timeoutMs) {
-        long t0 = SystemClock.uptimeMillis();
-
-        if (shell == null) {
-            return new VerifyResult(false, 0,
-                    L.s("没有 shell 通道，无法复验", "no shell channel; cannot verify"));
-        }
-
-        // 1. 断开 + 确认
-        try { shell.exec("cmd wifi forget-network 0", 2000); } catch (Throwable ignored) {}
-        boolean off = disconnectAndVerify(target.ssid);
-        if (!off) {
-            return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
-                    L.s("复验前无法断开目标，结果不可信",
-                        "could not disconnect before verification; result unreliable"));
-        }
-
-        // 2. 重新渋净配置
-        try { shell.forgetTarget(target.ssid); } catch (Throwable ignored) {}
-
-        // 3. 用同一密码再连一次
-        final String cmd = ConnectSpec.buildConnect(target.ssid, security, password,
-                pinBssid ? target.bssid : null, macRotate);
-        final ShellChannel sh = shell;
-        final long commandAt0 = SystemClock.uptimeMillis();
-        new Thread(() -> {
-            try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
-        }, "wpaforge-verify-conn").start();
-
-        // 复验判据与主判定**保持一致**（四层，任一确认即通过）。
-        //
-        // 旧实现只认 NetworkWatcher 事件，而部分机型上回调拿不到 SSID，
-        // 于是正确密码在主判定里明明「看起来连上了」，到复验这一步却永远失败，
-        // 被降级成 UNKNOWN —— 用户看到的就是「密码对也判不出来」。
-        //
-        // 复验的前提是「已断开并确认断开」，此刻目标必然未连接，
-        // 因此任何随后的连接证据都只能来自这次重连，归因是确定的。
-        final long commandAt = commandAt0;
-        final String ssidBefore = snapshotSsid();
-        final long netIdBefore = currentNetId();
-
-        // 与 tryOneShell 同样的问题（2026-10-23 一起修）：
-        // 这里原本也在“缓冲刚清空”的时刻一次性探测，探测必然失败 →
-        // 复验的日志判据被整段跳过。改为无条件进入，读到内容即视为可读。
-        boolean logReadable = true;
-
-        long deadline = t0 + timeoutMs;
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (cancelFlag.get()) {
-                return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
-                        L.s("复验被取消", "verification cancelled"));
-            }
-            sleep(150);
-
-            // 判据 A：状态机日志（root）
-            {
-                String stateLog = WifiStateLog.read(shell, 600);
-                if (stateLog != null && WifiStateLog.sawConnectedFor(stateLog, target.ssid)) {
-                    long ms = SystemClock.uptimeMillis() - t0;
-                    android.util.Log.i(TAG, "复验通过(状态机日志)");
-                    return new VerifyResult(true, ms,
-                            L.s("复验通过（用同一密码能再次连上）",
-                                "verified (reconnected with the same passphrase)"));
-                }
-            }
-
-            // 判据 B：status + netId（两条通道都可用）
-            String st = null;
-            try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
-            if (st != null && StatusParser.connectedTo(st, target.ssid)) {
-                long nowId = StatusParser.parse(st, target.ssid).netId;
-                boolean newLink = !target.ssid.equals(ssidBefore)
-                        || (nowId >= 0 && netIdBefore >= 0 && nowId != netIdBefore);
-                if (newLink) {
-                    long ms = SystemClock.uptimeMillis() - t0;
-                    android.util.Log.i(TAG, "复验通过(status): netId=" + nowId);
-                    return new VerifyResult(true, ms,
-                            L.s("复验通过（用同一密码能再次连上）",
-                                "verified (reconnected with the same passphrase)"));
-                }
-            }
-
-            // 判据 C：watcher 事件
-            long at = watcher != null
-                    ? watcher.firstAvailableAfter(target.ssid, commandAt) : -1;
-            if (at > 0) {
-                long ms = SystemClock.uptimeMillis() - t0;
-                android.util.Log.i(TAG, "复验通过(watcher): 事件在命令后 " + (at - commandAt) + "ms");
-                return new VerifyResult(true, ms,
-                        L.s("复验通过（用同一密码能再次连上）",
-                            "verified (reconnected with the same passphrase)"));
-            }
-
-            // 判据 D：本地 API
-            String nowSsid = snapshotSsid();
-            if (target.ssid.equals(nowSsid) && !target.ssid.equals(ssidBefore)) {
-                long ms = SystemClock.uptimeMillis() - t0;
-                android.util.Log.i(TAG, "复验通过(WifiInfo)");
-                return new VerifyResult(true, ms,
-                        L.s("复验通过（用同一密码能再次连上）",
-                            "verified (reconnected with the same passphrase)"));
-            }
-        }
-
-        // 超时了。区分两种原因，便于排查
-        boolean onTargetNow = target.ssid.equals(snapshotSsid());
-        if (onTargetNow) {
-            return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
-                    L.s("复验失败：确实连上了目标，但没收到连接证据（监听可能失效）",
-                        "verification failed: on target now but no connect evidence "
-                                + "(listener may be broken)"));
-        }
-
-        return new VerifyResult(false, SystemClock.uptimeMillis() - t0,
-                L.s("复验失败：用同一密码没有再连上 —— 很可能是误判，或信号太差",
-                    "verification failed: could not reconnect with the same passphrase "
-                            + "- likely a false positive, or the signal is too weak"));
-    }
 
     // ------------------------------------------------------------------ 批量跑
 
@@ -2192,7 +2101,8 @@ public final class CrackEngine {
         return "Root";
     }
 
-    private static String securityArg(NetRecord t) {
+    /** 连接参数里的加密方式（对 {@code cmd wifi connect-network} 说话的口径）。 */
+    public static String securityArg(NetRecord t) {
         switch (t.security) {
             case OPEN: return "open";
             case OWE:  return "owe";

@@ -76,6 +76,34 @@ public final class SavedWifiReader {
         return out;
     }
 
+    /** 解析给定的 WifiConfigStore XML 文本（不执行任何命令）。 */
+    public static List<Saved> parseXml(String xml) {
+        List<Saved> out = new ArrayList<>();
+        if (xml != null && xml.contains("<string name=\"SSID\">")) parse(xml, out);
+        return out;
+    }
+
+    /** 在已解析列表里按 SSID 精确查找；找不到返回 {@code null}。 */
+    public static Saved find(List<Saved> list, String ssid) {
+        if (list == null || ssid == null) return null;
+        for (Saved s : list) if (ssid.equals(s.ssid)) return s;
+        return null;
+    }
+
+    /** 直接从 XML 文本里找目标的已保存配置；找不到返回 {@code null}。 */
+    public static Saved findIn(String xml, String ssid) {
+        return find(parseXml(xml), ssid);
+    }
+
+    /**
+     * 读取全部已保存网络（返回第一个可读路径的结果）。
+     *
+     * <p>与 {@link #read()} 同一实现，语义更直白的别名 —— 供恢复流程复用。
+     */
+    public static List<Saved> readAll() {
+        return read();
+    }
+
     /**
      * 解析 WifiConfigStore.xml。
      * 结构是若干个 <Network>…</Network>，里面 SSID 与 PreSharedKey 成对出现。

@@ -202,9 +202,13 @@ public class R6WiringTest {
             ok("run() 生成 runId", eng.contains("AttemptId.newRunId("));
             ok("每条候选生成 attemptId", eng.contains("AttemptId.of(currentRunId, cursor)"));
             ok("Attempt 携带 attemptId", eng.contains("a.attemptId ="));
-            ok("清理结果被检查（不再裸调用 clear）",
-                    eng.contains("WifiStateLog.clearChecked(")
-                            && !eng.contains("WifiStateLog.clear(shell);"));
+            // R11：不再清空缓冲；窗口起点由「时间锚点 + 起点标记」确立，
+            // 且起点状态必须进入窗口元数据（不再是"清完就当它清了"）。
+            ok("不再清空全局缓冲（既不裸调 clear 也不调 clearChecked）",
+                    !eng.contains("WifiStateLog.clear(shell)")
+                            && !eng.contains("clearChecked("));
+            ok("窗口起点状态被记录进元数据（不是默默假设）",
+                    eng.contains("windowStartOk") && eng.contains("windowFromMs"));
             ok("写入起点标记", eng.contains("AttemptMarker.writeCommand("));
             ok("每轮算窗口元数据", eng.contains("AttemptMarker.evaluate("));
             ok("判词带 attemptId", eng.contains("verdictTag(a.attemptId, cursor"));

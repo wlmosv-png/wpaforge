@@ -312,16 +312,41 @@ public class R10InvariantTest {
         for (String b : banned) {
             if (productionContains(b)) wired++;
         }
-        eq("生产代码里没有任何 RootProber 判定入口的调用（4 处判定出口处于死代码状态）", 0, wired);
+        eq("生产代码里没有任何 RootProber 判定入口的调用", 0, wired);
         String rp = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
                 + "wpaforge/audit/RootProber.java");
         if (rp != null) {
-            int calls = 0, i2 = 0;
-            while ((i2 = rp.indexOf("tryOne(", i2)) >= 0) { calls++; i2++; }
-            eq("RootProber 自己的 tryOne 也只有声明、没有调用（不会被误当生产链）", 1, calls);
-            ok("它仍产出自己的 AUTH_FAIL/TIMEOUT（因此一旦被接线就绕过全部新规则）",
-                    rp.contains("Verdict.AUTH_FAIL") && rp.contains("Verdict.TIMEOUT"));
+            // I8 强化（F4 同族清理）：原来这里只断言「没人调用」，但代码还在 ——
+            // 一旦有人接回去就绕过全部新规则，并且会在每条候选前删掉目标的已保存配置。
+            // 现在断言的是**它已经不存在**，风险从「靠纪律约束」变成「结构上不可能」。
+            ok("RootProber 不再含 tryOne（未加固判定链已删除）", rp.indexOf("tryOne(") < 0);
+            ok("RootProber 不再自带 AUTH_FAIL/TIMEOUT 结论",
+                    !rp.contains("Verdict.AUTH_FAIL") && !rp.contains("Verdict.TIMEOUT"));
+            // 只断言**执行型构造**消失；注释与 help 文本里提到命令名是允许的。
+            ok("RootProber 不再含执行型 forget/connect 命令",
+                    rp.indexOf("new String[]{\"su\", \"-c\", \"cmd wifi forget-network") < 0
+                            && rp.indexOf("\"cmd wifi connect-network \" +") < 0
+                            && rp.indexOf("\"timeout 20 \" + cmd") < 0);
+            ok("RootProber 不再持有 attempt 链（tryOne/forgetTarget/execAsync）",
+                    rp.indexOf("tryOne(") < 0 && rp.indexOf("private void forgetTarget(") < 0
+                            && rp.indexOf("execAsync(") < 0);
+            ok("RootProber 仍保留被外部使用的四项（check/checkRoot/lastTimedOut/exec）",
+                    rp.contains("public static CheckResult check(")
+                            && rp.contains("public static String checkRoot()")
+                            && rp.contains("public static boolean lastTimedOut()")
+                            && rp.contains("public static String exec("));
         }
+
+        // F4：verifyHit 及其携带的三条破坏性命令必须**整体消失**（不是「没人调用」）。
+        int vh = 0;
+        // 注意：不要在这里禁 `wifi.disconnect()` —— 前置闸门 disconnectAndVerify()
+        // 里的那次是**合法且必需**的（命令前把基线清成「未连接目标」）。
+        // 要禁的是复验路径专有的那几段：写死 netId=0 的删配置、按 SSID 的删配置。
+        for (String b : new String[]{"public boolean verifyHit(", "public VerifyResult ",
+                "cmd wifi forget-network 0", "shell.forgetTarget("}) {
+            if (productionContains(b)) vh++;
+        }
+        eq("引擎里不再有 verifyHit / VerifyResult / 复验期的删配置与断连命令", 0, vh);
 
         System.out.println();
         System.out.println("=== R10 不变量测试: " + pass + " 通过, " + fail + " 失败 ===");

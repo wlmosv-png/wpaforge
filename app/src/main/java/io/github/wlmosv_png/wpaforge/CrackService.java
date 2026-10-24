@@ -117,8 +117,117 @@ public class CrackService extends Service {
         super.onCreate();
         L.init(this);
         instance = this;
+        // R11：先装好两个基础设施，后面所有恢复动作才有落脚点。
+        //   SecretBox         —— 恢复记录里的原口令靠它加密（装不上就拒绝落明文）
+        //   RestoreJournal    —— 恢复记录载体（进程被杀后靠它补做）
+        try {
+            io.github.wlmosv_png.wpaforge.audit.SecretBox.install(
+                    io.github.wlmosv_png.wpaforge.audit.SecretBox.device(this));
+        } catch (Throwable ignored) {}
+        try {
+            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.install(
+                    io.github.wlmosv_png.wpaforge.audit.RestoreStoreFile.file(this));
+        } catch (Throwable ignored) {}
         createChannel();
         recoverInterrupted();
+        // F1/F2：补做未完成的恢复一律**异步 + 单飞**（RestoreRunner 内部一把锁），
+        // 这里不再同步跑 —— 原来在 onCreate（主线程）里最多阻塞十几秒会 ANR。
+        io.github.wlmosv_png.wpaforge.audit.RestoreRunner.requestStartupRecovery("service-start");
+    }
+
+    // ──────────────────────────────── R11：配置恢复 ────────────────────────────────
+
+    /**
+     * 本次任务的恢复记录（**内存副本 = 权威来源**）。
+     *
+     * <p>为什么内存这份是权威：盘上那份可能因为写入失败而停留在**上一个任务**的内容。
+     * 收尾恢复只认这一份，并且要核对 `taskId` 属于本任务（F3）。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry restoreEntry;
+
+    /**
+     * 在任何破坏性动作之前：快照原配置 → 加密 → 落盘 → 过 fail-closed 闸门。
+     *
+     * <p>顺序不能变：引擎第一条候选就会 `cmd wifi forget-network`，
+     * 删掉之后原口令再也拿不回来，所以**快照必须在删除之前**，
+     * 而**持久化必须在动手之前**（进程被杀时才补得回来）。
+     *
+     * @return 闸门结论；{@code proceed=false} 时调用方**不得**进入引擎
+     */
+    private io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision armRestore(TaskQueue.Task task) {
+        io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.Snapshot snap = null;
+        boolean journalSaved = false;
+        boolean otherPending = false;
+        try {
+            if (task == null || task.ssid == null || task.ssid.isEmpty()) {
+                return new io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision(
+                        false, io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Reason
+                        .CHANNEL_UNREADABLE, "任务缺少目标 SSID");
+            }
+            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry onDisk =
+                    io.github.wlmosv_png.wpaforge.audit.RestoreJournal.load();
+            otherPending = io.github.wlmosv_png.wpaforge.audit.RestoreRunner
+                    .otherTaskPending(onDisk, task.id)
+                    // F7：盘上有内容却读不出来 —— 不能当成「没有待办」。
+                    // 那条记录可能是另一个目标未完成的恢复，被本次 save 覆盖掉就
+                    // 永久丢失还原能力，而且不报错。未知一律按「有别人的待办」处理。
+                    || io.github.wlmosv_png.wpaforge.audit.RestoreJournal.pendingUnknown();
+
+            String sec = io.github.wlmosv_png.wpaforge.audit.ConfigRestorer
+                    .securityArg(task.toNetRecord().security);
+            String lineage = (task.lastRunId == null || task.lastRunId.isEmpty())
+                    ? task.id : task.lastRunId;
+            snap = io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.snapshot(
+                    task.id, task.ssid, task.bssid, sec, lineage);
+            // 只有在「没有别人的待办」时才写盘 —— 否则会覆盖掉那份待办记录。
+            journalSaved = !otherPending
+                    && io.github.wlmosv_png.wpaforge.audit.RestoreJournal.save(snap.entry);
+            restoreEntry = snap.entry;
+            log(L.s("配置恢复登记: ", "Restore journal: ")
+                    + io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.describe(snap.entry)
+                    + L.f(" · task=%s · 落盘=%s", " · task=%s · persisted=%s",
+                          task.id, journalSaved ? "yes" : "NO"));
+        } catch (Throwable t) {
+            log(L.s("配置恢复登记异常: ", "restore journal threw: ") + t);
+        }
+
+        if (snap == null) {
+            return new io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision(
+                    false, io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Reason
+                    .JOURNAL_UNWRITABLE, "快照未能采集");
+        }
+        return io.github.wlmosv_png.wpaforge.audit.RestoreGuard
+                .decide(snap.facts(otherPending, journalSaved));
+    }
+
+    /**
+     * 收尾恢复。**每一个终态都必须走到这里**：命中、未命中、暂停、取消、异常。
+     *
+     * <p>同步执行（不另起线程）：它必须在服务真正停下来之前完成，
+     * 否则 {@code stopSelf} 会把这个线程一起结束掉。
+     * 与「启动补做」通过 {@code RestoreRunner} 的同一把锁串行化（F1）。
+     *
+     * @param taskId 当前任务 id —— 记录归属不符时**不动**目标配置
+     */
+    private void restoreAfterRun(String taskId, String outcome) {
+        try {
+            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry mine = restoreEntry;
+            if (mine == null) return;
+            log(L.s("收尾恢复（", "restoring after ") + outcome + L.s("）…", ")…"));
+            io.github.wlmosv_png.wpaforge.audit.RestorePlan.Outcome o =
+                    io.github.wlmosv_png.wpaforge.audit.RestoreRunner.runExclusiveForTask(
+                            mine, taskId, io.github.wlmosv_png.wpaforge.audit.ConfigRestorer::restore);
+            if (o == null) {
+                log(L.s("本次未执行收尾恢复: ", "no restore this time: ")
+                        + io.github.wlmosv_png.wpaforge.audit.RestoreRunner.lastSummary());
+                return;
+            }
+            restoreEntry = mine;
+            log(L.s("配置恢复结论: ", "Restore result: ") + o.summary());
+        } catch (Throwable t) {
+            log(L.s("配置恢复异常（不影响任务本身）: ",
+                    "restore threw (task itself unaffected): ") + t);
+        }
     }
 
     /**
@@ -625,6 +734,19 @@ public class CrackService extends Service {
 
         log(L.s("===== 开始任务: ", "===== Starting task: ") + task.ssid + " =====");
 
+        // P0（F3/F6）：**任何破坏性动作之前**先做快照 + 加密 + 持久化，并过 fail-closed 闸门。
+        // 快照拿不到 / 配置读不到 / 口令加密失败 / 记录写不进盘 / 盘上还有别的未完成恢复
+        // —— 任一成立都不进入破坏性操作。任务置 PAUSED（可续跑，不丢进度）。
+        io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision gate = armRestore(task);
+        if (!gate.proceed) {
+            log(L.s("已阻止本次运行: ", "run blocked: ")
+                    + io.github.wlmosv_png.wpaforge.audit.RestoreGuard.describe(gate));
+            task.state = TaskQueue.State.PAUSED;
+            TaskQueue.update(this, task);
+            notifyQueue();
+            return;
+        }
+
         // ── R7：运行标识与续跑血缘 ────────────────────────────────────────────
         // 续跑时**开新 run**（绝不复用旧 id）：旧 run 只作为血缘保留在记录里，
         // 旧证据（日志窗口、连接状态）一律不继承 —— 由新 run + 每条候选自己的
@@ -806,35 +928,10 @@ public class CrackService extends Service {
             public void close() {
                 sess.close();
             }
-            @Override
-            public void forgetTarget(String ssid) {
-                // 删净旧配置 + 回读校验
-                //
-                // 解析统一走 CrackEngine.parseNetIdLine：**不能**再用
-                // split("\s+") 取 parts[1] 当 SSID —— SSID 含空格
-                // （"My Net 5G"）会匹配失败，配置删不掉，
-                // 系统随后拿已保存的旧密码连上，判定就成了假阳性。
-                for (int round = 0; round < 3; round++) {
-                    String list = exec("cmd wifi list-networks", 4000);
-                    if (list == null) return;
-                    long leftover = -1;
-                    for (String line : list.split("\n")) {
-                        Long id = io.github.wlmosv_png.wpaforge.audit.CrackEngine
-                                .parseNetIdLine(line, ssid);
-                        if (id != null) { leftover = id; break; }
-                    }
-                    if (leftover < 0) {
-                        log(L.f("配置已清干净: %s", "config cleared: %s", ssid));
-                        return;
-                    }
-                    exec("cmd wifi forget-network " + leftover, 4000);
-                    log(L.f("清除旧配置: %s netId=%s",
-                            "forgot stale config: %s netId=%s", ssid, leftover));
-                    try { Thread.sleep(500); } catch (InterruptedException ignored) {}
-                }
-                log(L.s("警告: 旧配置可能未删净，结果可能不准",
-                        "Warning: stale config may remain; results may be unreliable"));
-            }
+            // F4：这里原来有一份「删净旧配置」实现（内含 cmd wifi forget-network）。
+            // 自 verifyHit() 删除后它已无调用者，且引擎判定用的是自带的
+            // CrackEngine.forgetTargetByShell / removeTargetConfig —— 同一个动作
+            // 两处实现只会带来不一致。接口方法已降级为 @Deprecated 空默认实现。
             @Override
             public String name() { return "Root"; }
         });
@@ -895,6 +992,7 @@ public class CrackService extends Service {
                 engineRef = null;
                 ft.state = TaskQueue.State.STOPPED;
                 TaskQueue.update(CrackService.this, ft);
+                restoreAfterRun(ft.id, "BLOCKED");
                 running = false;
                 notifyQueue();
                 stopSelfSafe();
@@ -974,7 +1072,7 @@ public class CrackService extends Service {
         ft.elapsedMs += System.currentTimeMillis() - taskStartAt;
 
         if (hitPassword != null && !hitPassword.isEmpty()) {
-            ft.hitPassword = hitPassword;
+            ft.setHitPassword(hitPassword);   // R12：标签/密文一并生成，明文不落盘
             ft.state = TaskQueue.State.DONE_HIT;
             log(L.f("任务结束: %s 已命中（试了 %d 条）",
                     "Task finished: %s hit (%d tried)", ft.ssid, tested));
@@ -1014,6 +1112,10 @@ public class CrackService extends Service {
         }
 
         TaskQueue.update(this, ft);
+        // R11：**所有终态**（命中 / 未命中 / 暂停 / 取消）都要走恢复。
+        // 命中时留的本来就是正确口令，恢复会把它确认一遍并清掉 journal；
+        // 其余情况则把候选留下的错误口令换成用户原来的配置。
+        restoreAfterRun(ft.id, ft.state.name());
         for (UiCallback cb : callbacks) cb.onTaskDone(ft, hitPassword, ft.state.name());
         notifyQueue();
 

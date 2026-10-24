@@ -117,7 +117,11 @@ public final class WpaLogReader {
             "associate|4-Way|RX message|negotiat|ASSOC-REJECT|SSID-TEMP-DISABLED"
                     + "|CONNECTED|WRONG_KEY|reason="
                     // R6：起点标记行必须能穿过同一个过滤式，否则窗口隔离无从证明
-                    + "|" + AttemptMarker.FIELD;
+                    + "|" + AttemptMarker.FIELD
+                    // P0-3：logcat 一侧的退出码哨兵也必须放行 ——
+                    // 否则 grep 会把「上游失败了」这条唯一证据亲手滤掉，
+                    // 调用方只能看到空输出，与「真没日志」不可区分。
+                    + "|" + LogcatCmd.RC;
 
     /**
      * 读取时要放行的 tag：wpa_supplicant 的判定证据 + 本项目的起点标记。
@@ -355,13 +359,57 @@ public final class WpaLogReader {
      * @param lines 读取最后多少行
      */
     public static String read(CrackEngine.ShellChannel shell, int lines) {
+        return read(shell, lines, 0L);
+    }
+
+    /** 读取命令 + 时间锚点（R11：取代 {@code logcat -c}）。 */
+    public static String readCommandSince(long anchorMs) {
+        return Lc.withSince(readCommand(), anchorMs);
+    }
+
+    /**
+     * 读取命令 + 时间锚点 + **退出码哨兵**（P0-3）。
+     *
+     * <p>{@link ShellExec} 只取 stdout、不看退出码，而管道下 {@code $?} 是 grep 的，
+     * 于是「上游 logcat 失败」「窗口里真没日志」「grep 自己坏了」三者不可分。
+     * 这里让两侧各自回显退出码，由 {@link LogcatCmd} 判档。
+     */
+    public static String readCommandGuarded(long anchorMs) {
+        return LogcatCmd.wrap(readCommandSince(anchorMs));
+    }
+
+    /**
+     * 读一次日志并给出**结构化判定**（P0-3）。
+     *
+     * @return null = 通道异常（exec 超时/失联），调用方必须按「不可判」处理
+     */
+    public static LogcatCmd.Result readEx(CrackEngine.ShellChannel shell, int lines, long anchorMs) {
+        if (shell == null) return null;
+        try {
+            String out = shell.exec(readCommandGuarded(anchorMs), 6000);
+            if (out == null) return null;
+            return LogcatCmd.parse(out);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "读取日志失败: " + t);
+            return null;
+        }
+    }
+
+    /**
+     * 带时间锚点读一次日志。
+     *
+     * @param anchorMs 起始时刻（墙钟毫秒）；{@code <= 0} = 不加时间限制（离线/降级）
+     */
+    public static String read(CrackEngine.ShellChannel shell, int lines, long anchorMs) {
         if (shell == null) return null;
         try {
             // 不要加 `-t N`：本机 400 行全量日志只覆盖约 5 秒，而一次尝试有 10 秒，
             // 较早出现的 CTRL-EVENT-ASSOC-REJECT / 4-Way Handshake failed 会被挤出
             // 窗口、再也读不到（实测 -t 400 -s wpa_supplicant 只剩 4 行，去掉 -t 有 305 行）。
-            // 调用方在每条候选前已 logcat -c，缓冲里就是本次尝试的日志。
-            // lines 参数保留仅为兼容调用点。
+            //
+            // R11 起改用**时间锚点**（`-t '<MM-DD HH:MM:SS.mmm>'`）：
+            // “只读本次尝试的行”由时间戳保证，于是不再需要 `logcat -c`
+            // —— 那是个全局副作用，会把整机其它组件的缓冲一起清掉。
             //
             // **服务端预过滤**（2026-10-23 实测）：本机一轮原始输出 293 行 / 33KB，
             // 而判定真正要用的只有 5 行 / 0.6KB。整段读回来要过管道、进 JVM 逐行收，
@@ -370,15 +418,23 @@ public final class WpaLogReader {
             //   · parse() 的输入变小，Java 侧开销同步变小
             // 过滤式必须**覆盖 WpaLogReader 全部 7 个模式**，少一个就会静默丢判据 ——
             // 有 WpaFilterTest 钉住这条不变式（新增模式时必须同步更新 SHELL_FILTER）。
-            String cmd = readCommand();
-            return shell.exec(cmd, 6000);
+            String cmd = readCommandGuarded(anchorMs);
+            String out = shell.exec(cmd, 6000);
+            if (out == null) return null;
+            // 哨兵行不能流进判定：先按结构化结果剥掉再交给 parse()
+            return LogcatCmd.parse(out).body;
         } catch (Throwable t) {
             android.util.Log.w(TAG, "读取日志失败: " + t);
             return null;
         }
     }
 
-    /** 清空日志缓冲，让下一次读取只看到本次尝试 */
+    /**
+     * 清空日志缓冲。
+     *
+     * @deprecated R11 起生产不再调用（窗口归属改为起点标记 + 时间锚点）。
+     */
+    @Deprecated
     public static void clear(CrackEngine.ShellChannel shell) {
         if (shell == null) return;
         try {

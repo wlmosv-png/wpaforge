@@ -47,6 +47,42 @@ public class App extends Application {
             if (prev != null) prev.uncaughtException(thread, throwable);
         });
 
+        // R11 / R12：基础设施与旧数据迁移。
+        //   · SecretBox          —— 敏感串加密（Android Keystore，AES/GCM）；
+        //                           装不上时**拒绝落明文**（宁可少显示，不留明文）
+        //   · RestoreJournal     —— 配置恢复记录载体（进程被杀后靠它补做恢复）
+        //   · PlaintextMigration —— 旧版本的明文命中口令：**先备份，后重写**
+        try {
+            io.github.wlmosv_png.wpaforge.audit.SecretBox.install(
+                    io.github.wlmosv_png.wpaforge.audit.SecretBox.device(this));
+            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.install(
+                    io.github.wlmosv_png.wpaforge.audit.RestoreStoreFile.file(this));
+        } catch (Throwable t) {
+            Log.w(TAG, "secret infra unavailable: " + t);
+        }
+
+        // F1/F2：补做入口从 CrackService 扩到**应用启动** —— 否则用户只打开 App
+        // 不再起服务时，上一次未完成的配置恢复永远不会被补做。
+        // 内部是「异步 + 单飞 + 一把锁」，不会与任务收尾恢复并发操作同一份 journal，
+        // 也不会阻塞主线程。
+        try {
+            io.github.wlmosv_png.wpaforge.audit.RestoreRunner
+                    .requestStartupRecovery("app-start");
+        } catch (Throwable t) {
+            Log.w(TAG, "restore runner unavailable: " + t);
+        }
+
+        new Thread(() -> {
+            try {
+                if (!io.github.wlmosv_png.wpaforge.audit.PlaintextMigration.needed(this)) return;
+                io.github.wlmosv_png.wpaforge.audit.PlaintextMigration.Report r =
+                        io.github.wlmosv_png.wpaforge.audit.PlaintextMigration.run(this);
+                Log.i(TAG, "plaintext migration: " + r.describe());
+            } catch (Throwable t) {
+                Log.w(TAG, "plaintext migration failed: " + t);
+            }
+        }, "wpaforge-migrate").start();
+
         // 启动自证：把环境信息写一份，用户不接电脑也能反馈
         writeStartupLog();
     }
@@ -77,6 +113,22 @@ public class App extends Application {
                     sb.append("版本: ").append(getPackageManager()
                             .getPackageInfo(getPackageName(), 0).versionName).append('\n');
                 } catch (Throwable ignored) {}
+                sb.append('\n');
+
+                // P2-8：敏感串加解密自检。
+                // 只用应用自己生成的**合成串**（不是任何真实口令、不落盘），
+                // 走一遍 seal → open，只写结论 —— 恢复原口令完全依赖这条通道，
+                // 而 open() 在真机上从来没有被执行过。
+                sb.append("-- 敏感串（Android Keystore）--\n");
+                sb.append("  加解密通道: ")
+                        .append(io.github.wlmosv_png.wpaforge.audit.SecretBox.available()
+                                ? "可用" : "不可用（将拒绝落任何秘密）")
+                        .append('\n');
+                sb.append("  seal→open 往返自检: ")
+                        .append(io.github.wlmosv_png.wpaforge.audit.SecretBox.roundTrip(
+                                io.github.wlmosv_png.wpaforge.audit.SecretBox.selfTestProbe())
+                                ? "PASS" : "FAIL")
+                        .append('\n');
                 sb.append('\n');
 
                 // 权限
@@ -159,7 +211,6 @@ public class App extends Application {
                             return io.github.wlmosv_png.wpaforge.audit.RootProber
                                     .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
                         }
-                        @Override public void forgetTarget(String ssid) { }
                         @Override public String name() { return "Root"; }
                     });
                     io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe cp = eng.probeChannel();

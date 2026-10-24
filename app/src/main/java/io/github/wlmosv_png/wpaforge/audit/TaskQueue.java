@@ -57,8 +57,20 @@ public final class TaskQueue {
         public int dictSize;
         /** 已测试到第几条 —— 断点续跑的关键字段 */
         public int offset;
-        /** 已命中口令，空表示未命中 */
+        /** 已命中口令（**内存值**，空表示未命中）。落盘走 {@link #hitTag} + {@link #hitSeal}。 */
         public String hitPassword;
+        /**
+         * 命中口令的**脱敏标签**（R12）—— 落盘的是它，可对照、不可还原。
+         * 例：{@code #29ff2d(len=9)}。
+         */
+        public String hitTag = "";
+        /**
+         * 命中口令的密文（R12）：{@link SecretBox} 的 Android Keystore AES/GCM 输出。
+         * 空串 = 加密通道不可用 —— 此时**不落明文**，代价是重启后看不到口令。
+         */
+        public String hitSeal = "";
+        /** 这条任务是不是从**旧格式（明文 hit）**读出来的 —— 迁移用，不落盘。 */
+        public transient boolean legacyHitPlain = false;
         public State state = State.PENDING;
         public long createdAt;
         public long elapsedMs;
@@ -132,6 +144,29 @@ public final class TaskQueue {
             }
         }
 
+        /**
+         * 设置命中口令：同时算出脱敏标签与密文（R12 的唯一写入口）。
+         *
+         * <p>直接给 {@link #hitPassword} 赋值会让标签/密文不一致 ——
+         * 所以所有生产路径都走这里，有测试钉住。
+         */
+        public void setHitPassword(String plain) {
+            hitPassword = plain == null ? "" : plain;
+            if (hitPassword.isEmpty()) {
+                hitTag = "";
+                hitSeal = "";
+                return;
+            }
+            hitTag = io.github.wlmosv_png.wpaforge.ui.Redact.pw(hitPassword);
+            String seal = SecretBox.seal(hitPassword);
+            hitSeal = seal == null ? "" : seal;
+        }
+
+        /** 这条记录的落盘形态里是否还残留明文口令（迁移判定用）。 */
+        public boolean hasPlaintextOnDisk() {
+            return legacyHitPlain;
+        }
+
         public JSONObject toJson() {
             JSONObject o = new JSONObject();
             try {
@@ -145,7 +180,13 @@ public final class TaskQueue {
                 o.put("dictName", dictName == null ? "" : dictName);
                 o.put("dictSize", dictSize);
                 o.put("offset", offset);
-                o.put("hit", hitPassword == null ? "" : hitPassword);
+                // R12：**绝不写明文**。
+                // 原来这一行把命中口令原样写进 queue.json —— 任务日志做过脱敏，
+                // 队列却一直漏着，等于在磁盘上留一份长期口令清单。
+                // 现在只写「脱敏标签 + 密文」，明文只活在内存里给界面用。
+                o.put("hit", "");
+                o.put("hitTag", hitTag == null ? "" : hitTag);
+                o.put("hitSeal", hitSeal == null ? "" : hitSeal);
                 o.put("state", state.name());
                 o.put("created", createdAt);
                 o.put("elapsed", elapsedMs);
@@ -171,7 +212,18 @@ public final class TaskQueue {
             t.dictName = o.optString("dictName", "");
             t.dictSize = o.optInt("dictSize", 0);
             t.offset = o.optInt("offset", 0);
-            t.hitPassword = o.optString("hit", "");
+            // R12 读取：新格式看 hitSeal/hitTag；旧数据的 "hit" 是明文，读进内存过渡，
+            // 由 PlaintextMigration 在下次启动时**先备份后重写**。
+            t.hitSeal = o.optString("hitSeal", "");
+            t.hitTag = o.optString("hitTag", "");
+            String legacyHit = o.optString("hit", "");
+            if (!legacyHit.isEmpty()) {
+                t.setHitPassword(legacyHit);
+                t.legacyHitPlain = true;
+            } else if (!t.hitSeal.isEmpty()) {
+                String pw = SecretBox.open(t.hitSeal);
+                t.hitPassword = pw == null ? "" : pw;
+            }
             try {
                 t.state = State.valueOf(o.optString("state", "PENDING"));
             } catch (Exception e) {
@@ -254,6 +306,26 @@ public final class TaskQueue {
      */
     public static boolean refuseSave(List<?> tasks, boolean loadFailed) {
         return loadFailed && (tasks == null || tasks.isEmpty());
+    }
+
+    /**
+     * 原始 queue.json 文本里是否还有**明文命中口令**（纯函数，可离线断言）。
+     *
+     * <p>新格式永远写 {@code "hit":""}，所以只要出现非空的 {@code "hit":"…"}，
+     * 就说明这份数据是旧版本留下的。
+     */
+    public static boolean hasLegacyPlaintextHit(String rawJson) {
+        if (rawJson == null || rawJson.isEmpty()) return false;
+        int at = 0;
+        while ((at = rawJson.indexOf("\"hit\"", at)) >= 0) {
+            int colon = rawJson.indexOf(':', at);
+            if (colon < 0) return false;
+            int q = rawJson.indexOf('"', colon + 1);
+            if (q < 0) return false;
+            if (q + 1 < rawJson.length() && rawJson.charAt(q + 1) != '"') return true;
+            at = colon + 1;
+        }
+        return false;
     }
 
     /** 读取整个队列 */

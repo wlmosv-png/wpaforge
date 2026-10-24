@@ -242,8 +242,15 @@ public class R3VerdictTest {
             String codeOnly = stripComments(from > 0 && to > from ? eng.substring(from, to) : "");
             ok("到期归类区段的**代码**里不再出现 AUTH_FAIL",
                     from > 0 && to > from && !codeOnly.contains("AUTH_FAIL"));
-            ok("清理结果被检查", eng.contains("WifiStateLog.clearChecked(")
-                    && !eng.contains("WifiStateLog.clear(shell);"));
+            // R11：窗口归属不再依赖"清空全局缓冲"，改为「时间锚点 + 起点标记」。
+            // 断言换成同等强度的新不变式：起点状态**被算出来并传进窗口元数据**，
+            // 而且生产主循环里不再有任何清空调用。
+            ok("窗口起点状态与「日志是否可读」都被算出来并传进元数据",
+                    eng.contains("final boolean windowStartOk = markerWritten;")
+                            && eng.contains("boolean logReadOk = lr != null && lr.logUsable();")
+                            && eng.contains("wlog, true, logReadOk);"));
+            ok("生产主循环不再清空全局缓冲（clearChecked/clear 都不调用）",
+                    !eng.contains("clearChecked(") && !eng.contains("WifiStateLog.clear(shell)"));
             ok("窗口切片被使用", eng.contains("AttemptMarker.sliceAfter(wlog, attemptId)"));
             ok("Attempt 带 reason 字段（机器可读归类码）", eng.contains("public String reason = \"\""));
         }

@@ -3963,32 +3963,19 @@ public class MainActivity extends Activity {
      *   <li>重启一次 WiFi，让系统按**已保存的凭据**自己回连</li>
      * </ol>
      */
+    /**
+     * （R11 起**不再动手**）这里原来是 UI 侧的“善后”：删掉目标配置 + 重启 Wi-Fi。
+     *
+     * <p>为什么必须停用：它会把**服务刚刚恢复好的原配置再删一次**。
+     * 任务收尾的恢复已经统一搬到 {@code CrackService.restoreAfterRun()}，
+     * 那是唯一有权改目标配置的地方（它还会读回验证并把结论写进日志）。
+     * 两处各删一次的结果是：用户看到“已恢复 WiFi”，实际配置已经被删掉了。
+     *
+     * <p>保留方法只为兼容既有调用点；行为是**完全不动系统状态**。
+     */
     private void restoreWifiAfterRun() {
-        final String targetSsid = targetNet == null ? "" : targetNet.ssid;
-        new Thread(() -> {
-            try {
-                if (!targetSsid.isEmpty()) {
-                    String list = io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
-                            new String[]{"su", "-c", "cmd wifi list-networks"}, 6000);
-                    long id = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser
-                            .findNetId(list, targetSsid);
-                    if (id >= 0) {
-                        io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
-                                new String[]{"su", "-c", "cmd wifi forget-network " + id}, 5000);
-                    }
-                }
-                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
-                        new String[]{"su", "-c", "cmd wifi set-wifi-enabled disabled"}, 8000);
-                Thread.sleep(1200);
-                io.github.wlmosv_png.wpaforge.audit.RootProber.exec(this,
-                        new String[]{"su", "-c", "cmd wifi set-wifi-enabled enabled"}, 8000);
-                ui.post(() -> appendStream(L.s(
-                        "已恢复 WiFi（系统按已保存的凭据自动回连）",
-                        "WiFi restored (system reconnects with saved credentials)")));
-            } catch (Throwable ignored) {}
-        }, "wpaforge-restore-wifi").start();
+        // 有意为空：恢复由 CrackService 负责（见其 restoreAfterRun / recoverRestore）。
     }
-
 
     private void startConnect() {
         if (targetNet == null) {
@@ -4416,7 +4403,6 @@ public class MainActivity extends Activity {
                             return io.github.wlmosv_png.wpaforge.audit.RootProber
                                     .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
                         }
-                        @Override public void forgetTarget(String s2) { }
                         @Override public String name() { return "Root"; }
                     };
 
@@ -5086,7 +5072,6 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
                     return io.github.wlmosv_png.wpaforge.audit.RootProber
                             .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
                 }
-                @Override public void forgetTarget(String ssid) { }
                 @Override public String name() { return "Root"; }
             });
             io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe p = eng.probeChannel();
@@ -5282,7 +5267,8 @@ pageSettings.addView(sectionLabel(L.s("破解模式", "Crack mode")));
         for (int i = 0; i < show; i++) {
             HistStore.Record r = list.get(i);
             String line = r.timeLabel() + "  " + r.ssid
-                    + (r.hit ? "\n✓ " + r.password : L.s("\n✗ 未命中", "\n✗ no match"))
+                    + (r.hit ? "\n✓ " + r.displayPassphrase()
+                             : L.s("\n✗ 未命中", "\n✗ no match"))
                     + L.f("   试了 %d 条 / %s", "   tried %d / %s", r.tested, r.durationLabel());
             d.addItem(line, null);
         }

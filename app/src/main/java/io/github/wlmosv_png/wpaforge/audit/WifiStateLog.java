@@ -169,6 +169,34 @@ public final class WifiStateLog {
      * 所以这里读 main 缓冲的尾部若干行，过滤交给本地正则做。
      */
     public static String read(CrackEngine.ShellChannel shell, int lines) {
+        return read(shell, lines, 0L);
+    }
+
+    /**
+     * 带时间锚点的读取（R11：不再依赖 {@code logcat -c}）。
+     *
+     * @param anchorMs 起始时刻（墙钟毫秒）；{@code <= 0} 表示不加时间限制
+     */
+    public static LogcatCmd.Result readEx(CrackEngine.ShellChannel shell, long anchorMs) {
+        if (shell == null) return null;
+        try {
+            String cmd = Lc.withSince("logcat -d -e 'ClientModeImpl'", anchorMs);
+            String out = shell.exec(LogcatCmd.wrap(cmd), 8000);
+            if (out == null) return null;
+            return LogcatCmd.parse(out);
+        } catch (Throwable t) {
+            android.util.Log.w(TAG, "读取状态日志失败: " + t);
+            return null;
+        }
+    }
+
+    public static String read(CrackEngine.ShellChannel shell, int lines, long anchorMs) {
+        LogcatCmd.Result r = readEx(shell, anchorMs);
+        return r == null ? null : r.body;
+    }
+
+    /** 旧实现（无哨兵）保留为私有参照，避免误用。 */
+    private static String readRaw(CrackEngine.ShellChannel shell, long anchorMs) {
         if (shell == null) return null;
         try {
             // 用 -e 正则按行内容过滤，而不是读尾部 N 行。两个实测原因：
@@ -176,10 +204,9 @@ public final class WifiStateLog {
             //     `-s WifiClientModeImpl` 精确匹配拿不到（实测 0 条）
             //   · `-t N` 先取全部缓冲的最后 N 行再过滤，本机 600 行只覆盖约 7 秒，
             //     一次尝试（10 秒）里较早的 L2ConnectedState 会被挤出窗口（实测 0 条）
-            //   · `-e ClientModeImpl` 实测 17 条、耗时 100ms（全量读 90ms，几乎无差）
-            // 调用方在每条候选前已 logcat -c，所以读到的都是本次尝试的行。
-            // lines 参数保留仅为兼容调用点，不再参与命令构造。
-            String cmd = "logcat -d -e 'ClientModeImpl'";
+            // R11 起另加**时间锚点**（-t '<MM-DD HH:MM:SS.mmm>'），
+            // 于是“只读本次尝试的行”由时间戳保证，不再需要清空全局缓冲。
+            String cmd = Lc.withSince("logcat -d -e 'ClientModeImpl'", anchorMs);
             return shell.exec(cmd, 8000);
         } catch (Throwable t) {
             android.util.Log.w(TAG, "读取状态日志失败: " + t);
@@ -222,9 +249,13 @@ public final class WifiStateLog {
     /**
      * 清空日志缓冲并**返回结果**（替代原来的 void 版本）。
      *
-     * <p>调用方【必须】检查返回值：返回 {@code ok()==false} 时，
-     * 「缓冲已被清空」这个前提不成立，日志类证据一律按不可用处理。
+     * @deprecated R11 起生产代码**不再调用**：窗口归属改为「起点标记 + 时间锚点」，
+     *     不再需要动全局缓冲。保留它是为了留住历史审计的对照物
+     *     （R3 把它列为“高风险假设：从未校验清空是否成功”），
+     *     删掉会让那段结论失去引用目标。新代码请用
+     *     {@link #read(CrackEngine.ShellChannel, int, long)}。
      */
+    @Deprecated
     public static ClearResult clearChecked(CrackEngine.ShellChannel shell) {
         if (shell == null) return new ClearResult(false, false, null);
         try {
@@ -235,7 +266,12 @@ public final class WifiStateLog {
         }
     }
 
-    /** 清空日志缓冲，让读取只包含本次尝试的记录 */
+    /**
+     * 清空日志缓冲，让读取只包含本次尝试的记录。
+     *
+     * @deprecated 同 {@link #clearChecked}：生产不再调用。
+     */
+    @Deprecated
     public static void clear(CrackEngine.ShellChannel shell) {
         clearChecked(shell);
     }

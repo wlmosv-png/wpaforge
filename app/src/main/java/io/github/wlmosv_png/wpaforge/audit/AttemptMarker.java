@@ -211,24 +211,62 @@ public final class AttemptMarker {
         public final boolean markerWritten;
         public final boolean markerVisible;
         public final boolean foreignMarker;
+        /**
+         * 窗口起点是否由**时间锚点**确立（R11：取代 {@code logcat -c}）。
+         *
+         * <p>只作记录：{@link #isolated} 仍只由“自己的标记出现了、且其后没有别人标记”
+         * 决定 —— 时间锚点与标记是两道独立防线，任一道成立都不该被另一道拖成不可用。
+         */
+        public final boolean timeAnchored;
+        /**
+         * 日志读取本身是否成功（P0-3）。
+         *
+         * <p>{@code false} = 上游 logcat 失败 / grep 坏了 / 拿不到退出码哨兵。
+         * <b>它必须与「读到了、但里面没有我要的行」严格分开</b>：
+         * 前者是「通道不可判」，后者才是「窗口内没有证据」。
+         */
+        public final boolean logReadOk;
         /** 起始标记与外来标记都没有出现时为 true —— id 非法时为 false。 */
         public final boolean isolated;
-        /** 短标签，进判词/诊断：{@code id-invalid} / {@code no-marker} / {@code foreign} / {@code ok}。 */
+        /** 短标签，进判词/诊断：{@code id-invalid} / {@code logcat-failed} / {@code foreign} /
+         *  {@code no-marker} / {@code ok}。 */
         public final String reason;
 
         Window(String attemptId, boolean clearOk, boolean markerWritten,
                boolean markerVisible, boolean foreignMarker) {
+            this(attemptId, clearOk, markerWritten, markerVisible, foreignMarker, false, true);
+        }
+
+        Window(String attemptId, boolean clearOk, boolean markerWritten,
+               boolean markerVisible, boolean foreignMarker, boolean timeAnchored) {
+            this(attemptId, clearOk, markerWritten, markerVisible, foreignMarker, timeAnchored, true);
+        }
+
+        Window(String attemptId, boolean clearOk, boolean markerWritten,
+               boolean markerVisible, boolean foreignMarker, boolean timeAnchored,
+               boolean logReadOk) {
             this.attemptId = attemptId;
             this.clearOk = clearOk;
             this.markerWritten = markerWritten;
             this.markerVisible = markerVisible;
             this.foreignMarker = foreignMarker;
+            this.timeAnchored = timeAnchored;
+            this.logReadOk = logReadOk;
             this.isolated = markerVisible && !foreignMarker;
             if (!AttemptId.wellFormed(attemptId)) this.reason = "id-invalid";
+            else if (!logReadOk) this.reason = "logcat-failed";
             else if (foreignMarker) this.reason = "foreign";
             else if (!markerVisible) this.reason = "no-marker";
             else this.reason = "ok";
         }
+
+        /**
+         * 日志证据**能不能用于判定**：通道可读 **且** 窗口隔离成立。
+         *
+         * <p>{@link #evidenceUsable()} 只看窗口隔离（保持既有语义不变）；
+         * 引擎应当用本方法 —— 否则「logcat 命令失败」会被当成「窗口里没证据」。
+         */
+        public boolean usableForVerdict() { return logReadOk && isolated; }
 
         /** 日志证据是否可用（必要条件，非充分条件）。 */
         public boolean evidenceUsable() { return isolated; }
@@ -255,10 +293,35 @@ public final class AttemptMarker {
      */
     public static Window evaluate(String attemptId, boolean clearOk, boolean markerWritten,
                                   String readText) {
+        return evaluate(attemptId, clearOk, markerWritten, readText, false);
+    }
+
+    /**
+     * 同 {@link #evaluate(String, boolean, boolean, String)}，外加“窗口起点是否由时间锚点确立”。
+     *
+     * <p><b>为什么 {@code clearOk} 这个参数名一直留着</b>：调用方语义已经从
+     * “缓冲被清空了”演化为“窗口起点已被确立”（时间锚点或清空，任一即可）。
+     * 它只进诊断串，不进 {@link Window#isolated} —— 判定永远只认标记。
+     *
+     * @param timeAnchored 本次读取是否带 {@code -t <时间>} 锚点（见 {@link Lc}）
+     */
+    public static Window evaluate(String attemptId, boolean clearOk, boolean markerWritten,
+                                  String readText, boolean timeAnchored) {
+        return evaluate(attemptId, clearOk, markerWritten, readText, timeAnchored, true);
+    }
+
+    /**
+     * 同上，外加「这次日志读取本身是否成功」。
+     *
+     * @param logReadOk {@see LogcatCmd.Status#OK}/{@code NO_MATCH} 为 true；
+     *                  上游失败、grep 失败、哨兵缺失一律 false
+     */
+    public static Window evaluate(String attemptId, boolean clearOk, boolean markerWritten,
+                                  String readText, boolean timeAnchored, boolean logReadOk) {
         String id = AttemptId.wellFormed(attemptId) ? attemptId : null;
         boolean visible = id != null && present(readText, id);
         boolean foreign = id != null && foreignMarkerAfter(readText, id);
-        return new Window(id, clearOk, markerWritten, visible, foreign);
+        return new Window(id, clearOk, markerWritten, visible, foreign, timeAnchored, logReadOk);
     }
 
     /** 从一行里取出标记携带的 attemptId（形状合法才算）；没有返回 {@code null}。 */

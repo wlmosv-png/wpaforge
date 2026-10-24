@@ -1,6 +1,7 @@
 package io.github.wlmosv_png.wpaforge.audit;
 
 import io.github.wlmosv_png.wpaforge.L;
+import io.github.wlmosv_png.wpaforge.ui.Redact;
 
 import android.content.Context;
 
@@ -22,6 +23,22 @@ import java.util.Locale;
  *
  * 记录每次破解的：时间、目标、用的字典、试了多少条、耗时、结果。
  * 存在应用私有目录，不写共享存储（避免权限问题）。
+ *
+ * <h3>R12：口令不再明文落盘</h3>
+ * 原实现把命中口令明文写在 CSV 第 9 列，等于在磁盘上留一份长期口令清单 ——
+ * 任务日志早就做过脱敏（{@code Redact}），但**这个文件一直漏着**。
+ * 现在第 9 列是**脱敏标签**（{@code #29ff2d(len=9)}），
+ * 明文另存第 10 列，且先过 {@link SecretBox}（Android Keystore，AES-256-GCM）。
+ *
+ * <h3>向后兼容</h3>
+ * 旧文件是 9 列、第 9 列明文。读取时按列数分流：
+ * <ul>
+ *   <li>9 列 → 当成旧格式，明文被读进内存（仅在内存里），
+ *       同时算出标签与密文；由 {@link PlaintextMigration} 在下次启动时**先备份后重写**。</li>
+ *   <li>10 列 → 新格式：标签 + 密文；明文由 {@link SecretBox#open} 还原。</li>
+ * </ul>
+ * 加密通道不可用时密文为空 —— 此时**不写明文**，代价是重启后记录里看不到口令，
+ * 这是刻意选的：宁可少显示一个字段，也不在磁盘上留明文。
  */
 public final class HistStore {
 
@@ -35,11 +52,37 @@ public final class HistStore {
         public final int tested;
         public final long elapsedMs;
         public final boolean hit;
+        /** 命中口令（内存值；落盘走 {@link #tag} + {@link #sealed}）。 */
         public final String password;
+        /** 脱敏标签（可对照、不可还原）—— 落盘的就是它。 */
+        public final String tag;
+        /** {@link SecretBox} 密文；空 = 加密通道不可用，不落任何秘密。 */
+        public final String sealed;
+        /** 这条记录是不是从**旧格式（明文）**读出来的 —— 迁移用。 */
+        public final boolean legacyPlain;
 
         public Record(long timeMs, String ssid, String bssid, String dictName,
                       int dictSize, int tested, long elapsedMs,
                       boolean hit, String password) {
+            String pw = password == null ? "" : password;
+            this.timeMs = timeMs;
+            this.ssid = ssid == null ? "" : ssid;
+            this.bssid = bssid == null ? "" : bssid;
+            this.dictName = dictName == null ? "" : dictName;
+            this.dictSize = dictSize;
+            this.tested = tested;
+            this.elapsedMs = elapsedMs;
+            this.hit = hit;
+            this.password = pw;
+            this.tag = (hit && !pw.isEmpty()) ? Redact.pw(pw) : "";
+            this.sealed = (hit && !pw.isEmpty()) ? orEmpty(SecretBox.seal(pw)) : "";
+            this.legacyPlain = false;
+        }
+
+        /** 内部用：直接给定 tag / sealed（读盘路径），不再重复加密。 */
+        private Record(long timeMs, String ssid, String bssid, String dictName,
+                       int dictSize, int tested, long elapsedMs, boolean hit,
+                       String password, String tag, String sealed, boolean legacyPlain) {
             this.timeMs = timeMs;
             this.ssid = ssid == null ? "" : ssid;
             this.bssid = bssid == null ? "" : bssid;
@@ -49,7 +92,12 @@ public final class HistStore {
             this.elapsedMs = elapsedMs;
             this.hit = hit;
             this.password = password == null ? "" : password;
+            this.tag = tag == null ? "" : tag;
+            this.sealed = sealed == null ? "" : sealed;
+            this.legacyPlain = legacyPlain;
         }
+
+        private static String orEmpty(String s) { return s == null ? "" : s; }
 
         public String timeLabel() {
             return new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(timeMs));
@@ -62,21 +110,53 @@ public final class HistStore {
             return (sec / 3600) + " 时 " + ((sec % 3600) / 60) + " 分";
         }
 
-        /** 存成一行 CSV，字段里逗号做转义 */
+        /** 界面上该显示什么：有明文给明文（用户自己看），没有就给脱敏标签。 */
+        public String displayPassphrase() {
+            if (!password.isEmpty()) return password;
+            return tag.isEmpty() ? "" : tag;
+        }
+
+        /**
+         * 存成一行 CSV。第 9 列 = 脱敏标签，第 10 列 = 密文。
+         *
+         * <p><b>这里绝不写明文</b> —— 这是 R12 的核心不变式，有测试钉住。
+         */
         public String toLine() {
             return timeMs + "," + esc(ssid) + "," + esc(bssid) + "," + esc(dictName)
                     + "," + dictSize + "," + tested + "," + elapsedMs
-                    + "," + (hit ? "1" : "0") + "," + esc(password);
+                    + "," + (hit ? "1" : "0") + "," + esc(tag) + "," + esc(sealed);
         }
 
         public static Record fromLine(String line) {
             try {
                 String[] p = line.split(",", -1);
                 if (p.length < 9) return null;
-                return new Record(
-                        Long.parseLong(p[0]), unesc(p[1]), unesc(p[2]), unesc(p[3]),
-                        Integer.parseInt(p[4]), Integer.parseInt(p[5]),
-                        Long.parseLong(p[6]), "1".equals(p[7]), unesc(p[8]));
+                long timeMs = Long.parseLong(p[0]);
+                String ssid = unesc(p[1]);
+                String bssid = unesc(p[2]);
+                String dict = unesc(p[3]);
+                int size = Integer.parseInt(p[4]);
+                int tested = Integer.parseInt(p[5]);
+                long elapsed = Long.parseLong(p[6]);
+                boolean hit = "1".equals(p[7]);
+
+                if (p.length >= 10) {
+                    // 新格式：标签 + 密文；明文只从密文还原，解不出就没有
+                    String tag = unesc(p[8]);
+                    String sealed = unesc(p[9]);
+                    String pw = SecretBox.open(sealed);
+                    return new Record(timeMs, ssid, bssid, dict, size, tested, elapsed,
+                            hit, pw == null ? "" : pw, tag, sealed, false);
+                }
+
+                // 旧格式：第 9 列是**明文**。读进内存并补出标签/密文，
+                // 磁盘上的明文由迁移流程**先备份后重写**清掉。
+                String plain = unesc(p[8]);
+                String tag = (hit && !plain.isEmpty()) ? Redact.pw(plain) : "";
+                String sealed = (hit && !plain.isEmpty())
+                        ? orEmpty(SecretBox.seal(plain)) : "";
+                return new Record(timeMs, ssid, bssid, dict, size, tested, elapsed,
+                        hit, plain, tag, sealed, true);
             } catch (Exception e) {
                 return null;
             }
@@ -106,8 +186,13 @@ public final class HistStore {
 
     private static final String FILE_NAME = "history.csv";
 
-    private static File file(Context ctx) {
+    /** 只读路径，供迁移流程使用。 */
+    public static File fileOf(Context ctx) {
         return new File(ctx.getFilesDir(), FILE_NAME);
+    }
+
+    private static File file(Context ctx) {
+        return fileOf(ctx);
     }
 
     /** 追加一条记录 */
@@ -141,6 +226,24 @@ public final class HistStore {
         return rev;
     }
 
+    /** 整表重写（迁移用）。返回是否成功。 */
+    public static boolean rewrite(Context ctx, List<Record> newestFirst) {
+        try {
+            File f = file(ctx);
+            File tmp = new File(ctx.getFilesDir(), FILE_NAME + ".tmp");
+            try (OutputStreamWriter w = new OutputStreamWriter(
+                    new FileOutputStream(tmp), StandardCharsets.UTF_8)) {
+                for (int i = newestFirst.size() - 1; i >= 0; i--) {
+                    w.write(newestFirst.get(i).toLine() + "\n");
+                }
+            }
+            if (f.exists() && !f.delete()) { /* 删不掉就直接改名覆盖 */ }
+            return tmp.renameTo(f) || f.isFile();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** 清空记录 */
     public static boolean clear(Context ctx) {
         try {
@@ -172,7 +275,9 @@ public final class HistStore {
                             + "  (" + r.bssid + ")\n");
                     w.write("    字典: " + r.dictName + "(" + r.dictSize + " 条)\n");
                     w.write(L.s("    尝试: ", "    Attempts: ") + r.tested + " 条   耗时: " + r.durationLabel() + "\n");
-                    w.write(L.s("    结果: ", "    Result: ") + (r.hit ? L.s("成功，口令 = ", "success, passphrase = ") + r.password : L.s("未命中", "No match")) + "\n\n");
+                    w.write(L.s("    结果: ", "    Result: ") + (r.hit
+                            ? L.s("成功，口令 = ", "success, passphrase = ") + r.displayPassphrase()
+                            : L.s("未命中", "No match")) + "\n\n");
                 }
             }
             return out;
@@ -183,7 +288,10 @@ public final class HistStore {
 
     /**
      * 导出只含成功结果的纯净密码表（每行 SSID:密码）。
-     * 方便自己归档。
+     *
+     * <p><b>这是唯一一处设计内的明文出口</b>：由用户主动点「导出」触发，
+     * 写到应用自己的外部目录。它不参与后台自动化，也不会被别的流程读取。
+     * 若某条记录的密文解不开（换设备/换签名），输出脱敏标签而不是编造值。
      */
     public static File exportPasswords(Context ctx) {
         List<Record> list = load(ctx);
@@ -194,7 +302,7 @@ public final class HistStore {
             try (OutputStreamWriter w = new OutputStreamWriter(
                     new FileOutputStream(out), StandardCharsets.UTF_8)) {
                 for (Record r : list) {
-                    if (r.hit) w.write(r.ssid + ":" + r.password + "\n");
+                    if (r.hit) w.write(r.ssid + ":" + r.displayPassphrase() + "\n");
                 }
             }
             return out;

@@ -243,7 +243,7 @@ cd /data/local/tmp/eta/promo-wpaforge && sh 1-aapt2.sh
 # 第二段：Linux 侧
 cd /workspace/promo-wpaforge
 WP_FORGE_KS="/storage/emulated/0/工程tg/签名材料/release.jks" \
-WP_FORGE_KS_PASS="wlmosv@2026" \
+WP_FORGE_KS_PASS="<在本地未入库的 env 文件里设置，勿写进仓库>" \
 WP_FORGE_KS_ALIAS="wlmosv" \
 sh 2-build-dex.sh
 ```

@@ -20,7 +20,7 @@
 # ── 与生产一致的三个常量（改动必须同步 Java 侧，有守卫测试钉住）─────────────
 MARKER_TAG="WPF_PROBE"                       # = AttemptMarker.TAG
 MARKER_FIELD="attempt="                      # = AttemptMarker.FIELD
-SHELL_FILTER='associate|4-Way|RX message|negotiat|ASSOC-REJECT|SSID-TEMP-DISABLED|CONNECTED|WRONG_KEY|reason=|attempt='
+SHELL_FILTER='associate|4-Way|RX message|negotiat|ASSOC-REJECT|SSID-TEMP-DISABLED|CONNECTED|WRONG_KEY|reason=|attempt=|__WP_LC_RC='
                                              # = WpaLogReader.SHELL_FILTER（逐字一致）
 SELFCHECK_SSID_HASH="60578b9b"               # = sha256("selfcheck")[:8]
 # ────────────────────────────────────────────────────────────────────────────

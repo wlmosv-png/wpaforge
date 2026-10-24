@@ -76,6 +76,17 @@ public final class TaskQueue {
         public long elapsedMs;
         /** 本次实际试过多少条（不算续跑前的） */
         public int testedThisRun;
+        /**
+         * 上次运行里**已证实失败**（AUTH_FAIL）的条数。
+         * <p>与 {@link #missInconclusive} 一起回答：「未命中」到底是"试过了没有"，
+         * 还是"根本没拿到证据"。旧数据缺这两个字段 → 0（表示未记录，不猜）。
+         */
+        public int missConfirmedFail;
+        /**
+         * 上次运行里**无结论**（TIMEOUT/UNKNOWN）的条数。
+         * <p>&gt;0 时界面不得把这次结束说成"未命中"—— 那是证据不足，不是密码错。
+         */
+        public int missInconclusive;
         /** 是否启用目标派生（入队时记录，执行时按此决定） */
         public boolean useTargetDict = false;
         /** 是否启用智能排序 */
@@ -180,6 +191,8 @@ public final class TaskQueue {
                 o.put("dictName", dictName == null ? "" : dictName);
                 o.put("dictSize", dictSize);
                 o.put("offset", offset);
+                o.put("missFail", missConfirmedFail);
+                o.put("missUnk", missInconclusive);
                 // R12：**绝不写明文**。
                 // 原来这一行把命中口令原样写进 queue.json —— 任务日志做过脱敏，
                 // 队列却一直漏着，等于在磁盘上留一份长期口令清单。
@@ -212,6 +225,9 @@ public final class TaskQueue {
             t.dictName = o.optString("dictName", "");
             t.dictSize = o.optInt("dictSize", 0);
             t.offset = o.optInt("offset", 0);
+            // 旧数据缺这两个字段 → 0（不猜）
+            t.missConfirmedFail = o.optInt("missFail", 0);
+            t.missInconclusive = o.optInt("missUnk", 0);
             // R12 读取：新格式看 hitSeal/hitTag；旧数据的 "hit" 是明文，读进内存过渡，
             // 由 PlaintextMigration 在下次启动时**先备份后重写**。
             t.hitSeal = o.optString("hitSeal", "");

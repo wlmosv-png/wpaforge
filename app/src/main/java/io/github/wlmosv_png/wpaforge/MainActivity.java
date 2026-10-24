@@ -4601,9 +4601,9 @@ public class MainActivity extends Activity {
         TextView badge = new TextView(this);
         badge.setText(badgeText(task.state));
         badge.setTextSize(11);
-        badge.setTextColor(badgeFg(task.state));
+        badge.setTextColor(badgeFgFor(task));
         badge.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        badge.setBackground(roundBg(badgeBg(task.state), AmberTheme.RADIUS_CHIP));
+        badge.setBackground(roundBg(badgeBgFor(task), AmberTheme.RADIUS_CHIP));
         badge.setPadding(px(10), px(4), px(10), px(4));
         head.addView(badge);
 
@@ -4622,15 +4622,16 @@ public class MainActivity extends Activity {
         String hit = task.hitPassword == null || task.hitPassword.isEmpty()
                 ? "" : L.f("\n口令: %s", "\nPassphrase: %s", task.hitPassword);
         String modeTag = L.s("Root", "Root");
-        meta.setText(L.f("%s 模式\n字典 %s（%s）\n进度 %d / %d%s%s",
-                "%s mode\nDictionary %s (%s)\nProgress %d / %d%s%s",
+        meta.setText(L.f("%s 模式\n字典 %s（%s）\n进度 %d / %d%s%s%s",
+                "%s mode\nDictionary %s (%s)\nProgress %d / %d%s%s%s",
                 modeTag,
                 task.dictName,
                 io.github.wlmosv_png.wpaforge.audit.DictRule.formatCount(task.dictSize),
                 task.offset, task.dictSize,
                 task.testedThisRun > 0
                     ? L.f("   本轮试了 %d 条", "   %d tried this run", task.testedThisRun) : "",
-                hit));
+                hit,
+                missCaveat(task)));
         meta.setTextSize(11.5f);
         meta.setTextColor(TaskQueue.State.DONE_HIT == task.state ? OK_GREEN : TEXT_DIM);
         meta.setLineSpacing(px(4), 1f);
@@ -4715,6 +4716,40 @@ public class MainActivity extends Activity {
         g.setBounds(0, 0, (int) (getResources().getDisplayMetrics().widthPixels * p
                 - px(64)), px(3));
         return g;
+    }
+
+    /**
+     * 未命中徽章：有「无结论」条目时换成警示色。
+     *
+     * <p>语义缺口（2026-10-24 最终审计发现）：一次全部无结论的结束也被写成「未命中」，
+     * 读起来像"已证实密码不在字典里"。那种结束**没有证据**证明密码错，所以给警示色，
+     * 并在卡片正文里注明无结论条数。
+     */
+    private int badgeBgFor(TaskQueue.Task task) {
+        if (task != null && task.state == TaskQueue.State.DONE_MISS
+                && task.missInconclusive > 0) {
+            return AmberTheme.WARN_BG;
+        }
+        return badgeBg(task.state);
+    }
+
+    private int badgeFgFor(TaskQueue.Task task) {
+        if (task != null && task.state == TaskQueue.State.DONE_MISS
+                && task.missInconclusive > 0) {
+            return ACCENT;
+        }
+        return badgeFg(task.state);
+    }
+
+    /** 未命中且有未证实条目时，卡片正文里那行说明（空串＝不拼这一行）。 */
+    private String missCaveat(TaskQueue.Task task) {
+        if (task == null || task.state != TaskQueue.State.DONE_MISS
+                || task.missInconclusive <= 0) {
+            return "";
+        }
+        return L.f("\n未命中 · 其中 %d 条无结论（未能证实密码错；建议核对环境后重跑）",
+                "\nno match · %d inconclusive (not proof of a wrong passphrase)",
+                task.missInconclusive);
     }
 
     private String badgeText(TaskQueue.State st) {

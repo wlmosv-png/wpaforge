@@ -1120,8 +1120,20 @@ public class CrackService extends Service {
             log(L.f("已停止，进度 %d/%d", "Stopped at %d/%d", offset, ft.dictSize));
         } else {
             ft.state = TaskQueue.State.DONE_MISS;
-            log(L.f("任务完成，未命中（试了 %d 条）",
-                    "Task complete, no match (%d tried)", tested));
+            // 把本轮结论分布记到任务上：**「未命中」只有在其余条目都有失败证据时才成立**。
+            // 无结论（TIMEOUT/UNKNOWN）条目并不证明密码错 —— 它们只是没拿到证据。
+            io.github.wlmosv_png.wpaforge.audit.CrackEngine eng = engineRef;
+            ft.missConfirmedFail = eng == null ? 0 : eng.confirmedFailCount();
+            ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();
+            if (ft.missInconclusive > 0) {
+                log(L.f("任务完成：未命中，但其中 %d 条无结论（未能证实密码错；建议核对环境后重跑）",
+                        "Task complete: no match, but %d attempts were inconclusive "
+                                + "(not proof of a wrong passphrase)",
+                        ft.missInconclusive));
+            } else {
+                log(L.f("任务完成，未命中（试了 %d 条，均有失败证据）",
+                        "Task complete, no match (%d tried, all with failure evidence)", tested));
+            }
             if (tested > 0) {
                 Prefs.recordRate(this, rateSampleMs(tested), tested);
             }

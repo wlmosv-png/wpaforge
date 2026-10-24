@@ -1850,6 +1850,9 @@ public final class CrackEngine {
         long pureTryMs = 0L;
         /** 最近若干条的实际耗时（界面上的速率/ETA 用它，而不是被开头慢批次拖住的整轮平均）。 */
         rate.reset();
+        // 本轮**结论分布**：已证实失败 / 无结论 必须分开统计 ——
+        // 全部无结论时不能说成「未命中」，那是"没证据"，不是"试过了没有"。
+        tally.reset();
         /** AP 侧退避检测窗口（连续偏慢就冷却一下，别拿无效尝试硬怼） */
         final BackoffPolicy.Window backoff = new BackoffPolicy.Window();
         /** 每 20 条吐一行耗时汇总（后台跑的日志里唯一能看到快慢的地方） */
@@ -1912,6 +1915,8 @@ public final class CrackEngine {
                 livePureTryMs = pureTryMs;
                 rate.add(itemMs);
                 liveRecentAvgMs = rate.avgMs();
+                // 结论分布（只统计、不参与判定）
+                tally.add(a.verdict);
 
                 // 攒够 20 条写一行汇总。四段分解 + 判定归类，
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
@@ -2068,6 +2073,11 @@ public final class CrackEngine {
                 }
                 l.onLog("  " + L.s("最近判定: ", "recent verdicts: ") + vb);
             }
+            // 收尾如实报账（后台跑时这是唯一能看出"到底有多少条真被证实"的地方）
+            l.onLog(L.f("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条（共执行 %d 条）",
+                    "Verdicts this run: %d confirmed failures, %d inconclusive (%d executed)",
+                    tally.confirmedFail(), tally.inconclusive(), tally.executed()));
+
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
             else if (pauseFlag.get()) outcome = "PAUSED";
@@ -2087,6 +2097,8 @@ public final class CrackEngine {
     private volatile long lastPureTryMs = 0L;
     /** 运行中的实时累计净尝试耗时（供界面算**本次**速率，不是历史值） */
     private volatile long livePureTryMs = 0L;
+    /** 本轮结论分布（已证实失败 / 无结论 / 执行数）—— 供服务写进任务与日志。 */
+    private final VerdictTally tally = new VerdictTally();
     /** 最近若干条耗时的滑窗（引擎线程写、界面线程读，只读一个 volatile 快照值）。 */
     private final RateWindow rate = new RateWindow(RateWindow.DEFAULT_SIZE);
     private volatile long liveRecentAvgMs = 0L;
@@ -2118,6 +2130,21 @@ public final class CrackEngine {
      */
     public long liveRecentAvgMs() {
         return liveRecentAvgMs;
+    }
+
+    /** 本轮已证实失败的条数（AUTH_FAIL）。 */
+    public int confirmedFailCount() {
+        return tally.confirmedFail();
+    }
+
+    /** 本轮无结论的条数（TIMEOUT/UNKNOWN）—— 这些条目**不代表密码错**。 */
+    public int inconclusiveCount() {
+        return tally.inconclusive();
+    }
+
+    /** 「未命中」是否站得住（没有任何无结论条目）。 */
+    public boolean missProven() {
+        return tally.missProven();
     }
 
     private String channelName() {

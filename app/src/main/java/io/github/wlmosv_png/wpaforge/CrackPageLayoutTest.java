@@ -154,6 +154,33 @@ public class CrackPageLayoutTest {
         ok("滑窗类存在且可离线测", read(ROOT + "audit/RateWindow.java") != null
                 && read(ROOT + "RateWindowTest.java") != null);
 
+        System.out.println("== 2d. 「未命中」不能说成「已证实」：结论分布要分开 ==");
+        ok("结论分布是独立纯逻辑类（可离线测）",
+                read(ROOT + "audit/VerdictTally.java") != null
+                        && read(ROOT + "VerdictTallyTest.java") != null);
+        ok("引擎用 VerdictTally 记账并暴露两个计数",
+                eng.contains("private final VerdictTally tally = new VerdictTally();")
+                        && eng.contains("public int confirmedFailCount()")
+                        && eng.contains("public int inconclusiveCount()")
+                        && eng.contains("public boolean missProven()"));
+        ok("无结论时收尾如实报「结论分布」（而不是只说未命中）",
+                eng.contains("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条"));
+        String tq = read(ROOT + "audit/TaskQueue.java");
+        ok("任务上带两个 additive 字段（旧数据缺字段 → 0，不猜）",
+                tq != null && tq.contains("public int missInconclusive;")
+                        && tq.contains("o.optInt(\"missFail\", 0)")
+                        && tq.contains("o.optInt(\"missUnk\", 0)"));
+        ok("服务把分布记到任务上，并区分两种结束文案",
+                svc != null
+                        && svc.contains("ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();")
+                        && svc.contains("未能证实密码错")
+                        && svc.contains("均有失败证据"));
+        ok("界面在有未证实条目时换警示色并补一行说明",
+                ma.contains("private int badgeBgFor(TaskQueue.Task task)")
+                        && ma.contains("private String missCaveat(TaskQueue.Task task)")
+                        && ma.contains("badge.setBackground(roundBg(badgeBgFor(task)")
+                        && ma.contains("missCaveat(task)"));
+
         System.out.println("== 3. 原有回调一字不变 ==");
         ok("开始 → startConnect()",
                 ma.contains("startBtn.setOnClickListener(v -> startConnect());"));

@@ -137,6 +137,21 @@ public class CrackPageLayoutTest {
         ok("重建挂在多个时机（回前台 / 绑服务 / 队列刷新 / 队列回调）",
                 nResume >= 4);
 
+        System.out.println("== 2c. 速率/ETA 用最近 20 条滑窗（不是被拖住的整轮平均）==");
+        ok("界面上写明了口径（近 20 条）", ma.contains("（近 20 条）"));
+        ok("服务优先给滑窗均值", svc != null
+                && svc.contains("long recent = e.liveRecentAvgMs();"));
+        String eng = read(ROOT + "audit/CrackEngine.java");
+        ok("引擎维护滑窗（RateWindow）并在每条后更新", eng != null
+                && eng.contains("private final RateWindow rate = new RateWindow(")
+                && eng.contains("rate.add(itemMs);")
+                && eng.contains("liveRecentAvgMs = rate.avgMs();"));
+        ok("进度回调的 rate/eta 用滑窗值", eng != null
+                && eng.contains("long winPerItem = rate.avgMs();")
+                && eng.contains("long eta = winPerItem > 0 ? (total - cursor) * winPerItem : -1L;"));
+        ok("滑窗类存在且可离线测", read(ROOT + "audit/RateWindow.java") != null
+                && read(ROOT + "RateWindowTest.java") != null);
+
         System.out.println("== 3. 原有回调一字不变 ==");
         ok("开始 → startConnect()",
                 ma.contains("startBtn.setOnClickListener(v -> startConnect());"));

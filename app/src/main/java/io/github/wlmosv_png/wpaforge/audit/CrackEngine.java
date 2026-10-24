@@ -1848,6 +1848,8 @@ public final class CrackEngine {
         // WiFi 重置、基线断开、通道自检这些一次性开销，
         // 摊进「每条耗时」会让预估值被严重高估。
         long pureTryMs = 0L;
+        /** 最近若干条的实际耗时（界面上的速率/ETA 用它，而不是被开头慢批次拖住的整轮平均）。 */
+        rate.reset();
         /** AP 侧退避检测窗口（连续偏慢就冷却一下，别拿无效尝试硬怼） */
         final BackoffPolicy.Window backoff = new BackoffPolicy.Window();
         /** 每 20 条吐一行耗时汇总（后台跑的日志里唯一能看到快慢的地方） */
@@ -1908,6 +1910,8 @@ public final class CrackEngine {
                 }
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;
+                rate.add(itemMs);
+                liveRecentAvgMs = rate.avgMs();
 
                 // 攒够 20 条写一行汇总。四段分解 + 判定归类，
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
@@ -2031,12 +2035,20 @@ public final class CrackEngine {
                 }
 
 
-                // 用净尝试耗时算速率，界面上的「条/秒」与剩余时间
-                // 才和用户实际感受到的一致。
-                double elapsed = Math.max(0.001, pureTryMs / 1000.0);
-                double rate = tested / elapsed;
-                long eta = rate > 0 ? (long) ((total - cursor) / rate * 1000) : -1;
-                l.onProgress(cursor, total, rate, eta);
+                // 速率与剩余时间用**最近 20 条的滑窗**，不是整轮平均。
+                //
+                // 为什么（2026-10-24 实测）：逐条耗时在 2.1~5.7 秒之间摆动 ——
+                // 走「系统广播认证失败」这条快速判据的批次约 2 秒/条，
+                // 落到「观察窗口结束、无结论」的批次要等满窗口，均值能到 5 秒以上。
+                // 整轮平均会把开头的慢批次一直拖着，于是界面显示「每条约 5.2 秒、剩 7 小时」，
+                // 而眼下实际只有 2.2 秒/条。滑窗均值才和用户当场的感受一致。
+                long winPerItem = rate.avgMs();
+                if (winPerItem <= 0) {   // 窗口还空（刚开始）→ 退回整轮平均
+                    winPerItem = tested > 0 ? pureTryMs / tested : 0;
+                }
+                double ratePerSec = winPerItem > 0 ? 1000.0 / winPerItem : 0d;
+                long eta = winPerItem > 0 ? (total - cursor) * winPerItem : -1L;
+                l.onProgress(cursor, total, ratePerSec, eta);
             }
         } finally {
             lastPureTryMs = pureTryMs;
@@ -2075,6 +2087,9 @@ public final class CrackEngine {
     private volatile long lastPureTryMs = 0L;
     /** 运行中的实时累计净尝试耗时（供界面算**本次**速率，不是历史值） */
     private volatile long livePureTryMs = 0L;
+    /** 最近若干条耗时的滑窗（引擎线程写、界面线程读，只读一个 volatile 快照值）。 */
+    private final RateWindow rate = new RateWindow(RateWindow.DEFAULT_SIZE);
+    private volatile long liveRecentAvgMs = 0L;
 
     // ── 每条候选的耗时分解（只为可观测性，**不参与任何判定**）──────────────
     // 后台跑任务时界面没开、UI 回调是空的，逐条结果不会进任务日志 ——
@@ -2095,6 +2110,14 @@ public final class CrackEngine {
 
     public long livePureTryMs() {
         return livePureTryMs;
+    }
+
+    /**
+     * 最近 N 条的平均耗时（ms）；没有样本返回 0。
+     * <p>界面上的「本次每条约 X 秒」用它 —— 见 {@link RateWindow} 的说明。
+     */
+    public long liveRecentAvgMs() {
+        return liveRecentAvgMs;
     }
 
     private String channelName() {

@@ -1023,6 +1023,11 @@ public class CrackService extends Service {
             CrackEngine e = engineRef;
             if (e == null || !running) return 0;
             int n = e.testedCount();
+            // 优先「最近 20 条」的滑窗均值：它才是此刻的真实节奏。
+            // （整轮平均会被开头的慢批次拖住 —— 用户实测：显示 5.2 秒，实际 2.2 秒。）
+            long recent = e.liveRecentAvgMs();
+            if (recent > 0) return recent;
+            // 窗口还空（刚开始）：退回整轮平均。
             // 必须用**运行中**的累计值：lastPureTryMs 只在整轮循环结束后才赋值，
             // 任务进行中它恒为 0，于是界面永远显示上一个任务的历史数字。
             long pure = e.livePureTryMs();

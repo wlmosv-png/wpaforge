@@ -167,7 +167,8 @@ public class MainActivity extends Activity {
     private final io.github.wlmosv_png.wpaforge.ui.CandidateTicker candTicker =
             new io.github.wlmosv_png.wpaforge.ui.CandidateTicker(3);
     private TextView candLabel;
-    private TextView candNow;
+    /** 当前候选（带「顶上来 / 消散」动效）。 */
+    private io.github.wlmosv_png.wpaforge.ui.CandidateRoll candRoll;
     private TextView candPrev;
     private LinearLayout candBox;
     /** 命中卡片：产品的巅峰时刻，值得单独一块 */
@@ -672,7 +673,9 @@ public class MainActivity extends Activity {
     private TextView wpsStatusLine;
     private TextView wpsProgressLine;
     private LinearLayout wpsModeList;
-    private android.widget.ProgressBar wpsBusy;
+    /** 扫描进度：一条细的不确定进度线 + 一行阶段文字（替代原来的大转圈）。 */
+    private android.widget.ProgressBar wpsScanBar;
+    private TextView wpsScanStatus;
     private Button wpsReconAllBtn;
     /** 体检是否连「不收外部 PIN」的一起测。默认跳过 —— 实测那批 3/3 打不动。 */
     private boolean wpsReconAll = false;
@@ -721,9 +724,23 @@ public class MainActivity extends Activity {
         scanBtn.setOnClickListener(v -> doWpsScan());
         wpsTargetCard.addView(scanBtn);
 
-        wpsBusy = new android.widget.ProgressBar(this);
-        wpsBusy.setVisibility(View.GONE);
-        wpsTargetCard.addView(wpsBusy);
+        // 扫描状态：一条 4dp 的不确定进度线 + 一行阶段文字。
+        // 原来是一个居中的大转圈（用户反馈"点击后转圈"很笨），现在是一条细线。
+        wpsScanBar = new android.widget.ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        wpsScanBar.setIndeterminate(true);
+        wpsScanBar.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        wpsScanBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams wsblp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(4));
+        wsblp.topMargin = px(10);
+        wpsTargetCard.addView(wpsScanBar, wsblp);
+
+        wpsScanStatus = new TextView(this);
+        wpsScanStatus.setTextSize(AmberTheme.FS_LABEL);
+        wpsScanStatus.setTextColor(AmberTheme.TEXT_DIM);
+        wpsScanStatus.setVisibility(View.GONE);
+        wpsTargetCard.addView(wpsScanStatus, topGap(6));
 
         Button addTargetBtn = btnSecondary(L.s("手动添加目标（扫不到的弱信号 AP 用这个）",
                 "Add target by BSSID (for weak APs the scan misses)"));
@@ -1059,9 +1076,13 @@ public class MainActivity extends Activity {
 
     /** 扫描进度：转圈 + 一行阶段文字（不再干等三十秒后突然蹦出来）。 */
     private void wpsScanBusy(boolean on, String text) {
-        if (wpsBusy != null) wpsBusy.setVisibility(on ? View.VISIBLE : View.GONE);
-        if (on && wpsPickedLine != null && text != null && !text.isEmpty()) {
-            wpsPickedLine.setText(text);
+        if (wpsScanBar != null) wpsScanBar.setVisibility(on ? View.VISIBLE : View.GONE);
+        if (wpsScanStatus == null) return;
+        if (on && text != null && !text.isEmpty()) {
+            wpsScanStatus.setText(text);
+            wpsScanStatus.setVisibility(View.VISIBLE);
+        } else if (!on) {
+            wpsScanStatus.setVisibility(View.GONE);
         }
     }
 
@@ -1125,8 +1146,12 @@ public class MainActivity extends Activity {
                 wpsTargets.clear();
                 wpsTargets.addAll(list);
                 renderWpsTargets();
-                wpsPickedLine.setText(L.s("扫描完成：", "Scan done: ") + list.size()
-                        + L.s(" 个支持 WPS 的目标", " WPS targets"));
+                // 结论写进扫描状态行；「目标」那行只表示当前选中项（语义更清楚）
+                if (wpsScanStatus != null) {
+                    wpsScanStatus.setText(L.s("扫描完成：", "Scan done: ") + list.size()
+                            + L.s(" 个支持 WPS 的目标", " WPS targets"));
+                    wpsScanStatus.setVisibility(View.VISIBLE);
+                }
             });
         }, "wps-scan").start();
     }
@@ -1153,27 +1178,100 @@ public class MainActivity extends Activity {
         }
         final boolean zh = L.s("a", "b").equals("a");
         for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg : wpsTargets) {
-            Button b = btnSecondary("");
+            // 每个目标一张**行卡**：名称一行、地址一行、能力/体检一行，右侧信号与状态胶囊。
+            // 原来是一个塞了四行居中文字的大按钮（用户反馈"显示的内容很拉胯"）。
+            boolean on = wpsPicked != null && tg.bssid.equals(wpsPicked.bssid);
+            boolean worth = tg.pinWorthTrying();
+
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.HORIZONTAL);
+            item.setBackground(roundBgStroked(on ? AmberTheme.ACCENT_BG : AmberTheme.CARD,
+                    on ? ACCENT : AmberTheme.EDGE, AmberTheme.RADIUS_CARD, on ? 1.2f : 0.8f));
+            item.setPadding(px(14), px(12), px(12), px(12));
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            ilp.bottomMargin = px(8);
+            item.setLayoutParams(ilp);
+            if (wpsRunning) item.setAlpha(0.6f);
+
+            LinearLayout left = new LinearLayout(this);
+            left.setOrientation(LinearLayout.VERTICAL);
+
+            TextView ssid = new TextView(this);
+            ssid.setText(tg.ssid);
+            ssid.setTextSize(AmberTheme.FS_TITLE);
+            ssid.setTextColor(on ? ACCENT : TEXT);
+            ssid.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            ssid.setSingleLine(true);
+            ssid.setEllipsize(TextUtils.TruncateAt.END);
+            left.addView(ssid);
+
+            TextView addr = new TextView(this);
+            addr.setText(tg.bssid + "   " + tg.freq + " MHz");
+            addr.setTextSize(FS_TINY);
+            addr.setTextColor(AmberTheme.TEXT_DIM);
+            addr.setTypeface(Typeface.MONOSPACE);
+            addr.setSingleLine(true);
+            LinearLayout.LayoutParams al2 = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            al2.topMargin = px(4);
+            left.addView(addr, al2);
+
             StringBuilder cap = new StringBuilder();
-            cap.append(tg.ssid).append('\n');
-            cap.append(tg.bssid).append("    ").append(tg.rssi).append(" dBm    ")
-                    .append(tg.freq).append(" MHz\n");
             cap.append("[").append(tg.capLabel(zh)).append("]");
             String rl = tg.reconLabel(zh);
             if (!rl.isEmpty()) {
-                cap.append('\n').append(rl);
-                if (!tg.reconDetail.isEmpty()) cap.append("    ").append(tg.reconDetail);
+                cap.append("  ").append(rl);
+                if (!tg.reconDetail.isEmpty()) cap.append("  ").append(tg.reconDetail);
             }
             if (!tg.wpsMethods.isEmpty()) cap.append("  ").append(tg.wpsMethods);
             if (!tg.wpsDevice.isEmpty()) cap.append("  · ").append(tg.wpsDevice);
-            b.setText(cap.toString());
-            boolean on = wpsPicked != null && tg.bssid.equals(wpsPicked.bssid);
-            b.setBackground(roundBgStroked(on ? ACCENT : SURFACE,
-                    on ? ACCENT : (tg.pinWorthTrying() ? BTN_2ND_EDGE : DANGER), 18, 0.8f));
-            b.setTextColor(on ? AmberTheme.ON_ACCENT
-                    : (tg.pinWorthTrying() ? TEXT : DANGER));
-            b.setEnabled(!wpsRunning);
-            b.setOnClickListener(v -> {
+
+            TextView caps = new TextView(this);
+            caps.setText(cap.toString());
+            caps.setTextSize(FS_TINY);
+            caps.setTextColor(worth ? AmberTheme.TEXT_DIM : DANGER);
+            caps.setTypeface(Typeface.MONOSPACE);
+            caps.setSingleLine(false);
+            caps.setMaxLines(3);
+            LinearLayout.LayoutParams clp2 = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp2.topMargin = px(3);
+            left.addView(caps, clp2);
+
+            item.addView(left, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            LinearLayout right = new LinearLayout(this);
+            right.setOrientation(LinearLayout.VERTICAL);
+            right.setGravity(Gravity.END);
+            right.setMinimumWidth(px(70));
+
+            TextView dbm = new TextView(this);
+            dbm.setText(tg.rssi + " dBm");
+            dbm.setTextSize(12f);
+            dbm.setTextColor(AmberTheme.signalColor(levelOfRssi(tg.rssi)));
+            dbm.setTypeface(Typeface.MONOSPACE);
+            dbm.setGravity(Gravity.END);
+            dbm.setSingleLine(true);
+            right.addView(dbm);
+
+            TextView chip = new TextView(this);
+            chip.setText(on ? L.s("已选", "selected")
+                    : (worth ? L.s("可试", "worth trying") : L.s("不建议", "not advised")));
+            chip.setTextSize(FS_TINY);
+            chip.setTextColor(on ? AmberTheme.ON_ACCENT : (worth ? AmberTheme.TEXT_DIM : DANGER));
+            chip.setGravity(Gravity.CENTER);
+            chip.setBackground(roundBg(on ? ACCENT : (worth ? AmberTheme.CARD_3
+                    : AmberTheme.DANGER_SOFT_BG), AmberTheme.RADIUS_CHIP));
+            chip.setPadding(px(8), px(3), px(8), px(3));
+            LinearLayout.LayoutParams chlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            chlp.topMargin = px(6);
+            right.addView(chip, chlp);
+
+            item.addView(right);
+            item.setOnClickListener(v -> {
                 if (wpsRunning) {
                     Toast.makeText(this, L.s("任务运行中，请先暂停再换目标",
                             "Task running - pause first"), Toast.LENGTH_SHORT).show();
@@ -1186,7 +1284,7 @@ public class MainActivity extends Activity {
                 refreshWpsButtons();
                 renderWpsTargets();
             });
-            wpsTargetList.addView(b);
+            wpsTargetList.addView(item);
         }
         // 默认选第一个，省一次点击
         if (wpsPicked == null && !wpsTargets.isEmpty()) {
@@ -1830,10 +1928,36 @@ public class MainActivity extends Activity {
         onlp.bottomMargin = px(AmberTheme.GAP_CARD);
         pageObserve.addView(observeNotice, onlp);
 
-        // ② 网络侦察入口: 终端式局域网设备探测(需 root)。
-        Button lanProbe = btnSecondary(L.s("网络侦察 ▸ 探测当前 WiFi 设备",
-                "LAN recon ▸ probe devices on WiFi"));
-        lanProbe.setOnClickListener(v -> {
+        // ② 网络侦察入口：终端式局域网设备探测（需 root）。
+        // 大胶囊按钮改为**卡片行**（标题 + 副标题 + ›）：与设置页/审计页同一套行结构，
+        // 页面上不再出现"一个占满屏幕宽度的按钮"。回调与入口一字未改。
+        LinearLayout reconCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        LinearLayout reconRow = new LinearLayout(this);
+        reconRow.setOrientation(LinearLayout.VERTICAL);
+        reconRow.setBackground(io.github.wlmosv_png.wpaforge.ui.UiKit.ripple(
+                AmberTheme.CARD, dp(AmberTheme.RADIUS_CHIP)));
+        reconRow.setPadding(0, px(2), 0, px(2));
+        reconCard.addView(reconRow);
+
+        TextView reconTitle = new TextView(this);
+        reconTitle.setText(L.s("网络侦察", "LAN recon") + "   ›");
+        reconTitle.setTextSize(AmberTheme.FS_BODY + 1f);
+        reconTitle.setTextColor(TEXT);
+        reconTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        reconRow.addView(reconTitle);
+
+        TextView reconSub = new TextView(this);
+        reconSub.setText(L.s("探测当前 WiFi 网段里的设备与开放端口（需 root）",
+                "Probe devices and open ports on the current WiFi subnet (root)"));
+        reconSub.setTextSize(AmberTheme.FS_LABEL);
+        reconSub.setTextColor(AmberTheme.TEXT_FAINT);
+        reconSub.setLineSpacing(px(3), 1f);
+        LinearLayout.LayoutParams rslp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rslp.topMargin = px(3);
+        reconRow.addView(reconSub, rslp);
+
+        reconRow.setOnClickListener(v -> {
             try {
                 startActivity(new android.content.Intent(this,
                         io.github.wlmosv_png.wpaforge.ui.LanProbeActivity.class));
@@ -1842,7 +1966,10 @@ public class MainActivity extends Activity {
                         Toast.LENGTH_SHORT).show();
             }
         });
-        pageObserve.addView(lanProbe);
+        LinearLayout.LayoutParams rclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rclp.bottomMargin = px(AmberTheme.GAP_CARD);
+        pageObserve.addView(reconCard, rclp);
 
         // ③ 信号分布
         pageObserve.addView(sectionLabel(L.s("信号分布", "Signal distribution")));
@@ -2487,6 +2614,15 @@ public class MainActivity extends Activity {
 
         row.addView(right);
         return row;
+    }
+
+    /** RSSI → 档位（与 NetRecord.signalLevel 同一把尺子；UI 侧小工具，不动业务类）。 */
+    private static int levelOfRssi(int rssi) {
+        if (rssi >= -50) return 4;
+        if (rssi >= -60) return 3;
+        if (rssi >= -70) return 2;
+        if (rssi >= -80) return 1;
+        return 0;
     }
 
     private String levelText(int lv) {
@@ -3451,13 +3587,11 @@ public class MainActivity extends Activity {
 
         // 当前处理项（等宽大字 + 上两条）
         candLabel = AmberTheme.label(this, L.s("当前候选", "CURRENT"));
-        candNow = new TextView(this);
-        candNow.setTextSize(22);
-        candNow.setTextColor(TEXT);
-        candNow.setTypeface(Typeface.MONOSPACE);
-        candNow.setSingleLine(true);
-        candNow.setEllipsize(TextUtils.TruncateAt.END);
-        candNow.setPadding(0, px(5), 0, 0);
+        candRoll = new io.github.wlmosv_png.wpaforge.ui.CandidateRoll(this);
+        LinearLayout.LayoutParams candLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        candLp.topMargin = px(5);
+        candRoll.setLayoutParams(candLp);
         candPrev = new TextView(this);
         candPrev.setTextSize(11.5f);
         candPrev.setTextColor(AmberTheme.TEXT_FAINT);
@@ -3469,7 +3603,7 @@ public class MainActivity extends Activity {
         candBox.setOrientation(LinearLayout.VERTICAL);
         candBox.setVisibility(View.GONE);
         candBox.addView(candLabel);
-        candBox.addView(candNow);
+        candBox.addView(candRoll);
         candBox.addView(candPrev);
         eventCard.addView(candBox);
 
@@ -4956,14 +5090,14 @@ public class MainActivity extends Activity {
 
     /** 刷新「正在试」区：当前候选等宽大字，上面两条淡出 */
     private void renderCandidates() {
-        if (candBox == null || candNow == null) return;
+        if (candBox == null || candRoll == null) return;
         String cur = candTicker.current();
         if (cur == null) {
             candBox.setVisibility(View.GONE);
             return;
         }
         candBox.setVisibility(View.VISIBLE);
-        candNow.setText(cur);
+        candRoll.setCandidate(cur);
         java.util.List<String> prev = candTicker.previous(2);
         StringBuilder sb = new StringBuilder();
         for (String p : prev) {
@@ -5013,7 +5147,7 @@ public class MainActivity extends Activity {
         candTicker.clear();
         if (candBox != null) candBox.setVisibility(View.GONE);
         if (hitCard != null) hitCard.setVisibility(View.GONE);
-        if (candNow != null) candNow.setText("");
+        if (candRoll != null) candRoll.setCandidateInstant("");
         if (candPrev != null) candPrev.setText("");
         lastTested = 0;
         lastTotal = 0;

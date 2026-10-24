@@ -88,12 +88,14 @@ public final class AmberTheme {
      * <p>雷达上的点、列表里的信号条与 dBm 数字都用这一套 ——
      * 同一个网络在哪儿看都是同一个颜色，「强/弱」不需要看数字就能判断。
      * 越强越亮越暖，弱信号压暗（不是换色相，避免变成彩虹）。
+     * 第二版调过一次：最亮那档原来是接近白的浅黄，在近黑底上会"发糊"，
+     * 现在改成饱和琥珀 —— 同样是"最亮"，但不再糊成一片白。
      */
-    public static final int SIG_4 = 0xFFFFE08A;
-    public static final int SIG_3 = 0xFFFFC24D;
-    public static final int SIG_2 = 0xFFE89B1F;
-    public static final int SIG_1 = 0xFF8A6A1E;
-    public static final int SIG_0 = 0xFF5C4A18;
+    public static final int SIG_4 = 0xFFFFC24D;
+    public static final int SIG_3 = 0xFFE39A28;
+    public static final int SIG_2 = 0xFFC07E1E;
+    public static final int SIG_1 = 0xFF8E6420;
+    public static final int SIG_0 = 0xFF5F4A20;
 
     /** 档位 → 颜色；越界自动夹到 0..4。 */
     public static int signalColor(int level) {

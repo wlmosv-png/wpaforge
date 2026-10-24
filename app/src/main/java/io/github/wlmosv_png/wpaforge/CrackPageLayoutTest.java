@@ -93,7 +93,7 @@ public class CrackPageLayoutTest {
 
         System.out.println("== 2. 破解页展示位：一个都不能漏赋值 ==");
         String[] views = {"connectTargetView", "connectDictView", "connectModeView",
-                "connectProgress", "candBox", "candLabel", "candNow", "candPrev",
+                "connectProgress", "candBox", "candLabel", "candRoll", "candPrev",
                 "hitCard", "hitPw", "hitMeta", "observeNotice", "flowHeader", "flowChevron",
                 "flowLabel", "flowCount", "chipKey", "chipAll", "flowClear",
                 "connectStreamView", "streamScroll", "streamParams", "jumpLatestBtn",
@@ -108,6 +108,10 @@ public class CrackPageLayoutTest {
         }
         eq("破解页所有展示位都在 buildConnectTab 里赋值（漏：" + miss + "）", 0, missing);
 
+        ok("当前候选有滚动动效（顶上来 / 消散）",
+                ma.contains("candRoll.setCandidate(cur)")
+                        && read(ROOT + "ui/CandidateRoll.java") != null
+                        && read(ROOT + "ui/CandidateRoll.java").contains("setCandidate(String s)"));
         System.out.println("== 3. 原有回调一字不变 ==");
         ok("开始 → startConnect()",
                 ma.contains("startBtn.setOnClickListener(v -> startConnect());"));

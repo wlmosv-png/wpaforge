@@ -60,8 +60,14 @@ public class RadarSweep extends View {
         }
     }
 
-    /** 五道信号环的半径比例（下标＝档位，越大越靠里）。 */
-    private static final float[] RING = {0.98f, 0.835f, 0.69f, 0.545f, 0.40f};
+    /**
+     * 五道信号环的半径比例（下标＝档位，越大越靠里）。
+     *
+     * <p>最内环从 0.40 外移到 0.51：原来最强档的点紧贴中心的大数字，
+     * 加上刻度字也在那儿，看起来就是"中间一团"。现在中心留出一圈干净的空，
+     * 强信号的那道环在中层，读数与点都不打架。
+     */
+    private static final float[] RING = {0.97f, 0.855f, 0.74f, 0.625f, 0.51f};
     /** 环刻度文字（与该环的档位一一对应）。 */
     private static final String[] RING_LABEL = {"\u2264-90", "-80", "-70", "-60", "\u2265-50"};
     /** 每档的点半径（dp，下标＝档位）。 */
@@ -192,15 +198,15 @@ public class RadarSweep extends View {
         for (int i = 0; i < RING.length; i++) {
             float rr = radius * RING[i];
             cv.drawCircle(cx, cy, rr, pRing);
-            // 刻度字贴在该环的左下 45°，避开中心的数字。
-            // 先铺一块与卡片同色的底：点多的时候它会让刻度保持可读（不然被点压住）。
-            float a = (float) Math.toRadians(135);
-            float tx = cx + (float) Math.cos(a) * rr + dp(3);
-            float ty = cy + (float) Math.sin(a) * rr - dp(2);
+            // 刻度做成**纵轴上的刻度尺**（上半天、写在纵轴右侧）：
+            // 斜排会跟中心的数字、以及点挤在一起；竖排一眼就能读出"哪道环是多少 dBm"。
+            // 底下垫一块与卡片同色的底片，点多的时候刻度也不会被点压住。
+            float tx = cx + dp(5);
+            float ty = cy - rr + dp(3);
             float tw = pScale.measureText(RING_LABEL[i]);
             pPatch.setColor(AmberTheme.CARD);
             pPatch.setAlpha(238);
-            RectF patch = new RectF(tx - dp(3), ty - dp(9), tx + tw + dp(3), ty + dp(3));
+            RectF patch = new RectF(tx - dp(3), ty - dp(9), tx + tw + dp(3), ty + dp(4));
             cv.drawRoundRect(patch, dp(3), dp(3), pPatch);
             cv.drawText(RING_LABEL[i], tx, ty, pScale);
         }
@@ -280,10 +286,13 @@ public class RadarSweep extends View {
             dotR = Math.max(dp(1.9f), dotR);
 
             int color = AmberTheme.signalColor(level);
-            if (level >= 4 && dotR > dp(3.4f)) {   // 最强档：很淡的光晕（挤的时候不画）
-                pDot.setColor(color);
-                pDot.setAlpha((int) (alpha * 60));
-                cv.drawCircle(bx, by, dotR * 1.9f, pDot);
+            if (level >= 4) {
+                // 最强档：一圈**细亮环**（原来那层大光晕会被看成"糊"，这里换成清晰的环）
+                pEdge.setColor(AmberTheme.ACCENT_SOFT);
+                pEdge.setStyle(Paint.Style.STROKE);
+                pEdge.setAlpha((int) (alpha * 170));
+                cv.drawCircle(bx, by, dotR + dp(1.6f), pEdge);
+                pEdge.setColor(AmberTheme.DANGER);
             }
             pDot.setColor(color);
             pDot.setAlpha((int) (alpha * 255));

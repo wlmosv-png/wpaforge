@@ -5357,9 +5357,14 @@ public class MainActivity extends Activity {
         final NetDialog dlg = new NetDialog(this,
                 L.s("连接自测", "Connection test"),
                 L.s("输入一个你能确认密码的 WiFi，点测试。\n"
-                        + "会真的发起一次连接（会短暂切换网络）。",
+                        + "会真的发起一次连接（会短暂切换网络）。\n"
+                        + "测试会临时改动目标网络的已保存配置 —— 开始前先登记原配置，"
+                        + "结束（含失败/中断）后自动还原并读回验证；登记不到就拒绝执行。",
                         "Enter a Wi-Fi whose passphrase you know.\n"
-                                + "It will really connect once (briefly switching networks)."));
+                                + "It really connects once (briefly switching networks).\n"
+                                + "It temporarily replaces the target's saved config: the original is "
+                                + "snapshotted first and restored (with read-back) afterwards; "
+                                + "if it cannot be snapshotted the test is refused."));
         final android.widget.EditText ssidIn = dlg.addField(
                 L.s("SSID（网络名）", "SSID"), "");
         final android.widget.EditText pwIn = dlg.addField(
@@ -5436,7 +5441,49 @@ public class MainActivity extends Activity {
                 }
             }
 
-            if (sh != null) {
+            // ── 保护（最终审计 P0-1）：步骤 3 会**改动目标网络配置**，
+            //    所以先走 R11 同一套机制：登记原配置（netId + 加密后的原口令）→ 落盘 →
+            //    过 fail-closed 闸门。任何一项不成立就**禁止本次自测**并说明原因。
+            final String testTaskId = "selftest-" + System.currentTimeMillis();
+            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry guardEntry = null;
+            {
+                sb.append(L.s("\n【保护】登记目标原始配置（结束时会自动还原并读回验证）\n",
+                        "\n[guard] snapshotting target config (auto-restored afterwards)\n"));
+                try {
+                    io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry onDisk =
+                            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.load();
+                    boolean otherPending = io.github.wlmosv_png.wpaforge.audit.RestoreRunner
+                            .otherTaskPending(onDisk, testTaskId)
+                            || io.github.wlmosv_png.wpaforge.audit.RestoreJournal.pendingUnknown();
+                    io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.Snapshot snap =
+                            io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.snapshot(
+                                    testTaskId, ssid, null, "wpa2", testTaskId);
+                    boolean saved = !otherPending
+                            && io.github.wlmosv_png.wpaforge.audit.RestoreJournal.save(snap.entry);
+                    sb.append("  ").append(io.github.wlmosv_png.wpaforge.audit.ConfigRestorer
+                            .describe(snap.entry)).append('\n');
+                    io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision d =
+                            io.github.wlmosv_png.wpaforge.audit.RestoreGuard.decide(
+                                    snap.facts(otherPending, saved));
+                    if (d.proceed) {
+                        guardEntry = snap.entry;
+                        sb.append(L.s("  ✓ 已登记，测试结束后自动还原\n",
+                                "  ✓ snapshotted; will restore after the test\n"));
+                    } else {
+                        sb.append(L.s("  ✗ 无法保证能还原，已禁止本次自测（不执行任何写操作）: ",
+                                        "  x cannot guarantee restore - self-test refused (no writes): "))
+                                .append(io.github.wlmosv_png.wpaforge.audit.RestoreGuard.describe(d))
+                                .append('\n');
+                    }
+                } catch (Throwable t) {
+                    guardEntry = null;
+                    sb.append(L.s("  ✗ 登记异常，已禁止本次自测: ", "  x snapshot threw - refused: "))
+                            .append(t.getClass().getSimpleName()).append('\n');
+                }
+            }
+
+            if (sh != null && guardEntry != null) {
+                try {
                 // ── 步骤 3：清配置 ──
                 sb.append(L.s("\n【3/6】清除目标旧配置\n", "\n[3/6] Clear stale config\n"));
                 String before = null;
@@ -5541,6 +5588,36 @@ public class MainActivity extends Activity {
                     sb.append(L.s("  这说明系统确实没连上（密码不符 / 信号太弱 / 安全类型不匹配）。\n",
                             "  The system genuinely failed to connect (wrong passphrase / weak signal / security mismatch).\n"));
                 }
+                } finally {
+                    // ── 收尾还原（最终审计 P0-1）──
+                    // 无论成功、失败、中断还是异常，都必须走到这里；与启动补做共用同一把锁，
+                    // 所以不会和服务的收尾恢复并发操作同一份 journal / 同一个目标配置。
+                    sb.append(L.s("\n【还原】正在恢复目标原始配置…\n",
+                            "\n[restore] restoring original config...\n"));
+                    try {
+                        io.github.wlmosv_png.wpaforge.audit.RestorePlan.Outcome o =
+                                io.github.wlmosv_png.wpaforge.audit.RestoreRunner.runExclusiveForTask(
+                                        guardEntry, testTaskId,
+                                        io.github.wlmosv_png.wpaforge.audit.ConfigRestorer::restore);
+                        if (o == null) {
+                            sb.append(L.s("  ⚠ 本次未执行还原: ", "  ! restore not run: "))
+                                    .append(io.github.wlmosv_png.wpaforge.audit.RestoreRunner.lastSummary())
+                                    .append('\n');
+                        } else {
+                            sb.append("  ").append(o.summary()).append('\n');
+                            if (!o.restored) {
+                                sb.append(L.s("  ⚠ 原配置未确认还原：请手动重连该网络（口令可能需要重输）\n",
+                                        "  ! original config not confirmed: reconnect manually\n"));
+                            }
+                        }
+                    } catch (Throwable t) {
+                        sb.append(L.s("  ✗ 还原异常: ", "  x restore threw: "))
+                                .append(t.getClass().getSimpleName()).append('\n');
+                    }
+                }
+            } else if (sh != null) {
+                sb.append(L.s("\n【跳过】未通过保护检查，本次不执行任何会改动网络配置的步骤。\n",
+                        "\n[skipped] guard failed - no config-touching steps were run.\n"));
             }
 
             final String body = sb.toString();

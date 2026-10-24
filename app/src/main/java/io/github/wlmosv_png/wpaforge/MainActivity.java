@@ -220,6 +220,16 @@ public class MainActivity extends Activity {
     private final java.util.List<TaskQueue.Task> queueCache = new java.util.ArrayList<>();
     /** 当前用作字典的文件路径（空表示用内置生成器） */
     private String currentDictPath = "";
+    /**
+     * 字典条数的**显示值**。
+     *
+     * <p>为什么单独存一个：回前台时界面可能只从任务里拿得到「名字 + 条数」
+     * （候选列表要读盘、可能几 MB），没必要为了显示一个数字先卡住界面。
+     * 列表补齐后会覆盖它。
+     */
+    private int dictSizeShown = 0;
+    /** 是否正在后台补齐候选列表（防止重复触发读盘）。 */
+    private boolean dictReloading = false;
     private LinearLayout queueBox;
     /** 设置页里的权限状态行（授权后要刷新） */
     private TextView permLabel;
@@ -397,6 +407,8 @@ public class MainActivity extends Activity {
             crackService.addCallback(svcCallback);
             setRunning(crackService.isWorking());
             refreshQueue();
+            // 服务刚绑上：目标/字典可能只存在于服务里（界面被系统重建过）
+            restoreSelectionFromAuthority();
         }
 
         @Override
@@ -3036,7 +3048,7 @@ public class MainActivity extends Activity {
 
     private void updateDictStatus() {
         if (dictStatus == null) return;
-        int n = currentDict == null ? 0 : currentDict.size();
+        int n = dictCount();
         dictStatus.setText(L.s("当前字典: ", "Current dictionary: ") + n + L.s(" 条", " entries") + (n == 0 ? L.s("（未选择）", "(none selected)") : ""));
     }
 
@@ -4022,6 +4034,118 @@ public class MainActivity extends Activity {
         refreshQueue();
     }
 
+    /**
+     * 从「权威」重建 目标 / 字典 的**显示状态**（2026-10-24 反馈修复）。
+     *
+     * <h3>原来的问题</h3>
+     * 目标与字典只存在 Activity 的内存字段里。系统在后台把 Activity 回收、
+     * 用户再回来（或暂停后继续）时，Activity 是新建的：字段为空 →
+     * 顶上两张卡显示「未选择目标 / 未选择字典」，而服务其实正拿着它们跑。
+     * 这是**显示没有单一权威**的典型症状：真实的权威（服务 + 持久化队列）
+     * 一直好好的，只有界面自己忘了。
+     *
+     * <h3>现在的做法（权威 + 派生显示）</h3>
+     * <ol>
+     *   <li><b>目标</b>：内存里没有 → 取「服务正在跑的任务」，再退到「队列里第一个
+     *       RUNNING/PAUSED 任务」，用 {@code task.toNetRecord()} 还原；</li>
+     *   <li><b>字典</b>：优先直接用**服务正在使用的**那份候选列表（与引擎同源，
+     *       零成本）；服务不在或没在跑，就用任务里的 {@code dictName/dictSize}
+     *       先把名字与条数显示出来，同时**后台**按 {@code dictPath} 读盘补齐列表
+     *       （列表还要给「开始」用，所以必须补，但不该卡住界面）；</li>
+     *   <li><b>只在缺失时才覆盖</b>：用户本次已经选好的目标/字典绝不被动过 ——
+     *       否则「我明明选了别的」会被运行中的任务顶掉。</li>
+     * </ol>
+     * 本方法是幂等的，可以在绑定服务、队列变化、回前台、切回本页时重复调用。
+     */
+    private void restoreSelectionFromAuthority() {
+        // ① 目标
+        if (targetNet == null || targetNet.ssid == null || targetNet.ssid.isEmpty()) {
+            TaskQueue.Task t = activeTaskForDisplay();
+            if (t != null && t.ssid != null && !t.ssid.isEmpty()) {
+                try {
+                    targetNet = t.toNetRecord();
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        // ② 字典
+        if ((currentDict == null || currentDict.isEmpty()) && !dictReloading) {
+            CrackService svc = liveService();
+            java.util.List<Candidate> engineDict = svc == null ? null : svc.dictForDisplay();
+            if (engineDict != null && !engineDict.isEmpty()) {
+                // 与引擎同一份：直接采用（这就是权威）
+                currentDict = engineDict;
+                dictSizeShown = engineDict.size();
+                TaskQueue.Task t = svc.current();
+                if (t != null) {
+                    if (currentDictName == null || currentDictName.isEmpty()) {
+                        currentDictName = t.dictName == null ? "" : t.dictName;
+                    }
+                    if (currentDictPath == null || currentDictPath.isEmpty()) {
+                        currentDictPath = t.dictPath == null ? "" : t.dictPath;
+                    }
+                }
+            } else {
+                TaskQueue.Task t = activeTaskForDisplay();
+                if (t != null) {
+                    if (currentDictName == null || currentDictName.isEmpty()) {
+                        currentDictName = t.dictName == null ? "" : t.dictName;
+                    }
+                    if (currentDictPath == null || currentDictPath.isEmpty()) {
+                        currentDictPath = t.dictPath == null ? "" : t.dictPath;
+                    }
+                    if (t.dictSize > 0) dictSizeShown = t.dictSize;
+
+                    final String path = currentDictPath;
+                    final String name = currentDictName;
+                    if (path != null && !path.isEmpty()) {
+                        dictReloading = true;
+                        new Thread(() -> {
+                            java.util.List<Candidate> reloaded = null;
+                            try {
+                                reloaded = io.github.wlmosv_png.wpaforge.audit.DictStore.load(
+                                        new java.io.File(path), 0);
+                            } catch (Throwable ignored) {}
+                            final java.util.List<Candidate> r = reloaded;
+                            ui.post(() -> {
+                                dictReloading = false;
+                                if (r != null && !r.isEmpty()
+                                        && (currentDict == null || currentDict.isEmpty())) {
+                                    currentDict = r;
+                                    dictSizeShown = r.size();
+                                    currentDictName = name;
+                                }
+                                updateConnectDict();
+                                updateDictStatus();
+                            });
+                        }, "wpaforge-dict-reload").start();
+                    }
+                }
+            }
+        }
+
+        updateTargetLabel();
+        updateConnectDict();
+        updateConnectMode();
+        updateDictStatus();
+    }
+
+    /**
+     * 显示用的「活动任务」：正在跑的优先，其次队列里第一个 RUNNING/PAUSED。
+     * <p>只用于重建显示；不改队列、不改任何状态。
+     */
+    private TaskQueue.Task activeTaskForDisplay() {
+        CrackService svc = liveService();
+        if (svc != null) {
+            TaskQueue.Task cur = svc.current();
+            if (cur != null) return cur;
+        }
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PAUSED) return t;
+        }
+        return null;
+    }
+
     /** 执行方式：仅 Root，点击只弹提示 */
     /** 空状态提示 */
     private void updateEmptyHint() {
@@ -4117,16 +4241,28 @@ public class MainActivity extends Activity {
     /** 破解页显示当前选中的字典 */
     private void updateConnectDict() {
         if (connectDictView == null) return;
-        if (currentDict == null || currentDict.isEmpty()) {
+        int n = dictCount();
+        if (n <= 0) {
             connectDictView.setText(L.s("未选择字典 —— 点这里选择",
                     "No dictionary — tap to select"));
             connectDictView.setTextColor(TEXT_DIM);
         } else {
-            connectDictView.setText(currentDictName + "   ·   "
-                    + currentDict.size() + L.s(" 条", " entries"));
+            String name = (currentDictName == null || currentDictName.isEmpty())
+                    ? L.s("字典", "Dictionary") : currentDictName;
+            connectDictView.setText(name + "   ·   " + n + L.s(" 条", " entries"));
             connectDictView.setTextColor(OK_GREEN);
         }
         updateEmptyHint();
+    }
+
+    /**
+     * 字典条数：优先用内存里的候选列表，其次用从权威恢复出来的显示值。
+     * <p>这样「后台跑着 → 回前台」时，即使候选列表还在后台读盘，
+     * 界面上也不会显示成「未选择字典」。
+     */
+    private int dictCount() {
+        if (currentDict != null && !currentDict.isEmpty()) return currentDict.size();
+        return Math.max(0, dictSizeShown);
     }
 
     /** 服务状态回调 */
@@ -4137,6 +4273,8 @@ public class MainActivity extends Activity {
                 queueCache.clear();
                 queueCache.addAll(queue);
                 renderQueue();
+                // 队列是持久化权威：界面被重建后靠它把「目标/字典」的显示补回来
+                restoreSelectionFromAuthority();
             });
         }
 
@@ -4635,6 +4773,9 @@ public class MainActivity extends Activity {
             queueCache.clear();
             queueCache.addAll(TaskQueue.load(this));
             renderQueue();
+            // 队列是持久化权威：刚读到盘就顺手把「目标/字典」的显示对齐一次
+            // （界面被系统重建、服务已不在时，就靠这一步把两张卡补回来）
+            restoreSelectionFromAuthority();
         });
     }
 
@@ -6340,6 +6481,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         checkBackgroundStall();
+        // 回前台：目标/字典的显示与「权威」对齐一次（后台跑过的任务会在这里补回来）
+        restoreSelectionFromAuthority();
         if (currentTab == 0) {
             // 从后台回来要把雷达动画接上，否则会停在最后一帧
             if (radar != null) radar.startSpin();

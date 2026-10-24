@@ -112,6 +112,31 @@ public class CrackPageLayoutTest {
                 ma.contains("candRoll.setCandidate(cur)")
                         && read(ROOT + "ui/CandidateRoll.java") != null
                         && read(ROOT + "ui/CandidateRoll.java").contains("setCandidate(String s)"));
+        System.out.println("== 2b. 目标/字典显示：权威 + 派生（后台跑回来不会丢）==");
+        String svc = read(ROOT + "CrackService.java");
+        ok("服务给界面一个只读的候选列表入口（与引擎同源）",
+                svc != null && svc.contains("public java.util.List<Candidate> dictForDisplay()"));
+        ok("MainActivity 有「从权威重建显示」的方法",
+                ma.contains("private void restoreSelectionFromAuthority()"));
+        ok("重建只在**缺失时**发生（不覆盖用户本次的选择）",
+                ma.contains("if (targetNet == null || targetNet.ssid == null")
+                        && ma.contains("if ((currentDict == null || currentDict.isEmpty()) && !dictReloading)"));
+        ok("目标从任务还原（task.toNetRecord）", ma.contains("targetNet = t.toNetRecord();"));
+        ok("字典优先用服务正在用的那份",
+                ma.contains("java.util.List<Candidate> engineDict = svc == null ? null : svc.dictForDisplay();"));
+        ok("服务不在时按 dictPath 后台补齐列表",
+                ma.contains("audit.DictStore.load(") && ma.contains("wpaforge-dict-reload"));
+        ok("条数显示不依赖列表是否已载入（dictCount）",
+                ma.contains("private int dictCount()") && ma.contains("return Math.max(0, dictSizeShown);"));
+        int nResume = 0, nSvc = 0, nQueue = 0;
+        for (String l : ma.split("\n")) {
+            if (l.contains("restoreSelectionFromAuthority();")) {
+                nResume++;   // 统计所有调用点
+            }
+        }
+        ok("重建挂在多个时机（回前台 / 绑服务 / 队列刷新 / 队列回调）",
+                nResume >= 4);
+
         System.out.println("== 3. 原有回调一字不变 ==");
         ok("开始 → startConnect()",
                 ma.contains("startBtn.setOnClickListener(v -> startConnect());"));

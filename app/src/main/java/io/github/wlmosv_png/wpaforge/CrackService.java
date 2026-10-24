@@ -345,6 +345,17 @@ public class CrackService extends Service {
         return currentTask;
     }
 
+    /**
+     * 服务**正在使用**的那份候选列表（只读用途：界面回前台后重建显示）。
+     *
+     * <p>为什么由服务给而不是界面自己读盘：界面与引擎必须是同一份数据来源 ——
+     * 界面自己再读一遍盘，就可能出现「界面显示 1771 条、引擎实际跑的是另一份」
+     * 这种对不上的情况。这里直接给出引擎正在用的引用。
+     */
+    public java.util.List<Candidate> dictForDisplay() {
+        return currentDict;
+    }
+
     /** 排队一个目标 */
     public TaskQueue.Task enqueue(NetRecord target, String dictPath, String dictName) {
         TaskQueue.Task t = TaskQueue.enqueue(this, target, dictPath, dictName);

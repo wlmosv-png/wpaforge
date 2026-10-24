@@ -19,11 +19,11 @@ import android.view.View;
  */
 public class AuthorCard extends View {
 
-    private static final int ACCENT = Color.parseColor("#FFB300");
-    private static final int ACCENT_DIM = Color.parseColor("#66FFB300");
-    private static final int TEXT = Color.parseColor("#E8E8EE");
-    private static final int TEXT_DIM = Color.parseColor("#8A8A94");
-    private static final int SURFACE = Color.parseColor("#1B1B24");
+    private static final int ACCENT = AmberTheme.ACCENT;
+    private static final int ACCENT_DIM = AmberTheme.ACCENT_EDGE;
+    private static final int TEXT = AmberTheme.TEXT;
+    private static final int TEXT_DIM = AmberTheme.TEXT_DIM;
+    private static final int SURFACE = AmberTheme.CARD;
 
     private final Paint pBg = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pRing = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -88,7 +88,7 @@ public class AuthorCard extends View {
 
         // 卡片底：竖向渐变，上浅下深
         pBg.setShader(new LinearGradient(0, 0, 0, h,
-                new int[]{Color.parseColor("#23232E"), SURFACE},
+                new int[]{AmberTheme.CARD_2, SURFACE},
                 null, Shader.TileMode.CLAMP));
         cv.drawRoundRect(whole, dp(20), dp(20), pBg);
         pBg.setShader(null);
@@ -118,7 +118,7 @@ public class AuthorCard extends View {
             cv.drawCircle(cx, cy, r - dp(1.2f), pAvatarRing);
         } else {
             // 回退：同心环 + 字母
-            pFill.setColor(Color.parseColor("#2A2A36"));
+            pFill.setColor(AmberTheme.NEUTRAL_BG);
             cv.drawCircle(cx, cy, r, pFill);
 
             pRing.setStyle(Paint.Style.STROKE);

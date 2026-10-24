@@ -1,5 +1,6 @@
 package io.github.wlmosv_png.wpaforge;
 
+import io.github.wlmosv_png.wpaforge.ui.AmberTheme;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.BitmapFactory;
@@ -23,12 +24,12 @@ import io.github.wlmosv_png.wpaforge.ui.AuthorCard;
  */
 public class AboutActivity extends Activity {
 
-    private static final int BG       = Color.parseColor("#0E0E11");
-    private static final int SURFACE  = Color.parseColor("#1B1B24");
-    private static final int ACCENT   = Color.parseColor("#FFB300");
-    private static final int TEXT     = Color.parseColor("#E8E8EE");
-    private static final int TEXT_DIM = Color.parseColor("#8A8A94");
-    private static final int OK_GREEN = Color.parseColor("#4CAF50");
+    private static final int BG       = AmberTheme.BG;
+    private static final int SURFACE  = AmberTheme.CARD;
+    private static final int ACCENT   = AmberTheme.ACCENT;
+    private static final int TEXT     = AmberTheme.TEXT;
+    private static final int TEXT_DIM = AmberTheme.TEXT_DIM;
+    private static final int OK_GREEN = AmberTheme.OK;
 
     private static final String GH     = "https://github.com/wlmosv-png";
     private static final String TG     = "https://t.me/wlmosv_bunny";
@@ -166,7 +167,7 @@ public class AboutActivity extends Activity {
         t.setTextSize(12.5f);
         t.setTextColor(TEXT_DIM);
         t.setLineSpacing(px(5), 1f);
-        t.setBackground(roundBg(SURFACE, 18));
+        t.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
         t.setPadding(px(18), px(16), px(18), px(16));
         return t;
     }
@@ -178,7 +179,7 @@ public class AboutActivity extends Activity {
         b.setTextSize(12);
         b.setTextColor(ACCENT);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        b.setBackground(roundBg(Color.parseColor("#1F1F2A"), 18));
+        b.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CARD));
         b.setMinWidth(0); b.setMinimumWidth(0);
         b.setMinHeight(0); b.setMinimumHeight(0);
         b.setStateListAnimator(null);
@@ -195,7 +196,7 @@ public class AboutActivity extends Activity {
                              String[] tags, View.OnClickListener onClick) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundBg(SURFACE, 18));
+        box.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
         box.setPadding(px(18), px(16), px(18), px(16));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -233,7 +234,7 @@ public class AboutActivity extends Activity {
                 chip.setText(s2);
                 chip.setTextSize(10);
                 chip.setTextColor(TEXT_DIM);
-                chip.setBackground(roundBg(Color.parseColor("#232330"), 10));
+                chip.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
                 chip.setPadding(px(9), px(3), px(9), px(3));
                 LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);

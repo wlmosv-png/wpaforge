@@ -24,10 +24,10 @@ public class ThinProgress extends View {
     private final Paint pRight = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pSub = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    private int accent = Color.parseColor("#FFB300");
-    private int track = Color.parseColor("#242430");
-    private int textColor = Color.parseColor("#CFCFD6");
-    private int subColor = Color.parseColor("#8A8A94");
+    private int accent = AmberTheme.ACCENT;
+    private int track = AmberTheme.SUNKEN;
+    private int textColor = AmberTheme.TEXT;
+    private int subColor = AmberTheme.TEXT_DIM;
 
     public ThinProgress(Context c) { this(c, null); }
 

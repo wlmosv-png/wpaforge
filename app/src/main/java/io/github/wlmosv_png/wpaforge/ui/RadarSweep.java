@@ -36,7 +36,7 @@ public class RadarSweep extends View {
     private final Paint pBlip = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pText = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    private final int accent = Color.parseColor("#FFB300");
+    private final int accent = AmberTheme.ACCENT;
     private float sweepAngle = 0f;
     private boolean spinning = false;
     private long lastFrame = 0;
@@ -49,10 +49,10 @@ public class RadarSweep extends View {
         super(c, a);
         pRing.setStyle(Paint.Style.STROKE);
         pRing.setStrokeWidth(dp(1.2f));
-        pRing.setColor(Color.parseColor("#33FFFFFF"));
+        pRing.setColor(AmberTheme.BTN_2ND_EDGE);
 
         pText.setTextAlign(Paint.Align.CENTER);
-        pText.setColor(Color.parseColor("#E8E8E8"));
+        pText.setColor(AmberTheme.TEXT);
     }
 
     private float dp(float v) {
@@ -132,7 +132,7 @@ public class RadarSweep extends View {
         // 扫描扇形：一段渐变弧 + 拖尾线
         RectF oval = new RectF(cx - radius, cy - radius, cx + radius, cy + radius);
         pSweep.setShader(new LinearGradient(cx, cy, cx + radius, cy,
-                new int[]{Color.TRANSPARENT, Color.parseColor("#44FFB300")},
+                new int[]{Color.TRANSPARENT, AmberTheme.ACCENT_GLOW},
                 null, Shader.TileMode.CLAMP));
         cv.drawArc(oval, sweepAngle - 40, 40, true, pSweep);
         pSweep.setShader(null);
@@ -156,7 +156,7 @@ public class RadarSweep extends View {
             float diff = Math.abs(((sweepAngle - b.angleDeg) % 360 + 360) % 360);
             float alpha = diff < 60 ? 1f : Math.max(0.25f, 1f - (diff - 60) / 300f);
 
-            pBlip.setColor(b.locked ? accent : Color.parseColor("#FF5252"));
+            pBlip.setColor(b.locked ? accent : AmberTheme.DANGER);
             pBlip.setAlpha((int) (255 * alpha));
             cv.drawCircle(bx, by, b.strong ? dp(5f) : dp(3.2f), pBlip);
         }
@@ -164,10 +164,10 @@ public class RadarSweep extends View {
         // 中心文字
         if (!centerText.isEmpty()) {
             pText.setTextSize(dp(26));
-            pText.setColor(Color.parseColor("#E8E8E8"));
+            pText.setColor(AmberTheme.TEXT);
             cv.drawText(centerText, cx, cy - dp(2), pText);
             pText.setTextSize(dp(11));
-            pText.setColor(Color.parseColor("#8A8A8A"));
+            pText.setColor(AmberTheme.TEXT_DIM);
             cv.drawText(subText, cx, cy + dp(16), pText);
         }
 

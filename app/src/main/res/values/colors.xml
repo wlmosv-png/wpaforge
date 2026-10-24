@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Obsidian Amber 的资源侧颜色。
+
+  为什么要有这份文件：主题（对话框、状态栏、窗口底、字体选择器）由 **系统**
+  按 @style 解析，Java 侧的 ui/AmberTheme 管不到它们。两边必须是同一套值，
+  所以这里的名字与 ui/AmberTheme 的字段一一对应 —— 改配色时两处一起改，
+  并且由 CrackPageLayoutTest / ThemeConsistencyTest 钉住一致性。
+-->
+<resources>
+    <color name="wpf_bg">#FF101014</color>
+    <color name="wpf_card">#FF1B1B22</color>
+    <color name="wpf_card_2">#FF24242D</color>
+    <color name="wpf_accent">#FFFFB800</color>
+    <color name="wpf_on_accent">#FF14141A</color>
+    <color name="wpf_text">#FFF5F5F7</color>
+    <color name="wpf_text_dim">#FFA5A5B1</color>
+    <color name="wpf_danger">#FFFF5A5F</color>
+    <!-- 水波纹 / 控件高亮：极淡白，深底上可见但不刺眼 -->
+    <color name="wpf_ripple">#33FFFFFF</color>
+</resources>

@@ -55,12 +55,12 @@ public class SignalBars extends View {
 
     public SignalBars(Context c, AttributeSet a) {
         super(c, a);
-        accent = Color.parseColor("#FFB300");
-        accent5g = Color.parseColor("#FFD54F");
-        accentDim = Color.parseColor("#7A5600");
-        textMain = Color.parseColor("#E0E0E6");
-        textDim = Color.parseColor("#8A8A94");
-        gridColor = Color.parseColor("#22FFFFFF");
+        accent = AmberTheme.ACCENT;
+        accent5g = AmberTheme.ACCENT_5G;
+        accentDim = AmberTheme.ACCENT_DIM;
+        textMain = AmberTheme.TEXT;
+        textDim = AmberTheme.TEXT_DIM;
+        gridColor = AmberTheme.GRID;
 
         pGrid.setStrokeWidth(2f);
         pGrid.setColor(gridColor);
@@ -140,7 +140,7 @@ public class SignalBars extends View {
             cv.drawRoundRect(r, dp(2), dp(2), pBar);
 
             // 顶端高亮小段
-            pTop.setColor(b.is5G ? Color.parseColor("#FFFFFF") : Color.parseColor("#FFE082"));
+            pTop.setColor(b.is5G ? Color.WHITE : AmberTheme.ACCENT_SOFT);
             RectF top = new RectF(r.left, r.top, r.right, r.top + Math.min(barH, dp(4)));
             cv.drawRoundRect(top, dp(2), dp(2), pTop);
 
@@ -148,7 +148,7 @@ public class SignalBars extends View {
             if (!b.locked) {
                 pBar.setStyle(Paint.Style.STROKE);
                 pBar.setStrokeWidth(dp(1.4f));
-                pBar.setColor(Color.parseColor("#FF5252"));
+                pBar.setColor(AmberTheme.DANGER);
                 cv.drawCircle(cx, r.top - dp(7), dp(3f), pBar);
                 pBar.setStyle(Paint.Style.FILL);
             }

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WPAForge Obsidian Amber —— 资源侧主题。
+
+  为什么必须有：应用的全部页面都是 Java 构建的（ui/AmberTheme 管配色），
+  但**系统**渲染的那些东西管不到 —— 对话框（AlertDialog）、状态栏/导航栏底色、
+  窗口启动底色、字体选择器、Toast、文本选择手柄。它们只认资源里的 @style。
+  不给它们一套主题，结果是页面近黑琥珀、系统弹窗却是平台默认深灰 + 青色强调，
+  一眼就能看出「两张皮」。
+
+  这里的每个颜色都来自 @color/wpf_*（与 ui/AmberTheme 的字段一对一同值）。
+-->
+<resources>
+
+    <!-- 应用主题：近黑底 + 琥珀强调 -->
+    <style name="WPFTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/wpf_accent</item>
+        <item name="android:colorAccent">@color/wpf_accent</item>
+        <item name="android:colorPrimaryDark">@color/wpf_bg</item>
+        <item name="android:colorBackground">@color/wpf_bg</item>
+        <item name="android:windowBackground">@color/wpf_bg</item>
+        <item name="android:statusBarColor">@color/wpf_bg</item>
+        <item name="android:navigationBarColor">@color/wpf_bg</item>
+        <!-- targetSdk 35 上强制 edge-to-edge；这两项保证图标与近黑底对比正确 -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:textColorPrimary">@color/wpf_text</item>
+        <item name="android:textColorSecondary">@color/wpf_text_dim</item>
+        <item name="android:textColorTertiary">@color/wpf_text_dim</item>
+        <item name="android:colorControlHighlight">@color/wpf_ripple</item>
+        <!-- 对话框也走同一套（否则系统弹窗与页面配色不一致） -->
+        <item name="android:alertDialogTheme">@style/WPFDialog</item>
+    </style>
+
+    <!--
+      对话框主题。
+      刻意**不覆盖** android:windowBackground —— 平台自带的对话框底图负责
+      圆角与四周留白，覆盖成纯色会把圆角抹掉。这里只改「面板填充色 + 文字 + 强调色」。
+    -->
+    <style name="WPFDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/wpf_accent</item>
+        <item name="android:colorBackground">@color/wpf_card</item>
+        <item name="android:textColorPrimary">@color/wpf_text</item>
+        <item name="android:textColorSecondary">@color/wpf_text_dim</item>
+    </style>
+
+</resources>

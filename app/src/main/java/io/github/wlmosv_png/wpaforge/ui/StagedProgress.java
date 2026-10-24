@@ -53,11 +53,16 @@ public class StagedProgress extends View {
     private final Paint pStage = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pTick = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    private int accent = Color.parseColor("#FFB300");
-    private int okGreen = Color.parseColor("#4CAF50");
-    private int textMain = Color.parseColor("#E8E8EE");
-    private int textDim = Color.parseColor("#8A8A94");
-    private int track = Color.parseColor("#242430");
+    private int accent = AmberTheme.ACCENT;
+    private int okGreen = AmberTheme.OK;
+    private int textMain = AmberTheme.TEXT;
+    private int textDim = AmberTheme.TEXT_DIM;
+    private int track = AmberTheme.SUNKEN;
+    /* 分层的暗/中两档也做成字段：主题化时一并替换，避免同一套颜色两处各写一遍 */
+    private int accentDim = AmberTheme.ACCENT_DIM;
+    private int accentMid = AmberTheme.ACCENT_MID;
+    private int okDim = AmberTheme.OK_DIM;
+    private int okMid = AmberTheme.OK_MID;
 
     private boolean done = false;
 
@@ -140,9 +145,9 @@ public class StagedProgress extends View {
         super(c, a);
         // 三层亮度：外暗 → 内亮，视觉上「一层套一层」
         int[] colors = {
-                Color.parseColor("#7A5300"),   // 外层 深琥珀
-                Color.parseColor("#C68A00"),   // 中层 中琥珀
-                Color.parseColor("#FFB300")    // 内层 亮琥珀（主色）
+                AmberTheme.ACCENT_DIM,   // 外层 深琥珀
+                AmberTheme.ACCENT_MID,   // 中层 中琥珀
+                AmberTheme.ACCENT    // 内层 亮琥珀（主色）
         };
         for (int i = 0; i < pFill.length; i++) {
             pFill[i] = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -151,7 +156,7 @@ public class StagedProgress extends View {
         pHead.setTextAlign(Paint.Align.LEFT);
         pFoot.setTextAlign(Paint.Align.LEFT);
         pStage.setTextAlign(Paint.Align.LEFT);
-        pTick.setColor(Color.parseColor("#FFFFFF"));
+        pTick.setColor(Color.WHITE);
         pTrack.setColor(track);
     }
 
@@ -194,14 +199,40 @@ public class StagedProgress extends View {
         this.done = d;
         for (Paint p : pFill) p.setColor(d ? okGreen : accent);
         if (d) {
-            pFill[0].setColor(Color.parseColor("#2E7D32"));
-            pFill[1].setColor(Color.parseColor("#388E3C"));
+            pFill[0].setColor(okDim);
+            pFill[1].setColor(okMid);
             pFill[2].setColor(okGreen);
         } else {
-            pFill[0].setColor(Color.parseColor("#7A5300"));
-            pFill[1].setColor(Color.parseColor("#C68A00"));
+            pFill[0].setColor(accentDim);
+            pFill[1].setColor(accentMid);
             pFill[2].setColor(accent);
         }
+        invalidate();
+    }
+
+    /**
+     * 覆盖配色（供主题统一调用）。传 0 的位保持原值。
+     *
+     * <p>默认值就是本类一直以来的琥珀 + 近黑一套 —— 重构前它的颜色是写死在
+     * 构造函数里的，主题化之后由调用方传入 {@code ui.AmberTheme} 的值，
+     * 这样「进度条的主色」和「页面主色」不会再各写一个十六进制。
+     */
+    public void setPalette(int accentColor, int dim, int mid,
+                           int main, int dimText, int trackColor,
+                           int okColor, int okDimColor, int okMidColor) {
+        if (accentColor != 0) this.accent = accentColor;
+        if (dim != 0) this.accentDim = dim;
+        if (mid != 0) this.accentMid = mid;
+        if (main != 0) this.textMain = main;
+        if (dimText != 0) this.textDim = dimText;
+        if (trackColor != 0) this.track = trackColor;
+        if (okColor != 0) this.okGreen = okColor;
+        if (okDimColor != 0) this.okDim = okDimColor;
+        if (okMidColor != 0) this.okMid = okMidColor;
+        pTrack.setColor(this.track);
+        pHead.setColor(this.textMain);
+        pFoot.setColor(this.textDim);
+        setDone(done);        // 依当前 done 状态重算三段填充
         invalidate();
     }
 

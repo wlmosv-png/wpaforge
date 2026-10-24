@@ -31,12 +31,12 @@ import android.widget.TextView;
  */
 public final class NetDialog {
 
-    private static final int SURFACE = Color.parseColor("#1B1B24");
-    private static final int ACCENT  = Color.parseColor("#FFB300");
-    private static final int TEXT    = Color.parseColor("#E8E8EE");
-    private static final int TEXT_DIM= Color.parseColor("#8A8A94");
-    private static final int DANGER  = Color.parseColor("#FF6B6B");
-    private static final int FIELD_BG= Color.parseColor("#12121A");
+    private static final int SURFACE = AmberTheme.CARD;
+    private static final int ACCENT  = AmberTheme.ACCENT;
+    private static final int TEXT    = AmberTheme.TEXT;
+    private static final int TEXT_DIM= AmberTheme.TEXT_DIM;
+    private static final int DANGER  = AmberTheme.DANGER;
+    private static final int FIELD_BG= AmberTheme.SUNKEN;
 
     private final Context ctx;
     private final Dialog dialog;
@@ -53,7 +53,7 @@ public final class NetDialog {
 
         LinearLayout root = new LinearLayout(ctx);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackground(round(SURFACE, 24));
+        root.setBackground(round(SURFACE, AmberTheme.RADIUS_CARD));
         root.setPadding(px(22), px(22), px(22), px(16));
 
         if (title != null && !title.isEmpty()) {
@@ -130,7 +130,7 @@ public final class NetDialog {
         tv.setLineSpacing(4 * d.dp, 1f);
 
         ScrollView sv = new ScrollView(ctx);
-        sv.setBackground(d.round(FIELD_BG, 14));
+        sv.setBackground(d.round(FIELD_BG, AmberTheme.RADIUS_CHIP));
         sv.setPadding(d.px(14), d.px(14), d.px(14), d.px(14));
         sv.addView(tv);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -160,7 +160,7 @@ public final class NetDialog {
         et.setHintTextColor(TEXT_DIM);
         et.setTextSize(13.5f);
         et.setSingleLine(true);
-        et.setBackground(round(FIELD_BG, 14));
+        et.setBackground(round(FIELD_BG, AmberTheme.RADIUS_CHIP));
         et.setPadding(px(14), px(13), px(14), px(13));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -185,7 +185,7 @@ public final class NetDialog {
         et.setVerticalScrollBarEnabled(true);
         et.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        et.setBackground(round(FIELD_BG, 14));
+        et.setBackground(round(FIELD_BG, AmberTheme.RADIUS_CHIP));
         et.setPadding(px(14), px(13), px(14), px(13));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -220,7 +220,7 @@ public final class NetDialog {
     }
 
     public NetDialog setPositive(String label, OnClick cb) {
-        positiveBtn = button(label, ACCENT, true);
+        positiveBtn = button(label, AmberTheme.BTN_PRIMARY);
         positiveBtn.setOnClickListener(v -> {
             if (cb != null) cb.onClick(this);
             dialog.dismiss();
@@ -231,7 +231,7 @@ public final class NetDialog {
 
     /** 不自动关闭的确定按钮（用于校验失败时留在弹窗里） */
     public NetDialog setPositiveKeepOpen(String label, OnClick cb) {
-        positiveBtn = button(label, ACCENT, true);
+        positiveBtn = button(label, AmberTheme.BTN_PRIMARY);
         positiveBtn.setOnClickListener(v -> {
             if (cb != null) cb.onClick(this);
         });
@@ -240,7 +240,7 @@ public final class NetDialog {
     }
 
     public NetDialog setNegative(String label, OnClick cb) {
-        negativeBtn = button(label, Color.parseColor("#2A2A36"), false);
+        negativeBtn = button(label, AmberTheme.BTN_NEUTRAL);
         negativeBtn.setOnClickListener(v -> {
             if (cb != null) cb.onClick(this);
             dialog.dismiss();
@@ -253,7 +253,7 @@ public final class NetDialog {
     }
 
     public NetDialog setDanger(String label, OnClick cb) {
-        Button b = button(label, DANGER, true);
+        Button b = button(label, AmberTheme.BTN_DANGER);
         b.setOnClickListener(v -> {
             if (cb != null) cb.onClick(this);
             dialog.dismiss();
@@ -272,7 +272,7 @@ public final class NetDialog {
         t.setTextSize(13.5f);
         t.setTextColor(TEXT);
         t.setPadding(px(16), px(15), px(16), px(15));
-        t.setBackground(round(FIELD_BG, 14));
+        t.setBackground(round(FIELD_BG, AmberTheme.RADIUS_CHIP));
         t.setSingleLine(true);
         t.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -288,25 +288,16 @@ public final class NetDialog {
         return t;
     }
 
-    private Button button(String label, int bg, boolean primary) {
-        Button b = new Button(ctx);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextSize(14);
-        b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        b.setTextColor(primary && bg != DANGER
-                ? Color.parseColor("#14141A") : Color.WHITE);
-        b.setMinWidth(0);
-        b.setMinimumWidth(0);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setStateListAnimator(null);
-        b.setPadding(px(20), px(11), px(20), px(11));
-        b.setBackground(round(bg, 20));
-        UiKit.enableTapHaptic(b);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        b.setLayoutParams(lp);
+    /**
+     * 建按钮 —— 只选**语义**，外观由 {@link AmberTheme#action} 一处定义。
+     *
+     * <p>改前这里自己拼底色/字色/圆角：危险操作是**实心红**，而页面上的危险按钮
+     * 是「暗底 + 红字 + 极淡红描边」。同一个「清空记录」在两处长得不一样。
+     */
+    private Button button(String label, int kind) {
+        Button b = AmberTheme.action(ctx, dp, label, kind);
+        b.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return b;
     }
 

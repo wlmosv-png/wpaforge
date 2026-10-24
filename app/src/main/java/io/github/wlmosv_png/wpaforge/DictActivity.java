@@ -1,5 +1,6 @@
 package io.github.wlmosv_png.wpaforge;
 
+import io.github.wlmosv_png.wpaforge.ui.AmberTheme;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
@@ -40,13 +41,13 @@ import io.github.wlmosv_png.wpaforge.ui.NetDialog;
  */
 public class DictActivity extends Activity {
 
-    private static final int BG       = Color.parseColor("#0E0E11");
-    private static final int SURFACE  = Color.parseColor("#17171C");
-    private static final int ACCENT   = Color.parseColor("#FFB300");
-    private static final int TEXT     = Color.parseColor("#E8E8E8");
-    private static final int TEXT_DIM = Color.parseColor("#8A8A8A");
-    private static final int DANGER   = Color.parseColor("#FF5252");
-    private static final int OK_GREEN = Color.parseColor("#4CAF50");
+    private static final int BG       = AmberTheme.BG;
+    private static final int SURFACE  = AmberTheme.CARD;
+    private static final int ACCENT   = AmberTheme.ACCENT;
+    private static final int TEXT     = AmberTheme.TEXT;
+    private static final int TEXT_DIM = AmberTheme.TEXT_DIM;
+    private static final int DANGER   = AmberTheme.DANGER;
+    private static final int OK_GREEN = AmberTheme.OK;
 
     private static final int REQ_PICK = 2001;
 
@@ -145,13 +146,13 @@ public class DictActivity extends Activity {
         fab.setText("+");
         fab.setAllCaps(false);
         fab.setTextSize(24);
-        fab.setTextColor(Color.parseColor("#14141A"));
+        fab.setTextColor(AmberTheme.ON_ACCENT);
         fab.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         fab.setMinWidth(0); fab.setMinimumWidth(0);
         fab.setMinHeight(0); fab.setMinimumHeight(0);
         fab.setStateListAnimator(null);
         fab.setPadding(0, 0, 0, px(2));
-        fab.setBackground(roundBg(ACCENT, 30));
+        fab.setBackground(roundBg(ACCENT, AmberTheme.RADIUS_BTN));
         fab.setOnClickListener(v -> showActionSheet());
 
         FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(px(58), px(58));
@@ -324,7 +325,7 @@ public class DictActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.setBackground(roundBg(Color.parseColor("#1F1F2A"), 16));
+        box.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CARD));
         box.setPadding(px(8), px(14), px(8), px(14));
         box.setClickable(true);
         box.setOnClickListener(l);
@@ -472,13 +473,13 @@ public class DictActivity extends Activity {
         b.setText(label);
         b.setAllCaps(false);
         b.setTextSize(12.5f);
-        b.setTextColor(Color.parseColor("#14141A"));
+        b.setTextColor(AmberTheme.ON_ACCENT);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinHeight(0);
         b.setMinimumHeight(0);
         b.setStateListAnimator(null);
         b.setPadding(px(16), px(10), px(16), px(10));
-        b.setBackground(roundBg(ACCENT, 22));
+        b.setBackground(roundBg(ACCENT, AmberTheme.RADIUS_BTN));
         b.setOnClickListener(l);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -516,7 +517,7 @@ public class DictActivity extends Activity {
             LinearLayout bar = new LinearLayout(this);
             bar.setOrientation(LinearLayout.HORIZONTAL);
             bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            bar.setBackground(roundBg(Color.parseColor("#1E2230"), 16));
+            bar.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CARD));
             bar.setPadding(px(14), px(10), px(14), px(10));
             LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -547,7 +548,7 @@ public class DictActivity extends Activity {
             empty.setTextSize(13);
             empty.setTextColor(TEXT_DIM);
             empty.setLineSpacing(px(6), 1f);
-            empty.setBackground(roundBg(SURFACE, 18));
+            empty.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CARD));
             empty.setPadding(px(20), px(22), px(20), px(22));
             listBox.addView(empty);
             statLabel.setText(L.s("共 0 个字典", "0 dictionaries"));
@@ -568,7 +569,7 @@ public class DictActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         // 选中态给一个明显的底色，多选时一眼看得出选了哪几本
         box.setBackground(roundBg(selected.contains(e)
-                ? Color.parseColor("#232B3A") : SURFACE, 18));
+                ? AmberTheme.ACCENT_BG : SURFACE, 18));
         box.setPadding(px(16), px(14), px(16), px(14));
         // 长按进入多选（Android 标准交互）—— 这样就不必再占一个「选择」按钮，
         // 那一行原本挤了 5 个按钮，本来就不好按。
@@ -669,7 +670,7 @@ public class DictActivity extends Activity {
         b.setTextSize(11.5f);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        b.setBackground(roundBg(Color.parseColor("#232330"), 16));
+        b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
         b.setMinWidth(0);
         b.setMinimumWidth(0);
         b.setMinHeight(0);
@@ -737,7 +738,7 @@ public class DictActivity extends Activity {
         tv.setTypeface(Typeface.MONOSPACE);
         tv.setLineSpacing(px(3), 1f);
         tv.setTextIsSelectable(true);
-        tv.setBackground(roundBg(SURFACE, 12));
+        tv.setBackground(roundBg(SURFACE, AmberTheme.RADIUS_CHIP));
         tv.setPadding(px(12), px(12), px(12), px(12));
         d.addView(tv);
 
@@ -1240,7 +1241,7 @@ public class DictActivity extends Activity {
             // 每个源做成两行条目
             android.widget.LinearLayout item = new android.widget.LinearLayout(this);
             item.setOrientation(android.widget.LinearLayout.VERTICAL);
-            item.setBackground(roundBg(Color.parseColor("#12121A"), 14));
+            item.setBackground(roundBg(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
             item.setPadding(px(16), px(14), px(16), px(14));
 
             TextView n = new TextView(this);

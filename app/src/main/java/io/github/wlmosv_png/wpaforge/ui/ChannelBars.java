@@ -68,13 +68,13 @@ public class ChannelBars extends View {
 
     public ChannelBars(Context c, AttributeSet a) {
         super(c, a);
-        accent   = Color.parseColor("#FFB300");
-        ok       = Color.parseColor("#4CAF50");
-        danger   = Color.parseColor("#FF5252");
-        warn     = Color.parseColor("#FFA726");
-        textMain = Color.parseColor("#E0E0E6");
-        textDim  = Color.parseColor("#8A8A94");
-        track    = Color.parseColor("#22FFFFFF");
+        accent   = AmberTheme.ACCENT;
+        ok       = AmberTheme.OK;
+        danger   = AmberTheme.DANGER;
+        warn     = AmberTheme.ACCENT;
+        textMain = AmberTheme.TEXT;
+        textDim  = AmberTheme.TEXT_DIM;
+        track    = AmberTheme.GRID;
 
         rowH = dp(26);
 

@@ -57,7 +57,7 @@
         android:description="@string/app_desc"
         android:allowBackup="false"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/WPFTheme">
 
         <service
             android:name=".CrackService"

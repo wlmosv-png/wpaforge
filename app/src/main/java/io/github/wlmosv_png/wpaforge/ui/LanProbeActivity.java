@@ -47,17 +47,17 @@ import io.github.wlmosv_png.wpaforge.scan.ProbeHistory;
 public class LanProbeActivity extends Activity {
 
     /* ---------- 配色 ---------- */
-    private static final int BG        = Color.parseColor("#0B0B10");
-    private static final int SURFACE   = Color.parseColor("#16161E");
-    private static final int SURFACE_2 = Color.parseColor("#1E1E28");
-    private static final int ACCENT    = Color.parseColor("#00E5A0");   // 终端绿（主色）
-    private static final int ACCENT_DIM= Color.parseColor("#0F6B4E");
-    private static final int TERM_FG   = Color.parseColor("#8AFFC8");
-    private static final int TERM_DIM  = Color.parseColor("#4E8A73");
-    private static final int TEXT      = Color.parseColor("#E6E6EE");
-    private static final int TEXT_DIM  = Color.parseColor("#8A8A96");
-    private static final int DANGER    = Color.parseColor("#FF5B5B");
-    private static final int WARN      = Color.parseColor("#FFB300");
+    private static final int BG        = AmberTheme.BG;
+    private static final int SURFACE   = AmberTheme.CARD;
+    private static final int SURFACE_2 = AmberTheme.CARD_2;
+    private static final int ACCENT    = AmberTheme.ACCENT;   // 终端绿（主色）
+    private static final int ACCENT_DIM= AmberTheme.ACCENT_DIM;
+    private static final int TERM_FG   = AmberTheme.TERM_FG;
+    private static final int TERM_DIM  = AmberTheme.TERM_DIM;
+    private static final int TEXT      = AmberTheme.TEXT;
+    private static final int TEXT_DIM  = AmberTheme.TEXT_DIM;
+    private static final int DANGER    = AmberTheme.DANGER;
+    private static final int WARN      = AmberTheme.ACCENT;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -161,9 +161,9 @@ public class LanProbeActivity extends Activity {
 
         termWrap = new LinearLayout(this);
         termWrap.setOrientation(LinearLayout.VERTICAL);
-        termWrap.setBackgroundColor(Color.parseColor("#08080C"));
+        termWrap.setBackgroundColor(AmberTheme.TERM_BG);
         termScroll = new ScrollView(this);
-        termScroll.setBackgroundColor(Color.parseColor("#08080C"));
+        termScroll.setBackgroundColor(AmberTheme.TERM_BG);
         termScroll.setVerticalScrollBarEnabled(true);
         termScroll.setScrollbarFadingEnabled(false);
         termView = new TextView(this);
@@ -192,7 +192,7 @@ public class LanProbeActivity extends Activity {
         scanBtn = new TextView(this);
         scanBtn.setText(L.s("▶  开始扫描", "▶  SCAN"));
         scanBtn.setTextSize(14);
-        scanBtn.setTextColor(Color.parseColor("#062015"));
+        scanBtn.setTextColor(AmberTheme.ON_ACCENT);
         scanBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         scanBtn.setGravity(Gravity.CENTER);
         scanBtn.setPadding(0, dp(14), 0, dp(14));
@@ -556,7 +556,7 @@ public class LanProbeActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         card.setBackground(isNew
-                ? roundStroke(SURFACE, 16, Color.parseColor("#55FF5B5B"), 1.5f)
+                ? roundStroke(SURFACE, 16, AmberTheme.DANGER_EDGE, 1.5f)
                 : round(SURFACE, 16));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -676,7 +676,7 @@ public class LanProbeActivity extends Activity {
         TextView ip = new TextView(this);
         ip.setText(d.ip);
         ip.setTextSize(13.5f);
-        ip.setTextColor(Color.parseColor("#5A5A66"));
+        ip.setTextColor(AmberTheme.TEXT_FAINT);
         ip.setPaintFlags(ip.getPaintFlags() | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
         card.addView(ip);
 
@@ -690,7 +690,7 @@ public class LanProbeActivity extends Activity {
             TextView v = new TextView(this);
             v.setText(sb.toString());
             v.setTextSize(10.5f);
-            v.setTextColor(Color.parseColor("#4A4A54"));
+            v.setTextColor(AmberTheme.TEXT_FAINT);
             v.setPadding(0, dp(3), 0, 0);
             card.addView(v);
         }

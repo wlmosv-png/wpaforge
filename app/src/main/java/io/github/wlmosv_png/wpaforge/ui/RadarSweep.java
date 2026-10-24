@@ -68,6 +68,10 @@ public class RadarSweep extends View {
     private static final float[] DOT_DP = {3.0f, 3.6f, 4.2f, 4.8f, 5.4f};
     /** 被光束扫过之后的余辉：从亮到暗的最低值。 */
     private static final float GLOW_MIN = 0.55f;
+    /** 同一道环内两点之间至少保留的点径倍数（防稠密用）。 */
+    private static final float DOT_GAP = 2.7f;
+    /** 同档超过单环容量时的分层偏移（半径比例）。 */
+    private static final float LAYER_OFFSET = 0.075f;
 
     private Blip[] blips = new Blip[0];
     private final Paint pRing = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -78,6 +82,8 @@ public class RadarSweep extends View {
     private final Paint pEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pText = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pScale = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** 刻度字底下的色块（与卡片同色）。 */
+    private final Paint pPatch = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private float sweepAngle = 0f;
     private boolean spinning = false;
@@ -186,11 +192,17 @@ public class RadarSweep extends View {
         for (int i = 0; i < RING.length; i++) {
             float rr = radius * RING[i];
             cv.drawCircle(cx, cy, rr, pRing);
-            // 刻度字贴在该环的左下 45°，避开中心的数字
+            // 刻度字贴在该环的左下 45°，避开中心的数字。
+            // 先铺一块与卡片同色的底：点多的时候它会让刻度保持可读（不然被点压住）。
             float a = (float) Math.toRadians(135);
-            float tx = cx + (float) Math.cos(a) * rr;
-            float ty = cy + (float) Math.sin(a) * rr;
-            cv.drawText(RING_LABEL[i], tx + dp(4), ty - dp(3), pScale);
+            float tx = cx + (float) Math.cos(a) * rr + dp(3);
+            float ty = cy + (float) Math.sin(a) * rr - dp(2);
+            float tw = pScale.measureText(RING_LABEL[i]);
+            pPatch.setColor(AmberTheme.CARD);
+            pPatch.setAlpha(238);
+            RectF patch = new RectF(tx - dp(3), ty - dp(9), tx + tw + dp(3), ty + dp(3));
+            cv.drawRoundRect(patch, dp(3), dp(3), pPatch);
+            cv.drawText(RING_LABEL[i], tx, ty, pScale);
         }
         for (int i = 1; i <= 3; i++) {   // 细十字轴（比环更淡）
             float rr = radius * i / 3.4f;
@@ -216,19 +228,41 @@ public class RadarSweep extends View {
             cv.drawLine(cx, cy, ex, ey, pDrum);
         }
 
-        // ── 落点：按档位分桶，桶内沿环均匀铺开（永不重叠、不挤中心）
+        // ── 落点：按档位分桶，桶内沿环均匀铺开。
+        //
+        // 稠密处理（WiFi 很多时）：单环容量按「环周长 / 点直径 / 间隔」算，
+        // 超过容量就**自动分层**（同一档位拆成 2~3 道子环），点径再按层内点数收缩。
+        // 这样 20 台和 120 台都不会糊成一圈 —— 既能一 AP 一点，也不重叠。
         int[] bucketSize = new int[RING.length];
         for (Blip b : blips) bucketSize[lv(b)]++;
+        int[] layers = new int[RING.length];
+        int[] perLayer = new int[RING.length];
+        for (int i = 0; i < RING.length; i++) {
+            int n = bucketSize[i];
+            float ringLen = (float) (2 * Math.PI * radius * RING[i]);
+            int cap = Math.max(1, (int) (ringLen / (dp(DOT_DP[i]) * DOT_GAP)));
+            // 最多拆三道子环：再多就会串到邻档的带上，反而看不出档位
+            layers[i] = Math.max(1, Math.min(3, (int) Math.ceil(n / (float) cap)));
+            perLayer[i] = (int) Math.ceil(n / (float) layers[i]);
+        }
         int[] used = new int[RING.length];
         for (Blip b : blips) {
             int level = lv(b);
             int idx = used[level]++;
-            int n = Math.max(1, bucketSize[level]);
+            int n = Math.max(1, perLayer[level]);
+            int layer = idx / n;                       // 第几道子环
+            int slot = idx % n;
             // 每档整体偏转一点，避免不同环上的点排成同一根辐条
-            float angle = (360f * idx / n) + level * 26f;
+            float angle = (360f * slot / n) + level * 26f + layer * (180f / Math.max(1, n));
 
+            float ringR = RING[level];
+            if (layers[level] > 1) {
+                // 子环围绕该档环向外/向内错开；夹在 0.28~1.0 之间不越界
+                float off = (layer - (layers[level] - 1) / 2f) * LAYER_OFFSET;
+                ringR = Math.max(0.28f, Math.min(1f, ringR + off));
+            }
             double a = Math.toRadians(angle);
-            float rr = radius * RING[level];
+            float rr = radius * ringR;
             float bx = cx + (float) Math.cos(a) * rr;
             float by = cy + (float) Math.sin(a) * rr;
 
@@ -240,19 +274,24 @@ public class RadarSweep extends View {
                         : GLOW_MIN + (1f - GLOW_MIN) * Math.max(0f, 1f - (diff - 26f) / 220f);
             }
 
+            // 点径：档位基准，随「本层点数」收缩 —— 挤的时候自动变小，永不粘连
+            float ringLen = (float) (2 * Math.PI * radius * ringR);
+            float dotR = Math.min(dp(DOT_DP[level]), ringLen / (DOT_GAP * n) / 2f * 1.5f);
+            dotR = Math.max(dp(1.9f), dotR);
+
             int color = AmberTheme.signalColor(level);
-            if (level >= 4) {   // 最强档：一层很淡的光晕（不再是 2 倍半径的糊圈）
+            if (level >= 4 && dotR > dp(3.4f)) {   // 最强档：很淡的光晕（挤的时候不画）
                 pDot.setColor(color);
                 pDot.setAlpha((int) (alpha * 60));
-                cv.drawCircle(bx, by, dp(DOT_DP[level]) * 1.9f, pDot);
+                cv.drawCircle(bx, by, dotR * 1.9f, pDot);
             }
             pDot.setColor(color);
             pDot.setAlpha((int) (alpha * 255));
-            cv.drawCircle(bx, by, dp(DOT_DP[level]), pDot);
+            cv.drawCircle(bx, by, dotR, pDot);
 
             if (!b.secured) {   // 未加密：细红边（与列表红胶囊同一语义）
                 pEdge.setAlpha((int) (alpha * 220));
-                cv.drawCircle(bx, by, dp(DOT_DP[level]) + dp(1.5f), pEdge);
+                cv.drawCircle(bx, by, dotR + dp(1.4f), pEdge);
             }
         }
 

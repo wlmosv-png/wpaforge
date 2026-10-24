@@ -112,6 +112,8 @@ public class MainActivity extends Activity {
     /** 设置页里的“当前模式能不能用”小字 */
     private TextView modeReadyLabel;
     private TextView auditLog;
+    /** 强度检查的就地结论（与写进日志的那条同源）。 */
+    private TextView auditCheckResult;
     /** 审计页日志是否已经写过内容（用于空状态占位：写第一条时要把占位清掉）。 */
     private boolean auditLogTouched = false;
     /** 离线校验是否在跑（同一时间只允许一条） */
@@ -2352,11 +2354,25 @@ public class MainActivity extends Activity {
      * <p>展示的信息与改版前**逐项相同**（BSSID / 信道 / 频段 / 安全 / WPS / 厂商 /
      * 估算距离 / 带宽代际），一个字段都没少。
      */
+    /**
+     * 单个网络一行（卡片样式）。
+     *
+     * <h3>第二次修正：内容不许被截断</h3>
+     * 第一版把地址与厂商/距离全塞进一行再 ellipsize，结果长 SSID 或长厂商名
+     * 会变成 "WP…"（用户截图指出）。现在按信息层级拆开：
+     * <ul>
+     *   <li><b>名称</b>一行（可以截断 —— 名字本身长，右侧还有固定宽度指标区）；</li>
+     *   <li><b>地址行</b>：MAC · 信道 · 频段（等宽，一行放得下）；</li>
+     *   <li><b>信息行</b>：带宽代际 · WPS · 厂商 · 估算距离，**允许换行不截断**；</li>
+     *   <li>右侧指标区固定宽度（dBm / 等级 / 安全胶囊），所以左边永远不会被挤窄。</li>
+     * </ul>
+     * 展示字段与最初版本**逐项相同**，只是换了排布方式。
+     */
     private View netRow(NetRecord r) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setBackground(roundBgStroked(AmberTheme.CARD, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
-        row.setPadding(px(14), px(13), px(14), px(13));
+        row.setPadding(px(14), px(13), px(12), px(13));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rp.bottomMargin = px(7);
@@ -2370,7 +2386,7 @@ public class MainActivity extends Activity {
         slp.rightMargin = px(12);
         row.addView(sigBar, slp);
 
-        // 左：名称 + 细节
+        // 左列：名称 / 地址 / 其余信息
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
 
@@ -2383,60 +2399,68 @@ public class MainActivity extends Activity {
         name.setEllipsize(TextUtils.TruncateAt.END);
         left.addView(name);
 
-        TextView detail = new TextView(this);
-        // 厂商名：IEEE OUI 表查询。查不到就不显示这一段。
-        //
-        // 随机化 MAC（首字节 bit1 = 1）查表必然落空，但原因和
-        // 「厂商未收录」完全不同 —— 前者是手机自己生成的地址，
-        // 后者是数据缺失。必须分开说，否则用户会以为是数据有问题。
-        String vendor = null;
-        if (io.github.wlmosv_png.wpaforge.scan.OuiLookup.isRandomized(r.bssid)) {
-            vendor = L.s("随机 MAC", "random MAC");
-        } else {
-            vendor = io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, r.bssid);
-        }
-        detail.setText(r.bssid + "  ·  ch" + r.channel
-                + (r.is5Ghz ? " (5G)" : " (2.4G)")
-                + (r.wpsSupported ? "  ·  WPS" : "")
-                + (vendor != null && !vendor.isEmpty()
-                    ? "  ·  " + vendor : "")
-                + (!r.isHidden() && r.estimatedDistanceMeters() > 0
-                    ? "  ·  ≈" + r.estimatedDistanceMeters() + "m" : ""));
-        detail.setTextSize(FS_TINY);
-        detail.setTextColor(AmberTheme.TEXT_DIM);
-        detail.setTypeface(Typeface.MONOSPACE);
-        detail.setSingleLine(true);
-        detail.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+        TextView addr = new TextView(this);
+        addr.setText(r.bssid + "   ch" + r.channel + (r.is5Ghz ? " · 5G" : " · 2.4G"));
+        addr.setTextSize(FS_TINY);
+        addr.setTextColor(AmberTheme.TEXT_DIM);
+        addr.setTypeface(Typeface.MONOSPACE);
+        addr.setSingleLine(true);
+        LinearLayout.LayoutParams alp2 = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dlp.topMargin = px(4);
-        left.addView(detail, dlp);
+        alp2.topMargin = px(4);
+        left.addView(addr, alp2);
 
-        // 带宽 / Wi-Fi 代际。拿不到就不加这一行，不占位。
+        // 信息行：带宽代际（琥珀）+ 其余（次级色）；**可换行，不截断**
         ScanDetail sd = scanner == null ? ScanDetail.UNKNOWN : scanner.detailOf(r);
-        if (!sd.isEmpty()) {
-            TextView phy = new TextView(this);
-            phy.setText(sd.label());
-            phy.setTextSize(FS_TINY);
-            phy.setTextColor(ACCENT);
-            phy.setPadding(0, px(3), 0, 0);
-            left.addView(phy);
+        String vendor = io.github.wlmosv_png.wpaforge.scan.OuiLookup.isRandomized(r.bssid)
+                ? L.s("随机 MAC", "random MAC")
+                : io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, r.bssid);
+        StringBuilder meta = new StringBuilder();
+        if (!sd.isEmpty()) meta.append(sd.label());
+        if (r.wpsSupported) meta.append(meta.length() > 0 ? "  ·  " : "").append("WPS");
+        if (vendor != null && !vendor.isEmpty()) {
+            meta.append(meta.length() > 0 ? "  ·  " : "").append(vendor);
+        }
+        if (!r.isHidden() && r.estimatedDistanceMeters() > 0) {
+            meta.append(meta.length() > 0 ? "  ·  " : "")
+                    .append("≈").append(r.estimatedDistanceMeters()).append("m");
+        }
+        if (meta.length() > 0) {
+            TextView info = new TextView(this);
+            android.text.SpannableString sp =
+                    new android.text.SpannableString(meta.toString());
+            if (!sd.isEmpty()) {
+                sp.setSpan(new android.text.style.ForegroundColorSpan(ACCENT), 0,
+                        sd.label().length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            info.setText(sp);
+            info.setTextSize(FS_TINY);
+            info.setTextColor(AmberTheme.TEXT_DIM);
+            info.setTypeface(Typeface.MONOSPACE);
+            info.setSingleLine(false);          // 允许折行 —— 宁可多一行，不可截断
+            info.setMaxLines(2);
+            LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            mlp.topMargin = px(3);
+            left.addView(info, mlp);
         }
 
         row.addView(left, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 右：dBm（等宽）+ 等级 + 安全胶囊
+        // 右列：固定宽度（dBm / 等级 / 安全胶囊）
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
         right.setGravity(Gravity.END);
+        right.setMinimumWidth(px(76));
 
         TextView dbm = new TextView(this);
         dbm.setText(r.rssi + " dBm");
-        dbm.setTextSize(13f);
+        dbm.setTextSize(12.5f);
         dbm.setTextColor(AmberTheme.signalColor(r.signalLevel()));
         dbm.setTypeface(Typeface.MONOSPACE);
         dbm.setGravity(Gravity.END);
+        dbm.setSingleLine(true);
         right.addView(dbm);
 
         TextView lvl = new TextView(this);
@@ -2490,33 +2514,50 @@ public class MainActivity extends Activity {
 
     // ---------------- 审计页 ----------------
 
+    /**
+     * 审计页 —— 2026-10-24 重做。
+     *
+     * <h3>为什么重做</h3>
+     * 上一版是四五个占满宽度的胶囊按钮竖着排：每个都像主操作，按钮墙把页面撑得
+     * 很长，而且「评估」这种一次性的小动作也用整行大按钮，层级混乱（用户反馈
+     * "感觉这个还不够软件美学"）。现在：
+     * <ul>
+     *   <li>字典入口改成**行式**（与设置页同一套行结构与箭头）；</li>
+     *   <li>强度检查：输入框与「评估」按钮**同一行** —— 输入与动作是一件事；</li>
+     *   <li>评估结果**就地显示**一行结论（与写进日志的那条结论同源同文案）；</li>
+     *   <li>离线校验：说明块 + 一行入口；</li>
+     *   <li>日志区改成终端卡：等宽、下沉底、带标题与空状态引导。</li>
+     * </ul>
+     *
+     * <p>所有回调、字典来源、判定语义与文案内容**与改版前一致**。
+     */
     private void buildAuditTab() {
         if (radar != null) radar.stopSpin();
 
+        // ---------------- 字典 ----------------
         pageAudit.addView(sectionLabel(L.s("字典", "Dictionary")));
-
-        // 字典卡：当前字典 + 四个入口在同一张卡里 —— 滚动时是一块内容，而不是四块
         LinearLayout dictCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
         dictStatus = new TextView(this);
         dictStatus.setTextSize(AmberTheme.FS_TITLE);
         dictStatus.setTextColor(TEXT);
         dictStatus.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        dictStatus.setLineSpacing(px(4), 1f);
-        dictStatus.setPadding(0, 0, 0, px(6));
-        updateDictStatus();
+        dictStatus.setSingleLine(false);
         dictCard.addView(dictStatus);
+        updateDictStatus();
 
-        Button manage = btnPrimary(L.s("打开字典管理", "Manage dictionaries"));
+        Button manage = rowAction(L.s("打开字典管理", "Manage dictionaries"));
         manage.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, DictActivity.class)));
+        dictCard.addView(groupDivider(10));
         dictCard.addView(manage);
 
-        Button load = btnSecondary(L.s("加载字典文件", "Load dictionary file"));
+        Button load = rowAction(L.s("加载字典文件", "Load dictionary file"));
         load.setOnClickListener(v -> showDictPicker());
+        dictCard.addView(groupDivider(2));
         dictCard.addView(load);
 
-        Button gen = btnSecondary(L.s("内置生成器（快速）", "Built-in generator (quick)"));
+        Button gen = rowAction(L.s("内置生成器（快速）", "Built-in generator (quick)"));
         gen.setOnClickListener(v -> {
             new Thread(() -> {
                 DictGenerator g = new DictGenerator(100000)
@@ -2532,32 +2573,62 @@ public class MainActivity extends Activity {
                 });
             }).start();
         });
+        dictCard.addView(groupDivider(2));
         dictCard.addView(gen);
 
         // 按 SSID 派生：审计页以前只能「加载文件」和「内置生成器」，
         // 想按目标网络现场造候选必须跑到破解页 —— 两个页面本是一件事。
         // 这里补上入口，派生结果直接成为当前字典。
-        Button derive = btnSecondary(L.s("按 SSID 派生（选目标）",
-                "Derive from SSID (pick a target)"));
+        Button derive = rowAction(L.s("按 SSID 派生（选目标）", "Derive from SSID (pick a target)"));
         derive.setOnClickListener(v -> pickTargetForDerive());
+        dictCard.addView(groupDivider(2));
         dictCard.addView(derive);
-
         pageAudit.addView(dictCard);
 
+        // ---------------- 口令强度检查 ----------------
         pageAudit.addView(sectionLabel(L.s("口令强度检查", "Passphrase strength check")));
-
         LinearLayout checkCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+
+        TextView checkHint = new TextView(this);
+        checkHint.setText(L.s("输入一个口令，看它在当前字典里的位置（第几位 = 多快被猜出来）",
+                "Type a passphrase to see its rank in the current dictionary"));
+        checkHint.setTextSize(AmberTheme.FS_BODY);
+        checkHint.setTextColor(TEXT_DIM);
+        checkHint.setLineSpacing(px(4), 1f);
+        checkCard.addView(checkHint);
+
+        LinearLayout inputRow = new LinearLayout(this);
+        inputRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams irlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        irlp.topMargin = px(10);
+
         EditText input = new EditText(this);
-        input.setHint(L.s("输入一个口令，看它在字典里的位置", "Enter a passphrase to see its position in the dictionary"));
+        input.setHint(L.s("口令", "Passphrase"));
         input.setTextColor(TEXT);
-        input.setHintTextColor(TEXT_DIM);
+        input.setHintTextColor(AmberTheme.TEXT_FAINT);
         input.setTextSize(AmberTheme.FS_STATE);
         input.setSingleLine(true);
         input.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
-        input.setPadding(px(14), px(13), px(14), px(13));
-        checkCard.addView(input);
+        input.setPadding(px(14), px(12), px(14), px(12));
+        inputRow.addView(input, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button check = btnPrimary("评估");
+        Button check = AmberTheme.action(this, dp, L.s("评估", "Check"), AmberTheme.BTN_PRIMARY);
+        LinearLayout.LayoutParams cklp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cklp.leftMargin = px(10);
+        inputRow.addView(check, cklp);
+        checkCard.addView(inputRow, irlp);
+
+        auditCheckResult = new TextView(this);
+        auditCheckResult.setTextSize(AmberTheme.FS_BODY);
+        auditCheckResult.setTextColor(TEXT_DIM);
+        auditCheckResult.setLineSpacing(px(4), 1f);
+        auditCheckResult.setVisibility(View.GONE);
+        checkCard.addView(auditCheckResult, topGap(10));
+
         check.setOnClickListener(v -> {
             String pw = input.getText().toString().trim();
             if (pw.isEmpty()) {
@@ -2569,17 +2640,22 @@ public class MainActivity extends Activity {
                 return;
             }
             long rank = AuditEngine.rankOf(currentDict, pw);
+            // 就地显示与日志**同一条结论**（一个进日志、一个留在这里），判定语义未改
+            String line = rank > 0
+                    ? L.f("命中：在字典第 %d 位 —— 弱口令", "Found: rank %d — weak", rank)
+                    : L.s("未命中：不在当前字典里", "Not found in the current dictionary");
+            auditCheckResult.setText((rank > 0 ? "⚠ " : "✓ ") + line);
+            auditCheckResult.setTextColor(rank > 0 ? DANGER : OK_GREEN);
+            auditCheckResult.setVisibility(View.VISIBLE);
             if (rank > 0) {
                 appendLog("命中: \"" + pw + "\" 在字典第 " + rank + " 位 —— 弱口令");
             } else {
                 appendLog("未命中: \"" + pw + "\" 不在当前字典里");
             }
         });
-        checkCard.addView(check);
-
         pageAudit.addView(checkCard);
 
-        // ---------------- 离线校验（外部抓包材料） ----------------
+        // ---------------- 离线校验 ----------------
         pageAudit.addView(sectionLabel(L.s("离线校验（外部材料）", "Offline check (external capture)")));
 
         LinearLayout offCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
@@ -2594,26 +2670,30 @@ public class MainActivity extends Activity {
                 + "PMKID needs only PBKDF2 + one HMAC, about twice as fast as EAPOL — ask for it when capturing."));
         offHint.setTextSize(AmberTheme.FS_BODY);
         offHint.setTextColor(TEXT_DIM);
-        offHint.setLineSpacing(px(4), 1f);
+        offHint.setLineSpacing(px(5), 1f);
         offHint.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
         offHint.setPadding(px(14), px(13), px(14), px(13));
         offCard.addView(offHint);
 
-        Button offPick = btnSecondary(L.s("选择材料文件，跑当前字典",
+        Button offPick = rowAction(L.s("选择材料文件，跑当前字典",
                 "Pick a capture file, run the current dictionary"));
         offPick.setOnClickListener(v -> showOfflinePicker());
+        offCard.addView(groupDivider(10));
         offCard.addView(offPick);
 
         pageAudit.addView(offCard);
 
-        pageAudit.addView(sectionLabel(L.s("日志", "Log")));
+        // ---------------- 运行记录 ----------------
+        pageAudit.addView(sectionLabel(L.s("运行记录", "Run log")));
+        LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
         auditLog = new TextView(this);
-        auditLog.setTextSize(11);
-        auditLog.setTextColor(TEXT_DIM);
+        auditLog.setTextSize(11f);
+        auditLog.setTextColor(AmberTheme.TERM_FG);
         auditLog.setTypeface(Typeface.MONOSPACE);
-        auditLog.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
-        auditLog.setPadding(px(16), px(16), px(16), px(16));
+        auditLog.setLineSpacing(px(4), 1f);
+        auditLog.setBackground(roundBgStatic(AmberTheme.TERM_BG, AmberTheme.RADIUS_CHIP));
+        auditLog.setPadding(px(14), px(13), px(14), px(13));
         auditLog.setMinLines(6);
         // 空状态：一块纯空白会让人以为功能坏了 —— 先说清这里会出现什么。
         auditLog.setTextColor(AmberTheme.TEXT_FAINT);
@@ -2621,7 +2701,8 @@ public class MainActivity extends Activity {
                 "尚无记录。上面的每次操作（加载字典 / 内置生成器 / 按 SSID 派生 / 强度评估 / 离线校验）都会写到这里。",
                 "No entries yet. Every action above (load dictionary / built-in generator / derive from SSID / "
                         + "strength check / offline check) is written here."));
-        pageAudit.addView(auditLog);
+        logCard.addView(auditLog);
+        pageAudit.addView(logCard);
     }
 
     // ---------------- 离线校验 ----------------
@@ -3102,7 +3183,7 @@ public class MainActivity extends Activity {
         if (auditLog == null) return;
         if (!auditLogTouched) {
             auditLogTouched = true;
-            auditLog.setTextColor(AmberTheme.TEXT_DIM);   // 有内容后回到正常对比度
+            auditLog.setTextColor(AmberTheme.TERM_FG);    // 有内容后回到终端正文色
             auditLog.setText("");                        // 清掉空状态占位
         }
         String cur = auditLog.getText().toString();

@@ -214,9 +214,16 @@ public class ThemeConsistencyTest {
         ok("雷达是五道信号环刻度盘（越强越靠里 + 环上标 dBm）", radar != null
                 && radar.contains("private static final float[] RING")
                 && radar.contains("private static final String[] RING_LABEL"));
-        ok("同档内的点沿圆周均匀铺开（永不重叠、不挤圆心）", radar != null
-                && radar.contains("float angle = (360f * idx / n) + level * 26f;")
+        ok("同档内的点沿圆周均匀铺开（不挤圆心）", radar != null
+                && radar.contains("float angle = (360f * slot / n) + level * 26f + layer *")
                 && radar.contains("int[] bucketSize = new int[RING.length];"));
+        ok("WiFi 很多时自动分层 + 点径收缩（不会糊成一圈）", radar != null
+                && radar.contains("int[] layers = new int[RING.length];")
+                && radar.contains("Math.min(3, (int) Math.ceil(n / (float) cap))")
+                && radar.contains("float dotR = Math.min(dp(DOT_DP[level]),"
+                                  + " ringLen / (DOT_GAP * n) / 2f * 1.5f);"));
+        ok("刻度字带底色块（点多也不糊掉刻度）", radar != null
+                && radar.contains("pPatch.setColor(AmberTheme.CARD);"));
         ok("点不再抖动（没有相位/脉动，只有扫描余辉）", radar != null
                 && !radar.contains("phase")
                 && !radar.contains("pulse")

@@ -20,7 +20,8 @@
 | 冷构建复现 | ✅ 通过 | `git archive HEAD` 导出到独立目录 → `1-aapt2.sh` + `2-build-dex.sh` 重新出包 |
 | 内容一致性 | ✅ 逐条一致 | 两份包 **41 个条目全部 CRC/大小相同**；`classes.dex` 672,968 B（md5 `6a13b67c…`）、`AndroidManifest.xml` 5,820 B、`resources.arsc` 3,996 B **md5 完全相同**；APK 体积同为 2,968,782 B |
 | 差异来源 | ✅ 已解释 | 仅有 zip 时间戳与签名块差异（sha256 不同属正常，非源码差异） |
-| 候选包身份 | ✅ | `WPAForge-1.9.25-95-icon.apk`：2,968,782 B，sha256 `eeda6dc8b58e5b10e5441035bd17b3fea97d6d340126abfe57f5627e80fc4940`，versionCode 95 / 1.9.25，证书 SHA-256 `af5524cd…25c8`，三关键条目 STORED，dex 内无测试/探针 |
+| 候选包身份（**当前**，换新图标后重出） | ✅ | `/storage/emulated/0/Download/WPAForge-1.9.25-95.apk`：2,612,430 B，sha256 `2b1979fc1506bab7ae8c7425ca6b57829671b7586db1b0e22b4af069d528b85d`，versionCode 95 / 1.9.25，证书 SHA-256 `af5524cd…25c8`；与上一候选包 41 条目同名同数，`classes.dex` / `AndroidManifest.xml` / `resources.arsc` 三件 md5 完全一致，差异只在 20 个 mipmap PNG 与签名文件；已 `pm install -r` 成功、`firstInstallTime` 未变（数据保留） |
+| 候选包身份（换图标前的上一版，留档） | ⚪ 已替代 | `WPAForge-1.9.25-95-icon.apk`：2,968,782 B，sha256 `eeda6dc8b58e5b10e5441035bd17b3fea97d6d340126abfe57f5627e80fc4940`，versionCode 95 / 1.9.25，证书 SHA-256 `af5524cd…25c8`，三关键条目 STORED，dex 内无测试/探针 |
 | 冷构建产物（备用，内容等价） | ✅ | `WPAForge-1.9.25-95-verify.apk`：同体积，sha256 `8486963142052a5f670f9bea91928f89eb34e4b183397306c95feb7786841f2f` |
 | 结论 | ✅ | **候选 APK 可证明对应最终源码**（无需因对应性重新构建；备用包已留档） |
 
@@ -81,8 +82,9 @@
 
 **READY WITH KNOWN LIMITATIONS**
 
-- 发布**产物就绪且可证明对应最终源码**：候选 APK `WPAForge-1.9.25-95-icon.apk`（2,968,782 B，
-  sha256 `eeda6dc8…4940`，versionCode 95 / 1.9.25，证书 `af5524cd…25c8`）；冷构建内容逐条一致。
+- 发布**产物就绪且可证明对应最终源码**：候选 APK `WPAForge-1.9.25-95.apk`（2,612,430 B，
+  sha256 `2b1979fc…b85d`，versionCode 95 / 1.9.25，证书 `af5524cd…25c8`）；换图标重出后与上一候选包
+  `classes.dex` / `AndroidManifest.xml` / `resources.arsc` 三件 md5 完全一致，冷构建内容逐条一致。
 - 文档就绪：`RELEASE_BODY_FINAL.md`（Release 正文候选）、`CHANGELOG_DRAFT.md`（42 条用户可见）、
   `RELEASE_NOTES_DRAFT.md`（简版）、`RELEASE_AUDIT.md`（内部审计）、`VERIFY_PLAN_ISOLATED.md`（验证计划）。
 - **限制（必须在发布说明中如实披露，不得宣称验证通过）**：

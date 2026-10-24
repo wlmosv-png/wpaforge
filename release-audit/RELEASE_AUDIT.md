@@ -132,7 +132,7 @@
 - 门禁命令：`sh /workspace/wpf-gate.sh`
 - 结果：**javac 通过（warning 0）**，源码 152 文件 / 285 class，**2180 通过 / 0 失败**，无跳过项
 - 新增测试类（25）：`CrackHudTest`、`CrackPageLayoutTest`、`LogPipelineTest`、`LogWindowTest`、`MarkerSelfCheckTest`、`PlaintextHygieneTest`、`R1EvidenceTest`、`R2TimeoutTest`、`R3VerdictTest`、`R6AttemptIdTest`、`R6WiringTest`、`R7RecoveryTest`、`R10InvariantTest`、`RateWindowTest`、`RedactTest`、`RestoreConcurrencyTest`、`RestoreFailClosedTest`、`RestoreJournalTest`、`RestorePlanTest`、`SavedWifiUiTest`、`SelfTestSafetyTest`、`ThemeConsistencyTest`、`VerdictContractTest`、`VerdictTallyTest`、`R3AuditProbe`（探针，不进包）
-- 构建产物（本次候选）：`WPAForge-1.9.25-95-icon.apk`，2,968,782 B，sha256 `eeda6dc8…4940`，证书 `af5524cd…25c8`，versionCode 95 / versionName 1.9.25；三关键条目 STORED；dex 内无测试/探针；装机后设备侧哈希一致、`firstInstallTime` 未变
+- 构建产物（**当前候选**，换新图标后重出）：`WPAForge-1.9.25-95.apk`，2,612,430 B，sha256 `2b1979fc1506bab7ae8c7425ca6b57829671b7586db1b0e22b4af069d528b85d`，证书 `af5524cd…25c8`，versionCode 95 / versionName 1.9.25；装机后设备侧哈希一致、`firstInstallTime` 未变。与上一候选包（2,968,782 B / `eeda6dc8…4940`）**41 条目同名同数，`classes.dex` / `AndroidManifest.xml` / `resources.arsc` 三件 md5 完全一致**，差异只有 20 个 mipmap PNG（图标换成「开锁 + wifi」）与 3 个签名文件。
 - 真机已验证（有记录）：恢复启动补做/成功分支/失败留痕（A/B）、Keystore 加解密自检、日志时间锚点四态、口令迁移已执行、图标与构建一致、速率显示口径
 
 ## 7. 被排除在公开日志之外的内部变更

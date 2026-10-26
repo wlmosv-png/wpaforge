@@ -1,24 +1,15 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="WPAForge" width="100%">
+<img src="docs/banner.png" alt="WPAForge" width="100%">
 
 **在手机上，逐条试出你自己路由器的 WPA 密码。**
 按 SSID 与线索现场生成候选，逐条真实关联验证；内置精选字典，也能用你自己的。
 
-[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=yellow)](https://github.com/wlmosv-png/wpaforge/stargazers)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
-[![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
+[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=4493F8&labelColor=2B2B33&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=FFD54F&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/stargazers)
 
-<p>
-<a href="https://github.com/wlmosv-png/wpaforge/releases/latest"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88-FFB800?style=for-the-badge&logo=android&logoColor=black" alt="下载最新版"></a>
-<a href="https://wlmosv.dpdns.org/wpaforge/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-wlmosv.dpdns.org-1F6FEB?style=for-the-badge&logo=cloudflare&logoColor=white" alt="官网"></a>
-<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="https://img.shields.io/badge/%E6%BC%94%E7%A4%BA-B%E7%AB%99-FB7299?style=for-the-badge&logo=bilibili&logoColor=white" alt="B站演示"></a>
-<a href="https://github.com/wlmosv-png/wpaforge/discussions"><img src="https://img.shields.io/badge/%E8%AE%A8%E8%AE%BA-Discussions-6E7681?style=for-the-badge&logo=github&logoColor=white" alt="讨论"></a>
-<a href="README_EN.md"><img src="https://img.shields.io/badge/README-English-4493F8?style=for-the-badge&logo=googletranslate&logoColor=white" alt="English"></a>
-</p>
+**[⬇ 下载最新版](https://github.com/wlmosv-png/wpaforge/releases/latest)**　·　[官网](https://wlmosv.dpdns.org/wpaforge/)　·　[演示（B站）](https://www.bilibili.com/video/BV1b1np6YE7U)　·　[讨论](https://github.com/wlmosv-png/wpaforge/discussions)　·　[English](README_EN.md)
 
 <img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge 界面速览" width="100%">
 

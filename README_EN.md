@@ -1,26 +1,17 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="WPAForge" width="100%">
+<img src="docs/banner.png" alt="WPAForge" width="100%">
 
 **Try to recover your own router's WPA password, candidate by candidate.**
-Candidates are built for the target from its SSID and your hints, then each one is really
-associated; curated built-in dictionaries, or bring your own.
+Candidates are built for the target from its SSID and your hints, then each one is really associated; curated built-in dictionaries, or bring your own.
 
-[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=yellow)](https://github.com/wlmosv-png/wpaforge/stargazers)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
-[![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
+[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=4493F8&labelColor=2B2B33&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=FFD54F&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/stargazers)
 
-<p>
-<a href="https://github.com/wlmosv-png/wpaforge/releases/latest"><img src="https://img.shields.io/badge/Download-latest%20APK-FFB800?style=for-the-badge&logo=android&logoColor=black" alt="Download"></a>
-<a href="https://wlmosv.dpdns.org/wpaforge/"><img src="https://img.shields.io/badge/Website-wlmosv.dpdns.org-1F6FEB?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Website"></a>
-<a href="https://github.com/wlmosv-png/wpaforge/discussions"><img src="https://img.shields.io/badge/Discussions-GitHub-6E7681?style=for-the-badge&logo=github&logoColor=white" alt="Discussions"></a>
-<a href="README.md"><img src="https://img.shields.io/badge/README-%E4%B8%AD%E6%96%87-4493F8?style=for-the-badge&logo=googletranslate&logoColor=white" alt="中文"></a>
-</p>
+**[⬇ Download the latest APK](https://github.com/wlmosv-png/wpaforge/releases/latest)**　·　[Website](https://wlmosv.dpdns.org/wpaforge/)　·　[Discussions](https://github.com/wlmosv-png/wpaforge/discussions)　·　[中文](README.md)
 
-<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge UI overview" width="100%">
+<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge 界面速览" width="100%">
 
 <sub>UI overview — observe → crack → hit → dictionaries, four steps (2s per frame)</sub>
 

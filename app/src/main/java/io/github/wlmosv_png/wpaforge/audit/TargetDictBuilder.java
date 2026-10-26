@@ -43,9 +43,15 @@ public final class TargetDictBuilder {
             "999", "9999", "0000", "1111", "2023", "2024", "2025", "2026"
     };
 
-    /** 高频字母后缀 */
+    /**
+     * SSID 后面接的字母后缀。
+     *
+     * <p>审查删掉了原来的 {@code wifi} / {@code wlan} ——
+     * SSID 已经叫 FAST_E972 了，密码再叫 {@code FASTE972wifi}
+     * 等于把 SSID 又写一遍，没人这么设。
+     */
     private static final String[] ALPHA_SUFFIX = {
-            "a", "ab", "abc", "wifi", "wlan", "admin", "net", "root"
+            "a", "ab", "abc", "admin", "net", "root"
     };
 
     private TargetDictBuilder() {}
@@ -184,13 +190,11 @@ public final class TargetDictBuilder {
             b.add(digits + digits);
             b.add(digits + digits + digits);
             for (String sf : NUM_SUFFIX) b.add(digits + sf);
-            for (String sf : new String[]{"8", "88", "6", "66", "9", "99"}) {
-                b.add(digits + sf + digits);
-            }
-            if (!letters.isEmpty()) {
-                b.add(digits + letters.toLowerCase());
-                b.add(digits + capitalize(letters.toLowerCase()));
-            }
+            // 删掉原来的「夹心数字」digits+88+digits（97288972 / 97266972 / 97299972）：
+            // 把 SSID 里的数字夹在重复数字中间，是矩阵的副产品，没人这么设。
+            /* 删掉原来的「数字碎片 + 字母碎片」（972faste / 972Faste）：
+             * 972 是 SSID 里的数字、faste 是 SSID 里的字母，两块碎片直接粘起来
+             * —— 形态上不像任何人写的密码，只是 B 桶的矩阵产物。 */
         }
         if (!b.isEmpty()) { buckets.add(b); caps.add(12); categories.add(L.s("数字族", "digit family")); }
 
@@ -205,18 +209,26 @@ public final class TargetDictBuilder {
         }
         if (!c.isEmpty()) { buckets.add(c); caps.add(12); categories.add(L.s("SSID+数字", "SSID+digits")); }
 
-        // D. BSSID 尾号族
+        /* D. BSSID —— **只保留"完整 MAC 无分隔"这一种形态**。
+         *
+         * 社会工程学审查（用户："派生 ssid 确实出了很多垃圾的条目"）砍掉了原来的
+         * 「尾号 + 后缀」一整族：4495a900 / 4495a911 / 4495a912345 / 4495a9520 …
+         *
+         * 为什么砍：
+         *  · 出厂默认用 MAC 是真实存在的，但形态是**完整 MAC 原样**（12 位十六进制），
+         *    不是"尾号 + 00/111/12345/1314"这种拼凑 —— 那是矩阵生成的副产品；
+         *  · 6 位的尾号本来就够不到 WPA 的 8 位下限，真正让它进榜的是补后缀，
+         *    属于"为了凑长度而造串"；
+         *  · 本机 107 次真实命中里，一次都没有来自这一族。 */
         List<String> d = new ArrayList<>();
         if (target.bssid != null) {
             String mac = target.bssid.replace(":", "").replace("-", "");
-            if (mac.length() >= 8) {
-                String tail6 = mac.substring(mac.length() - 6).toLowerCase();
-                d.add(tail6);
-                d.add(tail6.toUpperCase());
-                for (String sf : NUM_SUFFIX) d.add(tail6 + sf);
+            if (mac.length() == 12) {
+                d.add(mac.toLowerCase());
+                d.add(mac.toUpperCase());
             }
         }
-        if (!d.isEmpty()) { buckets.add(d); caps.add(12); categories.add(L.s("BSSID 尾号", "BSSID tail")); }
+        if (!d.isEmpty()) { buckets.add(d); caps.add(4); categories.add(L.s("BSSID 原样", "BSSID literal")); }
 
         // E. SSID 字母部分 + 数字
         List<String> e = new ArrayList<>();
@@ -331,13 +343,9 @@ public final class TargetDictBuilder {
                 for (String yr : yrList) {
                     h.add(tkLow + yr);
                     if (isLetter) h.add(tkCap + yr);
-                    if (!isNum) {
-                        h.add(tkLow + "@" + yr);
-                        h.add(tkCap + "@" + yr);
-                        h.add(yr + "@" + tkLow);
-                        h.add(tkLow + "#" + yr);
-                        h.add(tkCap + "#" + yr);
-                    }
+                    /* 符号位置矩阵已删（fast@2026 / 2026@fast / fast#2026 各来一遍）。
+                     * 真实世界里 {词 + @ + 短数字}（admin@123）是有的，
+                     * 但"年份"配符号很罕见，而把顺序和符号来回换着组合纯属堆砌。 */
                 }
 
                 // 词元 + 高频后缀
@@ -378,7 +386,7 @@ public final class TargetDictBuilder {
                 for (String yr : vyrs) {
                     vi.add(vf + yr);
                     vi.add(cap + yr);
-                    vi.add(vf + "@" + yr);
+                    // 原来这里还有 vf + "@" + yr（tplink@2026）：与上面同一类堆砌，一并删
                 }
                 for (String sf : NUM_SUFFIX) {
                     vi.add(vf + sf);

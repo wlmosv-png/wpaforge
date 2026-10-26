@@ -55,7 +55,8 @@ public class TargetDictTest {
         ok("含去分隔符", has(r1.candidates, "FASTE972"), "");
         ok("含数字三连（原数字族现在是 9 位）", has(r1.candidates, "972972972"), "");
         ok("含 SSID+数字后缀", has(r1.candidates, "fast_e9720"), "");
-        ok("含 BSSID 尾号+后缀", has(r1.candidates, "e9721100"), "");
+        // 旧断言是「含 BSSID 尾号+后缀」—— 那一族已按社会工程学审查砍掉
+        ok("已删除 BSSID 尾号+后缀族", !has(r1.candidates, "e9721100"), "");
         ok("含字母部分+数字", has(r1.candidates, "faste123"), "");
         ok("来源列出各桶", r1.explanation.contains("SSID"), r1.explanation);
 
@@ -65,6 +66,28 @@ public class TargetDictTest {
         ok("关闭时不含厂商词元", !has(off.candidates, "tplinktplink"), "");
         ok("关闭时仍有通用弱口令", has(off.candidates, "12345678"), "");
         ok("关闭时来源写明", off.explanation.contains("关"), off.explanation);
+
+        System.out.println("== 社会工程学审查：SSID 派的臆造串必须绝迹 ==");
+        /* 这一节钉的是"审查砍掉的那几类"。
+         * 用户的原话：「派生 ssid 确实出了很多垃圾的条目，你是用户你也觉得这种密码离谱」。
+         * 每一条都注明"为什么它不该存在"，避免以后有人以为是漏掉的功能又加回来。 */
+        ok("无 BSSID 尾号+后缀（e9721100）", !has(r1.candidates, "e9721100"), "");
+        ok("无 BSSID 尾号+数字（e972111）", !has(r1.candidates, "e972111"), "");
+        ok("无 BSSID 尾号+520（e97211520）", !has(r1.candidates, "e97211520"), "");
+        // r1 的 BSSID 是 AA:BB:CC:E9:72:11 → 完整 MAC 无分隔
+        ok("保留完整 MAC（唯一有据可依的形态）",
+                has(r1.candidates, "aabbcce97211"), "");
+        ok("无符号位置矩阵（fast@2026）", !has(r1.candidates, "fast@2026"), "");
+        ok("无符号位置矩阵（2026@fast）", !has(r1.candidates, "2026@fast"), "");
+        ok("无符号位置矩阵（fast#2026）", !has(r1.candidates, "fast#2026"), "");
+        ok("无写死 wifi 后缀（FASTE972wifi）", !has(r1.candidates, "FASTE972wifi"), "");
+        ok("无写死 wlan 后缀（faste972wlan）", !has(r1.candidates, "faste972wlan"), "");
+        ok("无夹心数字（97288972）", !has(r1.candidates, "97288972"), "");
+        ok("无数字碎片+字母碎片（972faste）", !has(r1.candidates, "972faste"), "");
+        ok("仍保留有价值的：SSID+数字后缀", has(r1.candidates, "fast_e9720"), "");
+        ok("仍保留有价值的：字母部分+数字", has(r1.candidates, "faste123"), "");
+        ok("仍保留有价值的：片段组合", has(r1.candidates, "fast1234")
+                || has(r1.candidates, "FASTE972a"), "");
 
         System.out.println("== 不再补位：旧版臆造串必须绝迹 ==");
         ok("无 97288897", !has(r1.candidates, "97288897"), "");
@@ -78,7 +101,7 @@ public class TargetDictTest {
         TargetDictBuilder.Result r2 = TargetDictBuilder.build(t2, 2000, null, on);
         ok("含 209 三连", has(r2.candidates, "209209209"), "");
         ok("含 209+数字后缀", has(r2.candidates, "20912345"), "");
-        ok("含 BSSID 尾号族", has(r2.candidates, "ddeeff123"), "");
+        ok("已删除 BSSID 尾号族", !has(r2.candidates, "ddeeff123"), "");
 
         System.out.println("== 厂商词元（OUI）==");
         int yr = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR);
@@ -87,6 +110,7 @@ public class TargetDictTest {
         ok("厂商名 + 年份", has(rv.candidates, "tplink" + yr), "");
         ok("不足 8 位的裸品牌名被长度闸门挡掉", !has(rv.candidates, "tplink"), "");
         ok("来源里标出厂商词元", rv.explanation.contains("厂商"), rv.explanation);
+        ok("厂商词元不再带 @年份（tplink@2026 属臆造）", !has(rv.candidates, "tplink@2026"), "");
 
         TargetDictBuilder.Result rvFull = TargetDictBuilder.build(t1, 2000, "Sichuan Tianyi Kanghe", on);
         ok("长厂商名取首个词并加年份", has(rvFull.candidates, "sichuan" + yr), "");

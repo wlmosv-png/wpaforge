@@ -16,6 +16,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -288,6 +289,110 @@ public final class NetDialog {
         }
         body.addView(t, lp);
         return t;
+    }
+
+    /**
+     * 带自绘图标的列表项：`[图标] 标题 / 副标题 ………… [右侧图标]`
+     *
+     * 为什么另起一个方法而不改 {@link #addItem}：字典管理页等处还在用它，
+     * 那些条目本来就短，加图标和副标题反而更挤。
+     *
+     * 这一版要解决的是"看不出能点"和"看不出当前选的哪个"：
+     *   · 右侧一律有图标 —— 未选中是 `›`，选中是琥珀色的 `✓`；
+     *   · 按下走 UiKit.rippleStroked，有真实按压反馈；
+     *   · 选中项整行换成琥珀底 + 琥珀描边 + 琥珀标题。
+     *
+     * @return 句柄，可就地更新标题/副标题/选中态，不必重建整个弹窗
+     */
+    public IconRow addIconItem(DictIcons.Kind kind, String title, String subtitle,
+                               boolean selected, OnClick cb) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.TOP);
+        row.setPadding(px(14), px(13), px(14), px(13));
+
+        ImageView ic = new ImageView(ctx);
+        LinearLayout.LayoutParams icLp = new LinearLayout.LayoutParams(px(22), px(22));
+        icLp.rightMargin = px(13);
+        row.addView(ic, icLp);
+
+        LinearLayout col = new LinearLayout(ctx);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(ctx);
+        t.setTextSize(14f);
+        t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        col.addView(t);
+        TextView sub = new TextView(ctx);
+        sub.setTextSize(11.5f);
+        sub.setLineSpacing(px(3), 1f);
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        subLp.topMargin = px(3);
+        col.addView(sub, subLp);
+        row.addView(col, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        ImageView tr = new ImageView(ctx);
+        LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(px(18), px(18));
+        trLp.leftMargin = px(10);
+        trLp.topMargin = px(2);
+        row.addView(tr, trLp);
+
+        IconRow h = new IconRow(row, ic, tr, t, sub, kind, dp);
+        h.set(title, subtitle, selected);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = px(7);
+        if (cb != null) {
+            row.setOnClickListener(v -> {
+                cb.onClick(this);
+                dialog.dismiss();
+            });
+        }
+        body.addView(row, lp);
+        return h;
+    }
+
+    /** {@link #addIconItem} 的返回句柄：就地刷新，不重建弹窗 */
+    public static final class IconRow {
+        public final View view;
+        private final ImageView icon, trailing;
+        private final TextView title, subtitle;
+        private final DictIcons.Kind kind;
+        private final float density;
+
+        IconRow(View v, ImageView ic, ImageView tr, TextView t, TextView sub,
+                DictIcons.Kind kind, float density) {
+            this.view = v;
+            this.icon = ic;
+            this.trailing = tr;
+            this.title = t;
+            this.subtitle = sub;
+            this.kind = kind;
+            this.density = density;
+        }
+
+        /** 整体刷新：文案 + 选中态（底色/描边/图标配色一次到位） */
+        public void set(String titleText, String subtitleText, boolean selected) {
+            title.setText(titleText);
+            subtitle.setText(subtitleText);
+            int mainColor = selected ? ACCENT : TEXT;
+            int dimColor = selected ? AmberTheme.ACCENT_MID : TEXT_DIM;
+            title.setTextColor(mainColor);
+            subtitle.setTextColor(dimColor);
+            title.setTypeface(Typeface.create("sans-serif-medium",
+                    selected ? Typeface.BOLD : Typeface.NORMAL));
+            view.setBackground(UiKit.rippleStroked(
+                    selected ? AmberTheme.ACCENT_BG : FIELD_BG,
+                    selected ? AmberTheme.ACCENT_EDGE : AmberTheme.EDGE,
+                    AmberTheme.RADIUS_CHIP * density, Math.max(1f, density)));
+            icon.setImageDrawable(DictIcons.sized(kind, selected ? ACCENT : TEXT_DIM,
+                    density, 22f));
+            trailing.setImageDrawable(DictIcons.sized(
+                    selected ? DictIcons.Kind.CHECK : DictIcons.Kind.ARROW,
+                    selected ? ACCENT : TEXT_DIM, density, 18f));
+        }
     }
 
     /**

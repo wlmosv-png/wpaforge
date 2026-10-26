@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.github.wlmosv_png.wpaforge.audit.AuditEngine;
+import io.github.wlmosv_png.wpaforge.ui.DictIcons;
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
@@ -120,6 +121,17 @@ public class MainActivity extends Activity {
     private boolean offlineBusy = false;
     private List<Candidate> currentDict;
     private String currentDictName = "";
+    /**
+     * 当前字典的**来源代码**（不是显示文案，避免中英切换后比较失效）。
+     * 用途只有一个：字典来源弹窗里把"现在用的是哪个"标出来，
+     * 以及破解页那行显示成「当前字典: 画像派生 · 53 条」。
+     */
+    private String currentDictSource = "";
+    private static final String SRC_PROFILE = "profile";
+    private static final String SRC_GENERIC = "generic";
+    private static final String SRC_FILE = "file";
+    /** 通用生成器的条数是确定的，算一次就缓存 */
+    private int genericDictCount = 0;
     private AuditEngine engine;
 
     // 试连页组件
@@ -3051,42 +3063,148 @@ public class MainActivity extends Activity {
     private void updateDictStatus() {
         if (dictStatus == null) return;
         int n = dictCount();
-        dictStatus.setText(L.s("当前字典: ", "Current dictionary: ") + n + L.s(" 条", " entries") + (n == 0 ? L.s("（未选择）", "(none selected)") : ""));
+        if (n == 0) {
+            dictStatus.setText(L.s("当前字典: 未选择", "Current dictionary: none"));
+            return;
+        }
+        dictStatus.setText(L.s("当前字典: ", "Current dictionary: ")
+                + sourceLabel(currentDictSource) + " · " + n + L.s(" 条", " entries"));
     }
 
     /**
-     * 破解页的「字典来源」三选一。
+     * 破解页的「字典来源」。四个来源做成一屏**可点卡片**。
      *
-     * 不再只给「选文件」：内置生成器与按 SSID 派生本来在审计页，
-     * 用户切来切去还会遇到「切回来没刷新」。全部收到这一处，
-     * 选完立即生效并刷新破解页那行显示。
+     * 用户原话：「那个选择字典文件，不知道的人还以为不是个选项呢」。
+     * 所以这一屏要同时回答三件事：
+     *   ① 这行能不能点 —— 每行右侧自绘 `›`，不是纯文字
+     *   ② 现在用的是哪个 —— 选中行换琥珀底 + 琥珀 `✓` + 琥珀标题，
+     *      外加顶部一行「当前: …」
+     *   ③ 点了会发生什么 —— 副标题给**真实条数与预计耗时**
+     *      （三种方式的代价差几十倍：几十条 vs 一千七百多条，以前一个字都没提）
+     *
+     * 图标全部来自 {@link DictIcons}，Canvas 自绘，不依赖 emoji 字体。
      */
     private void showDictSource() {
-        // 用自研 NetDialog，不用系统 AlertDialog。
-        // 系统弹窗是 Material 白底风格，跟字典管理页里的暗色圆角
-        // 弹窗完全两套语言，同一个 App 里跳得很。NetDialog 已经
-        // 支持 addItem 的一行式条目，正好拿来代替 setItems。
-        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
-                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
-                        L.s("字典来源", "Dictionary source"), null);
-        // 「已知密码线索」单独成一个板块：它不是"字典的一种"，而是关于这个网的事实，
-        // 优先级高于下面所有字典 —— 所以放最上面，并用分隔提示跟字典区分开。
         final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
                 io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
-        d.addHint(L.s("— 已知密码线索（画像 · 优先于下面所有字典）—",
-                "— Known hints (profile · ranked above all wordlists) —"));
-        d.addItem(cur.isEmpty()
-                        ? L.s("填写已知线索（未填）", "Fill in known hints (empty)")
-                        : L.f("编辑已知线索（已填 %d 项）", "Edit known hints (%d set)", cur.count()),
+        final int budget = Prefs.deriveBudget(this);
+
+        // 画像能出多少条：拿真实实现算一次（几毫秒），没有目标就用占位目标
+        int seedCount = 0;
+        try {
+            io.github.wlmosv_png.wpaforge.core.NetRecord t = targetNet != null
+                    ? targetNet
+                    : new io.github.wlmosv_png.wpaforge.core.NetRecord("sample",
+                            "00:00:00:00:00:00", -60, 2432,
+                            io.github.wlmosv_png.wpaforge.core.NetRecord.Security.WPA2, false, "");
+            seedCount = io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(
+                    t, budget, null, cur,
+                    io.github.wlmosv_png.wpaforge.audit.CnHot.load(this)).candidates.size();
+        } catch (Throwable ignored) {}
+        final int generic = genericDictSize();
+
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.s("用什么密码字典", "Which password source"),
+                        L.s("先填线索最划算：实测命中有一半发生在第 1 条。",
+                                "Fill hints first \u2014 half of the real hits landed on candidate #1."));
+        d.addHint(L.s("当前: ", "Now: ") + sourceLabel(currentDictSource)
+                + (dictCount() > 0 ? " · " + dictCount() + L.s(" 条", " entries") : ""));
+
+        d.addIconItem(DictIcons.Kind.PROFILE,
+                L.s("已知密码线索", "Known hints"),
+                cur.isEmpty()
+                        ? L.s("还没填。手机号 / 生日 / 姓名拼音 / 门牌 —— 最值钱的一步",
+                                "Not filled. Phone / birthday / pinyin / floor \u2014 best payoff")
+                        : L.f("已填 %d 项 · 可出 %d 条", "%d filled \u00b7 %d candidates",
+                                cur.count(), seedCount),
+                false,
                 dd -> showSeedDialog());
-        d.addHint(L.s("— 字典 —", "— Wordlists —"));
-        d.addItem(L.s("选择字典文件", "Pick a dictionary file"),
-                dd -> showDictPicker());
-        d.addItem(L.s("按目标派生（画像驱动）", "Derive from target (profile-driven)"),
+
+        d.addIconItem(DictIcons.Kind.TARGET,
+                L.s("按目标派生（推荐）", "Derive from target (recommended)"),
+                (cur.isEmpty()
+                        ? L.s("还没填线索，只会出通用词表", "No hints \u2014 generic list only")
+                        : L.s("线索 + 通用弱口令现场生成", "Hints + common weak lists, built on the fly"))
+                        + " · " + seedCount + L.s(" 条 · 约 ", " entries \u00b7 ~")
+                        + Prefs.estimate(this, seedCount),
+                SRC_PROFILE.equals(currentDictSource),
                 dd -> deriveFromTarget());
-        d.addItem(L.s("内置生成器（通用）", "Built-in generator (generic)"),
+
+        d.addIconItem(DictIcons.Kind.FILE,
+                L.s("用自己的字典文件", "Use your own wordlist"),
+                L.s("从手机里挑一份现成的词表", "Pick an existing wordlist from the phone"),
+                SRC_FILE.equals(currentDictSource),
+                dd -> showDictPicker());
+
+        d.addIconItem(DictIcons.Kind.GENERIC,
+                L.s("通用弱口令表", "Generic weak list"),
+                L.s("不看目标", "Target-agnostic") + " · " + generic + L.s(" 条 · 约 ", " entries \u00b7 ~")
+                        + Prefs.estimate(this, generic),
+                SRC_GENERIC.equals(currentDictSource),
                 dd -> buildGenericDict());
-        d.setNegative(L.s("取消", "Cancel"), null);
+
+        d.addItem(L.s("怎么选？看说明", "Which one? Read this"), dd -> showDictGuide());
+        d.setNegative(L.s("关闭", "Close"), null);
+        d.show();
+
+        // 第一次进来先给一次说明 —— 用户提的问题本质就是"没人告诉我怎么来"
+        if (!Prefs.dictGuideSeen(this)) {
+            Prefs.setDictGuideSeen(this);
+            showDictGuide();
+        }
+    }
+
+    /** 来源代码 → 显示文案 */
+    private String sourceLabel(String code) {
+        if (SRC_PROFILE.equals(code)) return L.s("画像派生", "profile-derived");
+        if (SRC_GENERIC.equals(code)) return L.s("通用弱口令表", "generic weak list");
+        if (SRC_FILE.equals(code)) return L.s("字典文件", "dictionary file");
+        return L.s("未选择", "none");
+    }
+
+    /** 通用生成器条数（内容确定，缓存一次） */
+    private int genericDictSize() {
+        if (genericDictCount <= 0) {
+            genericDictCount = new DictGenerator(200000)
+                    .classic().numericPatterns().phoneSegments()
+                    .wordVariants().wordDigits().build().size();
+        }
+        return genericDictCount;
+    }
+
+    /**
+     * 「字典怎么选」说明。
+     *
+     * 关键是**顺序**：现在用户看到的是四个平级选项，不知道先干哪个。
+     * 这里明确说"先填线索、再派生、没线索才用通用表"，并把代价摆出来。
+     */
+    private void showDictGuide() {
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.s("字典怎么选？", "How to choose"),
+                        L.s("① 先填「已知密码线索」\n"
+                                        + "手机号、生日、姓名拼音、门牌。这些东西任何词表里都没有，"
+                                        + "填了就直接排在候选最前面。\n\n"
+                                        + "② 再点「按目标派生」\n"
+                                        + "它把线索和通用弱口令拼在一起，通常几十条、几分钟跑完。\n\n"
+                                        + "③ 没有线索也行\n"
+                                        + "那就点「通用弱口令表」。但那是一千七百多条，要跑一个多小时。\n\n"
+                                        + "④ 已经收集了字典文件\n"
+                                        + "选「用自己的字典文件」，直接加载。",
+                                "1) Fill in \"Known hints\" first\n"
+                                        + "Phone, birthday, pinyin, floor. No wordlist has these, "
+                                        + "and they go straight to the front of the queue.\n\n"
+                                        + "2) Then tap \"Derive from target\"\n"
+                                        + "It combines your hints with common weak lists \u2014 "
+                                        + "usually a few dozen candidates, a few minutes.\n\n"
+                                        + "3) No hints? That is fine\n"
+                                        + "Use \"Generic weak list\" \u2014 but that is ~1700 entries, "
+                                        + "over an hour.\n\n"
+                                        + "4) Already have a wordlist file\n"
+                                        + "Pick \"Use your own wordlist\" and load it directly."));
+        d.setNegative(L.s("知道了", "Got it"), null);
+        d.setPositive(L.s("去填线索", "Fill hints"), dd -> showSeedDialog());
         d.show();
     }
 
@@ -3245,7 +3363,7 @@ public class MainActivity extends Activity {
                     + (seeds.isEmpty() ? "" : " · " + seeds.fingerprint());
             final String path = saveDictToFile(r.candidates, nm);
             ui.post(() -> {
-                applyDict(r.candidates, nm, path);
+                applyDict(r.candidates, nm, path, SRC_PROFILE);
                 appendStream(L.f("定向载荷就绪: %d 发", "Derived %d candidates", r.candidates.size()));
                 appendStream(r.explanation);
             });
@@ -3265,7 +3383,7 @@ public class MainActivity extends Activity {
             final String path = saveDictToFile(list, nm);
             final String stats = renderStats(g.stats());
             ui.post(() -> {
-                applyDict(list, nm, path);
+                applyDict(list, nm, path, SRC_GENERIC);
                 appendStream(L.f("载荷编排完成: %d 发", "Generated %d entries", list.size()));
                 appendStream(stats);
             });
@@ -3307,11 +3425,16 @@ public class MainActivity extends Activity {
         return out.getAbsolutePath();
     }
 
-    /** 统一入口：设为当前字典 + 刷新界面显示 */
+    /** 统一入口：设为当前字典 + 刷新界面显示（来源代码见 SRC_*） */
     private void applyDict(java.util.List<Candidate> list, String name, String path) {
+        applyDict(list, name, path, "");
+    }
+
+    private void applyDict(java.util.List<Candidate> list, String name, String path, String source) {
         currentDict = list;
         currentDictName = name;
         currentDictPath = path == null ? "" : path;
+        currentDictSource = source == null ? "" : source;
         updateDictStatus();
         updateConnectDict();
         Toast.makeText(this, L.f("已应用 %d 条", "Applied %d entries",
@@ -3399,6 +3522,7 @@ public class MainActivity extends Activity {
                 }
                 currentDict = rl;
                 currentDictName = e.name;
+                currentDictSource = SRC_FILE;
                 currentDictPath = e.file.getAbsolutePath();
                 updateDictStatus();
                 updateConnectDict();

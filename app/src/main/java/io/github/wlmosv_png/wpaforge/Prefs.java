@@ -43,6 +43,8 @@ public final class Prefs {
      */
     private static final String K_BUDGET = "derive_budget";
     public static final int DEFAULT_BUDGET = 120;
+    /** 「字典怎么选」说明是否已看过（只看一次，之后从弹窗里手动打开） */
+    private static final String K_DICT_GUIDE = "dict_guide_seen";
 
     private Prefs() {}
 
@@ -63,6 +65,14 @@ public final class Prefs {
 
     public static void clearSeeds(Context ctx) {
         sp(ctx).edit().remove(K_SEEDS).apply();
+    }
+
+    public static boolean dictGuideSeen(Context ctx) {
+        return sp(ctx).getBoolean(K_DICT_GUIDE, false);
+    }
+
+    public static void setDictGuideSeen(Context ctx) {
+        sp(ctx).edit().putBoolean(K_DICT_GUIDE, true).apply();
     }
 
     /** 派生预算（条）。界面可调，最小 30 最大 2000。 */

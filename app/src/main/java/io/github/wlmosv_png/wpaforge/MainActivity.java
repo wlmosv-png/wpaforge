@@ -98,9 +98,14 @@ public class MainActivity extends Activity {
     private LinearLayout signalBoard;
     /** 雷达卡下面的「关键数字」行（每次扫描后重填） */
     private LinearLayout radarStatsBox;
-    /** 雷达卡头部：左侧状态（最后更新 / 系统限流倒计时），右侧「重新扫描」 */
+    /**
+     * 雷达卡头部：**一行可点的状态文字**（最后更新 / 限流倒计时 / 轻点刷新）。
+     *
+     * <p>原来这里是个带底框的按钮，用户反馈「不好那个按钮了，文字可以保留」——
+     * 一个描边方块压在卡片上确实重。现在整行就是控件：行首一个小刷新图标
+     * （可点时琥珀色、冷却时灰色），文字里写明「轻点刷新」。
+     */
     private TextView radarStatus;
-    private Button radarRefreshBtn;
     /** 上次扫描的 BSSID 集合，用来算「新增 / 消失」 */
     private java.util.List<String> lastBssids;
     private io.github.wlmosv_png.wpaforge.scan.ScanDiff.Result lastDiff;
@@ -2014,7 +2019,7 @@ public class MainActivity extends Activity {
      * 上次被系统拒（文案说明是"系统限制了频率"，不是软件坏了）。
      */
     private void updateRadarStatus() {
-        if (radarStatus == null || radarRefreshBtn == null) return;
+        if (radarStatus == null) return;
         long now = System.currentTimeMillis();
         long wait = scanner == null ? 0 : scanner.msUntilNextScan();
         boolean ready = wait <= 0;
@@ -2025,26 +2030,27 @@ public class MainActivity extends Activity {
             sb.append(L.s("还没扫描到网络", "No scan results yet"));
         } else {
             long sec = Math.max(0, (now - last) / 1000);
-            sb.append(L.s("最后更新 " + sec + " 秒前", "Updated " + sec + "s ago"));
+            // 「0 秒前」读着别扭，头几秒直接说「刚刚更新」
+            sb.append(sec <= 3
+                    ? L.s("刚刚更新", "Updated just now")
+                    : L.s("最后更新 " + sec + " 秒前", "Updated " + sec + "s ago"));
             if (lastDiff != null && lastDiff.changed()) {
                 sb.append(" · ").append(lastDiff.label(" · "));
             }
         }
-        if (!ready) {
-            sb.append(" · ").append(scanner == null ? "" : scanner.scanGateLabel());
-        }
+        sb.append(" · ").append(ready
+                ? L.s("轻点刷新", "tap to refresh")
+                : (scanner == null ? "" : scanner.scanGateLabel()));
         String text = sb.toString();
         if (!text.contentEquals(radarStatus.getText())) radarStatus.setText(text);
 
-        radarRefreshBtn.setEnabled(ready);
-        radarRefreshBtn.setTextColor(ready ? AmberTheme.ACCENT : AmberTheme.TEXT_FAINT);
-        radarRefreshBtn.setText(L.s("↻ 重新扫描", "↻ Rescan"));
-        radarRefreshBtn.setCompoundDrawablesWithIntrinsicBounds(
+        // 行首图标：可点=琥珀、冷却=灰（一眼看出现在按不按得动）
+        radarStatus.setCompoundDrawablesWithIntrinsicBounds(
                 io.github.wlmosv_png.wpaforge.ui.DictIcons.sized(
                         io.github.wlmosv_png.wpaforge.ui.DictIcons.Kind.REFRESH,
-                        ready ? AmberTheme.ACCENT : AmberTheme.TEXT_FAINT, dp, 13f), null, null, null);
-        radarRefreshBtn.setCompoundDrawablePadding(px(6));
-        radarRefreshBtn.setAlpha(ready ? 1f : 0.55f);
+                        ready ? AmberTheme.ACCENT : AmberTheme.TEXT_FAINT, dp, 12f),
+                null, null, null);
+        radarStatus.setTextColor(ready ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_FAINT);
     }
 
     /** 用户点「重新扫描」 */
@@ -2198,33 +2204,20 @@ public class MainActivity extends Activity {
         // 头部行：左＝状态（最后更新 / 系统限流倒计时），右＝重新扫描。
         // 系统对 startScan 有约 30 秒的频率限制，按钮必须**如实反映**能不能按，
         // 否则用户点了没反应，只会以为软件坏了。
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
         radarStatus = new TextView(this);
         radarStatus.setTextSize(11.5f);
         radarStatus.setTextColor(AmberTheme.TEXT_DIM);
         radarStatus.setSingleLine(true);
-        head.addView(radarStatus, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        radarRefreshBtn = new Button(this);
-        radarRefreshBtn.setAllCaps(false);
-        radarRefreshBtn.setTextSize(12f);
-        radarRefreshBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        radarRefreshBtn.setMinWidth(0);
-        radarRefreshBtn.setMinimumWidth(0);
-        radarRefreshBtn.setMinHeight(0);
-        radarRefreshBtn.setMinimumHeight(0);
-        radarRefreshBtn.setStateListAnimator(null);
-        radarRefreshBtn.setPadding(px(12), px(8), px(12), px(8));
-        radarRefreshBtn.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
-        radarRefreshBtn.setOnClickListener(v -> onRefreshClicked());
-        head.addView(radarRefreshBtn);
-        radarCard.addView(head);
+        radarStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        radarStatus.setCompoundDrawablePadding(px(7));
+        radarStatus.setGravity(Gravity.CENTER_VERTICAL);
+        radarStatus.setPadding(px(2), px(10), px(2), px(10));   // 撑出可点区域
+        radarStatus.setOnClickListener(v -> onRefreshClicked());
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hlp.bottomMargin = px(6);
-        head.setLayoutParams(hlp);
+        hlp.bottomMargin = px(4);
+        radarStatus.setLayoutParams(hlp);
+        radarCard.addView(radarStatus);
 
         radarCard.addView(radar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, px(224)));

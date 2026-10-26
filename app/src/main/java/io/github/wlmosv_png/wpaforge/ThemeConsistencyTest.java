@@ -272,10 +272,14 @@ public class ThemeConsistencyTest {
                 && set.contains("RadarSweep.ringColors()"));
         ok("雷达卡有图例与关键数字", set.contains("private View radarLegend()")
                 && set.contains("private void renderRadarStats(List<NetRecord> nets)"));
-        ok("有「重新扫描」控件（用户能主动刷新）", set.contains("radarRefreshBtn")
+        ok("能主动刷新：状态行整行可点", set.contains("radarStatus.setOnClickListener(v -> onRefreshClicked())")
                 && set.contains("private void onRefreshClicked()")
                 && set.contains("DictIcons.Kind.REFRESH"));
-        ok("状态行显示「最后更新 N 秒前」", set.contains("最后更新 ")
+        ok("不要按钮外框（用户：不好那个按钮了，文字可以保留）",
+                !set.contains("radarRefreshBtn")
+                        && !set.contains("new Button(this);\n        radarRefreshBtn"));
+        ok("状态行显示「刚刚更新 / 最后更新 N 秒前」", set.contains("刚刚更新")
+                && set.contains("最后更新 ")
                 && set.contains("scanner.lastResultsAt()"));
         ok("刷新带「新增 / 消失」差异（刷新才有信息量）", set.contains("ScanDiff.of(lastBssids, now)")
                 && set.contains("lastDiff.label("));

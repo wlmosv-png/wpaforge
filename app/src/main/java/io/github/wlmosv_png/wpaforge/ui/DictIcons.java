@@ -31,7 +31,8 @@ public final class DictIcons extends Drawable {
         ARROW,     // 右侧 ›
         CHECK,     // 右侧 ✓
         PICK,      // 多选框：空心圆（未选）
-        PICKED     // 多选框：实心圆 + 勾（已选）
+        PICKED,    // 多选框：实心圆 + 勾（已选）
+        MORE       // 行内「⋯」：更多操作
     }
 
     private final Kind kind;
@@ -127,6 +128,14 @@ public final class DictIcons extends Drawable {
             case CHECK: {
                 cv.drawLine(cx - u * 0.30f, cy + u * 0.02f, cx - u * 0.075f, cy + u * 0.255f, p);
                 cv.drawLine(cx - u * 0.075f, cy + u * 0.255f, cx + u * 0.31f, cy - u * 0.255f, p);
+                break;
+            }
+            case MORE: {
+                Paint f = new Paint(p);
+                f.setStyle(Paint.Style.FILL);
+                cv.drawCircle(cx, cy - u * 0.27f, u * 0.088f, f);
+                cv.drawCircle(cx, cy, u * 0.088f, f);
+                cv.drawCircle(cx, cy + u * 0.27f, u * 0.088f, f);
                 break;
             }
             case PICK: {

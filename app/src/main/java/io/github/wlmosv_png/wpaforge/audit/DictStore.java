@@ -288,6 +288,25 @@ public final class DictStore {
     }
 
     /** 读一个字典的所有行 */
+    /**
+     * 流式统计有效行数（跳过空行与 # 注释）—— **不把文件读进内存**。
+     * 给字典列表显示"多少条"用：105 万条的字典要是用 readLines 数，
+     * 一次性建 105 万个 String，手机上直接 OOM。
+     */
+    public static int countLines(File f) {
+        if (f == null || !f.isFile()) return 0;
+        int n = 0;
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                new FileInputStream(f), StandardCharsets.UTF_8), 1 << 16)) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                String t = line.replace("\uFEFF", "").trim();
+                if (!t.isEmpty() && !t.startsWith("#")) n++;
+            }
+        } catch (Exception ignored) {}
+        return n;
+    }
+
     public static List<String> readLines(File f) {
         List<String> out = new ArrayList<>();
         if (f == null || !f.isFile()) return out;

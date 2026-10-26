@@ -62,6 +62,33 @@ public class DictActivity extends Activity {
     /** 选中的字典（用于合并） */
     private final List<DictStore.Entry> selected = new ArrayList<>();
 
+    /* ── 列表的筛选 / 排序 / 多选模式 ────────────────────────────────
+     * 32 本字典、7 MB 的时候，用户要的是"按大小排，先跑小的"和
+     * "哪些跑过、别重复跑"。所以列表必须能筛能排，而不是一个平铺的清单。 */
+    private enum Filter { ALL, TRIED, UNTRIED }
+    private enum SortBy { SIZE, NAME, RECENT }
+    private Filter filter = Filter.ALL;
+    private SortBy sortBy = SortBy.SIZE;
+
+    /** 是否处于多选模式 —— 有模式才有分层：顶部报已选、底部升操作条 */
+    private boolean selectMode = false;
+    private LinearLayout selectBar;
+    private TextView selectCount;
+
+    /**
+     * 每本字典的跑过进度：绝对路径 → {已跑条数, 总条数}。
+     * 数据来自**任务队列**（Task.dictPath + offset/dictSize），不需要新增任何存储。
+     */
+    private final java.util.Map<String, int[]> progress = new java.util.HashMap<>();
+    /** 每本字典最近用过的时间（毫秒），同样来自任务队列 */
+    private final java.util.Map<String, Long> lastUsed = new java.util.HashMap<>();
+    /**
+     * 条数缓存：key = 路径 + 文件大小。
+     * 没有它的话，每次 refresh（切筛选、勾选、返回页面）都会把每个文件重数一遍 ——
+     * 7 MB 目录还好，几百 MB 的字典就是灾难。
+     */
+    private final java.util.Map<String, Integer> lineCountCache = new java.util.HashMap<>();
+
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -90,6 +117,14 @@ public class DictActivity extends Activity {
         refresh();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 回前台重读一次任务队列：刚跑完一本字典回来，徽标要立刻变
+        progressLoadedAt = 0L;
+        refresh();
+    }
+
     private int px(float v) { return Math.round(v * dp); }
 
     private void buildUi() {
@@ -97,10 +132,11 @@ public class DictActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
 
-        // 标题
+        // ── 标题区 ──
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.VERTICAL);
-        head.setPadding(px(26), px(46), px(22), px(8));
+        head.setPadding(px(20), px(44), px(20), px(4));
+
         TextView t = new TextView(this);
         t.setText(L.s("字典管理", "Dictionary management"));
         t.setTextSize(21);
@@ -108,61 +144,79 @@ public class DictActivity extends Activity {
         t.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         head.addView(t);
 
+        // 目录路径：很长，所以中间省略 + 点一下复制（不占视觉重心）
         pathLabel = new TextView(this);
         pathLabel.setTextSize(9.5f);
-        pathLabel.setTextColor(TEXT_DIM);
+        pathLabel.setTextColor(AmberTheme.TEXT_FAINT);
+        pathLabel.setSingleLine(true);
+        pathLabel.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        pathLabel.setPadding(0, px(2), 0, px(2));
+        pathLabel.setOnClickListener(v -> copyPath());
         head.addView(pathLabel);
 
         statLabel = new TextView(this);
         statLabel.setTextSize(11.5f);
         statLabel.setTextColor(ACCENT);
-        statLabel.setPadding(0, px(4), 0, 0);
         head.addView(statLabel);
 
-        // 搜索入口直接摆在顶上。
-        // 上一版把它塞进「＋」→ 字典操作菜单里，用户找不到 —— 找不到就等于没有。
-        Button searchBtn = chip(L.s("🔍  搜索字典内容", "🔍  Search in dictionaries"),
-                v -> showSearchPicker());
-        LinearLayout searchRow = new LinearLayout(this);
-        searchRow.setOrientation(LinearLayout.HORIZONTAL);
-        searchRow.setPadding(0, px(8), 0, px(2));
-        searchRow.addView(searchBtn);
-        head.addView(searchRow);
+        /* ── 主/次按钮 ────────────────────────────────────────────
+         * 上一版把主入口（新建/导入/在线）藏在右下角一个「+」里，
+         * 却把「搜索」做成铺满整行的实心琥珀按钮 —— 视觉权重正好反了。
+         * 现在：主操作 = 添加字典（实心），次要 = 搜索（描边）。 */
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setPadding(0, px(10), 0, px(2));
+        Button add = AmberTheme.action(this, dp,
+                L.s("+  添加字典", "+  Add dictionary"), AmberTheme.BTN_PRIMARY);
+        add.setOnClickListener(v -> showAddMenu());
+        btnRow.addView(add, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Button search = AmberTheme.action(this, dp,
+                L.s("搜索", "Search"), AmberTheme.BTN_SECONDARY);
+        search.setOnClickListener(v -> showSearchPicker());
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.leftMargin = px(8);
+        btnRow.addView(search, slp);
+        head.addView(btnRow);
         root.addView(head);
 
-        // 操作区：两行三列，全部可见，不需要横向滚动
-        // 【收拢】原来这里是两行六个大按钮，占了屏幕上部一整块，
-        // 而六个功能里有四个一周用不到一次。
-        // 现在全部收进右下角的悬浮按钮，列表直接顶到标题下面。
         FrameLayout stage = new FrameLayout(this);
 
         ScrollView sv = new ScrollView(this);
         listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
-        listBox.setPadding(px(14), px(8), px(14), px(96));
+        listBox.setPadding(px(12), px(6), px(12), px(112));
         sv.addView(listBox, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         stage.addView(sv, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        Button fab = new Button(this);
-        fab.setText("+");
-        fab.setAllCaps(false);
-        fab.setTextSize(24);
-        fab.setTextColor(AmberTheme.ON_ACCENT);
-        fab.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        fab.setMinWidth(0); fab.setMinimumWidth(0);
-        fab.setMinHeight(0); fab.setMinimumHeight(0);
-        fab.setStateListAnimator(null);
-        fab.setPadding(0, 0, 0, px(2));
-        fab.setBackground(roundBg(ACCENT, AmberTheme.RADIUS_BTN));
-        fab.setOnClickListener(v -> showActionSheet());
+        // ── 底部多选操作条（只在多选模式出现）──
+        selectBar = new LinearLayout(this);
+        selectBar.setOrientation(LinearLayout.HORIZONTAL);
+        selectBar.setGravity(Gravity.CENTER_VERTICAL);
+        selectBar.setVisibility(View.GONE);
+        selectBar.setPadding(px(14), px(10), px(14), px(10));
+        selectBar.setBackground(roundBgStroked(AmberTheme.CARD_2,
+                AmberTheme.ACCENT_EDGE, AmberTheme.RADIUS_CARD, 1f));
 
-        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(px(58), px(58));
-        flp.gravity = Gravity.BOTTOM | Gravity.END;
-        flp.rightMargin = px(20);
-        flp.bottomMargin = px(24);
-        stage.addView(fab, flp);
+        selectCount = new TextView(this);
+        selectCount.setTextSize(13f);
+        selectCount.setTextColor(TEXT);
+        selectBar.addView(selectCount, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        selectBar.addView(miniBtn(L.s("合并", "Merge"), ACCENT, v -> doMerge()));
+        selectBar.addView(miniBtn(L.s("删除", "Delete"), AmberTheme.DANGER,
+                v -> confirmDeleteSelected()));
+        selectBar.addView(miniBtn(L.s("取消", "Cancel"), AmberTheme.TEXT_DIM,
+                v -> exitSelectMode()));
+
+        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        blp.gravity = Gravity.BOTTOM;
+        blp.setMargins(px(12), 0, px(12), px(18));
+        stage.addView(selectBar, blp);
 
         root.addView(stage, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -170,7 +224,64 @@ public class DictActivity extends Activity {
         setContentView(root);
     }
 
-    /** 主操作弹窗：原来的六个入口都在这里 */
+    /** 底部操作条上的小按钮（比 chip 更紧凑） */
+    private Button miniBtn(String label, int color, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(12f);
+        b.setTextColor(color);
+        b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setStateListAnimator(null);
+        b.setPadding(px(12), px(8), px(12), px(8));
+        b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = px(8);
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    /** 路径太长，点一下复制 —— 比让用户用手指去选更实用 */
+    private void copyPath() {
+        java.io.File dir = DictStore.defaultDir(this);
+        android.content.ClipboardManager cm =
+                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("path", dir.getAbsolutePath()));
+            Toast.makeText(this, L.s("路径已复制", "Path copied"), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * 「+ 添加字典」：**只放"新增"这一类动作**。
+     *
+     * <p>上一版这个按钮打开的是 12 项的大杂烩（新建/导入/下载/搜索/合并/刷新/换目录/清空…），
+     * 用户点「添加」看到「清空全部字典」是会害怕的。管理类动作挪到「管理」里。
+     */
+    private void showAddMenu() {
+        NetDialog d = new NetDialog(this, L.s("添加字典", "Add dictionary"), null);
+        d.addItem(L.s("新建普通表（手写）", "New plain list (hand-written)"),
+                dd -> dialogNewPlain());
+        d.addItem(L.s("新建规则（区间批量生成）", "New rule (range-generated)"),
+                dd -> dialogNewRule());
+        d.addItem(L.s("从手机导入文件", "Import a file from the device"),
+                dd -> pickFile());
+        d.addItem(L.s("在线字典来源", "Online dictionary sources"),
+                dd -> showOnlineSources());
+        d.addItem(L.s("插入内置字典", "Restore built-in dictionaries"),
+                dd -> releaseBuiltin());
+        d.addItem(L.s("── 管理 ──", "── Manage ──"), dd -> showActionSheet());
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
+    }
+
+    /** 管理类操作（换目录/清空/合并/刷新等） */
     // ---------------- 字典内容搜索 ----------------
 
     /** 搜索入口：先选一本字典 */
@@ -496,204 +607,497 @@ public class DictActivity extends Activity {
 
     private void refresh() {
         File dir = DictStore.defaultDir(this);
-        pathLabel.setText(L.s("目录: ", "Directory: ") + dir.getAbsolutePath());
+        pathLabel.setText(dir.getAbsolutePath());
         listBox.removeAllViews();
 
-        /* 顶部状态行：本目标已经试过多少条。
-         * 这是"换字典不再重复跑"的可见证据 —— 用户得先看见它，
-         * 才会相信"合并后跑的时候不会重复"。 */
-        {
-            String key = Prefs.targetKey(this);
-            String label = Prefs.targetLabel(this);
-            if (key != null && !key.isEmpty()) {
-                io.github.wlmosv_png.wpaforge.audit.TriedSet tried =
-                        io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
-                                io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
-                TextView info = new TextView(this);
-                info.setText(tried.size() > 0
-                        ? L.s("目标 ", "Target ") + (label.isEmpty() ? "?" : label)
-                                + L.s(" 已试过 ", " already tried ") + tried.size()
-                                + L.s(" 条 —— 跑字典时会自动跳过，不重复劳动",
-                                      " entries \u2014 auto-skipped when running, no repeats")
-                        : L.s("目标 ", "Target ") + (label.isEmpty() ? "?" : label)
-                                + L.s(" 还没有已试记录", " has no tried record yet"));
-                info.setTextSize(11.5f);
-                info.setTextColor(tried.size() > 0 ? AmberTheme.OK : TEXT_DIM);
-                info.setPadding(px(4), 0, px(4), px(8));
-                listBox.addView(info);
-            }
-        }
-
         List<DictStore.Entry> entries = DictStore.scan(dir);
+        pruneSelection(entries);
+        loadProgressIfStale();
+        loadMissingLineCounts(entries);
+        sortEntries(entries);
 
-        // 只丢弃「已经不在列表里」的选择（比如刚被删掉），**不整体清空** ——
-        // 原来这里无条件 selected.clear()，而每次切换选择都会 refresh，
-        // 结果就是「选一个、刷一下、没了」。
-        {
-            List<DictStore.Entry> keep = new ArrayList<>();
-            for (DictStore.Entry sel : selected) {
-                for (DictStore.Entry cur : entries) {
-                    if (cur.file.equals(sel.file)) { keep.add(cur); break; }
-                }
-            }
-            selected.clear();
-            selected.addAll(keep);
-        }
-
-        // 多选状态条：只在有选择时出现，把「已选多少 + 能做什么」直接摆出来
-        if (!selected.isEmpty()) {
-            LinearLayout bar = new LinearLayout(this);
-            bar.setOrientation(LinearLayout.HORIZONTAL);
-            bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            bar.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
-            bar.setPadding(px(14), px(10), px(14), px(10));
-            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            blp.bottomMargin = px(10);
-            bar.setLayoutParams(blp);
-
-            TextView tv = new TextView(this);
-            tv.setText(L.s("已选 " + selected.size() + " 本", selected.size() + " selected"));
-            tv.setTextSize(12.5f);
-            tv.setTextColor(TEXT);
-            bar.addView(tv, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-            bar.addView(chip(L.s("合并", "Merge"), v -> doMerge()));
-            bar.addView(chip(L.s("清除", "Clear"), v -> {
-                selected.clear();
-                refresh();
-            }));
-            listBox.addView(bar);
-        }
-        if (entries.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("目录里还没有字典。\n\n你可以：\n"
-                    + L.s("· 点「新建普通」手写一个\n", "· tap “New dictionary” to write one\n")
-                    + L.s("· 点「新建规则」用区间规则批量生成（如 00000000→99999999）\n", "· tap “New rule” to generate a range (e.g. 00000000→99999999)\n")
-                    + L.s("· 点「导入」从手机里选一个 txt 文件\n", "· tap “Import” to pick a txt file\n")
-                    + L.s("· 点「打开目录」把字典文件拷进去后刷新", "· tap “Open folder” to copy files in, then refresh"));
-            empty.setTextSize(13);
-            empty.setTextColor(TEXT_DIM);
-            empty.setLineSpacing(px(6), 1f);
-            empty.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
-            empty.setPadding(px(20), px(22), px(20), px(22));
-            listBox.addView(empty);
-            statLabel.setText(L.s("共 0 个字典", "0 dictionaries"));
-            return;
+        List<DictStore.Entry> shown = new ArrayList<>();
+        for (DictStore.Entry e : entries) {
+            boolean tried = progress.containsKey(e.file.getAbsolutePath());
+            if (filter == Filter.TRIED && !tried) continue;
+            if (filter == Filter.UNTRIED && tried) continue;
+            shown.add(e);
         }
 
         long totalBytes = 0;
+        int triedN = 0;
         for (DictStore.Entry e : entries) {
             totalBytes += e.sizeBytes;
-            listBox.addView(row(e));
+            if (progress.containsKey(e.file.getAbsolutePath())) triedN++;
         }
-        statLabel.setText(L.s("共 ", "Total ") + entries.size() + L.s(" 个字典 · ", " dictionaries · ")
-                + (totalBytes / 1024 / 1024) + " MB");
+        statLabel.setText(selectMode
+                ? L.s("已选 " + selected.size() + " 本", selected.size() + " selected")
+                : L.s("共 " + entries.size() + " 个字典 · " + (totalBytes / 1024 / 1024)
+                                + " MB · 跑过 " + triedN + " 本",
+                        entries.size() + " dictionaries · " + (totalBytes / 1024 / 1024)
+                                + " MB · " + triedN + " tried"));
+
+        if (entries.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(L.s("目录里还没有字典。\n\n点上面的「+ 添加字典」：\n"
+                            + "· 新建普通表，手写几条\n"
+                            + "· 新建规则，按区间批量生成（如 00000000→99999999）\n"
+                            + "· 从手机里导入 txt\n"
+                            + "· 用在线来源下载",
+                    "No dictionaries yet.\n\nTap \"+ Add dictionary\" above to create, "
+                            + "import or download one."));
+            empty.setTextSize(13);
+            empty.setTextColor(AmberTheme.TEXT_DIM);
+            empty.setLineSpacing(px(5), 1f);
+            empty.setBackground(roundBgStroked(AmberTheme.CARD, AmberTheme.EDGE,
+                    AmberTheme.RADIUS_CARD, 0.8f));
+            empty.setPadding(px(18), px(20), px(18), px(20));
+            listBox.addView(empty);
+        } else {
+            listBox.addView(filterRow(entries.size(), triedN));
+            View tl = targetLine();
+            if (tl != null) listBox.addView(tl);
+            if (shown.isEmpty()) {
+                TextView none = new TextView(this);
+                none.setText(filter == Filter.TRIED
+                        ? L.s("这本网络还没有跑过任何字典。", "Nothing has been tried on this network yet.")
+                        : L.s("没有未跑过的字典 —— 都被跑过了。", "No untried dictionaries left."));
+                none.setTextSize(12.5f);
+                none.setTextColor(AmberTheme.TEXT_DIM);
+                none.setPadding(px(4), px(16), px(4), px(16));
+                listBox.addView(none);
+            } else {
+                for (DictStore.Entry e : shown) listBox.addView(row(e));
+            }
+        }
+        updateSelectBar();
     }
 
-    private View row(DictStore.Entry e) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        // 选中态给一个明显的底色，多选时一眼看得出选了哪几本
-        box.setBackground(roundBg(selected.contains(e)
-                ? AmberTheme.ACCENT_BG : SURFACE, 18));
-        box.setPadding(px(16), px(14), px(16), px(14));
-        // 长按进入多选（Android 标准交互）—— 这样就不必再占一个「选择」按钮，
-        // 那一行原本挤了 5 个按钮，本来就不好按。
-        //
-        // 注意：长按必须挂到**整行的每一个子控件**上。只挂容器没用 ——
-        // 手指落在按钮或文字上时，长按会被那个子控件吃掉（上一版就是这么失效的）。
-        // 长按整行也能选（保留），但**选完必须 refresh()** ——
-        // 不刷新的话行底色不变、顶部「已选 N 本 · 合并」那条也不出现，
-        // 用户看到的就是"选了没反应、根本没法合并"（上一版就是这么坏的）。
-        final View.OnLongClickListener longPress = v -> {
-            toggleSelect(e);
+    /** 选择项随列表刷新清理（已删除的字典不该留在选择里） */
+    private void pruneSelection(List<DictStore.Entry> entries) {
+        List<DictStore.Entry> keep = new ArrayList<>();
+        for (DictStore.Entry sel : selected) {
+            for (DictStore.Entry cur : entries) {
+                if (cur.file.equals(sel.file)) { keep.add(cur); break; }
+            }
+        }
+        selected.clear();
+        selected.addAll(keep);
+    }
+
+    // ---------------------------------------------------------------- 筛选 / 排序
+
+    private void sortEntries(List<DictStore.Entry> entries) {
+        switch (sortBy) {
+            case NAME:
+                entries.sort((x, y) -> x.name.compareToIgnoreCase(y.name));
+                break;
+            case RECENT:
+                entries.sort((x, y) -> Long.compare(
+                        lastUsed.getOrDefault(y.file.getAbsolutePath(), 0L),
+                        lastUsed.getOrDefault(x.file.getAbsolutePath(), 0L)));
+                break;
+            case SIZE:
+            default:
+                entries.sort((x, y) -> Long.compare(y.sizeBytes, x.sizeBytes));
+                break;
+        }
+    }
+
+    private View filterRow(int total, int triedN) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, px(2), 0, px(8));
+
+        row.addView(filterChip(L.s("全部 " + total, "All " + total), Filter.ALL),
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(filterChip(L.s("跑过 " + triedN, "Tried " + triedN), Filter.TRIED),
+                new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(filterChip(L.s("未跑 " + (total - triedN), "Untried " + (total - triedN)),
+                Filter.UNTRIED), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView sp = new TextView(this);
+        sp.setText(L.s("排序", "Sort"));
+        sp.setTextSize(11f);
+        sp.setTextColor(AmberTheme.TEXT_FAINT);
+        sp.setPadding(px(6), 0, px(6), 0);
+        row.addView(sp, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        row.addView(sortChip(L.s("大小", "Size"), SortBy.SIZE));
+        row.addView(sortChip(L.s("名称", "Name"), SortBy.NAME));
+        row.addView(sortChip(L.s("最近", "Recent"), SortBy.RECENT));
+        return row;
+    }
+
+    private Button filterChip(String label, Filter f) {
+        boolean on = filter == f;
+        Button b = miniChip(label, on ? AmberTheme.ON_ACCENT : AmberTheme.TEXT_DIM,
+                on ? ACCENT : AmberTheme.CARD_3);
+        b.setOnClickListener(v -> {
+            filter = f;
             refresh();
-            return true;
-        };
-        box.setOnLongClickListener(longPress);
-        box.setLongClickable(true);
+        });
+        return b;
+    }
+
+    private Button sortChip(String label, SortBy sb) {
+        boolean on = sortBy == sb;
+        Button b = miniChip(label, on ? AmberTheme.ON_ACCENT : AmberTheme.TEXT_DIM,
+                on ? ACCENT : AmberTheme.CARD_3);
+        b.setOnClickListener(v -> {
+            sortBy = sb;
+            refresh();
+        });
+        return b;
+    }
+
+    private Button miniChip(String label, int textColor, int bgColor) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(11f);
+        b.setTextColor(textColor);
+        b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setStateListAnimator(null);
+        b.setPadding(px(11), px(7), px(11), px(7));
+        b.setBackground(roundBg(bgColor, AmberTheme.RADIUS_CHIP));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = px(6);
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    /** 当前目标那行小字（有记录时才出现） */
+    private View targetLine() {
+        String key = Prefs.targetKey(this);
+        if (key == null || key.isEmpty()) return null;
+        io.github.wlmosv_png.wpaforge.audit.TriedSet tried =
+                io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
+                        io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
+        if (tried.size() == 0) return null;
+        TextView tv = new TextView(this);
+        tv.setText(L.s("本网络已试过 " + tried.size() + " 条 · 跑字典时自动跳过",
+                tried.size() + " candidates tried on this network \u00b7 skipped automatically"));
+        tv.setTextSize(11f);
+        tv.setTextColor(AmberTheme.OK);
+        tv.setPadding(px(2), 0, px(2), px(10));
+        return tv;
+    }
+
+    // ---------------------------------------------------------------- 进度（来自任务队列）
+
+    private long progressLoadedAt = 0L;
+
+    /** 读任务队列（进页面、回前台、跑完回来时读一次就够，不必每次 refresh 都读） */
+    private void loadProgressIfStale() {
+        if (System.currentTimeMillis() - progressLoadedAt < 3000L) return;
+        loadProgressAsync();
+    }
+
+    private void loadProgressAsync() {
+        progressLoadedAt = System.currentTimeMillis();
+        new Thread(() -> {
+            java.util.List<io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task> q =
+                    io.github.wlmosv_png.wpaforge.audit.TaskQueue.load(DictActivity.this);
+            final java.util.Map<String, int[]> p = new java.util.HashMap<>();
+            final java.util.Map<String, Long> lu = new java.util.HashMap<>();
+            for (io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task t : q) {
+                if (t.dictPath == null || t.dictPath.isEmpty()) continue;
+                int[] cur = p.get(t.dictPath);
+                if (cur == null) {
+                    cur = new int[]{0, 0};
+                    p.put(t.dictPath, cur);
+                }
+                boolean done = t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.DONE_HIT
+                        || t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.DONE_MISS;
+                cur[0] = Math.max(cur[0], done ? t.dictSize : t.offset);
+                cur[1] = Math.max(cur[1], t.dictSize);
+                long when = t.createdAt + Math.max(0, t.elapsedMs);
+                Long prev = lu.get(t.dictPath);
+                if (prev == null || when > prev) lu.put(t.dictPath, when);
+            }
+            ui.post(() -> {
+                progress.clear();
+                progress.putAll(p);
+                lastUsed.clear();
+                lastUsed.putAll(lu);
+                refresh();
+            });
+        }, "wpaforge-dict-progress").start();
+    }
+
+    /** 先用缓存填上条数，只把没数过的交给后台（这一列直接决定"要跑多久"） */
+    private void loadMissingLineCounts(final List<DictStore.Entry> entries) {
+        final List<DictStore.Entry> todo = new ArrayList<>();
+        for (DictStore.Entry e : entries) {
+            if (e.isRule) continue;
+            Integer c = lineCountCache.get(cacheKey(e));
+            if (c != null) {
+                e.lineCount = c;
+            } else if (e.lineCount <= 0) {
+                todo.add(e);
+            }
+        }
+        if (todo.isEmpty()) return;
+        new Thread(() -> {
+            boolean changed = false;
+            for (DictStore.Entry e : todo) {
+                int n = DictStore.countLines(e.file);
+                if (n > 0) {
+                    lineCountCache.put(cacheKey(e), n);
+                    e.lineCount = n;
+                    changed = true;
+                }
+            }
+            if (changed) ui.post(this::refresh);
+        }, "wpaforge-dict-count").start();
+    }
+
+    private static String cacheKey(DictStore.Entry e) {
+        return e.file.getAbsolutePath() + "@" + e.sizeBytes;
+    }
+
+    private static String fmtCount(int n) {
+        if (n >= 10000) return L.s((n / 10000) + " 万", (n / 1000) + "k");
+        return String.valueOf(n);
+    }
+
+    /** 副行：大小 · 条数 · 上次使用（文件名不重复写，标题就是它） */
+    private String metaLine(DictStore.Entry e) {
+        StringBuilder sb = new StringBuilder(e.sizeLabel());
+        if (e.isRule) {
+            sb.append(L.s(" · 区间规则", " \u00b7 range rule"));
+        } else if (e.lineCount > 0) {
+            sb.append(" · ").append(e.lineCount >= 10000
+                            ? fmtCount(e.lineCount) + L.s(" 条", " entries")
+                            : e.lineCount + L.s(" 条", " entries"));
+        }
+        Long when = lastUsed.get(e.file.getAbsolutePath());
+        if (when != null && when > 0) {
+            sb.append(L.s(" · 上次 ", " \u00b7 last "))
+                    .append(new java.text.SimpleDateFormat("MM-dd", java.util.Locale.ROOT)
+                            .format(new java.util.Date(when)));
+        }
+        return sb.toString();
+    }
+
+    /** 状态徽标：这一本跑了没跑、跑了多少 —— 本 App 最该一眼看到的信息 */
+    private TextView statusBadge(DictStore.Entry e) {
+        int[] p = progress.get(e.file.getAbsolutePath());
+        TextView tv = new TextView(this);
+        tv.setTextSize(10.5f);
+        tv.setPadding(px(2), 0, px(2), 0);
+        if (p == null) {
+            tv.setText(L.s("没跑过", "new"));
+            tv.setTextColor(AmberTheme.TEXT_FAINT);
+        } else if (p[1] > 0 && p[0] >= p[1]) {
+            tv.setText(L.s("✓ 跑过", "✓ done"));
+            tv.setTextColor(AmberTheme.OK);
+        } else {
+            tv.setText(L.s("◐ " + fmtCount(p[0]) + "/" + fmtCount(p[1]),
+                    "◐ " + p[0] + "/" + p[1]));
+            tv.setTextColor(ACCENT);
+        }
+        return tv;
+    }
+
+    // ---------------------------------------------------------------- 行
+
+    private View row(DictStore.Entry e) {
+        final boolean sel = selected.contains(e);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        // 行高约 62dp：一屏 9 本左右（上一版 130dp，一屏 4 本）
+        box.setBackground(sel ? roundBg(AmberTheme.ACCENT_BG, 14)
+                : roundBg(AmberTheme.SUNKEN, 14));
+        box.setPadding(px(12), px(10), px(12), px(10));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = px(8);
+        lp.bottomMargin = px(6);
         box.setLayoutParams(lp);
 
-        // 行首的选择圈：**不用长按也能选**。
-        // 长按是 Android 的多选习惯，但第一次用的人不会想到，于是"合并"根本找不到入口。
         ImageView pick = new ImageView(this);
         pick.setImageDrawable(DictIcons.sized(
-                selected.contains(e) ? DictIcons.Kind.PICKED : DictIcons.Kind.PICK,
-                selected.contains(e) ? AmberTheme.ACCENT : TEXT_DIM, dp, 22f));
-        pick.setContentDescription(L.s("选择", "Select"));
-        pick.setPadding(0, 0, px(12), 0);
+                sel ? DictIcons.Kind.PICKED : DictIcons.Kind.PICK,
+                sel ? ACCENT : AmberTheme.TEXT_DIM, dp, 22f));
+        pick.setVisibility((selectMode || sel) ? View.VISIBLE : View.GONE);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(px(24), px(24));
+        plp.rightMargin = px(10);
+        box.addView(pick, plp);
         pick.setOnClickListener(v -> {
             toggleSelect(e);
             refresh();
         });
-        box.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout headRow = new LinearLayout(this);
-        headRow.setOrientation(LinearLayout.HORIZONTAL);
-        headRow.setGravity(android.view.Gravity.TOP);
-        headRow.addView(pick, new LinearLayout.LayoutParams(px(34),
-                ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
         TextView name = new TextView(this);
         name.setText(e.name);
-        name.setTextSize(15);
+        name.setTextSize(14.5f);
         name.setTextColor(TEXT);
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        top.addView(name, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        TextView badge = new TextView(this);
-        badge.setText(e.isRule ? L.s("规则", "Rule") : L.s("普通", "Plain"));
-        badge.setTextSize(10);
-        badge.setTextColor(e.isRule ? ACCENT : TEXT_DIM);
-        badge.setPadding(px(8), px(2), px(8), px(2));
-        top.addView(badge);
-
-        headRow.addView(top, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        box.addView(headRow);
-
         TextView meta = new TextView(this);
-        meta.setText(e.sizeLabel() + "   " + e.file.getName());
-        meta.setTextSize(10);
-        meta.setTextColor(TEXT_DIM);
-        box.addView(meta);
+        meta.setText(metaLine(e));
+        meta.setTextSize(10.5f);
+        meta.setTextColor(AmberTheme.TEXT_FAINT);
+        meta.setSingleLine(true);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = px(2);
+        col.addView(name);
+        col.addView(meta, mlp);
+        box.addView(col, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 操作行
-        LinearLayout ops = new LinearLayout(this);
-        ops.setOrientation(LinearLayout.HORIZONTAL);
-        ops.setPadding(0, px(10), 0, 0);
-        ops.setClipToPadding(false);
-        ops.addView(smallBtn(L.s("查看", "View"), TEXT_DIM, v -> viewDict(e)));
-        ops.addView(smallBtn(L.s("编辑", "Edit"), ACCENT, v -> editDict(e)));
-        ops.addView(smallBtn(L.s("统计", "Stats"), OK_GREEN, v -> showStats(e)));
+        box.addView(statusBadge(e));
 
-        ops.addView(smallBtn(L.s("删除", "Delete"), DANGER, v -> confirmDelete(e)));
+        ImageView more = new ImageView(this);
+        more.setImageDrawable(DictIcons.sized(DictIcons.Kind.MORE, AmberTheme.TEXT_DIM, dp, 18f));
+        LinearLayout.LayoutParams xlp = new LinearLayout.LayoutParams(px(34), px(34));
+        xlp.leftMargin = px(4);
+        more.setLayoutParams(xlp);
+        more.setPadding(px(8), px(8), px(8), px(8));
+        box.addView(more);
+        more.setOnClickListener(v -> showRowMenu(e));
 
-        // 把长按转发给这一行的所有子控件（按钮、文字、元信息行……）
-        attachLongPress(box, longPress);
-
-        if (!selected.isEmpty()) {
-            // 多选进行中：点整行也能切换，不必精准点到别处
-            box.setOnClickListener(v -> {
+        // 点整行 = 看内容（最高频动作）；长按 = 进多选，**给一次轻振动**
+        box.setOnClickListener(v -> {
+            if (selectMode) {
                 toggleSelect(e);
                 refresh();
-            });
-        }
-        box.addView(ops);
-
+            } else {
+                viewDict(e);
+            }
+        });
+        box.setOnLongClickListener(v -> {
+            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+            enterSelectMode(e);
+            return true;
+        });
         return box;
     }
 
-    /** 把长按监听装到某个视图及其所有子控件上（子控件默认会吞掉长按） */
+    // ---------------------------------------------------------------- 多选模式
+
+    private void enterSelectMode(DictStore.Entry e) {
+        selectMode = true;
+        if (!selected.contains(e)) selected.add(e);
+        refresh();
+    }
+
+    private void exitSelectMode() {
+        selectMode = false;
+        selected.clear();
+        refresh();
+    }
+
+    private void updateSelectBar() {
+        if (selectBar == null) return;
+        selectBar.setVisibility(selectMode ? View.VISIBLE : View.GONE);
+        if (selectMode && selectCount != null) {
+            selectCount.setText(L.s("已选 " + selected.size() + " 本", selected.size() + " selected"));
+        }
+    }
+
+    private void confirmDeleteSelected() {
+        if (selected.isEmpty()) return;
+        final List<DictStore.Entry> victims = new ArrayList<>(selected);
+        NetDialog d = new NetDialog(this, L.s("删除选中的字典", "Delete selected dictionaries"),
+                L.s("将删除 " + victims.size() + " 本，此操作不可恢复。",
+                        victims.size() + " file(s) will be deleted. This cannot be undone."));
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.setDanger(L.s("删除", "Delete"), dd -> {
+            int ok = 0;
+            for (DictStore.Entry e : victims) if (e.file.delete()) ok++;
+            selected.clear();
+            selectMode = false;
+            Toast.makeText(this, L.s("已删除 " + ok + " 本", "Deleted " + ok),
+                    Toast.LENGTH_SHORT).show();
+            refresh();
+        });
+        d.show();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (selectMode) {
+            exitSelectMode();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    // ---------------------------------------------------------------- 行内「⋯」菜单
+
+    private void showRowMenu(DictStore.Entry e) {
+        NetDialog d = new NetDialog(this, e.name, metaLine(e));
+        d.addItem(L.s("查看内容", "View contents"), dd -> viewDict(e));
+        d.addItem(L.s("编辑", "Edit"), dd -> editDict(e));
+        d.addItem(L.s("统计", "Stats"), dd -> showStats(e));
+        d.addItem(L.s("重命名", "Rename"), dd -> renameDict(e));
+        d.addItem(L.s("复制一份", "Duplicate"), dd -> duplicateDict(e));
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.setDanger(L.s("删除", "Delete"), dd -> confirmDelete(e));
+        d.show();
+    }
+
+    private void renameDict(DictStore.Entry e) {
+        NetDialog d = new NetDialog(this, L.s("重命名", "Rename"), e.file.getName());
+        final EditText et = d.addField(L.s("新名称", "New name"), e.name);
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.setPositive(L.s("保存", "Save"), dd -> {
+            String nn = et.getText().toString().trim().replaceAll("[/\\:*?\"<>|]", "_");
+            if (nn.isEmpty()) return;
+            File to = new File(e.file.getParentFile(), nn + ".txt");
+            if (to.exists()) {
+                Toast.makeText(this, L.s("同名已存在", "Name already exists"),
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (e.file.renameTo(to)) {
+                Toast.makeText(this, L.s("已重命名", "Renamed"), Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, L.s("重命名失败", "Rename failed"), Toast.LENGTH_SHORT).show();
+            }
+            refresh();
+        });
+        d.show();
+    }
+
+    private void duplicateDict(DictStore.Entry e) {
+        new Thread(() -> {
+            File to = new File(e.file.getParentFile(), e.name + L.s(" 副本", " copy") + ".txt");
+            int i = 2;
+            while (to.exists()) {
+                to = new File(e.file.getParentFile(),
+                        e.name + L.s(" 副本", " copy") + i + ".txt");
+                i++;
+            }
+            boolean ok = false;
+            try (java.io.FileInputStream in = new java.io.FileInputStream(e.file);
+                 java.io.FileOutputStream out = new java.io.FileOutputStream(to)) {
+                byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                ok = true;
+            } catch (Exception ignored) {}
+            final boolean done = ok;
+            ui.post(() -> {
+                Toast.makeText(this, done ? L.s("已复制", "Duplicated")
+                        : L.s("复制失败", "Copy failed"), Toast.LENGTH_SHORT).show();
+                refresh();
+            });
+        }, "wpaforge-dict-dup").start();
+    }
+
     private void attachLongPress(View v, View.OnLongClickListener l) {
         if (v == null) return;
         v.setOnLongClickListener(l);

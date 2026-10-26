@@ -31,9 +31,7 @@ public class PersistTest {
         System.out.println("== 内置生成器落地 ==");
 
         // 1) \u751f\u6210\uff08\u4e0e MainActivity \u91cc\u5b8c\u5168\u76f8\u540c\u7684\u53c2\u6570\uff09
-        DictGenerator g = new DictGenerator(100000)
-                .classic().numericPatterns().phoneSegments()
-                .wordVariants().wordDigits();
+        DictGenerator g = DictGenerator.quick(100000);
         List<Candidate> list = g.build();
         System.out.println("  生成条数: " + list.size());
         check("生成非空", !list.isEmpty());

@@ -2781,9 +2781,7 @@ public class MainActivity extends Activity {
         Button gen = rowAction(L.s("内置生成器（快速）", "Built-in generator (quick)"));
         gen.setOnClickListener(v -> {
             new Thread(() -> {
-                DictGenerator g = new DictGenerator(100000)
-                        .classic().numericPatterns().phoneSegments()
-                        .wordVariants().wordDigits();
+                DictGenerator g = DictGenerator.quick(100000);
                 currentDict = g.build();
                 ui.post(() -> {
                     currentDictName = L.s("内置生成器", "Built-in generator");
@@ -3294,9 +3292,7 @@ public class MainActivity extends Activity {
     /** 通用生成器条数（内容确定，缓存一次） */
     private int genericDictSize() {
         if (genericDictCount <= 0) {
-            genericDictCount = new DictGenerator(200000)
-                    .classic().numericPatterns().phoneSegments()
-                    .wordVariants().wordDigits().build().size();
+            genericDictCount = DictGenerator.quick(200000).build().size();
         }
         return genericDictCount;
     }
@@ -3559,9 +3555,7 @@ public class MainActivity extends Activity {
         appendStream(L.s("正在编排通用载荷...", "Building built-in dictionary..."));
         new Thread(() -> {
             io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
-                    new io.github.wlmosv_png.wpaforge.audit.DictGenerator(200000)
-                            .classic().numericPatterns().phoneSegments()
-                            .wordVariants().wordDigits();
+                    io.github.wlmosv_png.wpaforge.audit.DictGenerator.quick(200000);
             final java.util.List<Candidate> list = g.build();
             final String nm = L.s("内置生成器", "Built-in generator");
             final String path = saveDictToFile(list, nm);

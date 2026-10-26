@@ -29,13 +29,16 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.DictRule;
 import io.github.wlmosv_png.wpaforge.audit.BuiltinDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictSources;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
+import io.github.wlmosv_png.wpaforge.audit.SourceRank;
 import io.github.wlmosv_png.wpaforge.ui.NetDialog;
 
 /**
@@ -54,6 +57,12 @@ public class DictActivity extends Activity {
 
     private static final int REQ_PICK = 2001;
 
+    /** 本机各字典的历史战绩（{@link SourceRank}）。懒加载 + 有历史记录变更时才重算 */
+    private Map<String, io.github.wlmosv_png.wpaforge.audit.SourceRank.Stat> rankStats =
+            new HashMap<>();
+    private long rankLoadedAt = 0;
+    private boolean rankLoading = false;
+
     private LinearLayout listBox;
     private TextView pathLabel;
     private TextView statLabel;
@@ -66,9 +75,13 @@ public class DictActivity extends Activity {
      * 32 本字典、7 MB 的时候，用户要的是"按大小排，先跑小的"和
      * "哪些跑过、别重复跑"。所以列表必须能筛能排，而不是一个平铺的清单。 */
     private enum Filter { ALL, TRIED, UNTRIED }
-    private enum SortBy { SIZE, NAME, RECENT }
+    private enum SortBy { SIZE, NAME, RECENT, HITS }
     private Filter filter = Filter.ALL;
-    private SortBy sortBy = SortBy.SIZE;
+    /**
+     * 默认按**本机真实战绩**排（{@link io.github.wlmosv_png.wpaforge.audit.SourceRank}）。
+     * 没有历史时它退化成「小表优先」—— 试错成本最低，也是个合理的默认。
+     */
+    private SortBy sortBy = SortBy.HITS;
 
     /** 是否处于多选模式 —— 有模式才有分层：顶部报已选、底部升操作条 */
     private boolean selectMode = false;
@@ -611,6 +624,7 @@ public class DictActivity extends Activity {
         listBox.removeAllViews();
 
         List<DictStore.Entry> entries = DictStore.scan(dir);
+        loadRankStatsIfStale();
         pruneSelection(entries);
         loadProgressIfStale();
         loadMissingLineCounts(entries);
@@ -687,6 +701,27 @@ public class DictActivity extends Activity {
 
     // ---------------------------------------------------------------- 筛选 / 排序
 
+    /**
+     * 读本机战绩（只读历史前 8 列，**不解密**）。
+     * 60 秒缓存：这个页面会被反复刷新，每次读盘 + 重排太浪费。
+     */
+    private void loadRankStatsIfStale() {
+        long now = System.currentTimeMillis();
+        if (rankLoading) return;
+        if (rankLoadedAt > 0 && now - rankLoadedAt < 60000) return;
+        rankLoading = true;
+        new Thread(() -> {
+            Map<String, io.github.wlmosv_png.wpaforge.audit.SourceRank.Stat> m =
+                    io.github.wlmosv_png.wpaforge.audit.SourceRank.load(this);
+            ui.post(() -> {
+                rankStats = m;
+                rankLoadedAt = System.currentTimeMillis();
+                rankLoading = false;
+                refresh();
+            });
+        }).start();
+    }
+
     private void sortEntries(List<DictStore.Entry> entries) {
         switch (sortBy) {
             case NAME:
@@ -697,6 +732,22 @@ public class DictActivity extends Activity {
                         lastUsed.getOrDefault(y.file.getAbsolutePath(), 0L),
                         lastUsed.getOrDefault(x.file.getAbsolutePath(), 0L)));
                 break;
+            case HITS: {
+                List<String> names = new ArrayList<>();
+                Map<String, Integer> sizes = new HashMap<>();
+                for (DictStore.Entry e : entries) {
+                    names.add(e.name);
+                    sizes.put(e.name, e.lineCount > 0 ? e.lineCount
+                            : (int) Math.min(Integer.MAX_VALUE, e.sizeBytes / 8));
+                }
+                List<String> ordered = SourceRank.order(names, rankStats, sizes);
+                Map<String, Integer> pos = new HashMap<>();
+                for (int i = 0; i < ordered.size(); i++) pos.put(ordered.get(i), i);
+                entries.sort((x, y) -> Integer.compare(
+                        pos.getOrDefault(x.name, Integer.MAX_VALUE),
+                        pos.getOrDefault(y.name, Integer.MAX_VALUE)));
+                break;
+            }
             case SIZE:
             default:
                 entries.sort((x, y) -> Long.compare(y.sizeBytes, x.sizeBytes));
@@ -724,6 +775,7 @@ public class DictActivity extends Activity {
         sp.setPadding(px(6), 0, px(6), 0);
         row.addView(sp, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        row.addView(sortChip(L.s("命中率", "Hit rate"), SortBy.HITS));
         row.addView(sortChip(L.s("大小", "Size"), SortBy.SIZE));
         row.addView(sortChip(L.s("名称", "Name"), SortBy.NAME));
         row.addView(sortChip(L.s("最近", "Recent"), SortBy.RECENT));
@@ -936,6 +988,18 @@ public class DictActivity extends Activity {
                             ? fmtCount(e.lineCount) + L.s(" 条", " entries")
                             : e.lineCount + L.s(" 条", " entries"));
         }
+        // 内置档位：让用户知道这本是「精选核心」还是「扩展 / 穷举」，而不是一视同仁
+        io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.Item bi =
+                io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.find(e.name);
+        if (bi != null) {
+            sb.append(" · ").append(tierLabel(bi.tier));
+        }
+        // 历史战绩：这是本工具跟别的字典工具最大的差别 —— 它会告诉你
+        // 「这本表在你自己的网络里表现如何」，而不是只报一个体积
+        io.github.wlmosv_png.wpaforge.audit.SourceRank.Stat st = rankStats.get(e.name);
+        if (st != null && st.hasHistory()) {
+            sb.append(" · ").append(st.label());
+        }
         Long when = lastUsed.get(e.file.getAbsolutePath());
         if (when != null && when > 0) {
             sb.append(L.s(" · 上次 ", " \u00b7 last "))
@@ -943,6 +1007,18 @@ public class DictActivity extends Activity {
                             .format(new java.util.Date(when)));
         }
         return sb.toString();
+    }
+
+    /** 档位标签 */
+    private static String tierLabel(int tier) {
+        switch (tier) {
+            case io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.TIER_CORE:
+                return L.s("核心", "core");
+            case io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.TIER_EXT:
+                return L.s("扩展", "extended");
+            default:
+                return L.s("穷举", "brute");
+        }
     }
 
     /** 状态徽标：这一本跑了没跑、跑了多少 —— 本 App 最该一眼看到的信息 */
@@ -1252,9 +1328,13 @@ public class DictActivity extends Activity {
         for (int i = 0; i < n; i++) {
             sb.append(i + 1).append(".  ").append(lines.get(i)).append('\n');
         }
-        final NetDialog d = new NetDialog(this, L.s("字典内容：", "Contents: ") + e.name,
-                L.s("共 " + lines.size() + " 条，已显示 " + n + " 条",
-                    lines.size() + " total, " + n + " shown"));
+        // 内置字典顺带交代「为什么留着」——用户有权知道这份表凭什么占位置
+        String sub = L.s("共 " + lines.size() + " 条，已显示 " + n + " 条",
+                lines.size() + " total, " + n + " shown");
+        io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.Item bi =
+                io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.find(e.name);
+        if (bi != null) sub = sub + "\n" + bi.reason();
+        final NetDialog d = new NetDialog(this, L.s("字典内容：", "Contents: ") + e.name, sub);
 
         TextView tv = new TextView(this);
         tv.setText(sb.toString());

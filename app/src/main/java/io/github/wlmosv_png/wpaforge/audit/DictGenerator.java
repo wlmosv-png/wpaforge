@@ -6,38 +6,51 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 字典生成器。全部算法自研，基于公开的弱口令统计规律与厂商默认规则推导，
- * 不内置任何第三方词表文件。
+ * 内置生成器（2026-10-26 重做）。
  *
- * 设计要点：
- *  - 生成有序（规则优先级从高到低），高命中率规则排在前面
- *  - 全程去重，用 LinkedHashMap 保留顺序
- *  - 可设上限，避免内存爆掉
+ * <p><b>重做的理由。</b>旧版按「英文词 × 数字后缀」铺了 1771 条，里面有三类
+ * 站不住的条目：
+ *
+ * <ol>
+ *   <li><b>手机段 + 假尾号</b>（{@code 130123456} / {@code 130888888}，160 条）——
+ *       真实世界里用手机号当密码就是**11 位全号**（公开统计：11 位纯数字占全部
+ *       家用 WiFi 密码 13.9%），「130 开头 + 123456」不是任何人的号码，
+ *       纯粹是矩阵副产品；</li>
+ *   <li><b>英文普通词全展开</b>（{@code family2018} / {@code love888}，1500+ 条）——
+ *       本机历史里英文单词表**一次都没被跑过**，也没命中过；</li>
+ *   <li><b>厂商词元 + 符号 + 年份</b>（{@code tplink@2026}）—— 与 SSID 派生那批
+ *       一起按社会工程学审掉了。</li>
+ * </ol>
+ *
+ * <p><b>新的骨架</b>：只留「有人真的会设」的形态 ——
+ * 经典弱口令、数字结构族（重复/阶梯/键盘图形/镜像）、路由与宽带相关词 × 少量后缀、
+ * 完整 MAC 原样。规模从 1771 压到约 500 条，剩下的按需生成：
+ * 「字母 + 生日」交给 {@link BirthdayTable}（旧版是 48 万条静态表，
+ * 而本机 6 次使用全在第 2 条就命中 —— 后面 48 万条白占 5.3 MB）。
+ *
+ * <p>设计要点不变：生成有序（高命中率规则在前）、全程去重、可设上限、
+ * 闸门只做合法性过滤（WPA 合法长度 8–63，不补位、不臆造）。
  */
 public final class DictGenerator {
 
-    /** 常见基础英文词（弱口令统计里高频，公开数据） */
-    private static final String[] BASE_WORDS = {
-            "admin", "password", "root", "guest", "test", "wifi", "wlan",
-            "home", "house", "family", "love", "hello", "china", "beijing",
-            "shanghai", "tel", "tp", "tplink", "xiaomi", "mi", "huawei",
-            "mercury", "tenda", "netcore", "asus", "netgear", "dlink",
-            "motorola", "linksys", "cisco", "public", "default", "manager"
+    /** 强词后缀（年份 + 连号 + 谐音数字，都是真实存在的形态） */
+    /**
+     * 「设备/网络场景」强词。
+     *
+     * <p>只留这 7 个：它们是家用 AP 上真正会出现的词根 ——
+     * 出厂默认、宽带账号、以及「WiFi」本身。
+     * 旧版那 34 个通用英文词（family / house / hello / beijing…）属于
+     * 「既不相关也不高频」，产出 {@code family2018} / {@code love888}
+     * 这类本机从未命中的形态，已删。
+     */
+    private static final String[] STRONG_WORDS = {
+            "admin", "password", "root", "guest", "test", "wifi", "wlan"
     };
 
-    /** 国内常见手机号段（公开的号段分配信息） */
-    private static final String[] PHONE_PREFIX = {
-            "130", "131", "132", "133", "134", "135", "136", "137", "138", "139",
-            "150", "151", "152", "153", "155", "156", "157", "158", "159",
-            "170", "171", "172", "173", "175", "176", "177", "178",
-            "180", "181", "182", "183", "184", "185", "186", "187", "188", "189",
-            "191", "198", "199"
-    };
-
-    /** 年份后缀候选 */
-    private static final String[] YEAR_SUFFIX = {
+    private static final String[] SUFFIX_STRONG = {
             "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026",
-            "123", "1234", "12345", "123456", "888", "666", "999", "000", "111"
+            "123", "1234", "12345", "123456", "888", "666", "000", "111",
+            "520", "1314", "888888", "666666"
     };
 
     private final LinkedHashMap<String, Candidate> pool = new LinkedHashMap<>();
@@ -51,10 +64,26 @@ public final class DictGenerator {
         this(200000);
     }
 
+    /**
+     * 「内置生成器（快速）」的**唯一配方**。
+     *
+     * <p>所有调用方都必须走这里：界面生成、服务重建、界面上的条数统计。
+     * 曾经三处各写一遍 {@code classic().numericPatterns().phoneSegments()...}，
+     * 任何一处改了参数，重建出来的条数就和入队时不一致，
+     * 续跑（暂停后继续）的 offset 会直接错位 —— 这类 bug 难查且致命。
+     */
+    public static DictGenerator quick(int maxSize) {
+        return new DictGenerator(maxSize)
+                .classic()
+                .numericPatterns()
+                .digitHighFreq()
+                .routerWords();
+    }
+
     private void add(String pw, Candidate.Origin origin) {
         if (pool.size() >= maxSize) return;
         if (pw == null || pw.isEmpty()) return;
-        if (pw.length() < 8 || pw.length() > 63) return; // WPA 合法长度
+        if (pw.length() < 8 || pw.length() > 63) return;   // WPA 合法长度，不补位
         if (!pool.containsKey(pw)) {
             pool.put(pw, new Candidate(pw, origin));
         }
@@ -83,63 +112,134 @@ public final class DictGenerator {
         return this;
     }
 
-    /** 纯数字规律：升序 / 重复 / 连号 */
+    /**
+     * 纯数字结构族：重复、阶梯、键盘图形、镜像。
+     *
+     * <p>只生成**有形态依据**的数字，不做区间穷举（那是
+     * {@link #birthdayRange} 与规则字典的活）。
+     */
     public DictGenerator numericPatterns() {
-        // 8 位重复：11111111 .. 99999999
+        // 单数字重复 8/9/10 位
         for (int d = 0; d <= 9; d++) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < 8; i++) sb.append(d);
             add(sb.toString(), Candidate.Origin.DIGITS);
+            add(sb.toString() + d, Candidate.Origin.DIGITS);
         }
-        // 连续升序 8/9/10 位片段
-        String ladder = "0123456789";
-        for (int start = 0; start + 8 <= ladder.length(); start++) {
-            add(ladder.substring(start, start + 8), Candidate.Origin.DIGITS);
+        // 连号阶梯（升序 8 位，覆盖整个数字环）
+        String ring = "0123456789012345678";
+        for (int i = 0; i + 8 <= 16; i++) {
+            add(ring.substring(i, i + 8), Candidate.Origin.DIGITS);
         }
-        // 常见"键盘邻接"数字列
-        add("09876543", Candidate.Origin.DIGITS);
+        // 降序阶梯
         add("98765432", Candidate.Origin.DIGITS);
         add("87654321", Candidate.Origin.DIGITS);
+        add("76543210", Candidate.Origin.DIGITS);
+        add("09876543", Candidate.Origin.DIGITS);
+        // 键盘图形（数字小键盘的竖列 / 横列 / 对角）
+        add("147258369", Candidate.Origin.DIGITS);
+        add("789456123", Candidate.Origin.DIGITS);
+        add("741852963", Candidate.Origin.DIGITS);
+        add("963852741", Candidate.Origin.DIGITS);
+        add("159357258", Candidate.Origin.DIGITS);
+        add("123654789", Candidate.Origin.DIGITS);
         return this;
     }
 
-    /** 手机号段 × 后四位规律，模拟"手机号当密码" */
-    public DictGenerator phoneSegments() {
-        for (String p : PHONE_PREFIX) {
-            add(p + "123456", Candidate.Origin.PHONE_SEGMENT);
-            add(p + "888888", Candidate.Origin.PHONE_SEGMENT);
-            add(p + "000000", Candidate.Origin.PHONE_SEGMENT);
-            add(p + "666666", Candidate.Origin.PHONE_SEGMENT);
+    /**
+     * 8 位数字里的高频结构（镜像、AB 交替）。
+     *
+     * <p>为什么单列这个方法：8 位纯数字是**最大的单一族** ——
+     * 公开统计（48,330 条真实 SSID + 密码样本）里，8 位密码中纯数字占 73%，
+     * 而 8 位数字里带结构（重复、连号、镜像、AB 交替）的又占了可观的头部。
+     * 旧版这里只有 17 条，太薄。
+     */
+    public DictGenerator digitHighFreq() {
+        // 镜像：4 位块「正反」（12344321）与「重复」（12341234）。
+        // 只取 5 个有说法的基底 —— 1234（顺子）、4321（倒顺）、
+        // 8888/6666（国人偏爱）、0000（出厂形态）。
+        String[] bases = {"1234", "4321", "8888", "6666", "0000"};
+        for (String b : bases) {
+            add(b + new StringBuilder(b).reverse(), Candidate.Origin.DIGITS);
+            add(b + b, Candidate.Origin.DIGITS);
+        }
+        // AB 交替：12121212 / 10101010 …（重复打磨出来的常见形态）
+        String[] ab = {"10", "12", "13", "18", "20", "21", "23", "24", "25", "26", "81", "89", "52"};
+        for (String p : ab) add(p + p + p + p, Candidate.Origin.DIGITS);
+        // 顺口串
+        add("16816816", Candidate.Origin.DIGITS);
+        add("11223344", Candidate.Origin.DIGITS);
+        add("44332211", Candidate.Origin.DIGITS);
+        return this;
+    }
+
+    /**
+     * 路由 / 宽带场景词 × 少量后缀。
+     *
+     * <p><b>为什么只剩 7 个词。</b>旧版这里是「34 个英文词 × 19 个后缀」，
+     * 产出的 {@code family2018} / {@code love888} 一类本机从没命中过。
+     * 品牌词（tplink / mercury / cmcc…）也一并去掉了，理由分两层：
+     *
+     * <ul>
+     *   <li>真实的出厂默认口令是**裸词**（{@code admin} / {@code tplink}），
+     *       不是「品牌 + 年份」；</li>
+     *   <li>而裸品牌词长度都在 8 位以下（{@code tplink} 6 位、{@code zte} 3 位），
+     *       本来就通不过 WPA 的长度闸门 —— 配后缀硬凑才是臆造。</li>
+     * </ul>
+     *
+     * <p>留下的是「设备/网络相关词 + 连号/年份」，形态与公开数据里
+     * 「词 + 数字」占 35.9% 的分布一致。
+     */
+    public DictGenerator routerWords() {
+        for (String w : STRONG_WORDS) {
+            add(w, Candidate.Origin.LETTERS);
+            String cap = Character.toUpperCase(w.charAt(0)) + w.substring(1);
+            for (String s : SUFFIX_STRONG) {
+                add(w + s, Candidate.Origin.ALNUM);
+                add(cap + s, Candidate.Origin.ALNUM);
+            }
+            for (String s : new String[]{"123", "1234", "123456"}) {
+                add(w + "_" + s, Candidate.Origin.ALNUM);
+            }
         }
         return this;
     }
 
-    /** 基础词 × 数字后缀 */
-    public DictGenerator wordVariants() {
-        for (String w : BASE_WORDS) {
-            for (String s : YEAR_SUFFIX) {
-                add(w + s, Candidate.Origin.YEAR_SUFFIX);
-            }
-            // 首字母大写变体
-            if (!w.isEmpty()) {
-                String cap = Character.toUpperCase(w.charAt(0)) + w.substring(1);
-                for (String s : YEAR_SUFFIX) {
-                    add(cap + s, Candidate.Origin.YEAR_SUFFIX);
-                }
-            }
+    /**
+     * 生日区间（穷举档，**默认不生成**）。
+     *
+     * <p>形态：{@code YYYYMMDD}。旧版把这 5.3 MB 的表静态打进包里，
+     * 现在改成按需生成 —— 用哪段年份、要不要跑，用户自己决定，
+     * 界面上必须能看到「约 N 条 ≈ 跑多久」。
+     *
+     * @param y1 起始年（含）
+     * @param y2 结束年（含）
+     */
+    public DictGenerator birthdayRange(int y1, int y2) {
+        for (String d : BirthdayTable.dates(y1, y2)) {
+            add(d, Candidate.Origin.DIGITS);
         }
         return this;
     }
 
-    /** 词 + 常见数字的更多组合（长度 8 以上的） */
-    public DictGenerator wordDigits() {
-        String[] tails = {"1", "12", "123", "1234", "12345", "520", "521",
-                "1314", "5201314", "0000", "8888", "6666", "168168", "112233"};
-        for (String w : BASE_WORDS) {
-            for (String t : tails) {
-                add(w + t, Candidate.Origin.ALNUM);
-                if (!w.isEmpty()) {
-                    add(Character.toUpperCase(w.charAt(0)) + w.substring(1) + t,
+    /**
+     * 前缀 + 生日（穷举档，**默认不生成**）。
+     *
+     * <p>形态依据来自公开统计：11 位「字母 + 数字」口令里，
+     * 三位字母 + 八位数字占 31%，其中字母约七成是姓名首字母。
+     * 所以前缀该由**线索里的名字**给出（见 {@link SeedDeriver}），
+     * 而不是无脑铺 26 个字母。
+     *
+     * @param prefixes 前缀（如姓名首字母 "zw"、"lxy"）
+     */
+    public DictGenerator prefixedBirthday(List<String> prefixes, int y1, int y2) {
+        if (prefixes == null || prefixes.isEmpty()) return this;
+        for (String p : prefixes) {
+            if (p == null || p.isEmpty()) continue;
+            for (String d : BirthdayTable.dates(y1, y2)) {
+                add(p.toLowerCase() + d, Candidate.Origin.ALNUM);
+                if (Character.isLetter(p.charAt(0))) {
+                    add(Character.toUpperCase(p.charAt(0)) + p.substring(1).toLowerCase() + d,
                             Candidate.Origin.ALNUM);
                 }
             }
@@ -148,28 +248,22 @@ public final class DictGenerator {
     }
 
     /**
-     * 厂商默认规则推导。
-     * 输入 AP 的 MAC 与型号关键词，按公开的出厂规则生成候选。
-     * 注意：这里只覆盖公开研究里已披露的通用规律，不针对具体在售设备。
+     * 厂商默认规则推导：**只出完整 MAC 原样**。
+     *
+     * <p>与 SSID 派生同一条结论（2026-10-26 社会工程学审查第二批）：
+     * 出厂默认用 MAC 是真实的，但形态是完整 12 位十六进制，
+     * 不是「尾 6 位 + 00 / 111 / 12345」——后者是为凑长度而造串，
+     * 本机 107 次命中里一次都没来自那一族。
      */
     public DictGenerator vendorRules(String bssid, String ssidHint) {
         if (bssid == null) return this;
         String mac = bssid.replace(":", "").replace("-", "").toUpperCase();
-        if (mac.length() < 6) return this;
-
-        // 通用规律：MAC 后 6 位作为候选（部分厂商出厂用这个）
-        String tail = mac.substring(mac.length() - 6);
-        add(tail.toLowerCase(), Candidate.Origin.VENDOR_RULE);
-        add(tail.toUpperCase(), Candidate.Origin.VENDOR_RULE);
-        // MAC 尾 6 位 + 常见后缀，凑够 8 位（出厂默认常按这个拼）
-        String[] vSuffix = {"", "123", "1234", "888", "666", "000", "111",
-                "2024", "2025", "2026"};
-        for (String s : vSuffix) {
-            add(tail.toLowerCase() + s, Candidate.Origin.VENDOR_RULE);
-            add(tail.toUpperCase() + s, Candidate.Origin.VENDOR_RULE);
+        if (mac.length() == 12) {
+            add(mac.toLowerCase(), Candidate.Origin.VENDOR_RULE);
+            add(mac, Candidate.Origin.VENDOR_RULE);
         }
-
-        // SSID 里出现过的数字串（含 4 位，再拼常见后缀凑长度）
+        // SSID 里的数字串：够 8 位就原样用，不足 8 位一律丢弃
+        // （旧版会给它补后缀凑长度 —— 那是臆造，已删）
         if (ssidHint != null) {
             StringBuilder digits = new StringBuilder();
             for (char c : ssidHint.toCharArray()) {
@@ -187,14 +281,8 @@ public final class DictGenerator {
     private void flushDigits(StringBuilder digits) {
         if (digits.length() == 0) return;
         String d = digits.toString();
-        if (d.length() >= 8) {
+        if (d.length() >= 8 && d.length() <= 16) {
             add(d, Candidate.Origin.VENDOR_RULE);
-        } else if (d.length() >= 4) {
-            // 拼后缀凑到 8 位以上
-            for (String s : new String[]{"", "0", "00", "000", "0000",
-                    "123", "1234", "888", "666"}) {
-                add(d + s, Candidate.Origin.VENDOR_RULE);
-            }
         }
         digits.setLength(0);
     }
@@ -219,7 +307,7 @@ public final class DictGenerator {
         return pool.size();
     }
 
-    /** 按来源统计，用于 UI 展示"字典构成" */
+    /** 按来源统计，用于 UI 展示「字典构成」 */
     public Map<String, Integer> stats() {
         Map<String, Integer> m = new LinkedHashMap<>();
         for (Candidate c : pool.values()) {

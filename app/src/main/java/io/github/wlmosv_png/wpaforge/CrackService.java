@@ -852,10 +852,7 @@ public class CrackService extends Service {
                 // 这里按入队时记录的名字/条数判断，并用完全相同的参数重建 ——
                 // 必须与 startConnect() 里生成时用的参数一致，否则 offset 对不上。
                 if (task.dictSize > 0) {
-                    base = new DictGenerator(task.dictSize)
-                            .classic().numericPatterns().phoneSegments()
-                            .wordVariants().wordDigits()
-                            .build();
+                    base = DictGenerator.quick(task.dictSize).build();
                     log(L.f("重建内置字典 %s -> %d 条",
                             "Rebuilt built-in dictionary %s -> %d entries",
                             task.dictName, base.size()));

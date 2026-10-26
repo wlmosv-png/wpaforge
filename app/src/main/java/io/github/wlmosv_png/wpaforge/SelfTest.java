@@ -1,5 +1,6 @@
 package io.github.wlmosv_png.wpaforge;
 
+import io.github.wlmosv_png.wpaforge.audit.BirthdayTable;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.WpaCore;
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
@@ -113,27 +114,60 @@ public class SelfTest {
                 NetRecord.Security.OPEN, false, "").isHidden());
 
         System.out.println("== 字典生成器 ==");
-        DictGenerator g = new DictGenerator(50000)
-                .classic().numericPatterns().phoneSegments().wordVariants();
+        // 2026-10-26 重做：1771 条 → 约 500 条。判据不再是「条数够多」，
+        // 而是「每一条都有人真的会设」。所以这里同时钉住**不该出现的族**。
+        DictGenerator g = DictGenerator.quick(50000);
         int n = g.size();
-        check("生成条数 > 1000", n > 1000);
-        boolean hasClassic = g.build().stream()
-                .anyMatch(c -> c.password.equals("12345678"));
-        check("包含 12345678", hasClassic);
-        boolean noDup = g.build().size() == n;
-        check("无重复", noDup);
-        boolean allLenOk = g.build().stream()
-                .allMatch(c -> c.password.length() >= 8 && c.password.length() <= 63);
-        check("长度全部合法 (8..63)", allLenOk);
+        check("生成条数在合理区间 (200..1500)", n > 200 && n < 1500);
+        check("包含 12345678", g.build().stream()
+                .anyMatch(c -> c.password.equals("12345678")));
+        check("含结构数字 12121212", g.build().stream()
+                .anyMatch(c -> c.password.equals("12121212")));
+        check("含键盘图形 147258369", g.build().stream()
+                .anyMatch(c -> c.password.equals("147258369")));
+        check("含 admin123456", g.build().stream()
+                .anyMatch(c -> c.password.equals("admin123456")));
+        check("无重复", g.build().size() == n);
+        check("长度全部合法 (8..63)", g.build().stream()
+                .allMatch(c -> c.password.length() >= 8 && c.password.length() <= 63));
+        // 已删族：手机段 + 假尾号
+        check("已删手机段+假尾号 130123456", g.build().stream()
+                .noneMatch(c -> c.password.equals("130123456")));
+        check("已删手机段+假尾号 130888888", g.build().stream()
+                .noneMatch(c -> c.password.equals("130888888")));
+        // 已删族：英文普通词 + 数字后缀
+        check("已删 family2018", g.build().stream()
+                .noneMatch(c -> c.password.equals("family2018")));
+        check("已删 love888", g.build().stream()
+                .noneMatch(c -> c.password.equals("love888")));
+        // 已删族：厂商词 + 符号 + 年份
+        check("已删 tplink@2026", g.build().stream()
+                .noneMatch(c -> c.password.equals("tplink@2026")));
 
         System.out.println("== 厂商规则推导 ==");
         DictGenerator vg = new DictGenerator().vendorRules("AA:BB:CC:DD:EE:FF", "MyHome-2026");
-        check("含 MAC 尾 6 位 + 后缀", vg.build().stream()
-                .anyMatch(c -> c.password.equals("ddeeff1234")));
-        check("MAC 尾裸 6 位被正确拒绝(<8位)", vg.build().stream()
-                .noneMatch(c -> c.password.equalsIgnoreCase("DDEEFF")));
-        check("含 SSID 内数字拼后缀", vg.build().stream()
-                .anyMatch(c -> c.password.startsWith("2026")));
+        check("只出完整 MAC 原样（小写）", vg.build().stream()
+                .anyMatch(c -> c.password.equals("aabbccddeeff")));
+        check("只出完整 MAC 原样（大写）", vg.build().stream()
+                .anyMatch(c -> c.password.equals("AABBCCDDEEFF")));
+        check("已删 MAC 尾 6 位 + 后缀", vg.build().stream()
+                .noneMatch(c -> c.password.equals("ddeeff1234")));
+        check("已删 SSID 数字拼后缀", vg.build().stream()
+                .noneMatch(c -> c.password.startsWith("2026")));
+
+        System.out.println("== 生日表（生成式，替代 483k 静态表）==");
+        check("1960-2010 天数正确", BirthdayTable.count(1960, 2010) == 18628);
+        check("闰年 2000 有 366 天", BirthdayTable.dates(2000, 2000).size() == 366);
+        check("平年 1900 有 365 天", BirthdayTable.dates(1900, 1900).size() == 365);
+        check("日期格式 YYYYMMDD", BirthdayTable.dates(1980, 1980).get(0).equals("19800101"));
+        DictGenerator bg = new DictGenerator().prefixedBirthday(
+                java.util.Arrays.asList("zw"), 1990, 1990);
+        check("前缀+生日：zw19900101", bg.build().stream()
+                .anyMatch(c -> c.password.equals("zw19900101")));
+        check("前缀+生日：Zw19900101（首字母大写）", bg.build().stream()
+                .anyMatch(c -> c.password.equals("Zw19900101")));
+        check("空前缀不生成", new DictGenerator()
+                .prefixedBirthday(java.util.Collections.emptyList(), 1990, 1990).size() == 0);
 
         System.out.println("== hex 解析 ==");
         check("hexToBytes 正常", WpaCore.hexToBytes("aabb") != null

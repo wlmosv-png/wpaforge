@@ -1,5 +1,7 @@
 package io.github.wlmosv_png.wpaforge.audit;
 
+import io.github.wlmosv_png.wpaforge.L;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,6 +27,30 @@ import java.util.List;
  * 四段之和小于总耗时 —— 差额就是 sleep/等待，那部分本来就不该出现在这里。
  */
 public final class CostMeter {
+
+    /**
+     * 预估用速率：每条候选多少秒。
+     *
+     * <p>不是拍脑袋 —— 本机历史（18 个目标、1530 条候选、8639 秒）实测：
+     * 命中快的轮次约 1.35 秒/条（每条几乎立刻就中），
+     * 整本跑完的长跑轮次 6.6–9.0 秒/条（中位 7.46）。
+     * 取 <b>6 秒</b> 是一个偏乐观但不离谱的中间值：用来告诉用户
+     * 「这本表大约要跑多久」，宁可让他觉得跑得比预估快。
+     *
+     * <p>任何时间预估都必须走 {@link #estimateText(int)}，
+     * 不允许各处自己乘一个数 —— 曾经有过 1.5 条/秒 与「约 3.6 秒」两套数字并存。
+     */
+    public static final double SEC_PER_CANDIDATE = 6.0;
+
+    /** 把条数翻译成人能读的时长；用于「这本表要跑多久」。 */
+    public static String estimateText(int entries) {
+        if (entries <= 0) return "";
+        long sec = (long) (entries * SEC_PER_CANDIDATE);
+        if (sec < 60) return L.s("约 " + sec + " 秒", "~" + sec + " s");
+        if (sec < 3600) return L.s("约 " + (sec / 60) + " 分钟", "~" + (sec / 60) + " min");
+        if (sec < 86400) return L.s("约 " + (sec / 3600) + " 小时", "~" + (sec / 3600) + " h");
+        return L.s("约 " + (sec / 86400) + " 天", "~" + (sec / 86400) + " d");
+    }
 
     /** 一条候选的样本 */
     public static final class Sample {

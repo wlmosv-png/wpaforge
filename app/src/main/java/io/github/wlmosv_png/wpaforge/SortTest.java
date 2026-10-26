@@ -77,8 +77,7 @@ public class SortTest {
         ok("null 输入返回空", SmartSorter.prioritize(target, null, 0).isEmpty(), "");
 
         System.out.println("== 大字典性能 ==");
-        DictGenerator g = new DictGenerator(100000).classic().numericPatterns()
-                .phoneSegments().wordVariants().wordDigits();
+        DictGenerator g = DictGenerator.quick(100000);
         List<Candidate> big = g.build();
         long t0 = System.currentTimeMillis();
         List<Candidate> sortedBig = SmartSorter.prioritize(target, big, 0);

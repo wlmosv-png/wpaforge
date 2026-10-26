@@ -110,6 +110,50 @@ public class PoolPipelineTest {
         for (String s : all) if (tA.contains(s)) skipA++;
         ok("A 网只跳过自己跑过的那些", skipA == 1, "" + skipA);
 
+        System.out.println("== 跨网络绝不共享（用户最关心的那条）==");
+        {
+            // 前提：同一个 SSID、不同的 BSSID（不同路由器/不同频段）→ 必须是两套记录
+            String keyA = TriedSet.targetKey("6A:93:7D:44:95:AB", "2.4G-3");
+            String keyB = TriedSet.targetKey("8A:93:7D:45:CF:07", "2.4G-3");
+            ok("同 SSID 不同 BSSID → 不同目标键", !keyA.equals(keyB), keyA + " / " + keyB);
+            ok("目标键带 BSSID（不是按 SSID 分）", keyA.startsWith("b") && keyB.startsWith("b"), "");
+
+            // 文件级验证：A 网的记录里有的候选，B 网查不到
+            File fa = new File(tmp, keyA + ".tried");
+            File fb = new File(tmp, keyB + ".tried");
+            TriedSet ta = new TriedSet();
+            ta.add("12345678");
+            ta.add("woaini1314");
+            ta.save(fa);
+            TriedSet tb = TriedSet.load(fb);            // B 网还没有任何记录
+            ok("A 网跑过的候选，B 网照样要跑（B 网查不到）",
+                    !tb.contains("12345678") && !tb.contains("woaini1314"), "");
+            ok("B 网记录为空", tb.size() == 0, "" + tb.size());
+            ok("两份记录是两个文件", !fa.getAbsolutePath().equals(fb.getAbsolutePath()), "");
+            // A 网自己还在
+            TriedSet taBack = TriedSet.load(fa);
+            ok("A 网自己的记录仍在", taBack.contains("12345678") && taBack.size() == 2,
+                    "" + taBack.size());
+
+            // 反过来：B 网跑过以后，也不该影响 A 网
+            TriedSet tb2 = new TriedSet();
+            tb2.add("zzzz9999");
+            tb2.save(fb);
+            TriedSet taAfter = TriedSet.load(fa);
+            ok("B 网跑过之后，A 网的记录没被污染",
+                    taAfter.size() == 2 && !taAfter.contains("zzzz9999"), "" + taAfter.size());
+        }
+
+        System.out.println("== 同一台路由器的不同频段：目前**互不共享**（这是有意的）==");
+        {
+            // 多数路由器 2.4G / 5G 是两个 BSSID、密码相同。
+            // 现状：两份记录互不相通 → 跑完 2.4G 再跑 5G 会**重复跑**全部候选。
+            // 这里把现状钉住，避免有人以为"它应该自动共享"而误改。
+            String k24 = TriedSet.targetKey("6A:93:7D:44:95:AB", "MyHome-2.4G");
+            String k5g = TriedSet.targetKey("6A:93:7D:44:95:AC", "MyHome-5G");
+            ok("2.4G 与 5G 是两套记录（现状，有意如此）", !k24.equals(k5g), k24 + " / " + k5g);
+        }
+
         System.out.println("== 落盘 / 读回 ==");
         File tf = new File(tmp, "b-aabbccddeeff.tried");
         ok("已试集合落盘", tried.save(tf), "");

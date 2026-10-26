@@ -277,32 +277,35 @@ public class StagedProgress extends View {
         }
 
         // ---- 三层轨道 ----
-        // 视觉重做（用户反馈"有点暗""特效设计一下"）：
-        //   · 轨道加一条极淡内描边，跟卡片底色分开，不再像"一条黑影"
-        //   · 填充用**横向渐变**（深→亮），而不是一块平色
-        //   · 高光带改成**软边渐变**（透明→亮→透明），比原来的方块柔和
-        //   · 填充前端加一个**呼吸光点**，明确指示"推进到这里"
-        //   · 完成时整体转绿，并再扫一遍高光收尾
+        // 视觉（按用户反馈再调）：
+        //   · 去掉上一版加的轨道描边 —— 用户说"加了个框之后变得不好看"
+        //   · 行尾标签移到条**外面**右侧 —— 旧版画在条内右下角，被填充盖住了
+        //   · 填充保留横向渐变，但不再叠顶部高光条（那也显得"有框"）
         final float barH = dp(9);
         final float gap = dp(6);
         long now = System.currentTimeMillis();
+
+        // 先给标签量宽度，从条宽里让出来
+        pStage.setTextSize(dp(10.5f));
+        float labelW = 0f;
+        for (Stage st : stages) {
+            if (!st.label.isEmpty()) labelW = Math.max(labelW, pStage.measureText(st.label));
+        }
+        final float barW = labelW > 0
+                ? Math.max(dp(60), w - labelW - dp(8)) : w;
+
         for (int i = 0; i < stages.size(); i++) {
             Stage st = stages.get(i);
             float top = y;
             float radius = barH / 2f;
 
-            RectF r = new RectF(0, top, w, top + barH);
+            RectF r = new RectF(0, top, barW, top + barH);
             cv.drawRoundRect(r, radius, radius, pTrack);
-            pEdge.setStyle(Paint.Style.STROKE);
-            pEdge.setStrokeWidth(Math.max(1f, dp(0.8f)));
-            pEdge.setColor(done ? AmberTheme.OK_DIM : 0x2AFFFFFF);
-            cv.drawRoundRect(r, radius, radius, pEdge);
 
             float v = i < 3 ? shown[i] : st.value;
             if (v > 0.001f) {
-                float fw = Math.max(barH, w * v);
+                float fw = Math.max(barH, barW * v);
 
-                // 每层一个横向渐变：深端 → 亮端
                 int c0, c1;
                 if (done) {
                     c0 = AmberTheme.OK_DIM;
@@ -315,24 +318,12 @@ public class StagedProgress extends View {
                 f.setShader(new android.graphics.LinearGradient(
                         r.left, 0, Math.max(r.left + 1, r.left + fw), 0, c0, c1,
                         android.graphics.Shader.TileMode.CLAMP));
-                RectF rf = new RectF(0, top, fw, top + barH);
-                cv.drawRoundRect(rf, radius, radius, f);
+                cv.drawRoundRect(new RectF(0, top, fw, top + barH), radius, radius, f);
 
-                // 填充区顶部一道 1.2dp 的微高光 —— 让条看起来是"管子"而不是色块
-                pHi.setShader(null);
-                pHi.setColor(0x2EFFFFFF);
-                pHi.setStrokeWidth(Math.max(1f, dp(1.2f)));
-                pHi.setStyle(Paint.Style.STROKE);
-                cv.drawLine(fw > radius * 2 ? radius : 0,
-                        top + Math.max(1f, dp(1.2f)),
-                        Math.max(0, fw - radius),
-                        top + Math.max(1f, dp(1.2f)), pHi);
-                pHi.setStyle(Paint.Style.FILL);
-
-                // 高光：软边渐变带，持续左→右扫（表达"正在推进"）
+                // 高光：软边渐变带，只扫最外层；完成时不再扫
                 if (i == 0 && !done && v > 0.02f) {
-                    float glowW = Math.max(dp(34), w * 0.14f);
-                    float cx = (w + glowW) * sweep - glowW * 0.5f;
+                    float glowW = Math.max(dp(34), barW * 0.14f);
+                    float cx = (barW + glowW) * sweep - glowW * 0.5f;
                     float l = Math.max(0, cx - glowW * 0.5f);
                     float r2 = Math.min(fw, cx + glowW * 0.5f);
                     if (r2 > l) {
@@ -346,26 +337,25 @@ public class StagedProgress extends View {
                                         Color.argb(0, 255, 255, 255)},
                                 new float[]{0f, 0.5f, 1f},
                                 android.graphics.Shader.TileMode.CLAMP));
+                        pHi.setStyle(Paint.Style.FILL);
                         cv.drawRoundRect(new RectF(l, top, r2, top + barH), radius, radius, pHi);
                     }
-                    // 前端呼吸光点：越接近完成越亮
+                    // 前端呼吸光点
                     float dot = barH * 0.62f;
                     double ph2 = (now % 900) / 900.0;
                     int da = (int) (120 + 90 * Math.sin(ph2 * Math.PI * 2));
                     pHi.setShader(null);
-                    pHi.setColor(Color.argb(Math.max(40, Math.min(230, da)),
-                            255, 250, 230));
+                    pHi.setStyle(Paint.Style.FILL);
+                    pHi.setColor(Color.argb(Math.max(40, Math.min(230, da)), 255, 250, 230));
                     cv.drawCircle(fw - radius, top + radius, dot * 0.5f, pHi);
                 }
                 f.setShader(null);
             }
 
-            // 行尾标签（第几层 / 百分比）
+            // 行尾标签：画在条外面右侧，垂直居中，不会再被填充盖住
             if (!st.label.isEmpty()) {
-                pStage.setTextSize(dp(10.5f));
                 pStage.setColor(textDim);
-                float lw = pStage.measureText(st.label);
-                cv.drawText(st.label, w - lw, top + barH - dp(0.5f), pStage);
+                cv.drawText(st.label, barW + dp(8), top + barH * 0.5f + dp(3.6f), pStage);
             }
 
             y += barH + gap;

@@ -4356,7 +4356,14 @@ public class MainActivity extends Activity {
     private void renderProgressCardState() {
         String text;
         int color;
-        boolean running = CrackService.isRunning();
+        /* 状态**以队列为准**，服务是否存活只用来决定"能不能点开始"。
+         *
+         * <p>踩过的坑：`running || st == RUNNING` 里的 running 取自
+         * {@code CrackService.isRunning()}，而那个标志在任务正常跑完后**仍然是 true**
+         * （服务实例还活着，只有 STOPPED 才会置回 false）。
+         * 结果就是——跑完了、去看别的字典、返回，界面又变回「运行中 100%」，
+         * 用户在等一个永远不会来的结果。**跑完了是什么就该显示什么。** */
+        boolean serviceRunning = CrackService.isRunning();
         TaskQueue.State st = null;
         for (TaskQueue.Task t : queueCache) {
             if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
@@ -4372,7 +4379,8 @@ public class MainActivity extends Activity {
         if (st == TaskQueue.State.PAUSED) {
             text = L.s("已暂停 · 进度已保留", "Paused · progress kept");
             color = ACCENT;
-        } else if (running || st == TaskQueue.State.RUNNING) {
+        } else if (st == TaskQueue.State.RUNNING) {
+            // 只有"队列里真有任务在跑"才叫运行中/收尾中
             text = finishingNow
                     ? L.s("收尾中", "Finishing up")
                     : L.s("运行中", "Running");
@@ -4392,11 +4400,23 @@ public class MainActivity extends Activity {
             stateBig.setTextColor(color);
         }
         if (actionsHint != null) {
-            boolean canStart = running != true
-                    && (st == null || st == TaskQueue.State.PAUSED);
-            actionsHint.setText(canStart
-                    ? L.s("可以开始 · 开始前会先登记目标配置", "Ready · the target config is saved first")
-                    : L.s("任务进行中 · 可暂停或停止", "Task active · pause or stop"));
+            /* 提示行必须和状态行说同一件事。
+             *
+             * <p>同类矛盾：上一版用服务存活来判 canStart，于是跑完那一刻
+             * 状态行已经写「已结束 · 未命中」，提示行却还挂着「任务进行中」——
+             * 同一张卡里两句话互相打脸。
+             *
+             * <p>现在按**队列事实**判；服务侧本来就有自我保护
+             * （{@code startQueue()} 见 worker 还活着会拒绝并记一行日志），
+             * 所以这里可以放行，不会真的开出两次任务。 */
+            boolean canStart = st == null || st == TaskQueue.State.PAUSED;
+            actionsHint.setText(!canStart
+                    ? L.s("任务进行中 · 可暂停或停止", "Task active · pause or stop")
+                    : serviceRunning
+                        ? L.s("上一轮还在收尾 · 现在点开始会排在它后面",
+                              "previous run is wrapping up; start will queue behind it")
+                        : L.s("可以开始 · 开始前会先登记目标配置",
+                              "Ready · the target config is saved first"));
             actionsHint.setTextColor(AmberTheme.TEXT_FAINT);
         }
     }
@@ -5022,9 +5042,12 @@ public class MainActivity extends Activity {
                         outer, io.github.wlmosv_png.wpaforge.ui.CrackHud.percentLabel(tested, total)));
                 connectProgress.setStages(st);
                 connectProgress.setDone(false);
+                /* 进度条上只留「还剩多久」这一行大字；脚注不再重复写。
+                 * 上一版条里写「56 / 60 · 17 条/分」，卡片下面又写一遍
+                 * 「17 条/分 … 剩 13 秒」——同一屏两组一模一样的数字。 */
                 connectProgress.setText(
                         io.github.wlmosv_png.wpaforge.ui.CrackHud.etaLabel(etaMs),
-                        io.github.wlmosv_png.wpaforge.ui.CrackHud.footnote(tested, total, rate));
+                        "");
 
                 // Obsidian Amber：同一组数字再喂给「大数字区」。
                 // **不重新计算任何东西** —— tested/total/rate/etaMs 全部是服务
@@ -5054,9 +5077,8 @@ public class MainActivity extends Activity {
                             ? L.s("速率 待测", "rate —") : rl);
                 }
                 if (statEtaView != null) {
-                    String el = io.github.wlmosv_png.wpaforge.ui.CrackHud.etaLabel(etaMs);
-                    statEtaView.setText(el.isEmpty()
-                            ? L.s("剩余 待估", "ETA —") : el);
+                    // 运行期间「剩多久」只由进度条上那行大字承担，这里留空避免重复
+                    statEtaView.setText("");
                 }
                 // 候选跑完了但还没收到"结束"回调 → 收尾中（恢复临时网络配置等）
                 boolean nowFinishing = total > 0 && tested >= total;
@@ -5677,6 +5699,8 @@ public class MainActivity extends Activity {
     private void startConnect() {
         hideResultCard();
         lastRestoreSummary = "";
+        finishingNow = false;          // 防上轮异常残留，导致状态一直显示"收尾中"
+        ui.removeCallbacks(finishingTick);
         // 跳过是"看不见的行为"，必须在**界面**上说出来。
         // 用户不看日志的话，3000 条的字典只跑 1200 条只会让他以为坏了。
         if (currentDictSkipped > 0) {

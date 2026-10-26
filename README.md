@@ -17,7 +17,7 @@
 
 <img src="docs/demo-ui.gif" alt="WPAForge 界面速览" width="100%">
 
-<sub>界面速览 —— 观测 → 选目标 → 字典 → 破解，四步</sub>
+<sub>界面速览 —— 观测 → 破解 → 命中 → 字典管理，四步（每张停 2 秒）</sub>
 
 
 </div>
@@ -47,9 +47,9 @@
 **锁屏继续跑，中断能接上。** 进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。
 
 <p align="center">
-  <a href="https://wlmosv.dpdns.org/wpaforge/#demo"><img src="docs/demo-hit.gif" alt="真机录屏：第 11 条候选命中" width="46%"></a>
+  <a href="https://wlmosv.dpdns.org/wpaforge/#demo"><img src="docs/demo-hit.gif" alt="真机截图：第 15 条候选命中" width="46%"></a>
 </p>
-<p align="center"><sub>▶ 真机录屏 · 第 11 条候选命中（10 秒试看）—— <a href="https://wlmosv.dpdns.org/wpaforge/#demo">完整 60 秒带配乐版</a> ｜ <a href="https://www.bilibili.com/video/BV1b1np6YE7U">B站（带弹幕）</a></sub></p>
+<p align="center"><sub>▶ 破解中 → 命中：进度 0.61% 时跑出 <b>11223344</b>（真机截图，每张停 2 秒）—— <a href="https://wlmosv.dpdns.org/wpaforge/#demo">完整演示</a> ｜ <a href="https://www.bilibili.com/video/BV1b1np6YE7U">B站（带弹幕）</a></sub></p>
 
 ## 还有什么
 
@@ -95,7 +95,7 @@ Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` �
   <img src="docs/screenshots/shot07.png" width="23%">
   <img src="docs/screenshots/shot08.png" width="23%">
 </p>
-<p align="center"><sub>① 观测 · ② 网络侦察 · ③ 字典管理 · ④ 字典内容 · ⑤ 口令强度与离线校验 · ⑥ WPS · ⑦ 破解 · ⑧ 命中</sub></p>
+<p align="center"><sub>① 观测（频谱雷达）· ② 破解（进度与速率）· ③ 命中（口令 + 一键复制）· ④ 字典管理（按命中率排序 + 历史战绩）<br>⑤ 网络侦察（设备与开放端口）· ⑥ 信号分布与信道推荐 · ⑦ 审计（字典 / 强度 / 离线校验）· ⑧ 设置（权限与保活）</sub></p>
 
 ## 构建
 

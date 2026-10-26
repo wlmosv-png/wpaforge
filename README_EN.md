@@ -17,7 +17,9 @@
 
 <img src="docs/demo-ui.gif" alt="WPAForge UI overview" width="100%">
 
-<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="docs/demo-hit.gif" alt="Real-device capture: the 11th candidate hits" width="46%"></a>
+<sub>UI overview — observe → crack → hit → dictionaries, four steps (2s per frame)</sub>
+
+<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="docs/demo-hit.gif" alt="Real-device screenshots: the 15th candidate hits" width="46%"></a>
 
 </div>
 
@@ -94,12 +96,18 @@ pops a system dialog for every candidate — neither can carry a dictionary walk
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/shot04.jpg" width="88%">
-  <br>
-  <img src="docs/screenshots/shot06.jpg" width="88%">
+  <img src="docs/screenshots/shot01.png" width="23%">
+  <img src="docs/screenshots/shot02.png" width="23%">
+  <img src="docs/screenshots/shot03.png" width="23%">
+  <img src="docs/screenshots/shot04.png" width="23%">
 </p>
-
-Audit · Crack — the rest you'll see once you install it.
+<p align="center">
+  <img src="docs/screenshots/shot05.png" width="23%">
+  <img src="docs/screenshots/shot06.png" width="23%">
+  <img src="docs/screenshots/shot07.png" width="23%">
+  <img src="docs/screenshots/shot08.png" width="23%">
+</p>
+<p align="center"><sub>① Observe (spectrum radar) · ② Crack (progress &amp; rate) · ③ Hit (passphrase + one-tap copy) · ④ Dictionaries (ranked by hit rate, with local record)<br>⑤ LAN recon (devices &amp; open ports) · ⑥ Signal distribution &amp; channel advice · ⑦ Audit (dictionary / strength / offline check) · ⑧ Settings (permissions &amp; keep-alive)</sub></p>
 
 ## Building
 

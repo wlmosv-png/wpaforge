@@ -30,6 +30,7 @@ mkdir -p "$SHOTS"
 CROP="crop=1080:2286:0:90"
 W=640
 FPS=6          # 6fps 足够顺滑，GIF 体积比 8fps 小三分之一
+HOLD=2.0       # 每张图停留秒数（用户要求 2 秒/张）
 
 # 原始截图 → 640 宽、去掉状态栏
 prep() {
@@ -82,7 +83,7 @@ echo "== 界面速览 GIF（4 帧）=="
 if [ -f "$IN/gif-a.png" ] && [ -f "$IN/gif-b.png" ] \
    && [ -f "$IN/gif-c.png" ] && [ -f "$IN/gif-d.png" ]; then
   for f in gif-a gif-b gif-c gif-d; do ffmpeg -y -loglevel error -i "$IN/$f.png" -vf "$CROP" "/tmp/$f.raw.png"; done
-  make_gif "$OUT/demo-ui.gif" 2.2 0.5 /tmp/gif-a.raw.png /tmp/gif-b.raw.png /tmp/gif-c.raw.png /tmp/gif-d.raw.png
+  make_gif "$OUT/demo-ui.gif" "$HOLD" 0.5 /tmp/gif-a.raw.png /tmp/gif-b.raw.png /tmp/gif-c.raw.png /tmp/gif-d.raw.png
 else
   echo "  （gif-a..d.png 不全，跳过）"
 fi
@@ -90,7 +91,7 @@ fi
 echo "== 命中 GIF（2 帧）=="
 if [ -f "$IN/hit-a.png" ] && [ -f "$IN/hit-b.png" ]; then
   for f in hit-a hit-b; do ffmpeg -y -loglevel error -i "$IN/$f.png" -vf "$CROP" "/tmp/$f.raw.png"; done
-  make_gif "$OUT/demo-hit.gif" 2.4 0.7 /tmp/hit-a.raw.png /tmp/hit-b.raw.png
+  make_gif "$OUT/demo-hit.gif" "$HOLD" 0.6 /tmp/hit-a.raw.png /tmp/hit-b.raw.png
 else
   echo "  （hit-a/hit-b.png 不全，跳过）"
 fi

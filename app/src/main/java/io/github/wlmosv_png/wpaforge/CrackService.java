@@ -851,7 +851,9 @@ public class CrackService extends Service {
             }
 
             if (task.useTargetDict) {
-                TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800,
+                // 预算与界面一致：候选只出"密度最高的一小撮"，不铺长尾
+                TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(),
+                        Prefs.deriveBudget(this),
                         io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, task.bssid),
                         seeds, cnCommon);
                 if (!dr.candidates.isEmpty()) {

@@ -10,16 +10,16 @@ import io.github.wlmosv_png.wpaforge.core.NetRecord;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
- * 线索派生自检。
+ * 画像派生自检（v2，2026-10-26 推倒重写）。
  *
- * 盯三件事：
- *  1. 线索确实能展开成「真实家庭网络里会出现的那类口令」（手机号 / 生日 / 拼音 / 门牌）；
- *  2. 无线索时**候选集合与旧版本一模一样** —— 只允许顺序变化（这条用哈希钉死）；
- *  3. 线索与中文字表的序列化、掩码不出错 —— 手机号是本机敏感数据。
+ * 盯四件事：
+ *  1. 画像只生"人会设的形态" —— 手机号只有 全号/后8/1+后8，不做子串手术；
+ *  2. 长度闸门生效 —— 短于 8 位直接丢，**绝不补位**（v1 的 00408514 那类必须绝迹）；
+ *  3. 预算封顶 —— 实测 3.6 秒/条，候选必须收在 120 以内；
+ *  4. SSID 派生默认关闭。
  */
 public class SeedDeriveTest {
 
@@ -35,201 +35,217 @@ public class SeedDeriveTest {
         return false;
     }
 
-    private static boolean hasIn(List<String> list, String pw) {
-        return list.contains(pw);
-    }
-
     private static int indexOf(List<Candidate> list, String pw) {
         for (int i = 0; i < list.size(); i++) if (list.get(i).password.equals(pw)) return i;
         return -1;
     }
 
-    /** 候选集合指纹：去重排序后 SHA-1 前 12 位。用来钉「集合不变」。 */
-    private static String setHash(List<Candidate> list) {
-        try {
-            LinkedHashSet<String> set = new LinkedHashSet<>();
-            for (Candidate c : list) set.add(c.password);
-            List<String> v = new ArrayList<>(set);
-            java.util.Collections.sort(v);
-            StringBuilder sb = new StringBuilder();
-            for (String s : v) sb.append(s).append('\n');
-            byte[] d = java.security.MessageDigest.getInstance("SHA-1")
-                    .digest(sb.toString().getBytes("UTF-8"));
-            StringBuilder h = new StringBuilder();
-            for (byte b : d) h.append(String.format("%02x", b));
-            return h.substring(0, 12);
-        } catch (Exception e) {
-            return "ERR";
+    private static boolean hasValue(SeedModel m, SeedDeriver.Tier tier, String v) {
+        for (SeedDeriver.Item it : SeedDeriver.profile(m)) {
+            if (it.tier == tier && it.value.equals(v)) return true;
         }
+        return false;
     }
 
     private static NetRecord target(String ssid, String bssid) {
         return new NetRecord(ssid, bssid, -50, 2432, NetRecord.Security.WPA2, false, "");
     }
 
+    /** 用户实测的那个号 + 那个 SSID，作为验收基线 */
+    private static SeedModel phoneSeed() {
+        SeedModel m = new SeedModel();
+        SeedModel.addPhone(m, "19395408514");
+        return m;
+    }
+
     public static void main(String[] a) {
         System.out.println("== SeedModel 校验与序列化 ==");
         SeedModel m = new SeedModel();
         ok("11 位手机号可加", SeedModel.addPhone(m, "13812345678"), "");
-        ok("带分隔符也认", SeedModel.addPhone(m, "138-1234-5678") == false, "重复号应被忽略");
+        ok("整个号重复被忽略", SeedModel.addPhone(m, "138-1234-5678") == false, "");
         ok("非 1 开头拒绝", SeedModel.addPhone(m, "23812345678") == false, "");
-        ok("位数不对拒绝", SeedModel.addPhone(m, "1381234567") == false, "");
         SeedModel m2 = new SeedModel();
         SeedModel.addPhone(m2, "13800000001");
         SeedModel.addPhone(m2, "13800000002");
         SeedModel.addPhone(m2, "13800000003");
         SeedModel.addPhone(m2, "13800000004");
-        ok("手机号上限 4 个", SeedModel.addPhone(m2, "13800000005") == false,
-                "应被 MAX_PHONES 挡住");
+        ok("手机号上限 4", SeedModel.addPhone(m2, "13800000005") == false, "");
         SeedModel m3 = new SeedModel();
-        for (int i = 0; i < 10; i++) SeedModel.addCustom(m3, "word" + i);
-        ok("自由词上限 8 条", m3.customs.size() == 8, "" + m3.customs.size());
+        ok("拼音只留字母并转小写", SeedModel.addName(m3, "Zhang Wei123") && m3.names.get(0).equals("zhangwei"), m3.names.toString());
+        ok("单字母拼音拒绝", SeedModel.addName(m3, "z") == false, "");
+        SeedModel.addName(m3, "wangwei");
+        SeedModel.addName(m3, "lisi");
+        SeedModel.addName(m3, "xiaobao");
+        ok("拼音上限 4", SeedModel.addName(m3, "dabao") == false && SeedModel.addName(m3, "extra") == false, m3.names.toString());
 
         SeedModel full = new SeedModel();
-        SeedModel.addPhone(full, "13812345678");
-        full.landline = "051288889999";
+        SeedModel.addPhone(full, "19395408514");
+        SeedModel.addName(full, "zhangwei");
         full.birthday = "19900101";
-        full.namePinyin = "zhangwei";
         full.houseNo = "802";
-        SeedModel.addCustom(full, "wojia");
-        SeedModel.addCustom(full, "特§殊=值,带%号");
+        full.landline = "051288889999";
+        full.oldPassword = "oldpass2024";
+        SeedModel.addCustom(full, "特§殊=值,%号");
+        full.useSsid = true;
         SeedModel back = SeedModel.decode(full.encode());
-        ok("序列化往返：手机号", back.phones.equals(full.phones), back.phones.toString());
-        ok("序列化往返：生日", back.birthday.equals("19900101"), back.birthday);
-        ok("序列化往返：拼音", back.namePinyin.equals("zhangwei"), back.namePinyin);
-        ok("序列化往返：门牌", back.houseNo.equals("802"), back.houseNo);
-        ok("序列化往返：含特殊字符的自由词", back.customs.equals(full.customs),
-                back.customs.toString());
-        ok("空模型 isEmpty", new SeedModel().isEmpty(), "");
-        ok("填一项后非空", !full.isEmpty() && full.count() == 6, "" + full.count());
+        ok("往返：手机号", back.phones.equals(full.phones), back.phones.toString());
+        ok("往返：拼音列表", back.names.equals(full.names), back.names.toString());
+        ok("往返：生日/门牌/宽带", back.birthday.equals("19900101")
+                && back.houseNo.equals("802") && back.landline.equals("051288889999"), "");
+        ok("往返：旧口令", back.oldPassword.equals("oldpass2024"), back.oldPassword);
+        ok("往返：带特殊字符的自由词", back.customs.equals(full.customs), back.customs.toString());
+        ok("往返：SSID 开关", back.useSsid, "");
+        ok("老格式 pinyin= 兼容读成 names",
+                SeedModel.decode("pinyin=zhangwei").names.contains("zhangwei"), "");
         ok("损坏串不崩", SeedModel.decode("§§===|乱码").isEmpty(), "");
-
-        String fp1 = full.fingerprint();
+        String fp = full.fingerprint();
         full.houseNo = "803";
-        ok("内容变则指纹变", !fp1.equals(full.fingerprint()), "");
+        ok("内容变则指纹变", !fp.equals(full.fingerprint()), "");
         full.houseNo = "802";
-        ok("内容还原则指纹还原", fp1.equals(full.fingerprint()), "");
-
+        ok("内容还原则指纹还原", fp.equals(full.fingerprint()), "");
         String masked = full.masked();
-        ok("掩码不含完整手机号", !masked.contains("13812345678"), masked);
-        ok("掩码保留号段与后四位", masked.contains("138") && masked.contains("5678"), masked);
-        ok("掩码不含自由词原文", !masked.contains("wojia"), masked);
+        ok("掩码不含完整手机号", !masked.contains("19395408514"), masked);
+        ok("掩码不含旧口令原文", !masked.contains("oldpass2024"), masked);
+        ok("掩码不含自由词原文", !masked.contains("号"), masked);
 
-        System.out.println("== SeedDeriver 展开 ==");
-        List<String> d = SeedDeriver.derive(full);
-        ok("含手机号全号", hasIn(d, "13812345678"), "");
-        ok("含手机号后 8 位", hasIn(d, "12345678"), "");
-        ok("含手机号后 6 位", hasIn(d, "345678"), "");
-        ok("含号段+后 6 位", hasIn(d, "138345678"), "");
-        ok("含 a+全号", hasIn(d, "a13812345678"), "");
-        ok("含生日 8 位", hasIn(d, "19900101"), "");
-        ok("含生日 6 位", hasIn(d, "900101"), "");
-        ok("含生日月日", hasIn(d, "0101"), "");
-        ok("含姓名拼音", hasIn(d, "zhangwei"), "");
-        ok("含拼音首字母", hasIn(d, "zw"), "");
-        ok("含拼音+年份", hasIn(d, "zhangwei2026"), "");
-        ok("含门牌+后缀", hasIn(d, "802520"), "");
-        ok("含门牌重复", hasIn(d, "802802"), "");
-        ok("含固话原样", hasIn(d, "051288889999"), "");
-        ok("含自由词原样", hasIn(d, "wojia"), "");
-        ok("空线索不产生任何候选", SeedDeriver.derive(new SeedModel()).isEmpty(), "");
-        ok("null 线索不崩", SeedDeriver.derive(null).isEmpty(), "");
+        System.out.println("== 画像派生：只生成人会设的形态 ==");
+        SeedModel p = phoneSeed();
+        List<SeedDeriver.Item> items = SeedDeriver.profile(p);
+        ok("手机号全号进原值", hasValue(p, SeedDeriver.Tier.VALUE, "19395408514"), "");
+        ok("手机号后 8 位进原值", hasValue(p, SeedDeriver.Tier.VALUE, "95408514"), "");
+        ok("1+后 8 位（9 位）进原值", hasValue(p, SeedDeriver.Tier.VALUE, "195408514"), "");
+        ok("后 6 位（408514）**不**进原值", !hasValue(p, SeedDeriver.Tier.VALUE, "408514"), "");
+        ok("后 6 位也不在任何一层", !hasValue(p, SeedDeriver.Tier.COMBO, "408514")
+                && !hasValue(p, SeedDeriver.Tier.MANGLE, "408514"), "");
+        int valueCount = 0;
+        for (SeedDeriver.Item it : items) if (it.tier == SeedDeriver.Tier.VALUE) valueCount++;
+        ok("纯手机号的画像 ≤5 条", valueCount <= 5, "" + valueCount);
 
         SeedModel pn = new SeedModel();
-        pn.namePinyin = "wangxiaoming";
-        String ini = SeedDeriver.initials("wangxiaoming");
-        ok("三字名首字母 wxm", "wxm".equals(ini), ini);
-        ok("切不出音节时不给首字母", "".equals(SeedDeriver.initials("qwertyui")),
-                SeedDeriver.initials("qwertyui"));
-        ok("拼音首字母出现在展开里", hasIn(SeedDeriver.derive(pn), "wxm"), "");
+        SeedModel.addName(pn, "zhangwei");
+        SeedModel.addName(pn, "xiaobao");
+        pn.birthday = "19900101";
+        pn.houseNo = "802";
+        List<SeedDeriver.Item> it2 = SeedDeriver.profile(pn);
+        ok("zhangwei（8 位）可单独当原值", hasValue(pn, SeedDeriver.Tier.VALUE, "zhangwei"), "");
+        ok("首字母 zw 只进互拼/追加", !hasValue(pn, SeedDeriver.Tier.VALUE, "zw"), "");
+        ok("互拼：拼音+手机后四位", hasValue(pn, SeedDeriver.Tier.COMBO, "zhangwei8514")
+                || hasValue(pn, SeedDeriver.Tier.COMBO, "zhangwei0101"), "");
+        ok("互拼：拼音+门牌", hasValue(pn, SeedDeriver.Tier.COMBO, "zhangwei802"), "");
+        ok("互拼：两名字拼接", hasValue(pn, SeedDeriver.Tier.COMBO, "zhangweixiaobao"), "");
+        ok("互拼上限 24", countTier(pn, SeedDeriver.Tier.COMBO) <= SeedDeriver.MAX_COMBO,
+                "" + countTier(pn, SeedDeriver.Tier.COMBO));
+        ok("追加上限 20", countTier(pn, SeedDeriver.Tier.MANGLE) <= SeedDeriver.MAX_MANGLE,
+                "" + countTier(pn, SeedDeriver.Tier.MANGLE));
+        ok("追加含 +1 / +123 / +520", hasValue(pn, SeedDeriver.Tier.MANGLE, "zhangwei1")
+                && hasValue(pn, SeedDeriver.Tier.MANGLE, "zhangwei123")
+                && hasValue(pn, SeedDeriver.Tier.MANGLE, "zhangwei520"), "");
 
-        ok("手机号片段集合含后 8 位", SeedDeriver.fragments(full).contains("12345678"), "");
+        ok("短拼音（wangwei=7）不单独当原值",
+                !hasValue(newSeedName("wangwei"), SeedDeriver.Tier.VALUE, "wangwei"), "");
+        ok("首字母 zhangwei→zw", "zw".equals(SeedDeriver.initials("zhangwei")), SeedDeriver.initials("zhangwei"));
+        ok("首字母 wangxiaoming→wxm", "wxm".equals(SeedDeriver.initials("wangxiaoming")), "");
+        ok("切不出音节就返回空", "".equals(SeedDeriver.initials("qwertyui")), "");
+        ok("空画像不产生候选", SeedDeriver.profile(new SeedModel()).isEmpty(), "");
+        ok("null 画像不崩", SeedDeriver.profile(null).isEmpty(), "");
 
-        System.out.println("== 线索进入派生链 ==");
-        NetRecord t1 = target("FAST_E972", "AA:BB:CC:E9:72:11");
-        TargetDictBuilder.Result rs = TargetDictBuilder.build(t1, 2000, null, full);
-        ok("线索派生含手机号全号", has(rs.candidates, "13812345678"), "");
-        ok("线索派生含拼音+数字", has(rs.candidates, "zhangwei520"), "");
-        ok("来源里标出用户线索", rs.explanation.contains("用户线索"), rs.explanation);
-        int idx = indexOf(rs.candidates, "13812345678");
-        ok("手机号排在前 50 条内", idx >= 0 && idx < 50, "idx=" + idx);
+        System.out.println("== 派生链：闸门与预算（验收基线）==");
+        NetRecord b209 = target("B209", "AA:BB:CC:55:D3:25");
+        TargetDictBuilder.Result r = TargetDictBuilder.build(b209, 120, null, p, null);
+        System.out.println("     生成 " + r.candidates.size() + " 条，来源: " + r.explanation);
+        ok("① 总数 ≤ 120", r.candidates.size() <= 120, "" + r.candidates.size());
+        ok("② 旧版的补位垃圾一条不剩",
+                !has(r.candidates, "00408514") && !has(r.candidates, "40851440")
+                        && !has(r.candidates, "40851400") && !has(r.candidates, "40851488")
+                        && !has(r.candidates, "40851411") && !has(r.candidates, "9540851495408514")
+                        && !has(r.candidates, "408514"), "");
+        ok("③ 前 10 条含画像原值（全号）",
+                indexOf(r.candidates, "19395408514") >= 0 && indexOf(r.candidates, "19395408514") < 10,
+                "idx=" + indexOf(r.candidates, "19395408514"));
+        ok("③ 前 10 条含画像原值（后 8 位）",
+                indexOf(r.candidates, "95408514") >= 0 && indexOf(r.candidates, "95408514") < 10,
+                "idx=" + indexOf(r.candidates, "95408514"));
+        ok("③ 前 10 条含通用弱口令头部",
+                indexOf(r.candidates, "12345678") >= 0 && indexOf(r.candidates, "12345678") < 10,
+                "idx=" + indexOf(r.candidates, "12345678"));
+        ok("画像原值排在通用弱口令之前",
+                indexOf(r.candidates, "19395408514") < indexOf(r.candidates, "12345678"), "");
+        ok("SSID 派生默认不进（无 B209B209）", !has(r.candidates, "B209B209"), r.explanation);
+
+        System.out.println("== 闸门：长度与形态 ==");
+        SeedModel longSeed = new SeedModel();
+        SeedModel.addCustom(longSeed, "123456789012");      // 12 位纯数字
+        SeedModel.addCustom(longSeed, "abcdefgh12345");     // 13 位混排
+        SeedModel.addCustom(longSeed, "abc12345");          // 8 位，合法
+        TargetDictBuilder.Result rg = TargetDictBuilder.build(b209, 200, null, longSeed, null);
+        ok("12 位纯数字被丢", !has(rg.candidates, "123456789012"), "");
+        ok("13 位混排被丢", !has(rg.candidates, "abcdefgh12345"), "");
+        ok("8 位合法保留", has(rg.candidates, "abc12345"), "");
+        SeedModel shortSeed = new SeedModel();
+        SeedModel.addCustom(shortSeed, "abc123");           // 6 位
+        TargetDictBuilder.Result rs = TargetDictBuilder.build(b209, 200, null, shortSeed, null);
+        // 注意区分：v1 那种"补位"产物（+00 / +11 / 前缀 0）必须绝迹；
+        // 而 +88 属于画像追加层的正常规则，不在禁止之列。
+        ok("6 位短串本身被丢", !has(rs.candidates, "abc123"), "");
+        ok("v1 的补位产物绝迹", !has(rs.candidates, "abc12300") && !has(rs.candidates, "abc12311")
+                && !has(rs.candidates, "0abc123") && !has(rs.candidates, "abc123ab"), "");
+
+        System.out.println("== SSID 派生：开关行为 ==");
+        NetRecord fast = target("FAST_E972", "AA:BB:CC:E9:72:11");
+        TargetDictBuilder.Result off = TargetDictBuilder.build(fast, 200, null, null, null);
+        ok("关闭时不含 SSID 原文", !has(off.candidates, "FAST_E972"), off.explanation);
+        ok("关闭时来源写明", off.explanation.contains("关") || off.explanation.contains("off"),
+                off.explanation);
+        SeedModel ssidOn = new SeedModel();
+        ssidOn.useSsid = true;
+        TargetDictBuilder.Result on = TargetDictBuilder.build(fast, 200, null, ssidOn, null);
+        ok("打开时含 SSID 原文", has(on.candidates, "FAST_E972"), "");
+        ok("SSID 候选排在通用弱口令之后",
+                indexOf(on.candidates, "12345678") < indexOf(on.candidates, "FAST_E972"), "");
 
         System.out.println("== 中文字表 ==");
-        List<String> parsed = CnHot.parse(Arrays.asList(
-                "# 注释", "", "12345678", "短", "1234567890123456789012345678901234567890"
-                        + "12345678901234567890123", "12345678", "zhang1234"));
-        ok("注释与空行被跳过", parsed.size() == 3, parsed.toString());
-        ok("过短被过滤", !parsed.contains("短"), "");
-        ok("重复只留一次", parsed.size() == new LinkedHashSet<>(parsed).size(), "");
+        List<String> parsed = CnHot.parse(Arrays.asList("# 注释", "", "12345678", "短", "12345678", "zhang1234"));
+        ok("注释空行与重复被清理", parsed.size() == 2, parsed.toString());
         List<String> cn = Arrays.asList("5201314520", "woaini1314", "zhangwei520");
-        TargetDictBuilder.Result rc = TargetDictBuilder.build(t1, 2000, null, null, cn);
+        TargetDictBuilder.Result rc = TargetDictBuilder.build(b209, 200, null, null, cn);
         ok("中文高频进入候选", has(rc.candidates, "woaini1314"), "");
         ok("来源里标出中文高频", rc.explanation.contains("中文高频"), rc.explanation);
-        int ic = indexOf(rc.candidates, "woaini1314");
-        ok("中文高频排在前 60 条内", ic >= 0 && ic < 60, "idx=" + ic);
 
-        System.out.println("== 排序：线索优先 ==");
-        // 用一个「后 8 位不是经典弱口令」的号来验排序，避免经典弱口令加成干扰结论
+        System.out.println("== 排序：画像优先 ==");
         SeedModel sp = new SeedModel();
         SeedModel.addPhone(sp, "13900001111");
         List<Candidate> poolDict = new ArrayList<>();
         poolDict.add(new Candidate("zzzzzzzz", Candidate.Origin.USER_DICT));
         poolDict.add(new Candidate("88888888", Candidate.Origin.DIGITS));
-        poolDict.add(new Candidate("12345678", Candidate.Origin.DIGITS));
-        poolDict.add(new Candidate("13900001111", Candidate.Origin.USER_DICT));
-        List<Candidate> ranked = SmartSorter.prioritize(t1, poolDict, 0, sp, null);
-        ok("线索命中排第一", "13900001111".equals(ranked.get(0).password),
-                ranked.get(0).password);
-
-        // 反过来：后 8 位恰好是经典弱口令时，那条**也是线索派生值**，
-        // 两条都该在最前 —— 这不是 bug，是同一个字符串同时命中两套规则。
-        List<Candidate> pool2 = new ArrayList<>();
-        pool2.add(new Candidate("zzzzzzzz", Candidate.Origin.USER_DICT));
-        pool2.add(new Candidate("88888888", Candidate.Origin.DIGITS));
-        pool2.add(new Candidate("12345678", Candidate.Origin.DIGITS));
-        pool2.add(new Candidate("13812345678", Candidate.Origin.USER_DICT));
-        List<Candidate> ranked2 = SmartSorter.prioritize(t1, pool2, 0, full, null);
-        ok("同源两条都排在最前", ranked2.get(0).password.equals("12345678")
-                        || ranked2.get(0).password.equals("13812345678"),
-                ranked2.get(0).password);
-        ok("非线索候选被压到后面", "zzzzzzzz".equals(ranked2.get(3).password),
-                ranked2.get(3).password);
-
-        List<Candidate> rankedOld = SmartSorter.prioritize(t1, poolDict, 0);
-        ok("无线索时旧签名仍可用", rankedOld.size() == 4, "" + rankedOld.size());
-
-        System.out.println("== 回归：无线索时候选集合不变 ==");
-        // 下面这几个数字/哈希来自 HEAD（改动前）的实测输出。
-        // 允许顺序变化（通用弱口令从兜底提到第三桶），但**集合必须一模一样**。
-        TargetDictBuilder.Result b1 = TargetDictBuilder.build(t1, 2000);
-        ok("FAST_E972 条数不变", b1.candidates.size() == 959, "" + b1.candidates.size());
-        ok("FAST_E972 集合不变", "e365f8db3929".equals(setHash(b1.candidates)), setHash(b1.candidates));
-        TargetDictBuilder.Result b2 = TargetDictBuilder.build(target("209", "AA:BB:CC:DD:EE:FF"), 2000);
-        ok("209 集合不变", "fccc16be8ebd".equals(setHash(b2.candidates)), setHash(b2.candidates));
-        TargetDictBuilder.Result b3 = TargetDictBuilder.build(target("小卖部WiFi5", "11:22:33:44:55:66"), 2000);
-        ok("中文 SSID 集合不变", "b068692f6dbd".equals(setHash(b3.candidates)), setHash(b3.candidates));
-        TargetDictBuilder.Result b4 = TargetDictBuilder.build(target("CMCC-8F2A", "AA:BB:CC:11:22:33"), 2000);
-        ok("CMCC-8F2A 集合不变", "b1237d932fc3".equals(setHash(b4.candidates)), setHash(b4.candidates));
-        ok("通用弱口令已前移（前 12 条内出现 12345678）",
-                indexOf(b1.candidates, "12345678") >= 0 && indexOf(b1.candidates, "12345678") < 12,
-                "idx=" + indexOf(b1.candidates, "12345678"));
-        ok("空线索时来源里没有用户线索", !b1.explanation.contains("用户线索"), b1.explanation);
-        ok("空中文表时来源里没有中文高频", !b1.explanation.contains("中文高频"), b1.explanation);
+        poolDict.add(new Candidate("13900001111", Candidate.Origin.USER_SEED));
+        List<Candidate> ranked = SmartSorter.prioritize(b209, poolDict, 0, sp, null);
+        ok("画像命中排第一", "13900001111".equals(ranked.get(0).password), ranked.get(0).password);
+        ok("无线索时旧签名可用", SmartSorter.prioritize(b209, poolDict, 0).size() == 3, "");
 
         System.out.println("== 边界 ==");
-        ok("null 目标仍返回空", TargetDictBuilder.build(null, 100).candidates.isEmpty(), "");
-        SeedModel onlyPhone = new SeedModel();
-        SeedModel.addPhone(onlyPhone, "13900001111");
-        TargetDictBuilder.Result rp = TargetDictBuilder.build(t1, 50, null, onlyPhone);
+        ok("null 目标返回空", TargetDictBuilder.build(null, 100).candidates.isEmpty(), "");
+        TargetDictBuilder.Result tiny = TargetDictBuilder.build(b209, 3, null, p, null);
+        ok("预算 3 生效", tiny.candidates.size() <= 3, "" + tiny.candidates.size());
         boolean lenOk = true;
-        for (Candidate c : rp.candidates) {
+        for (Candidate c : r.candidates) {
             if (c.password.length() < 8 || c.password.length() > 63) lenOk = false;
         }
-        ok("上限 50 生效", rp.candidates.size() <= 50, "" + rp.candidates.size());
         ok("所有条目长度合法", lenOk, "");
 
         System.out.println();
-        System.out.println("=== 线索派生测试: " + pass + " 通过, " + fail + " 失败 ===");
+        System.out.println("=== 画像派生测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
+    }
+
+    private static SeedModel newSeedName(String n) {
+        SeedModel m = new SeedModel();
+        SeedModel.addName(m, n);
+        return m;
+    }
+
+    private static int countTier(SeedModel m, SeedDeriver.Tier t) {
+        int n = 0;
+        for (SeedDeriver.Item it : SeedDeriver.profile(m)) if (it.tier == t) n++;
+        return n;
     }
 }

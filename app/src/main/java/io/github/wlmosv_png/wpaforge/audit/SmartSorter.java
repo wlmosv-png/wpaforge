@@ -96,8 +96,10 @@ public final class SmartSorter {
         List<String> seedFrag = new ArrayList<>();
         if (seeds != null && !seeds.isEmpty()) {
             for (String v : seeds.rawValues()) seedExact.add(v.toLowerCase(java.util.Locale.ROOT));
-            for (String v : SeedDeriver.derive(seeds)) seedExact.add(v.toLowerCase(java.util.Locale.ROOT));
-            seedFrag = SeedDeriver.fragments(seeds);
+            for (SeedDeriver.Item it : SeedDeriver.profile(seeds)) {
+                seedExact.add(it.value.toLowerCase(java.util.Locale.ROOT));
+            }
+            seedFrag = SeedDeriver.shortFragments(seeds);
         }
         Set<String> cnSet = cnCommon == null ? null : new HashSet<>(cnCommon);
 

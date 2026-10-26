@@ -3069,32 +3069,35 @@ public class MainActivity extends Activity {
         io.github.wlmosv_png.wpaforge.ui.NetDialog d =
                 new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
                         L.s("字典来源", "Dictionary source"), null);
+        // 「已知密码线索」单独成一个板块：它不是"字典的一种"，而是关于这个网的事实，
+        // 优先级高于下面所有字典 —— 所以放最上面，并用分隔提示跟字典区分开。
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
+        d.addHint(L.s("— 已知密码线索（画像 · 优先于下面所有字典）—",
+                "— Known hints (profile · ranked above all wordlists) —"));
+        d.addItem(cur.isEmpty()
+                        ? L.s("填写已知线索（未填）", "Fill in known hints (empty)")
+                        : L.f("编辑已知线索（已填 %d 项）", "Edit known hints (%d set)", cur.count()),
+                dd -> showSeedDialog());
+        d.addHint(L.s("— 字典 —", "— Wordlists —"));
         d.addItem(L.s("选择字典文件", "Pick a dictionary file"),
                 dd -> showDictPicker());
-        d.addItem(L.s("按目标 SSID 派生", "Derive from target SSID"),
+        d.addItem(L.s("按目标派生（画像驱动）", "Derive from target (profile-driven)"),
                 dd -> deriveFromTarget());
         d.addItem(L.s("内置生成器（通用）", "Built-in generator (generic)"),
                 dd -> buildGenericDict());
-        // 线索排在最后：它是「派生」的加强项，不是必须项。
-        // 标题里直接报出已填几项，用户不用点进去才知道自己填没填过。
-        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
-        d.addItem(cur.isEmpty()
-                        ? L.s("已知线索（未填，可选）", "Known hints (none, optional)")
-                        : L.f("已知线索（%d 项）", "Known hints (%d)", cur.count()),
-                dd -> showSeedDialog());
         d.setNegative(L.s("取消", "Cancel"), null);
         d.show();
     }
 
     /**
-     * 「已知线索」录入。
+     * 「已知密码线索」录入（社会工程学画像）。
      *
-     * 为什么值得多这一步：手机号、生日、姓名拼音、门牌这些东西不在任何公开词表里，
-     * 但它们在自家网络上的命中率远高于「按 SSID 猜」。填了不是取巧 ——
-     * 一条候选要连好几秒，方向比数量重要得多。
+     * 设计依据：CUPP(6.6k★) / elpscrk(964★) 这些主流工具都只问"关于这个人你知道什么"，
+     * 然后把信息**互相组合**，而不是对某一串数字做变形。
+     * 所以这里问的每一项，都是"人会真的写进密码里的东西"。
      *
-     * 全部可留空；留空时派生行为与旧版本完全一致。
+     * 全部可留空；留空时派生行为与旧版本一致。
      * 只存本机私有 SP，日志与界面一律走掩码。
      */
     private void showSeedDialog() {
@@ -3103,27 +3106,43 @@ public class MainActivity extends Activity {
 
         io.github.wlmosv_png.wpaforge.ui.NetDialog d =
                 new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
-                        L.s("已知线索（全部可选）", "Known hints (all optional)"),
+                        L.s("已知密码线索", "Known password hints"),
                         L.s("填了命中率显著提高。只存本机、不联网、不上传。",
                                 "Filling these raises the hit rate a lot. "
                                         + "Stored on device only, never uploaded."));
 
         final android.widget.EditText phone = d.addField(
-                L.s("手机号，多个用逗号分开", "Phone number(s), comma separated"),
+                L.s("手机号，多个用逗号分开（最多 4）", "Phone number(s), comma separated (max 4)"),
                 joinComma(cur.phones));
+        final android.widget.EditText names = d.addField(
+                L.s("姓名/昵称拼音，多个用逗号（zhangwei,xiaobao）",
+                        "Name/nickname pinyin, comma separated"),
+                joinComma(cur.names));
         final android.widget.EditText bday = d.addField(
                 L.s("生日 19900101 / 900101 / 0101", "Birthday 19900101 / 900101 / 0101"),
                 cur.birthday);
-        final android.widget.EditText pinyin = d.addField(
-                L.s("姓名拼音 zhangwei", "Name pinyin, e.g. zhangwei"),
-                cur.namePinyin);
         final android.widget.EditText house = d.addField(
                 L.s("门牌 / 楼层 / 房间号", "House / floor / room no."),
                 cur.houseNo);
+        final android.widget.EditText landline = d.addField(
+                L.s("宽带账号或固话", "Broadband account / landline"),
+                cur.landline);
+        final android.widget.EditText oldPw = d.addField(
+                L.s("这个网以前用过的口令", "This network's previous password"),
+                cur.oldPassword);
         final android.widget.EditText custom = d.addField(
-                L.s("自由词，多个用逗号分开", "Free words, comma separated"),
+                L.s("其他常出现的词，逗号分开", "Other words you'd expect, comma separated"),
                 joinComma(cur.customs));
-        d.addHint(L.s("留空即只按 SSID 派生。", "Leave blank to derive from the SSID only."));
+        d.addHint(L.s("留空即只按通用弱口令+中文高频派生。",
+                "Leave blank to derive from common + Chinese weak lists only."));
+
+        // SSID 派生开关：默认关 —— 实测里它一次都没贡献过命中，却是候选量最大的一块
+        final boolean[] ssidOn = {cur.useSsid};
+        final android.widget.TextView[] ssidRow = new android.widget.TextView[1];
+        ssidRow[0] = d.addItem(ssidToggleLabel(ssidOn[0]), dd -> {
+            ssidOn[0] = !ssidOn[0];
+            ssidRow[0].setText(ssidToggleLabel(ssidOn[0]));
+        });
 
         d.setNegative(L.s("取消", "Cancel"), null);
         d.setPositive(L.s("保存", "Save"), dd -> {
@@ -3132,23 +3151,48 @@ public class MainActivity extends Activity {
             for (String p : splitComma(phone.getText().toString())) {
                 io.github.wlmosv_png.wpaforge.audit.SeedModel.addPhone(m, p);
             }
+            for (String n : splitComma(names.getText().toString())) {
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.addName(m, n);
+            }
             m.birthday = bday.getText().toString().trim();
-            m.namePinyin = pinyin.getText().toString().trim();
             m.houseNo = house.getText().toString().trim();
+            m.landline = landline.getText().toString().trim();
+            m.oldPassword = oldPw.getText().toString().trim();
             for (String c : splitComma(custom.getText().toString())) {
                 io.github.wlmosv_png.wpaforge.audit.SeedModel.addCustom(m, c);
             }
+            m.useSsid = ssidOn[0];
             Prefs.setSeeds(this, m.encode());
+
+            io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result probe =
+                    io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(
+                            targetNet == null
+                                    ? new io.github.wlmosv_png.wpaforge.core.NetRecord(
+                                            "sample", "00:00:00:00:00:00", -60, 2432,
+                                            io.github.wlmosv_png.wpaforge.core.NetRecord.Security.WPA2,
+                                            false, "")
+                                    : targetNet,
+                            Prefs.deriveBudget(this),
+                            null, m, io.github.wlmosv_png.wpaforge.audit.CnHot.load(this));
             appendStream(m.isEmpty()
-                    ? L.s("线索已清空（仅按 SSID 派生）", "Hints cleared (SSID-only derivation)")
+                    ? L.s("线索已清空", "Hints cleared")
                     : L.f("线索已保存 %d 项: %s", "Saved %d hint(s): %s", m.count(), m.masked()));
+            appendStream(L.f("按线索可生成 %d 条候选（预算 %d）",
+                    "%d candidates from hints (budget %d)",
+                    probe.candidates.size(), Prefs.deriveBudget(this)));
             if (!m.isEmpty()) {
-                appendStream(L.s("线索已变，请重新「按目标 SSID 派生」后入队。",
+                appendStream(L.s("线索已变，请重新「按目标派生」后入队。",
                         "Hints changed \u2014 derive again before queueing."));
             }
             updateDictStatus();
         });
         d.show();
+    }
+
+    private static String ssidToggleLabel(boolean on) {
+        return on
+                ? L.s("SSID 派生：开（默认关，实测无贡献）", "SSID derivation: ON (off by default)")
+                : L.s("SSID 派生：关（默认）", "SSID derivation: OFF (default)");
     }
 
     private static String joinComma(java.util.List<String> list) {
@@ -3191,7 +3235,8 @@ public class MainActivity extends Activity {
         }
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
-                    io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet, 20000,
+                    io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet,
+                            Prefs.deriveBudget(this),
                             io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, targetNet.bssid),
                             seeds, io.github.wlmosv_png.wpaforge.audit.CnHot.load(this));
             // 文件名带线索指纹：换了线索再派生就不会撞上旧文件，

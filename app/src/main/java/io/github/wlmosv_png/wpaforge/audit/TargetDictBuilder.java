@@ -15,10 +15,13 @@ import io.github.wlmosv_png.wpaforge.core.NetRecord;
  * 如果字典里没有 "FAST_E972888" 这种派生口令，它永远排不出来。
  *
  * 本类根据目标的 SSID 文本与 BSSID，现场生成候选：
- *   - 用户线索（手机号 / 生日 / 拼音 / 门牌 / 自由词，见 SeedDeriver）—— 优先级最高
- *   - 内置中文高频口令表（cn_top.txt）
+ *   - 画像（手机号 / 姓名拼音 / 生日 / 门牌 / 宽带账号 / 旧口令，见 SeedDeriver）
+ *     分三层：原值 → 互拼 → 追加
+ *   - 内置中文高频口令表（cn_top.txt）头部
  *   - 通用弱口令（含经典弱口令与纯数字规律）
- *   - SSID 原文与各种大小写变形
+ *   - SSID 原文与各种大小写变形（**默认关闭**，见 SeedModel.useSsid）
+ *
+ * 桶序 = 优先级，直出（不做轮转）。理由见下方注释 —— 实测命中的中位位置是第 1 条。
  *   - SSID 里的数字串及其重复/加后缀
  *   - 去掉分隔符后的合并串
  *   - SSID 与数字的多种拼接
@@ -105,37 +108,41 @@ public final class TargetDictBuilder {
         String letters = lettersOf(ssid);
         String compact = ssid.replaceAll("[^A-Za-z0-9]", "");
 
-        // 按类别分桶，最后轮转交错 —— 保证前几十条就覆盖所有类别，
-        // 而不是某一类（比如 SSID+后缀）把前面全占满。
+        /* ── 桶序即优先级，直出、不轮转 ──────────────────────────────
+         * 本机 107 次真实命中的实测：中位命中位置 = 第 1 条，90 分位 = 第 3 条，
+         * 104/107 落在前 50 条内。所以这里要的不是"每个桶都公平覆盖"，
+         * 而是"前 50 条只放高密度形态" —— 轮转恰恰会把密度平均掉。 */
         List<List<String>> buckets = new ArrayList<>();
+        List<Integer> caps = new ArrayList<>();
 
-        // ---- J. 用户线索（最高优先）----
-        // 理由：用户填进来的是「关于这个网的事实」，而下面 A~I 全是猜测。
-        // 事实必须排在猜测前面，而且不能没被填就被跳过（那就退化成旧行为）。
+        /* ── J. 画像（原值 / 互拼 / 追加）──
+         * 用户填进来的是"关于这个网的事实"，A~I 全是猜测 —— 事实必须排在猜测前面。
+         * 三层各自有上限：原值极少而精，互拼和追加按主流工具的做法封顶。 */
         if (seeds != null && !seeds.isEmpty()) {
-            List<String> j = SeedDeriver.derive(seeds);
-            if (!j.isEmpty()) {
-                buckets.add(j);
-                categories.add(L.s("用户线索", "user seeds"));
+            List<String> v = new ArrayList<>(), c = new ArrayList<>(), m = new ArrayList<>();
+            for (SeedDeriver.Item it : SeedDeriver.profile(seeds)) {
+                if (it.tier == SeedDeriver.Tier.VALUE) v.add(it.value);
+                else if (it.tier == SeedDeriver.Tier.COMBO) c.add(it.value);
+                else m.add(it.value);
+            }
+            if (!v.isEmpty()) {
+                buckets.add(v); caps.add(20);
+                categories.add(L.s("画像·原值", "profile values"));
+            }
+            if (!c.isEmpty()) {
+                buckets.add(c); caps.add(SeedDeriver.MAX_COMBO);
+                categories.add(L.s("画像·互拼", "profile combos"));
+            }
+            if (!m.isEmpty()) {
+                buckets.add(m); caps.add(SeedDeriver.MAX_MANGLE);
+                categories.add(L.s("画像·追加", "profile appends"));
             }
         }
 
-        // ---- K. 中文高频口令 ----
-        // 旧版只有英文数据集（password / sunshine / football），国内真实分布
-        // 完全不在里面。这份表由 assets/builtin/cn_top.txt 提供，
-        // 加载不到就不生成该桶 —— 绝不硬编码一份替代品。
-        if (cnCommon != null && !cnCommon.isEmpty()) {
-            List<String> k = new ArrayList<>(cnCommon);
-            if (!k.isEmpty()) {
-                buckets.add(k);
-                categories.add(L.s("中文高频", "Chinese common"));
-            }
-        }
-
-        // ---- L. 通用弱口令（原先是「兜底」，排在所有桶之后）----
-        // 它的绝对命中数在真实数据里一直是最高的那一档，
-        // 却因为写成循环后的兜底而几乎永远轮不上。现在纳入轮转，排在第三位。
-        // 内容与旧版兜底完全一致，保证「候选集合」不变，只是顺序提前。
+        /* ── L. 通用弱口令（排在中文高频之前）──
+         * 实测：107 次命中里 57 次（53%）来自这张 27KB 的小表 —— 密度最高的一块。
+         * 旧版把它写在循环末尾当"兜底"，几乎永远轮不上。
+         * 排序按证据：**本机实测密度** > 我整理的词表。 */
         {
             List<String> l = new ArrayList<>();
             for (Candidate cw : new DictGenerator(400).classic().numericPatterns().build()) {
@@ -143,9 +150,25 @@ public final class TargetDictBuilder {
             }
             if (!l.isEmpty()) {
                 buckets.add(l);
+                caps.add(40);
                 categories.add(L.s("通用弱口令", "common weak"));
             }
         }
+
+        /* ── K. 中文高频口令（只取头部 30 条）──
+         * 旧版只有英文数据集（password / sunshine / football），国内分布完全不在里面。
+         * 表由 assets/builtin/cn_top.txt 提供，加载不到就不生成该桶 —— 不硬编码替代品。 */
+        if (cnCommon != null && !cnCommon.isEmpty()) {
+            buckets.add(new ArrayList<>(cnCommon));
+            caps.add(30);
+            categories.add(L.s("中文高频", "Chinese common"));
+        }
+
+        /* 以下 A~I 全是"按 SSID 猜"。默认关闭 —— 本机 107 次真实命中里
+         * 没有一次来自 SSID 派生，而它却是候选量最大的一块。
+         * 想试的话在画像里打开开关；打开后它排在所有画像候选之后。 */
+        int ssidStart = buckets.size();
+        int catSsidStart = categories.size();
 
         // A. SSID 原文与核心变形
         List<String> a = new ArrayList<>();
@@ -153,7 +176,7 @@ public final class TargetDictBuilder {
             a.add(ssid); a.add(ssidLower); a.add(ssidUpper);
             a.add(capitalize(ssidLower)); a.add(compact); a.add(compact.toLowerCase());
         }
-        if (!a.isEmpty()) { buckets.add(a); categories.add(L.s("SSID 原文", "SSID literal")); }
+        if (!a.isEmpty()) { buckets.add(a); caps.add(12); categories.add(L.s("SSID 原文", "SSID literal")); }
 
         // B. SSID 里的数字族
         List<String> b = new ArrayList<>();
@@ -169,7 +192,7 @@ public final class TargetDictBuilder {
                 b.add(digits + capitalize(letters.toLowerCase()));
             }
         }
-        if (!b.isEmpty()) { buckets.add(b); categories.add(L.s("数字族", "digit family")); }
+        if (!b.isEmpty()) { buckets.add(b); caps.add(12); categories.add(L.s("数字族", "digit family")); }
 
         // C. SSID + 数字后缀
         List<String> c = new ArrayList<>();
@@ -180,7 +203,7 @@ public final class TargetDictBuilder {
                 c.add(compact.toLowerCase() + sf);
             }
         }
-        if (!c.isEmpty()) { buckets.add(c); categories.add(L.s("SSID+数字", "SSID+digits")); }
+        if (!c.isEmpty()) { buckets.add(c); caps.add(12); categories.add(L.s("SSID+数字", "SSID+digits")); }
 
         // D. BSSID 尾号族
         List<String> d = new ArrayList<>();
@@ -193,7 +216,7 @@ public final class TargetDictBuilder {
                 for (String sf : NUM_SUFFIX) d.add(tail6 + sf);
             }
         }
-        if (!d.isEmpty()) { buckets.add(d); categories.add(L.s("BSSID 尾号", "BSSID tail")); }
+        if (!d.isEmpty()) { buckets.add(d); caps.add(12); categories.add(L.s("BSSID 尾号", "BSSID tail")); }
 
         // E. SSID 字母部分 + 数字
         List<String> e = new ArrayList<>();
@@ -205,7 +228,7 @@ public final class TargetDictBuilder {
                 e.add(capitalize(letters.toLowerCase()) + sf);
             }
         }
-        if (!e.isEmpty()) { buckets.add(e); categories.add(L.s("字母部分", "letter part")); }
+        if (!e.isEmpty()) { buckets.add(e); caps.add(12); categories.add(L.s("字母部分", "letter part")); }
 
         // F. SSID + 字母后缀
         List<String> f = new ArrayList<>();
@@ -216,7 +239,7 @@ public final class TargetDictBuilder {
                 f.add(compact.toLowerCase() + sf);
             }
         }
-        if (!f.isEmpty()) { buckets.add(f); categories.add(L.s("SSID+字母", "SSID+letters")); }
+        if (!f.isEmpty()) { buckets.add(f); caps.add(12); categories.add(L.s("SSID+字母", "SSID+letters")); }
 
         // G. 片段交叉组合（FAST_E972 -> E972、E972FAST、E972E972…）
         List<String> g2 = new ArrayList<>();
@@ -251,7 +274,7 @@ public final class TargetDictBuilder {
                 }
             }
         }
-        if (!g2.isEmpty()) { buckets.add(g2); categories.add(L.s("片段组合", "segment combinations")); }
+        if (!g2.isEmpty()) { buckets.add(g2); caps.add(12); categories.add(L.s("片段组合", "segment combinations")); }
 
         // H. 竞品级分级词元拆分与年份符号扩散 (Tokenize + Years + Symbol Matrix)
         List<String> h = new ArrayList<>();
@@ -324,7 +347,7 @@ public final class TargetDictBuilder {
                 }
             }
         }
-        if (!h.isEmpty()) { buckets.add(h); categories.add(L.s("智能词元扩散", "token matrix")); }
+        if (!h.isEmpty()) { buckets.add(h); caps.add(12); categories.add(L.s("智能词元扩散", "token matrix")); }
 
         // I. 厂商词元：OUI 表查到的厂商名本身就是强候选。
         //    依据不是「厂商默认密码表」（那种表编不准），而是两点可观察的事实：
@@ -363,88 +386,84 @@ public final class TargetDictBuilder {
                 }
             }
         }
-        if (!vi.isEmpty()) { buckets.add(vi); categories.add(L.s("厂商词元", "vendor token")); }
+        if (!vi.isEmpty()) { buckets.add(vi); caps.add(12); categories.add(L.s("厂商词元", "vendor token")); }
 
-        // 轮转交错：每轮从每个桶取 3 条。
-        // 每桶独立游标；只要还有任意一个桶没读完就继续（不能因为
-        // 某一轮恰好全是重复项就提前收工 —— 那会丢掉大量候选）。
-        int[] cursor = new int[buckets.size()];
-        while (pool.size() < limit) {
-            boolean anyActive = false;
-            for (int bi = 0; bi < buckets.size(); bi++) {
-                List<String> bucket = buckets.get(bi);
-                int taken = 0;
-                while (taken < 6 && cursor[bi] < bucket.size()) {
-                    String v = bucket.get(cursor[bi]++);
-                    taken++;
-                    if (v == null || v.isEmpty()) continue;
-                    add(pool, v, limit);
-                }
-                if (cursor[bi] < bucket.size()) anyActive = true;
+        // ── 顺序直出：按桶序，每桶按自己的上限取满，再进下一个桶 ──
+        // 不做轮转：轮转等于"把密度平均化"，而密度差着一两个数量级。
+        boolean useSsid = seeds != null && seeds.useSsid;
+        for (int bi = 0; bi < buckets.size(); bi++) {
+            if (bi >= ssidStart && !useSsid) continue;   // SSID 派生：默认不进
+            if (pool.size() >= limit) break;
+            int cap = bi < caps.size() ? caps.get(bi) : 12;
+            int n = 0;
+            for (String v : buckets.get(bi)) {
+                if (n >= cap || pool.size() >= limit) break;
+                if (add(pool, v, limit)) n++;
             }
-            if (!anyActive) break;   // 所有桶都读完了
         }
+
+        // 来源标注：画像派生 / 中文高频 各自打标，审计报告里能看出命中来自哪一层
+        java.util.Set<String> seedVals = new java.util.HashSet<>();
+        if (seeds != null && !seeds.isEmpty()) {
+            for (SeedDeriver.Item it : SeedDeriver.profile(seeds)) seedVals.add(it.value);
+        }
+        java.util.Set<String> cnVals = cnCommon == null
+                ? java.util.Collections.emptySet() : new java.util.HashSet<>(cnCommon);
 
         List<Candidate> out = new ArrayList<>();
         for (String pw : pool) {
-            out.add(new Candidate(pw, Candidate.Origin.VENDOR_RULE));
+            Candidate.Origin origin = Candidate.Origin.VENDOR_RULE;
+            if (seedVals.contains(pw)) origin = Candidate.Origin.USER_SEED;
+            else if (cnVals.contains(pw)) origin = Candidate.Origin.USER_DICT;
+            out.add(new Candidate(pw, origin));
             if (out.size() >= limit) break;
         }
 
-        String explain = categories.isEmpty()
-                ? L.s("该 SSID 没有可派生的特征，仅生成通用弱口令", "This SSID has no derivable features; only common weak passphrases generated")
-                : L.s("按目标派生: ", "Derived from target: ") + String.join(" / ", categories);
+        List<String> shown = new ArrayList<>(categories.subList(0, Math.min(catSsidStart, categories.size())));
+        if (useSsid && categories.size() > catSsidStart) {
+            shown.addAll(categories.subList(catSsidStart, categories.size()));
+        } else if (!useSsid) {
+            shown.add(L.s("SSID 派生: 关", "SSID derivation: off"));
+        }
+        String explain = shown.isEmpty()
+                ? L.s("没有可用特征，仅生成通用弱口令", "No usable features; common weak passphrases only")
+                : L.s("按目标派生: ", "Derived from target: ") + String.join(" / ", shown);
         return new Result(out, explain);
     }
 
     /**
-     * 加入候选。
+     * 加入候选。**严格长度闸门，不做任何补位。**
      *
-     * 关键：WPA 口令最短 8 位。但用户想设的往往是 6~7 位的短串
-     * （"972888"、"209209"），系统会强迫他们补到 8 位。
-     * 所以这里对不足 8 位的，自动补几种最可能的填法，而不是直接丢弃。
+     * v1 这里有一整套"不足 8 位就补 0 / 补 8 / 补 1 / 前缀 0"的启发，
+     * 后果是手机号后 6 位 `408514` 被炸成
+     * `40851440 / 40851400 / 40851488 / 40851411 / 00408514` 五条
+     * 没有任何人会设的串，白占 5 次真实连接尝试（实测 3.6 秒/次）。
+     *
+     * 依据：
+     *  · WPA 口令最短 8 位 —— 短于 8 位的中间产物本身就不可能是答案；
+     *  · "补到 8 位"除了极少数真实习惯（+年份 / +520）之外都是臆造，
+     *    而那些习惯已经由 {@link SeedDeriver} 的追加层显式覆盖；
+     *  · 主流工具（CUPP 的 wcfrom/wcto、hashcat 的规则集）全都靠长度闸门过滤，
+     *    没有谁给短串补位。
+     *
+     * 形态闸门：纯数字只接受 8~11 位（本机 107 次真实命中最长 10 位，11 位留给手机号）；
+     * 混排接受 8~12 位。
+     *
+     * @return true 表示确实新加进去了（用于按桶计上限）
      */
-    private static void add(LinkedHashSet<String> pool, String pw, int limit) {
-        if (pool.size() >= limit) return;
-        if (pw == null) return;
+    private static boolean add(LinkedHashSet<String> pool, String pw, int limit) {
+        if (pool.size() >= limit) return false;
+        if (pw == null) return false;
         String p = pw.trim();
-        if (p.isEmpty()) return;
-
-        if (p.length() >= 8 && p.length() <= 63) {
-            pool.add(p);
-            return;
+        if (p.length() < 8 || p.length() > 63) return false;
+        boolean allDigits = true;
+        for (int i = 0; i < p.length(); i++) {
+            char ch = p.charAt(i);
+            if (ch < '0' || ch > '9') { allDigits = false; break; }
         }
-        if (p.length() > 63) return;
-
-        // 不足 8 位：按最可能的补法扩展
-        int need = 8 - p.length();
-        if (need <= 0) { pool.add(p); return; }
-
-        // 补重复自己（972888 -> 97288897）
-        StringBuilder rep = new StringBuilder(p);
-        while (rep.length() < 8) rep.append(p);
-        pool.add(rep.substring(0, 8));
-
-        // 补 0
-        StringBuilder z = new StringBuilder(p);
-        while (z.length() < 8) z.append('0');
-        pool.add(z.toString());
-
-        // 补 8
-        StringBuilder e = new StringBuilder(p);
-        while (e.length() < 8) e.append('8');
-        pool.add(e.toString());
-
-        // 补 1
-        StringBuilder o = new StringBuilder(p);
-        while (o.length() < 8) o.append('1');
-        pool.add(o.toString());
-
-        if (need <= 2) {
-            // 差得不多时，再多补一种：前缀 0
-            String pre = "0".repeat(need) + p;
-            pool.add(pre);
-        }
+        if (allDigits && p.length() > 11) return false;
+        if (!allDigits && p.length() > 12) return false;
+        return pool.add(p);
     }
 
     private static String digitsOf(String s) {

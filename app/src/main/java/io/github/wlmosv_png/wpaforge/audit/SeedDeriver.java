@@ -6,311 +6,267 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 线索派生器：把用户填的线索展开成一批候选口令。
+ * 画像派生器（v2，2026-10-26 推倒重写）。
  *
- * 与 {@link TargetDictBuilder} 的分工：
- *   · 本类只负责「一条线索能长成哪些口令」，输出原样字符串；
- *   · 长度合法性（>=8 位）、不足 8 位的补齐策略、去重与上限，
- *     统一交给 TargetDictBuilder.add() —— 那套规则已经在生产里跑过，
- *     不在这里再写一遍，避免两处规则漂移。
+ * ── 为什么重写 ────────────────────────────────────────────────
+ * v1 把"线索"当成另一个 SSID 做字符串变形，结果对手机号 19395408514
+ * 吐出 00408514 / 40851411 / 40851488 / 9540851495408514 这类
+ * **没有任何人会设**的串，还把候选从 800 撑到 1495（按 3.6 秒/条 = 1 小时）。
  *
- * 纯逻辑、不依赖 Android，可离线单测。
+ * 参考了主流项目之后改成"画像"：
+ *   · CUPP(6.6k★)      —— 只问人的信息（名/昵称/生日/伴侣/孩子/宠物/公司），
+ *                          且有长度闸门 wcfrom=5 wcto=12
+ *   · elpscrk(964★)    —— 每个维度只出 2~4 种形态，靠"维度互拼"扩展；
+ *                          手机号只有 全号 / 前四 / 后四 三种
+ *   · hashcat 年度规则  —— 变形只有"追加 1 / 12 / 123 / 年份 / 符号"这几种原子操作
+ *   · pcfg_cracker     —— 输出必须按概率排序，评价指标是"平均第几次命中"
  *
- * 每条规则的存在理由都写在行内 —— 判断一条规则该不该加，
- * 看的是「真实家庭网络里有人这么设吗」，不是「理论上可能吗」。
+ * ── 三层，按证据密度排序 ─────────────────────────────────────
+ *   VALUE  原值：几乎就是答案本身，一个字段只给 1~3 条
+ *   COMBO  互拼：拼音+生日 / 拼音+门牌 / 拼音+手机后四位…
+ *   MANGLE 追加：只在原值后面加 1 / 12 / 123 / 年份 / 520 / ！…
+ *
+ * 本类**不负责**长度闸门与去重 —— 那些在 TargetDictBuilder.add() 里统一做，
+ * 避免两处规则漂移。
  */
 public final class SeedDeriver {
 
-    /** 单个线索类别的展开上限，防止用户填 4 个号把候选池占满 */
-    public static final int DEFAULT_PER_CAT = 400;
-    /** 线索派生总量上限 */
-    public static final int DEFAULT_TOTAL = 3000;
+    /** 三层标签，供排序与界面说明用 */
+    public enum Tier {
+        VALUE,   // 原值
+        COMBO,   // 互拼
+        MANGLE   // 追加
+    }
+
+    public static final class Item {
+        public final String value;
+        public final Tier tier;
+        /** 来源说明（拼音/手机号/生日…），只用于解释，不参与判定 */
+        public final String from;
+
+        Item(String v, Tier t, String from) {
+            this.value = v;
+            this.tier = t;
+            this.from = from;
+        }
+    }
+
+    /** 组合层上限：两条信息互拼，维度一多就会爆，必须封顶 */
+    public static final int MAX_COMBO = 24;
+    /** 追加层上限：只对最高价值的几个原值做追加 */
+    public static final int MAX_MANGLE = 20;
+    /** 参与追加的原值个数 */
+    private static final int MANGLE_BASES = 3;
+
+    /** 追加用的数字/符号（顺序即优先级，抄 hashcat top10_2025.rule 的高频段） */
+    private static final String[] APPEND = {
+            "1", "123", "1234", "520", "1314", "888", "666", "8", "88", "!",
+    };
 
     private SeedDeriver() {}
 
-    public static List<String> derive(SeedModel s) {
-        return derive(s, DEFAULT_PER_CAT, DEFAULT_TOTAL);
-    }
-
     // ---------------------------------------------------------------- 主入口
 
-    public static List<String> derive(SeedModel s, int perCat, int total) {
-        List<String> out = new ArrayList<>();
+    /** 生成全部画像候选，顺序 = 优先级（VALUE → COMBO → MANGLE） */
+    public static List<Item> profile(SeedModel s) {
+        List<Item> out = new ArrayList<>();
         if (s == null || s.isEmpty()) return out;
-
-        int cap = perCat <= 0 ? DEFAULT_PER_CAT : perCat;
-        int lim = total <= 0 ? DEFAULT_TOTAL : total;
 
         List<String> phones = new ArrayList<>();
         for (String p : s.phones) {
             String d = SeedModel.digits(p);
             if (d.length() == 11 && d.charAt(0) == '1') phones.add(d);
         }
-
-        String[] bd = birthdayForms(SeedModel.t(s.birthday));
+        List<String> names = new ArrayList<>();
+        for (String n : s.names) {
+            String v = norm(n);
+            if (!v.isEmpty() && !names.contains(v)) names.add(v);
+        }
+        String[] bd = SeedModel.birthdayForms(SeedModel.t(s.birthday));
         String full8 = bd[0], yy6 = bd[1], mmdd = bd[2];
-
-        String name = normPinyin(s.namePinyin);
-        String ini = initials(name);
-
+        String year = full8.length() == 8 ? full8.substring(0, 4) : "";
         String land = SeedModel.digits(s.landline);
         String house = SeedModel.digits(s.houseNo);
+        String old = SeedModel.t(s.oldPassword);
 
-        put(out, phoneBucket(phones, ini, mmdd, house), cap, lim);
-        put(out, birthdayBucket(full8, yy6, mmdd, name, ini), cap, lim);
-        put(out, pinyinBucket(name, ini, mmdd, house, full8, phones), cap, lim);
-        put(out, landlineBucket(land, mmdd), cap, lim);
-        put(out, houseBucket(house, mmdd), cap, lim);
-        put(out, customBucket(s.customs, mmdd, phones), cap, lim);
+        List<String> values = new ArrayList<>();
+        List<Item> combos = new ArrayList<>();
+        List<Item> mangles = new ArrayList<>();
+
+        // ---- VALUE：旧口令排最前（人改密码基本是在旧密码上微调）----
+        if (!old.isEmpty()) values.add(old);
+
+        // ---- VALUE：手机号 ----
+        // 只给三种形态：全号 / 后 8 位 / "1"+后 8 位。
+        // 后四位、前四位只有 4 个字符，WPA 口令最短 8 位 —— 单独用不可能成立，
+        // 所以它们只在组合层当零件（name+后四位），不占原值额度。
+        // 依据：本机 107 次真实命中里 9 位有 20 条（支持 "1"+后8 这种形态），
+        // 而从没出现 11 位以外的手机号变形。
+        for (String p : phones) {
+            values.add(p);
+            values.add(p.substring(3));
+            values.add("1" + p.substring(3));
+        }
+
+        // ---- VALUE：生日 ----
+        // 8 位整串是唯一能单独成立（>=8 位）的形态；6 位/月日留给组合层。
+        if (full8.length() == 8) values.add(full8);
+
+        // ---- VALUE：姓名拼音 ----
+        // 只有长度 >= 8 的拼音才能单独当口令（zhangwei=8 ✓，wangwei=7 ✗）。
+        // 短的（含首字母）一律只进组合层 —— 这是"不给没人会设的形态"的关键。
+        for (String n : names) {
+            if (n.length() >= 8) {
+                values.add(n);
+                values.add(cap(n));
+            }
+        }
+
+        // ---- VALUE：宽带账号 / 固话 ----
+        if (land.length() >= 8) {
+            values.add(land);
+            values.add(land.substring(land.length() - 8));
+        }
+
+        // ---- VALUE：自由词 ----
+        for (String c : s.customs) {
+            String v = SeedModel.t(c);
+            if (v.length() >= 8) values.add(v);
+        }
+
+        java.util.LinkedHashSet<String> seen = new LinkedHashSet<>(values);
+        for (String v : seen) out.add(new Item(v, Tier.VALUE, "原值"));
+
+        // ---- COMBO：维度互拼（这是主流工具真正的杀招）----
+        java.util.LinkedHashSet<String> cseen = new LinkedHashSet<>();
+        for (String n : names) {
+            String ini = initials(n);
+            for (String p : phones) {
+                String t4 = p.substring(7);
+                String b8 = p.substring(3);
+                addCombo(combos, cseen, n + t4, "拼音+手机后四位");
+                addCombo(combos, cseen, cap(n) + t4, "拼音+手机后四位");
+                addCombo(combos, cseen, b8 + ini, "手机后八位+首字母");
+            }
+            if (!mmdd.isEmpty()) {
+                addCombo(combos, cseen, n + mmdd, "拼音+生日月日");
+                addCombo(combos, cseen, cap(n) + mmdd, "拼音+生日月日");
+            }
+            if (!house.isEmpty()) addCombo(combos, cseen, n + house, "拼音+门牌");
+            if (!year.isEmpty()) addCombo(combos, cseen, n + year, "拼音+出生年");
+            if (!ini.isEmpty()) {
+                if (!mmdd.isEmpty()) addCombo(combos, cseen, ini + mmdd, "首字母+生日月日");
+                if (!house.isEmpty()) addCombo(combos, cseen, ini + house, "首字母+门牌");
+                if (!year.isEmpty()) addCombo(combos, cseen, ini + year, "首字母+出生年");
+            }
+        }
+        // 两个名字互拼（zhangwei + xiaobao）
+        for (int i = 0; i < names.size(); i++) {
+            for (int j = 0; j < names.size(); j++) {
+                if (i == j) continue;
+                addCombo(combos, cseen, names.get(i) + names.get(j), "两个名字互拼");
+            }
+        }
+        if (!house.isEmpty() && !mmdd.isEmpty()) addCombo(combos, cseen, house + mmdd, "门牌+生日月日");
+        if (!land.isEmpty() && !mmdd.isEmpty()) addCombo(combos, cseen, land + mmdd, "宽带账号+生日月日");
+        if (combos.size() > MAX_COMBO) combos = combos.subList(0, MAX_COMBO);
+        out.addAll(combos);
+
+        // ---- MANGLE：只对最高价值的几个原值追加 ----
+        List<String> bases = new ArrayList<>();
+        if (!old.isEmpty()) bases.add(old);
+        for (String n : names) {
+            bases.add(n);
+            if (bases.size() >= MANGLE_BASES) break;
+        }
+        for (String c : s.customs) {
+            if (bases.size() >= MANGLE_BASES) break;
+            String v = SeedModel.t(c);
+            if (!v.isEmpty()) bases.add(v);
+        }
+        java.util.LinkedHashSet<String> mseen = new LinkedHashSet<>();
+        for (String b : bases) {
+            for (String ap : APPEND) {
+                if (mangles.size() >= MAX_MANGLE) break;
+                addMangle(mangles, mseen, b + ap, "追加");
+            }
+            if (mangles.size() >= MAX_MANGLE) break;
+        }
+        out.addAll(mangles);
 
         return out;
     }
 
+    /** 只要原值层（界面预览、排序器加分用） */
+    public static List<String> values(SeedModel s) {
+        List<String> out = new ArrayList<>();
+        for (Item it : profile(s)) {
+            if (it.tier == Tier.VALUE) out.add(it.value);
+        }
+        return out;
+    }
+
     /**
-     * 短片段集合（长度 >= 4，且通常只有 5 种以内）。
-     * 排序器用它判断「候选里出现了线索的一部分」，比如后 8 位手机号。
+     * 短片段集合（长度 >= 4）：给排序器判断"候选里出现了画像的一部分"。
+     * 例：手机后四位出现在 zhangwei8514 里 → 这条值得加分。
      */
-    public static List<String> fragments(SeedModel s) {
+    public static List<String> shortFragments(SeedModel s) {
         LinkedHashSet<String> out = new LinkedHashSet<>();
         if (s == null) return new ArrayList<>();
         for (String p : s.phones) {
             String d = SeedModel.digits(p);
             if (d.length() != 11) continue;
-            out.add(d.substring(3));          // 后 8 位
-            out.add(d.substring(5));          // 后 6 位
-            out.add(d.substring(0, 3) + d.substring(5));
-            out.add(d.substring(7));          // 后 4 位
+            out.add(d.substring(3));   // 后八位
+            out.add(d.substring(7));   // 后四位
+            out.add(d.substring(0, 4));// 前四位（号段）
         }
-        String[] bd = birthdayForms(SeedModel.t(s.birthday));
-        if (!bd[0].isEmpty()) out.add(bd[0]);
-        if (!bd[2].isEmpty()) out.add(bd[2]);
-        String name = normPinyin(s.namePinyin);
-        if (!name.isEmpty()) { out.add(name); if (name.length() >= 4) out.add(name.substring(0, 4)); }
-        String ini = initials(name);
-        if (!ini.isEmpty()) out.add(ini);
-        String house = SeedModel.digits(s.houseNo);
-        if (!house.isEmpty()) out.add(house);
-        String land = SeedModel.digits(s.landline);
-        if (land.length() >= 4) out.add(land);
+        String[] bd = SeedModel.birthdayForms(SeedModel.t(s.birthday));
+        if (!bd[0].isEmpty()) {
+            out.add(bd[0]);
+            out.add(bd[0].substring(0, 4));   // 出生年
+            out.add(bd[2]);                   // 月日
+        }
+        for (String n : s.names) {
+            String v = norm(n);
+            if (v.length() >= 4) out.add(v.substring(0, 4));
+            String ini = initials(v);
+            if (ini.length() >= 2) out.add(ini);
+        }
+        String h = SeedModel.digits(s.houseNo);
+        if (h.length() >= 3) out.add(h);
+        String l = SeedModel.digits(s.landline);
+        if (l.length() >= 4) out.add(l.substring(Math.max(0, l.length() - 4)));
         for (String c : s.customs) {
             String v = SeedModel.t(c);
             if (v.length() >= 4) out.add(v);
         }
+        if (!SeedModel.t(s.oldPassword).isEmpty()) out.add(SeedModel.t(s.oldPassword));
+
         List<String> list = new ArrayList<>();
-        for (String x : out) if (x.length() >= 4) list.add(x.toLowerCase(Locale.ROOT));
+        for (String x : out) {
+            String v = x.toLowerCase(Locale.ROOT);
+            if (v.length() >= 4) list.add(v);
+        }
         return list;
-    }
-
-    // ---------------------------------------------------------------- 各线索类别
-
-    /**
-     * 手机号。国内家庭网络里排第一的密码形态就是户主手机号本身或它的后 8 位。
-     * 无法穷举（10^8），所以只能靠用户给 —— 这正是本功能存在的理由。
-     */
-    private static LinkedHashSet<String> phoneBucket(List<String> phones, String ini,
-                                                     String mmdd, String house) {
-        LinkedHashSet<String> c = new LinkedHashSet<>();
-        for (String p : phones) {
-            String b8 = p.substring(3);        // 后 8 位
-            String b6 = p.substring(5);        // 后 6 位
-            String pre = p.substring(0, 3);    // 号段
-            String t4 = p.substring(7);        // 后 4 位
-
-            c.add(p);                          // 全号 11 位
-            c.add(b8);                         // 后 8 位（最高频）
-            c.add(b6);
-            c.add(pre + b6);                   // 号段 + 后 6 位，9 位
-            c.add(b8 + b8);
-            c.add("1" + b8);                   // 前面补个 1 凑长度，很常见
-            c.add(t4 + t4 + t4 + t4);          // 尾号四位重复
-            for (String sf : new String[]{"a", "aa", "1", "00", "@", ".", "#"}) c.add(p + sf);
-            c.add("a" + p);
-            c.add("A" + p);
-            c.add("@" + p);
-            if (!ini.isEmpty()) {
-                c.add(b8 + ini);
-                c.add(ini + b8);
-            }
-            if (!mmdd.isEmpty()) c.add(b8 + mmdd);
-            if (!house.isEmpty()) c.add(b8 + house);
-        }
-        return c;
-    }
-
-    /**
-     * 生日。8 位是绝对主流；6 位（少了世纪）和 4 位月日也真实存在。
-     * 不生成「年份区间」这种发散 —— 那交给远端的 rule_date 与第八桶。
-     */
-    private static LinkedHashSet<String> birthdayBucket(String full8, String yy6, String mmdd,
-                                                        String name, String ini) {
-        LinkedHashSet<String> c = new LinkedHashSet<>();
-        if (!full8.isEmpty()) {
-            c.add(full8);
-            c.add(full8 + "a");
-            c.add(full8 + "aa");
-            c.add(full8 + "520");
-            c.add(full8 + "@");
-            c.add("a" + full8);
-            c.add("@" + full8);
-            c.add(full8.substring(0, 4));      // 出生年（不足 8 位由 add() 补齐）
-            if (!name.isEmpty()) c.add(name + full8);
-            if (!ini.isEmpty()) c.add(ini + full8);
-        }
-        if (!yy6.isEmpty()) {
-            c.add(yy6);
-            c.add("19" + yy6);
-            c.add("20" + yy6);
-        }
-        if (!mmdd.isEmpty()) {
-            c.add(mmdd);
-            c.add(mmdd + mmdd);
-            c.add("0" + mmdd + "0" + mmdd);
-            if (!name.isEmpty()) c.add(name + mmdd);
-            if (!ini.isEmpty()) c.add(ini + mmdd);
-        }
-        return c;
-    }
-
-    /**
-     * 姓名拼音。国内大量 WiFi 密码是「名字拼音 + 数字」或名字首字母 + 数字。
-     * 没有拼音表也能做全拼，但要拿到首字母就必须做音节切分 —— 见 SYLLABLES。
-     */
-    private static LinkedHashSet<String> pinyinBucket(String name, String ini, String mmdd,
-                                                      String house, String full8,
-                                                      List<String> phones) {
-        LinkedHashSet<String> c = new LinkedHashSet<>();
-        if (name.isEmpty()) return c;
-
-        c.add(name);
-        c.add(cap(name));
-        c.add(name.toUpperCase(Locale.ROOT));
-        if (!ini.isEmpty()) {
-            c.add(ini);
-            c.add(ini.toUpperCase(Locale.ROOT));
-            c.add(cap(ini));
-        }
-        for (String sf : TargetDictBuilder.NUM_SUFFIX) {
-            c.add(name + sf);
-            c.add(cap(name) + sf);
-            if (!ini.isEmpty()) c.add(ini + sf);
-        }
-        if (!mmdd.isEmpty()) {
-            c.add(name + mmdd);
-            c.add(cap(name) + mmdd);
-            if (!ini.isEmpty()) c.add(ini + mmdd);
-        }
-        if (!full8.isEmpty()) {
-            c.add(name + full8);
-            if (!ini.isEmpty()) c.add(ini + full8);
-        }
-        if (!house.isEmpty()) c.add(name + house);
-        if (!phones.isEmpty()) {
-            String t4 = phones.get(0).substring(7);
-            c.add(name + t4);
-            if (!ini.isEmpty()) c.add(ini + t4);
-        }
-        return c;
-    }
-
-    /** 固话 / 宽带账号。部分地区装机默认密码就是号码本身或其后 8 位 */
-    private static LinkedHashSet<String> landlineBucket(String land, String mmdd) {
-        LinkedHashSet<String> c = new LinkedHashSet<>();
-        if (land.length() < 6) return c;
-        c.add(land);
-        c.add("0" + land);
-        c.add(land + "0");
-        c.add(land + "00");
-        c.add(land + land);
-        c.add(land + "888");
-        c.add(land + "666");
-        c.add(land + "520");
-        if (land.length() >= 8) c.add(land.substring(land.length() - 8));
-        c.add(land + land.substring(Math.max(0, land.length() - 4)));
-        if (!mmdd.isEmpty()) c.add(land + mmdd);
-        return c;
-    }
-
-    /** 门牌 / 楼层 / 房间号 */
-    private static LinkedHashSet<String> houseBucket(String house, String mmdd) {
-        LinkedHashSet<String> c = new LinkedHashSet<>();
-        if (house.isEmpty()) return c;
-        c.add(house);
-        c.add(house + "0");
-        c.add(house + "00");
-        c.add(house + "000");
-        c.add(house + house);
-        for (String sf : new String[]{"123", "1234", "520", "521", "1314", "888", "666",
-                "2024", "2025", "2026", "168"}) {
-            c.add(house + sf);
-        }
-        if (!mmdd.isEmpty()) c.add(house + mmdd);
-        return c;
-    }
-
-    /** 自由词：用户自己想到的什么就加什么，一律原样 + 常见后缀 */
-    private static LinkedHashSet<String> customBucket(List<String> customs, String mmdd,
-                                                      List<String> phones) {
-        LinkedHashSet<String> c = new LinkedHashSet<>();
-        if (customs == null) return c;
-        for (String raw : customs) {
-            String v = SeedModel.t(raw);
-            if (v.isEmpty()) continue;
-            c.add(v);
-            c.add(v + "0");
-            c.add(v + "00");
-            for (String sf : new String[]{"123", "1234", "520", "521", "1314", "888", "666",
-                    "2024", "2025", "2026", "@", "!"}) {
-                c.add(v + sf);
-            }
-            if (!mmdd.isEmpty()) c.add(v + mmdd);
-            if (!phones.isEmpty()) c.add(v + phones.get(0).substring(7));
-        }
-        return c;
     }
 
     // ---------------------------------------------------------------- 工具
 
-    /**
-     * 按类别取前 cap 条并入总池；总量到顶就停。
-     * 用 LinkedHashSet 保序去重 —— 先加的是「更可能命中」的那批。
-     */
-    private static void put(List<String> out, LinkedHashSet<String> cat, int cap, int lim) {
-        int n = 0;
-        for (String v : cat) {
-            if (n >= cap || out.size() >= lim) return;
-            if (v == null) continue;
-            String s = v.trim();
-            if (s.isEmpty() || s.length() > 63) continue;
-            if (!out.contains(s)) out.add(s);
-            n++;
-        }
+    private static void addCombo(List<Item> out, LinkedHashSet<String> seen, String v, String from) {
+        if (out.size() >= MAX_COMBO) return;
+        String s = SeedModel.t(v);
+        if (s.isEmpty() || s.length() > 63) return;
+        if (seen.add(s)) out.add(new Item(s, Tier.COMBO, from));
     }
 
-    /**
-     * 生日归一。返回 {8 位完整, 6 位YYMMDD, MMDD}，缺的给空串。
-     * 接受 19900101 / 900101 / 0101 / 1990-01-01 这几种写法。
-     */
-    static String[] birthdayForms(String raw) {
-        String d = SeedModel.digits(raw);
-        String full = "", yy = "", mmdd = "";
-        if (d.length() >= 8) {
-            full = d.substring(d.length() - 8);
-            yy = full.substring(2);
-            mmdd = full.substring(4);
-        } else if (d.length() == 6) {
-            yy = d;
-            full = "19" + d;
-            mmdd = d.substring(2);
-        } else if (d.length() == 4) {
-            mmdd = d;
-        } else if (d.length() == 5) {
-            mmdd = d.substring(1);
-        }
-        return new String[]{full, yy, mmdd};
+    private static void addMangle(List<Item> out, LinkedHashSet<String> seen, String v, String from) {
+        if (out.size() >= MAX_MANGLE) return;
+        String s = SeedModel.t(v);
+        if (s.isEmpty() || s.length() > 63) return;
+        if (seen.add(s)) out.add(new Item(s, Tier.MANGLE, from));
     }
 
-    /** 拼音只留字母并转小写；超过 24 字符截断（正常姓名不会这么长） */
-    static String normPinyin(String raw) {
+    static String norm(String raw) {
         StringBuilder sb = new StringBuilder();
         for (char c : SeedModel.t(raw).toLowerCase(Locale.ROOT).toCharArray()) {
             if (c >= 'a' && c <= 'z') sb.append(c);
@@ -320,12 +276,10 @@ public final class SeedDeriver {
     }
 
     /**
-     * 姓名首字母。做法：用标准普通话音节表做贪心最长匹配切分，
-     * 全部切成功才给首字母，切不动就返回空 —— 宁可少给一条候选，
-     * 也不给一个错的（错的候选会占用真实连接尝试的份额）。
+     * 姓名首字母。用标准普通话音节表做贪心最长匹配切分，全部切成功才给首字母，
+     * 切不动就返回空 —— 宁可少给一条候选，也不给一条错的。
      *
      * zhangwei -> zhang|wei -> zw
-     * wangxiaoming -> wang|xiao|ming -> wxm
      */
     public static String initials(String pinyin) {
         if (pinyin == null || pinyin.length() < 2) return "";
@@ -353,10 +307,7 @@ public final class SeedDeriver {
         return Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
-    /**
-     * 标准普通话音节表（含 lv/nv 的 v 写法）。
-     * 只为音节切分用，不做任何发音或语义推断。
-     */
+    /** 标准普通话音节表，只为音节切分用 */
     private static final java.util.Set<String> SYLLABLES = new java.util.HashSet<>();
     static {
         String all = "a ai an ang ao "

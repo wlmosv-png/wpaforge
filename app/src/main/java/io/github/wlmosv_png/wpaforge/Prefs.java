@@ -34,6 +34,15 @@ public final class Prefs {
      * 存本机私有 SP，不外传；界面与日志一律走 SeedModel.masked()。
      */
     private static final String K_SEEDS = "target_seeds";
+    /**
+     * 派生候选预算上限，默认 120。
+     *
+     * 为什么是 120：实测单条 ~3.6 秒，120 条约 7 分钟；
+     * 而本机 107 次真实命中里 104 次落在前 50 条内 —— 120 已经是两倍余量。
+     * 旧版按 20000 上限生成、实际出到 1500 条，等于白跑一小时。
+     */
+    private static final String K_BUDGET = "derive_budget";
+    public static final int DEFAULT_BUDGET = 120;
 
     private Prefs() {}
 
@@ -54,6 +63,18 @@ public final class Prefs {
 
     public static void clearSeeds(Context ctx) {
         sp(ctx).edit().remove(K_SEEDS).apply();
+    }
+
+    /** 派生预算（条）。界面可调，最小 30 最大 2000。 */
+    public static int deriveBudget(Context ctx) {
+        int v = sp(ctx).getInt(K_BUDGET, DEFAULT_BUDGET);
+        if (v < 30) return 30;
+        if (v > 2000) return 2000;
+        return v;
+    }
+
+    public static void setDeriveBudget(Context ctx, int v) {
+        sp(ctx).edit().putInt(K_BUDGET, v).apply();
     }
 
     // ---------------- 引擎心跳 ----------------

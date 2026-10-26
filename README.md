@@ -11,10 +11,6 @@
 
 **[⬇ 下载最新版](https://github.com/wlmosv-png/wpaforge/releases/latest)**　·　[官网](https://wlmosv.dpdns.org/wpaforge/)　·　[演示（B站）](https://www.bilibili.com/video/BV1b1np6YE7U)　·　[讨论](https://github.com/wlmosv-png/wpaforge/discussions)　·　[English](README_EN.md)
 
-<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge 界面速览" width="100%">
-
-<sub>界面速览 —— 观测 → 破解 → 命中 → 字典管理，四步（每张停 2 秒）</sub>
-
 </div>
 
 ---
@@ -126,6 +122,10 @@ netId 只当**归属证据**：只有本条尝试与状态两侧都拿到非零 
 ```
 
 ## 界面预览
+
+<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge 界面速览" width="100%">
+
+<sub>界面速览 —— 观测 → 破解 → 命中 → 字典管理，四步（每张停 2 秒）</sub>
 
 <p align="center">
   <img src="docs/shots/v122/01-observe.png" width="23%">

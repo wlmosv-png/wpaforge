@@ -11,10 +11,6 @@ Candidates are built for the target from its SSID and your hints, then each one 
 
 **[⬇ Download the latest APK](https://github.com/wlmosv-png/wpaforge/releases/latest)**　·　[Website](https://wlmosv.dpdns.org/wpaforge/)　·　[Discussions](https://github.com/wlmosv-png/wpaforge/discussions)　·　[中文](README.md)
 
-<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge 界面速览" width="100%">
-
-<sub>UI overview — observe → crack → hit → dictionaries, four steps (2s per frame)</sub>
-
 </div>
 
 ---
@@ -140,6 +136,10 @@ The header is a single line — `Updated just now` / `Updated Ns ago`, extended 
 ```
 
 ## Screenshots
+
+<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge UI overview" width="100%">
+
+<sub>UI overview — observe → crack → hit → dictionaries, four steps (2s per frame)</sub>
 
 <p align="center">
   <img src="docs/shots/v122/01-observe.png" width="23%">

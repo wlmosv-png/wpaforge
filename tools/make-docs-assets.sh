@@ -32,8 +32,12 @@ SHOTS="$OUT/shots/$TAG"
 mkdir -p "$SHOTS"
 
 CROP="crop=1080:2286:0:90"
-W=640
-FPS=6          # 6fps 足够顺滑，GIF 体积比 8fps 小三分之一
+W=560          # GIF 宽度：640 时 12fps 会到 1.2MB，560 是体积与清晰度的平衡点
+# 帧率：交叉淡入要够帧才顺滑。6fps 时 0.6 秒的淡入只有 3~4 帧，
+# 用户直接反馈「看起来很卡」—— 12fps 下同一段有 7 帧，肉眼才连续。
+FPS=12
+COLORS=128     # 调色板颜色数（128 以下开始出现色带）
+FADE=0.35      # 转场时长：实测 0.35s@12fps≈4 帧，再短就像跳帧
 HOLD=2.0       # 每张图停留秒数（用户要求 2 秒/张）
 
 # 原始截图 → 640 宽、去掉状态栏
@@ -77,7 +81,7 @@ make_gif() {
     k=$((k+1))
     off=$(awk "BEGIN{printf \"%.3f\", $off + $hold}")
   done
-  fc="$fc${last}split[s1][s2];[s1]palettegen=max_colors=128:stats_mode=diff[p];[s2][p]paletteuse=dither=none"
+  fc="$fc${last}split[s1][s2];[s1]palettegen=max_colors=$COLORS:stats_mode=diff[p];[s2][p]paletteuse=dither=none"
   # shellcheck disable=SC2086
   ffmpeg -y -loglevel error $args -filter_complex "$fc" -map "[p]" "$out" 2>/dev/null || \
   ffmpeg -y -loglevel error $args -filter_complex "$fc" -loop 0 "$out"
@@ -88,7 +92,7 @@ echo "== 界面速览 GIF（4 帧）=="
 if [ -f "$IN/gif-a.png" ] && [ -f "$IN/gif-b.png" ] \
    && [ -f "$IN/gif-c.png" ] && [ -f "$IN/gif-d.png" ]; then
   for f in gif-a gif-b gif-c gif-d; do ffmpeg -y -loglevel error -i "$IN/$f.png" -vf "$CROP" "/tmp/$f.raw.png"; done
-  make_gif "$SHOTS/ui-overview.gif" "$HOLD" 0.5 /tmp/gif-a.raw.png /tmp/gif-b.raw.png /tmp/gif-c.raw.png /tmp/gif-d.raw.png
+  make_gif "$SHOTS/ui-overview-$TAG.gif" "$HOLD" "$FADE" /tmp/gif-a.raw.png /tmp/gif-b.raw.png /tmp/gif-c.raw.png /tmp/gif-d.raw.png
 else
   echo "  （gif-a..d.png 不全，跳过）"
 fi
@@ -96,7 +100,7 @@ fi
 echo "== 命中 GIF（2 帧）=="
 if [ -f "$IN/hit-a.png" ] && [ -f "$IN/hit-b.png" ]; then
   for f in hit-a hit-b; do ffmpeg -y -loglevel error -i "$IN/$f.png" -vf "$CROP" "/tmp/$f.raw.png"; done
-  make_gif "$SHOTS/hit-crack-to-found.gif" "$HOLD" 0.6 /tmp/hit-a.raw.png /tmp/hit-b.raw.png
+  make_gif "$SHOTS/hit-crack-to-found-$TAG.gif" "$HOLD" "$FADE" /tmp/hit-a.raw.png /tmp/hit-b.raw.png
 else
   echo "  （hit-a/hit-b.png 不全，跳过）"
 fi

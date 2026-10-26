@@ -15,7 +15,7 @@
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
-<img src="docs/shots/v122/ui-overview.gif" alt="WPAForge 界面速览" width="100%">
+<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge 界面速览" width="100%">
 
 <sub>界面速览 —— 观测 → 破解 → 命中 → 字典管理，四步（每张停 2 秒）</sub>
 
@@ -45,11 +45,6 @@
 「无法连接到 BTWIFL_0923」、App 却报「已连上」的情况。
 
 **锁屏继续跑，中断能接上。** 进度持续落盘（节流写，最多 20 条一次），被系统杀掉也不丢。
-
-<p align="center">
-  <a href="https://wlmosv.dpdns.org/wpaforge/#demo"><img src="docs/shots/v122/hit-crack-to-found.gif" alt="真机截图：第 15 条候选命中" width="46%"></a>
-</p>
-<p align="center"><sub>▶ 破解中 → 命中：进度 0.61% 时跑出 <b>11223344</b>（真机截图，每张停 2 秒）—— <a href="https://wlmosv.dpdns.org/wpaforge/#demo">完整演示</a> ｜ <a href="https://www.bilibili.com/video/BV1b1np6YE7U">B站（带弹幕）</a></sub></p>
 
 ## 还有什么
 

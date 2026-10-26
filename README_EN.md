@@ -15,11 +15,9 @@
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
-<img src="docs/shots/v122/ui-overview.gif" alt="WPAForge UI overview" width="100%">
+<img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge UI overview" width="100%">
 
 <sub>UI overview — observe → crack → hit → dictionaries, four steps (2s per frame)</sub>
-
-<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="docs/shots/v122/hit-crack-to-found.gif" alt="Real-device screenshots: the 15th candidate hits" width="46%"></a>
 
 </div>
 

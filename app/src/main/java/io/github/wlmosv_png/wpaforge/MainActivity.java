@@ -244,7 +244,14 @@ public class MainActivity extends Activity {
     /** 日志全量（含被筛掉的）；streamBuffer 只是它的「可见视图」 */
     private final java.util.List<LogLine> streamLines = new java.util.ArrayList<>();
     /** true = 只看关键（里程碑 + 失败原因），默认开 */
-    private boolean streamKeyOnly = true;
+    /**
+     * 日志级别：true = 只看关键，false = 全部。
+     *
+     * <p>默认改成「全部」—— 关键级别会把逐条候选的结果藏起来，
+     * 用户看到的是"跑了半天什么都没发生"。全部视图里每条候选一行，
+     * 至少能看出"程序在动、这条不对"。
+     */
+    private boolean streamKeyOnly = false;
     private TextView chipKey;
     private TextView chipAll;
     private int lastTested = 0, lastTotal = 0;

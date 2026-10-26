@@ -446,8 +446,19 @@ public final class TargetDictBuilder {
      *  · 主流工具（CUPP 的 wcfrom/wcto、hashcat 的规则集）全都靠长度闸门过滤，
      *    没有谁给短串补位。
      *
-     * 形态闸门：纯数字只接受 8~11 位（本机 107 次真实命中最长 10 位，11 位留给手机号）；
-     * 混排接受 8~12 位。
+     * 形态闸门（上限经"社会工程学审查"修正过）：
+     * <pre>
+     *   纯数字  8~16 位    手机号 11、宽带账号（区号+号码）12~13、日期 8
+     *   混排    8~24 位    拼音全名可以很长：laopoxingwang(13)、zhangxiaoming(13)
+     * </pre>
+     *
+     * <p>**为什么放宽**：原来写的是纯数字 ≤11、混排 ≤12，依据是"本机 107 次命中
+     * 最长 10 位"——但那是**小字典里数字口令**的分布，不是混排口令的分布。
+     * 实测这次审查抓到两条被误杀的社会工程学候选：
+     * {@code laopoxingwang}（自由词，13 位）和 {@code 051288889999}（宽带账号，12 位）。
+     *
+     * <p>放宽**不会**凭空造垃圾：能进池子的候选都来自各桶的显式规则
+     * （不是随机生成），闸门只负责"别放进离谱长度"。
      *
      * @return true 表示确实新加进去了（用于按桶计上限）
      */
@@ -461,8 +472,8 @@ public final class TargetDictBuilder {
             char ch = p.charAt(i);
             if (ch < '0' || ch > '9') { allDigits = false; break; }
         }
-        if (allDigits && p.length() > 11) return false;
-        if (!allDigits && p.length() > 12) return false;
+        if (allDigits && p.length() > 16) return false;      // 手机号 11 / 宽带账号 12~13
+        if (!allDigits && p.length() > 24) return false;      // 拼音全名 + 数字
         return pool.add(p);
     }
 

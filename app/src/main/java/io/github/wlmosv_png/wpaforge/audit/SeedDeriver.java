@@ -58,6 +58,15 @@ public final class SeedDeriver {
     /** 参与追加的原值个数 */
     private static final int MANGLE_BASES = 3;
 
+    /** 旧口令"换年份"用的年份（往前也要给 —— 很多人是隔几年改一次） */
+    private static final String[] MANGLE_YEARS = {
+            "2026", "2025", "2024", "2023", "2022", "2021", "2020",
+    };
+    /** 旧口令"换尾数"用的高频数字 */
+    private static final String[] MANGLE_TAILS = {
+            "0", "00", "1", "12", "123", "1234", "520", "1314", "888", "666", "123456",
+    };
+
     /** 追加用的数字/符号（顺序即优先级，抄 hashcat top10_2025.rule 的高频段） */
     private static final String[] APPEND = {
             "1", "123", "1234", "520", "1314", "888", "666", "8", "88", "!",
@@ -172,9 +181,38 @@ public final class SeedDeriver {
         if (combos.size() > MAX_COMBO) combos = combos.subList(0, MAX_COMBO);
         out.addAll(combos);
 
-        // ---- MANGLE：只对最高价值的几个原值追加 ----
+        /* ---- MANGLE ------------------------------------------------
+         * **两种 base 的处理不一样**，这是社会工程学审查改出来的：
+         *
+         *  · 旧口令：人改密码是在旧密码上**微调**，不是把它当词根乱拼。
+         *    zhangwei2023 → 换年份/换尾数（zhangwei2024、zhangwei2025、
+         *    zhangwei520…），而不是 zhangwei20231234、zhangwei20231314
+         *    那种"拼得越长越像密码"的堆砌（审查时被抓出来的）。
+         *
+         *  · 姓名 / 自由词：本来就是词根，追加后缀是对的
+         *    （zhangwei → zhangwei520）。 */
+        java.util.LinkedHashSet<String> mseen = new LinkedHashSet<>();
+        if (!old.isEmpty()) {
+            String stem = stripTrailingDigits(old);
+            if (!stem.isEmpty() && stem.length() >= 4) {
+                // 有尾数 → 换尾（长度不变，最符合"改了改"的真实形态）
+                for (String y : MANGLE_YEARS) {
+                    if (mangles.size() >= MAX_MANGLE) break;
+                    addMangle(mangles, mseen, stem + y, "旧口令换年份");
+                }
+                for (String n : MANGLE_TAILS) {
+                    if (mangles.size() >= MAX_MANGLE) break;
+                    addMangle(mangles, mseen, stem + n, "旧口令换尾数");
+                }
+            } else {
+                // 没有尾数可分（比如纯数字口令）→ 退回追加
+                for (String ap : APPEND) {
+                    if (mangles.size() >= MAX_MANGLE) break;
+                    addMangle(mangles, mseen, old + ap, "旧口令追加");
+                }
+            }
+        }
         List<String> bases = new ArrayList<>();
-        if (!old.isEmpty()) bases.add(old);
         for (String n : names) {
             bases.add(n);
             if (bases.size() >= MANGLE_BASES) break;
@@ -184,7 +222,6 @@ public final class SeedDeriver {
             String v = SeedModel.t(c);
             if (!v.isEmpty()) bases.add(v);
         }
-        java.util.LinkedHashSet<String> mseen = new LinkedHashSet<>();
         for (String b : bases) {
             for (String ap : APPEND) {
                 if (mangles.size() >= MAX_MANGLE) break;
@@ -255,15 +292,47 @@ public final class SeedDeriver {
     private static void addCombo(List<Item> out, LinkedHashSet<String> seen, String v, String from) {
         if (out.size() >= MAX_COMBO) return;
         String s = SeedModel.t(v);
-        if (s.isEmpty() || s.length() > 63) return;
+        if (s.isEmpty() || tooLongForCombining(s)) return;
         if (seen.add(s)) out.add(new Item(s, Tier.COMBO, from));
+    }
+
+    /**
+     * 组合/追加之后的长度上限：**纯数字 13 位、混排 20 位**。
+     *
+     * <p>为什么区分：真实世界里
+     * {@code zhangxiaoming520}（13+3=16 位，姓名+520）是常见形态，
+     * 而 {@code 0512888899990101}（宽带账号 12 位 + 月日 = 16 位纯数字）
+     * 没人会这么设 —— 这是"无脑延伸"，审查时被抓出来的。
+     *
+     * <p>纯数字的天花板按真实形态定：手机号 11、宽带账号 12~13。
+     * 注意**只约束组合/追加层**；用户自己填的原值不受限（见 TargetDictBuilder 的闸门）。
+     */
+    static boolean tooLongForCombining(String s) {
+        boolean digits = true;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') { digits = false; break; }
+        }
+        return digits ? s.length() > 13 : s.length() > 20;
     }
 
     private static void addMangle(List<Item> out, LinkedHashSet<String> seen, String v, String from) {
         if (out.size() >= MAX_MANGLE) return;
         String s = SeedModel.t(v);
-        if (s.isEmpty() || s.length() > 63) return;
+        if (s.isEmpty() || tooLongForCombining(s)) return;
         if (seen.add(s)) out.add(new Item(s, Tier.MANGLE, from));
+    }
+
+    /**
+     * 去掉末尾的连续数字，留下"词根"。
+     * 旧口令换尾时用它：{@code zhangwei2023 → zhangwei}。
+     * 全是数字的输入会返回空串（调用方据此退回"追加"策略）。
+     */
+    static String stripTrailingDigits(String s) {
+        if (s == null) return "";
+        int i = s.length();
+        while (i > 0 && s.charAt(i - 1) >= '0' && s.charAt(i - 1) <= '9') i--;
+        return i == s.length() ? s : s.substring(0, i);
     }
 
     static String norm(String raw) {

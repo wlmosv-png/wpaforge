@@ -1473,8 +1473,19 @@ allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto
 - 补上后同一个 helper：`BSS_ENUM` 0 → 34、`AP_COUNT` 21 → 23、verdict 从全 UNKNOWN 变
   `PIN_OK` / `NO_PIN`、设备名出 `BroadcomAP` / `fiberhome ONT` / `huawei_ONT` / `E5576-821` /
   `PSDN-TC32-10`。
-- **持久化**：`/data/adb/modules/wpaforge-wps-sepolicy/sepolicy.rule`（本机已建，重启生效；
-  删目录即撤销）。
+- **持久化：第一次做错了。** 先按常规建了模块目录 `sepolicy.rule`，
+  **用户重启后实测不生效** —— 活策略里查不到该条，`CTRL_OK=0`、`BSS_ENUM=0` 回落；
+  `/cache/magisk.log` 里没有该文件的任何记录。**原因未确认，不猜**（已把那个空壳模块目录删掉）。
+  改用 **`/data/adb/service.d/wpaforge-wps-policy.sh`**：开机 `magiskpolicy --live` 注入，
+  带幂等判断 + 自记日志 `/data/adb/wpaforge-wps-policy.log`。
+  机制已证：本机 service.d 另有 8 个在用脚本，重启后 `apk_index_httpd.sh` 起的 8732
+  与 `cliproxy-boot.sh` 起的 8317 都在 LISTEN。
+- 手工执行该脚本已验证：执行前 `--print-rules | grep -c` = 0 → 执行后出现
+  `allow hal_wifi_supplicant_default magisk unix_dgram_socket { sendto }`，日志「注入成功」；
+  第二次执行走「已存在，跳过」（幂等）。
+- 重启后再次实测（规则经脚本注入）：`CTRL_OK=1`、`BSS_ENUM=39`、`CAP_TOTAL=37`、`AP_COUNT=27`；
+  设备名 `BroadcomAP`×22 / `fiberhome ONT`×3 / `E5576-821` / `RalinkAPS_0`。
+- 名单命中：这 5 个设备名（含新增 `RalinkAPS_0`）**全部未命中**（名单 164 条）。
 
 ### 名单匹配的真实命中率（vulnwsc.txt 164 条 / 3499 B）
 本机 23 个 AP、5 个不同设备名（BroadcomAP / fiberhome ONT / huawei_ONT / E5576-821 /

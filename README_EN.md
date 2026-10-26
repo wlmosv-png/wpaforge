@@ -189,13 +189,20 @@ SELinux does not let the supplicant send the reply back to the root domain, so y
 list but "capability unknown" and no device names. WPAForge says so on the WPS page instead
 of showing a silent "all fine".
 
-Fix: drop a `sepolicy.rule` file into any Magisk module directory with one line:
+Fix: put an executable script into `/data/adb/service.d/` that injects the rule at boot:
 
-```
-allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto
+```sh
+#!/system/bin/sh
+/data/adb/magisk/magiskpolicy --live \
+  "allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto"
 ```
 
-Reboot to apply; delete the file to revert.
+Delete the script to revert.
+
+> **Note**: a module `sepolicy.rule` file did **not** work in this environment (measured) -
+> after a reboot the live policy still lacked the rule and `BSS_ENUM` fell back to 0
+> (cause unknown). Check with
+> `magiskpolicy --print-rules | grep "hal_wifi_supplicant_default magisk"`.
 
 ## Install
 

@@ -174,13 +174,19 @@ WPS 页要显示「WPS 设备名 / 能力 / 配对窗口」，只能通过 wpa_s
 症状是：AP 列表扫得出来，但每个目标的「能力」都是未知、也没有设备名。
 WPAForge 会在 WPS 页直接说明这一点，不会静默显示成「没问题」。
 
-放行办法：在任意 Magisk 模块目录下加一个 `sepolicy.rule`，内容一行：
+放行办法：在 `/data/adb/service.d/` 下放一个可执行脚本，开机时注入这条规则：
 
-```
-allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto
+```sh
+#!/system/bin/sh
+/data/adb/magisk/magiskpolicy --live \
+  "allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto"
 ```
 
-重启生效；删掉该文件回车即撤销。
+删掉该脚本即撤销。
+
+> **注意**：Magisk 模块目录里的 `sepolicy.rule` 这条路在这种环境下**实测不生效**——
+> 重启后活策略里查不到那条规则，`BSS_ENUM` 又回到 0（原因未确认）。
+> 核对办法：`magiskpolicy --print-rules | grep "hal_wifi_supplicant_default magisk"`。
 
 ## 安装
 

@@ -37,7 +37,9 @@ import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.DictRule;
 import io.github.wlmosv_png.wpaforge.audit.BuiltinDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictSources;
+import io.github.wlmosv_png.wpaforge.audit.DerivedDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
+import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.SourceRank;
 import io.github.wlmosv_png.wpaforge.ui.NetDialog;
 
@@ -56,6 +58,14 @@ public class DictActivity extends Activity {
     private static final int OK_GREEN = AmberTheme.OK;
 
     private static final int REQ_PICK = 2001;
+
+    /**
+     * 是否展开「临时产物」分组。
+     *
+     * <p>派生产物是缓存（由目标 + 线索就能重算），默认**折叠成一行**，
+     * 免得主列表被一次性产物淹没；要看/要删时点开。
+     */
+    private boolean showDerived = false;
 
     /** 本机各字典的历史战绩（{@link SourceRank}）。懒加载 + 有历史记录变更时才重算 */
     private Map<String, io.github.wlmosv_png.wpaforge.audit.SourceRank.Stat> rankStats =
@@ -681,7 +691,22 @@ public class DictActivity extends Activity {
                 none.setPadding(px(4), px(16), px(4), px(16));
                 listBox.addView(none);
             } else {
-                for (DictStore.Entry e : shown) listBox.addView(row(e));
+                // 主列表只放「资料」（用户自己下载/导入/新建的字典）；
+                // 派生产物归到折叠分组 —— 它们是缓存，不该和资料排在一起
+                List<DictStore.Entry> normals = new ArrayList<>();
+                List<DictStore.Entry> derived = new ArrayList<>();
+                for (DictStore.Entry e : shown) {
+                    if (io.github.wlmosv_png.wpaforge.audit.DerivedDicts.isDerivedName(e.name)) {
+                        derived.add(e);
+                    } else {
+                        normals.add(e);
+                    }
+                }
+                for (DictStore.Entry e : normals) listBox.addView(row(e));
+                if (!derived.isEmpty()) {
+                    listBox.addView(derivedHeader(derived));
+                    if (showDerived) for (DictStore.Entry e : derived) listBox.addView(row(e));
+                }
             }
         }
         updateSelectBar();
@@ -720,6 +745,95 @@ public class DictActivity extends Activity {
                 refresh();
             });
         }).start();
+    }
+
+    /**
+     * 「临时产物」分组行：一份计数 + 一个展开开关 + 一个清理入口。
+     *
+     * <p>为什么不一进来就删：正在排队/正在跑的任务可能正引用着其中某一份，
+     * 那些路径必须留着（否则续跑的 offset 对不上）。所以这里先说清
+     * 「能清几份、正在进行的有几份」，由用户点。
+     */
+    private View derivedHeader(final List<DictStore.Entry> derived) {
+        long bytes = 0;
+        for (DictStore.Entry e : derived) bytes += e.sizeBytes;
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundBgStroked(AmberTheme.CARD, AmberTheme.EDGE,
+                AmberTheme.RADIUS_CARD, 0.8f));
+        box.setPadding(px(12), px(10), px(12), px(10));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = px(6);
+        box.setLayoutParams(lp);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(L.s("临时产物 " + derived.size() + " 份 · " + DerivedDicts.sizeLabel(bytes)
+                        + "（派生 / 生成，用完可清）",
+                "Temporary " + derived.size() + " \u00b7 " + DerivedDicts.sizeLabel(bytes)
+                        + " (derived / generated)"));
+        t.setTextSize(12.5f);
+        t.setTextColor(AmberTheme.TEXT_DIM);
+        top.addView(t, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        top.addView(miniBtn(showDerived ? L.s("收起", "Hide") : L.s("展开", "Show"),
+                AmberTheme.TEXT_DIM, v -> {
+                    showDerived = !showDerived;
+                    refresh();
+                }));
+        top.addView(miniBtn(L.s("清理", "Clean up"), AmberTheme.DANGER, v -> confirmCleanDerived()));
+        box.addView(top);
+        return box;
+    }
+
+    /** 一键清理临时产物：先算清「能删几份、有几份正被任务占着」，再让用户确认 */
+    private void confirmCleanDerived() {
+        File dir = DictStore.defaultDir(this);
+        List<DictStore.Entry> all = DictStore.scan(dir);
+        java.util.Set<String> prot;
+        try {
+            prot = DerivedDicts.protectedPaths(TaskQueue.load(this));
+        } catch (Throwable t) {
+            Toast.makeText(this, L.s("队列读不出来，为了安全先不动",
+                    "Queue unreadable; nothing deleted"), Toast.LENGTH_LONG).show();
+            return;
+        }
+        final List<DictStore.Entry> victims = DerivedDicts.victims(all,
+                e -> e.name, e -> e.file.getAbsolutePath(), prot);
+        final int busy = DerivedDicts.derivedOnly(all, e -> e.name).size() - victims.size();
+        if (victims.isEmpty()) {
+            Toast.makeText(this, busy > 0
+                            ? L.s("这些产物正被排队/进行中的任务用着，现在不能删",
+                                    "In use by queued/running tasks")
+                            : L.s("没有可清理的临时产物", "Nothing to clean"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        long bytes = 0;
+        for (DictStore.Entry e : victims) bytes += e.sizeBytes;
+        String msg = L.s("将删除 " + victims.size() + " 份派生产物（"
+                        + DerivedDicts.sizeLabel(bytes) + "）。\n\n"
+                        + "它们是缓存：要用时按目标 + 线索随时能重算。",
+                victims.size() + " derived file(s) (" + DerivedDicts.sizeLabel(bytes)
+                        + ") will be deleted.\n\nThey are cache: reproducible from target + hints.");
+        if (busy > 0) {
+            msg += L.s("\n\n有 " + busy + " 份正被排队/进行中的任务引用，会保留。",
+                    "\n\n" + busy + " file(s) in use by tasks are kept.");
+        }
+        NetDialog d = new NetDialog(this, L.s("清理临时产物", "Clean up temporary files"), msg);
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.setDanger(L.s("清理", "Clean up"), dd -> {
+            int ok = 0;
+            for (DictStore.Entry e : victims) if (e.file.delete()) ok++;
+            Toast.makeText(this, L.s("已清理 " + ok + " 份", "Removed " + ok),
+                    Toast.LENGTH_SHORT).show();
+            refresh();
+        });
+        d.show();
     }
 
     private void sortEntries(List<DictStore.Entry> entries) {

@@ -3535,8 +3535,10 @@ public class MainActivity extends Activity {
             }
             // 名字要跟内容一致：这本现在主要是「画像 + 通用弱口令」，
             // 而 SSID 派生默认是关的，再叫「SSID 派生」会误导
-            final String nm = L.s("定向派生 · ", "Targeted · ") + ssid
-                    + (seeds.isEmpty() ? "" : " · " + seeds.fingerprint());
+            // 名字走 DerivedDicts：它同时负责「哪些是派生产物」的识别，
+            // 名字规则一旦两处各写一遍，滚动清理就会认不出旧文件
+            final String nm = io.github.wlmosv_png.wpaforge.audit.DerivedDicts
+                    .targetedName(ssid, seeds.isEmpty() ? "" : seeds.fingerprint());
             final String path = saveDictToFile(fresh, nm);
             final int skipN = skipped;
             ui.post(() -> {
@@ -3557,7 +3559,7 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
                     io.github.wlmosv_png.wpaforge.audit.DictGenerator.quick(200000);
             final java.util.List<Candidate> list = g.build();
-            final String nm = L.s("内置生成器", "Built-in generator");
+            final String nm = io.github.wlmosv_png.wpaforge.audit.DerivedDicts.generatorName();
             final String path = saveDictToFile(list, nm);
             final String stats = renderStats(g.stats());
             ui.post(() -> {
@@ -3589,6 +3591,7 @@ public class MainActivity extends Activity {
         if (dir == null) return "";
         if (!dir.exists() && !dir.mkdirs()) return "";
         String safe = baseName.replaceAll(FNAME_BAD, "_");
+        purgeSameGroup(dir, safe + ".txt");
         File out = new File(dir, safe + ".txt");
         try (java.io.BufferedWriter w = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(new java.io.FileOutputStream(out), "UTF-8"))) {
@@ -3601,6 +3604,40 @@ public class MainActivity extends Activity {
             return "";
         }
         return out.getAbsolutePath();
+    }
+
+    /**
+     * 写新的派生产物之前，删掉**同一个目标**的旧产物。
+     *
+     * <p>用户的原话：「那玩意用一次就不用了，留着看起来很多，还很麻烦」。
+     * 与其每次生成都多一份，不如让每个目标最多只留最新一份 ——
+     * 从「跑 N 次攒 2N 份」变成「恒定 2 份」。
+     *
+     * <p>队列里排队 / 正在跑 / 暂停中的任务引用的文件**一律不删**：
+     * 那些路径一消失，续跑的 offset 就对不上了。
+     */
+    private void purgeSameGroup(File dir, String newFileName) {
+        java.util.List<File> olds =
+                io.github.wlmosv_png.wpaforge.audit.DerivedDicts.sameGroup(dir, newFileName);
+        if (olds.isEmpty()) return;
+        java.util.Set<String> keep;
+        try {
+            keep = io.github.wlmosv_png.wpaforge.audit.DerivedDicts.protectedPaths(
+                    io.github.wlmosv_png.wpaforge.audit.TaskQueue.load(this));
+        } catch (Throwable t) {
+            keep = new java.util.HashSet<>();   // 读不到队列 → 保守：不清
+            appendLog(L.s("队列读取失败，跳过旧派生清理", "Queue unreadable, skipping cleanup"));
+            return;
+        }
+        int n = 0;
+        for (File f : olds) {
+            if (keep.contains(f.getAbsolutePath())) continue;
+            if (f.delete()) n++;
+        }
+        if (n > 0) {
+            appendLog(L.s("已清理 " + n + " 份同目标的旧派生字典",
+                    "Removed " + n + " stale derived dictionary(ies)"));
+        }
     }
 
     /** 统一入口：设为当前字典 + 刷新界面显示（来源代码见 SRC_*） */
@@ -4818,7 +4855,11 @@ public class MainActivity extends Activity {
         File dir = io.github.wlmosv_png.wpaforge.audit.DictStore.defaultDir(this);
         if (dir == null) return "";
         if (!dir.exists() && !dir.mkdirs()) return "";
-        File out = new File(dir, L.s("00 内置生成器.txt", "00 Built-in generator.txt"));
+        // 规范名走 DerivedDicts：历史上有过 `00 内置生成器.txt` 这第二个名字，
+        // 结果目录里长期躺着两份同样的内容
+        String genName = io.github.wlmosv_png.wpaforge.audit.DerivedDicts.generatorName();
+        purgeSameGroup(dir, genName + ".txt");
+        File out = new File(dir, genName + ".txt");
         try (java.io.BufferedWriter w = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(new java.io.FileOutputStream(out), "UTF-8"))) {
             for (Candidate c : currentDict) {

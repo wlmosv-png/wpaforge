@@ -2792,7 +2792,7 @@ public class MainActivity extends Activity {
         // 按 SSID 派生：审计页以前只能「加载文件」和「内置生成器」，
         // 想按目标网络现场造候选必须跑到破解页 —— 两个页面本是一件事。
         // 这里补上入口，派生结果直接成为当前字典。
-        Button derive = rowAction(L.s("按 SSID 派生（选目标）", "Derive from SSID (pick a target)"));
+        Button derive = rowAction(L.s("按目标派生（选目标）", "Derive from target (pick one)"));
         derive.setOnClickListener(v -> pickTargetForDerive());
         dictCard.addView(groupDivider(2));
         dictCard.addView(derive);
@@ -2911,7 +2911,7 @@ public class MainActivity extends Activity {
         // 空状态：一块纯空白会让人以为功能坏了 —— 先说清这里会出现什么。
         auditLog.setTextColor(AmberTheme.TEXT_FAINT);
         auditLog.setText(L.s(
-                "尚无记录。上面的每次操作（加载字典 / 内置生成器 / 按 SSID 派生 / 强度评估 / 离线校验）都会写到这里。",
+                "尚无记录。上面的每次操作（加载字典 / 内置生成器 / 按目标派生 / 强度评估 / 离线校验）都会写到这里。",
                 "No entries yet. Every action above (load dictionary / built-in generator / derive from SSID / "
                         + "strength check / offline check) is written here."));
         logCard.addView(auditLog);
@@ -3529,7 +3529,9 @@ public class MainActivity extends Activity {
                 if (tried.contains(c.password)) { skipped++; continue; }
                 fresh.add(c);
             }
-            final String nm = L.s("SSID 派生 · ", "SSID-derived · ") + ssid
+            // 名字要跟内容一致：这本现在主要是「画像 + 通用弱口令」，
+            // 而 SSID 派生默认是关的，再叫「SSID 派生」会误导
+            final String nm = L.s("定向派生 · ", "Targeted · ") + ssid
                     + (seeds.isEmpty() ? "" : " · " + seeds.fingerprint());
             final String path = saveDictToFile(fresh, nm);
             final int skipN = skipped;
@@ -3685,7 +3687,7 @@ public class MainActivity extends Activity {
                             .setMessage(L.s(
                                     "这个字典超出本机可用内存。\n\n"
                                             + "建议改用内置的 TOP 榜（几百到几千条），\n"
-                                            + "或先用「按 SSID 派生」生成针对性候选 ——\n"
+                                            + "或先用「按目标派生」生成针对性候选 ——\n"
                                             + "几十条就覆盖最常见的场景，而且快得多。",
                                     "This dictionary exceeds available memory.\n\n"
                                             + "Use a built-in TOP list (hundreds to thousands)\n"
@@ -3725,7 +3727,7 @@ public class MainActivity extends Activity {
     private void pickTargetForDerive() {
         if (targetNet != null) {
             new android.app.AlertDialog.Builder(this)
-                    .setTitle(L.s("按 SSID 派生", "Derive from SSID"))
+                    .setTitle(L.s("按目标派生", "Derive from target"))
                     .setMessage(L.f("当前目标: %s\n\n直接用它派生，还是重新选一个？",
                             "Current target: %s\n\nUse it, or pick another?",
                             targetNet.displayName()))
@@ -4505,6 +4507,11 @@ public class MainActivity extends Activity {
                             + "number \u2014 most of those are not in this list."));
             String rec = localTrackRecord();
             if (!rec.isEmpty()) why.append("\n").append(rec);
+            String top = topHitDictName();
+            if (!top.isEmpty()) {
+                why.append("\n").append(L.s("本机命中最多的是「" + top + "」—— 换这本通常更划算",
+                        "Most hits on this device came from \"" + top + "\" \u2014 usually a better bet"));
+            }
         }
         io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
         if (tried.size() > 0) {
@@ -4563,6 +4570,34 @@ public class MainActivity extends Activity {
         if (resultCard != null) resultCard.setVisibility(View.GONE);
         if (candLabel != null) {
             candLabel.setText(L.s("当前候选", "CURRENT"));
+        }
+    }
+
+    /**
+     * 本机**命中最多的那本字典**。
+     *
+     * <p>从历史记录里数出来（命中的记录带 dictName），用于在"没中"时给一条
+     * **可执行的**建议 —— 而不是只说"再试试别的"。数据本来就在盘上，不用新增存储。
+     *
+     * @return 形如 {@code 01 内置弱口令常用（57 次）}；样本太少返回空串
+     */
+    private String topHitDictName() {
+        try {
+            java.util.Map<String, Integer> hits = new java.util.HashMap<>();
+            for (io.github.wlmosv_png.wpaforge.audit.HistStore.Record r
+                    : io.github.wlmosv_png.wpaforge.audit.HistStore.load(this)) {
+                if (!r.hit || r.dictName == null || r.dictName.isEmpty()) continue;
+                Integer c = hits.get(r.dictName);
+                hits.put(r.dictName, c == null ? 1 : c + 1);
+            }
+            String best = "";
+            int n = 0;
+            for (java.util.Map.Entry<String, Integer> e : hits.entrySet()) {
+                if (e.getValue() > n) { n = e.getValue(); best = e.getKey(); }
+            }
+            return n >= 3 ? best + L.s("（" + n + " 次）", " (" + n + " hits)") : "";
+        } catch (Throwable t) {
+            return "";
         }
     }
 
@@ -4963,6 +4998,7 @@ public class MainActivity extends Activity {
                 queueCache.clear();
                 queueCache.addAll(queue);
                 renderQueue();
+                renderProgressCardState();   // 同上：队列变了就重画状态行
                 // 队列是持久化权威：界面被重建后靠它把「目标/字典」的显示补回来
                 restoreSelectionFromAuthority();
             });
@@ -5552,9 +5588,15 @@ public class MainActivity extends Activity {
             queueCache.clear();
             queueCache.addAll(TaskQueue.load(this));
             renderQueue();
+            renderProgressCardState();   // 队列是权威：一更新就重画状态行（见下方说明）
             // 队列是持久化权威：刚读到盘就顺手把「目标/字典」的显示对齐一次
             // （界面被系统重建、服务已不在时，就靠这一步把两张卡补回来）
             restoreSelectionFromAuthority();
+            /* **权威一变就必须重画状态行。**
+             * 踩过的坑：onTaskDone 里先 renderProgressCardState() 再 refreshQueue()
+             * ——渲染那刻 queueCache 还是旧的 RUNNING，而这里更新完缓存却没重画。
+             * 结果任务早已 DONE_MISS，状态行却永远停在「运行中 100%」；
+             * 用户点「先算了」之后那张卡还挂着"运行中"，像程序没结束。 */
         });
     }
 
@@ -7628,6 +7670,7 @@ public class MainActivity extends Activity {
         checkBackgroundStall();
         // 回前台：目标/字典的显示与「权威」对齐一次（后台跑过的任务会在这里补回来）
         restoreSelectionFromAuthority();
+        refreshQueue();          // 队列可能也是旧的（后台跑完）→ 重读并重画状态行
         if (currentTab == 0) {
             // 从后台回来要把雷达动画接上，否则会停在最后一帧
             if (radar != null) radar.startSpin();

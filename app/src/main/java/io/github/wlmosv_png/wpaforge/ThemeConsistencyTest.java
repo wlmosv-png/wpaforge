@@ -229,13 +229,14 @@ public class ThemeConsistencyTest {
                 && radar.contains("ChannelMap.HALF + i * w24")
                 && radar.contains("i * w5"));
         ok("落点几何走纯逻辑（可单测，不靠肉眼）", radar != null
-                && radar.contains("BlipLayout.layout(ins, radius, density, RING, DOT_DP)"));
+                && radar.contains("anim.setTargets(ins, radius,")
+                && radar.contains("RadarAnimator"));
         ok("扇区里点太多时自动分层 + 点径收缩", layoutBlips != null
                 && layoutBlips.contains("int rows = Math.max(1, Math.min(MAX_ROWS,")
                 && layoutBlips.contains("float dotR = Math.min(dotDp[level] * density,"));
         ok("频段用填充方式区分（2.4G 实心 / 5G 空心）", radar != null
                 && radar.contains("pDot.setStyle(Paint.Style.STROKE);")
-                && radar.contains("if (b.is5G) {"));
+                && radar.contains("if (st.is5G) {"));
         ok("刻度字带底色块（点多也不糊掉刻度）", radar != null
                 && radar.contains("pPatch.setColor(AmberTheme.CARD);"));
         ok("dBm 刻度在点之后画（不会被点压住）", radar != null
@@ -258,8 +259,21 @@ public class ThemeConsistencyTest {
         ok("雷达卡有图例与关键数字", set.contains("private View radarLegend()")
                 && set.contains("private void renderRadarStats(List<NetRecord> nets)"));
         ok("塞不下时画汇聚计数标（不硬挤）", radar != null
-                && radar.contains("if (p.aggregated())")
+                && radar.contains("if (st.count > 0)")
                 && layoutBlips != null && layoutBlips.contains("capacity"));
+
+        String animator = read(SRC + "scan/RadarAnimator.java");
+        ok("刷新走过渡而不是瞬移（点按 BSSID 匹配 + 缓动）", animator != null
+                && animator.contains("map.get(key)")
+                && animator.contains("st.angleDeg += (st.tAngle - st.angleDeg) * k")
+                && radar != null && !radar.contains("BlipLayout.layout(ins, radius"));
+        ok("新增点淡入 / 消失点淡出", animator != null
+                && animator.contains("ENTER_RATIO")
+                && animator.contains("st.tAlpha = 0f;")
+                && animator.contains("st.exiting = true;"));
+        ok("静止不出帧（busy() 收尾）", animator != null
+                && animator.contains("public boolean busy()")
+                && radar.contains("anim.busy()"));
         ok("雷达一 AP 一点：blips 长度＝可见网络数",
                 set.contains("RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()]"));
 

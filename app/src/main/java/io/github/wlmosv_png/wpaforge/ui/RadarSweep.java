@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 
 import io.github.wlmosv_png.wpaforge.scan.BlipLayout;
+import io.github.wlmosv_png.wpaforge.scan.RadarAnimator;
 import io.github.wlmosv_png.wpaforge.scan.ChannelMap;
 
 /**
@@ -106,6 +107,9 @@ public class RadarSweep extends View {
     private static final float GLOW_MIN = 0.72f;
 
     private Blip[] blips = new Blip[0];
+    /** 过渡状态机：新点淡入、消失点淡出、位置变化走缓动 */
+    private final RadarAnimator anim = new RadarAnimator();
+    private boolean animating = false;
     private final Paint pRing = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pAxis = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pSector = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -123,6 +127,10 @@ public class RadarSweep extends View {
     private long lastFrame = 0;
     private String centerText = "";
     private String subText = "";
+    /** 中心数字的滚动动画：显示值向目标值靠（数字刷新时不再是"啪"地跳变） */
+    private float centerShown = 0f;
+    private float centerTarget = 0f;
+    private boolean centerNumeric = false;
 
     public RadarSweep(Context c) { this(c, null); }
 
@@ -161,16 +169,53 @@ public class RadarSweep extends View {
         return v * getResources().getDisplayMetrics().density;
     }
 
+    /**
+     * 刷新落点。
+     *
+     * <p>这里**不直接把新位置画出来** —— 交给 {@link RadarAnimator} 按 BSSID 匹配旧点，
+     * 位置变化走缓动、新增淡入、消失淡出，避免"画面被整块替换"的生硬感。
+     */
     public void setBlips(Blip[] b) {
         this.blips = b == null ? new Blip[0] : b;
+        if (getWidth() == 0) {
+            // 还没测量：没有半径可算，等 onSizeChanged/下一帧再设
+            pendingTargets = true;
+            return;
+        }
+        applyTargets();
         lastFrame = SystemClock.uptimeMillis();
         kick();
+    }
+
+    private boolean pendingTargets = false;
+
+    private void applyTargets() {
+        float radius = Math.min(getWidth(), getHeight()) / 2f - dp(16);
+        if (radius <= 0) return;
+        List<BlipLayout.In> ins = new ArrayList<>(blips.length);
+        for (int i = 0; i < blips.length; i++) {
+            Blip b = blips[i];
+            ins.add(new BlipLayout.In(b.key, b.channel, b.is5G, lv(b), b.secured, i));
+        }
+        anim.setTargets(ins, radius,
+                getResources().getDisplayMetrics().density, RING, DOT_DP);
     }
 
     public void setCenterText(String t, String sub) {
         this.centerText = t == null ? "" : t;
         this.subText = sub == null ? "" : sub;
-        invalidate();
+        // 纯数字：让数字滚上去（首次直接到位，不从 0 数）
+        int n = -1;
+        try {
+            n = Integer.parseInt(this.centerText.trim());
+        } catch (Exception ignored) {}
+        centerNumeric = n >= 0;
+        if (centerNumeric) {
+            if (centerShown == 0f) centerShown = n;
+            centerTarget = n;
+        }
+        lastFrame = SystemClock.uptimeMillis();
+        kick();
     }
 
     public void startSpin() {
@@ -186,8 +231,19 @@ public class RadarSweep extends View {
     }
 
     private void kick() {
-        if (spinning) postInvalidateOnAnimation();
-        else invalidate();
+        postInvalidateOnAnimation();
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int ow, int oh) {
+        super.onSizeChanged(w, h, ow, oh);
+        if (pendingTargets || anim.size() == 0) {
+            pendingTargets = false;
+            anim.clear();
+            applyTargets();
+            anim.settle();      // 首次布局直接到位，别从中心"长"出来
+            kick();
+        }
     }
 
     @Override
@@ -226,6 +282,13 @@ public class RadarSweep extends View {
         float dt = lastFrame == 0 ? 0f : (now - lastFrame) / 1000f;
         lastFrame = now;
         if (dt > 0.2f) dt = 0.2f;
+
+        if (pendingTargets) {
+            pendingTargets = false;
+            applyTargets();
+        }
+        anim.advance(dt * 1000f);
+        animating = anim.busy();
 
         float cx = w / 2f, cy = h / 2f;
         float radius = Math.min(w, h) / 2f - dp(16);
@@ -274,7 +337,14 @@ public class RadarSweep extends View {
         if (!centerText.isEmpty()) {
             pText.setTextSize(dp(24));
             pText.setColor(AmberTheme.TEXT);
-            cv.drawText(centerText, cx, cy - dp(2), pText);
+            String big = centerText;
+            if (centerNumeric) {
+                float k = (float) (1.0 - Math.exp(-(dt * 1000f) / 220f));
+                centerShown += (centerTarget - centerShown) * k;
+                if (Math.abs(centerTarget - centerShown) < 0.5f) centerShown = centerTarget;
+                big = String.valueOf(Math.round(centerShown));
+            }
+            cv.drawText(big, cx, cy - dp(2), pText);
             pText.setTextSize(dp(10.5f));
             pText.setColor(AmberTheme.TEXT_DIM);
             cv.drawText(subText, cx, cy + dp(15), pText);
@@ -282,8 +352,10 @@ public class RadarSweep extends View {
 
         if (spinning) {
             sweepAngle = (sweepAngle + dt * 62f) % 360f;   // 约 5.8 秒一圈
-            postInvalidateOnAnimation();
         }
+        // 只有"还在转"或"还在过渡"时才继续出帧 —— 静止的盘一秒都不重绘
+        boolean centerBusy = centerNumeric && Math.abs(centerTarget - centerShown) >= 0.5f;
+        if (spinning || animating || centerBusy) postInvalidateOnAnimation();
     }
 
     /** 扇区分隔线 + 频段标签（2.4G 在上半圆，5G 在下半圆） */
@@ -349,72 +421,70 @@ public class RadarSweep extends View {
     }
 
     /**
-     * 落点：几何全部交给 {@link BlipLayout}（纯逻辑、有单测），
-     * 视图这里只管画 —— 位置对不对由测试保证，不靠肉眼。
+     * 落点：几何交给 {@link BlipLayout}，过渡交给 {@link RadarAnimator}（都是纯逻辑、有单测）。
+     *
+     * <p>视图这里只管画 —— 位置对不对、刷新顺不顺由测试保证，不靠肉眼。
      */
     private void drawBlips(Canvas cv, float cx, float cy, float radius) {
-        if (blips.length == 0) return;
-
-        List<BlipLayout.In> ins = new ArrayList<>(blips.length);
-        for (int i = 0; i < blips.length; i++) {
-            Blip b = blips[i];
-            ins.add(new BlipLayout.In(b.key, b.channel, b.is5G, lv(b), i));
-        }
-
+        if (anim.states().isEmpty()) return;
         float density = getResources().getDisplayMetrics().density;
-        List<BlipLayout.Pos> pos = BlipLayout.layout(ins, radius, density, RING, DOT_DP);
 
-        for (int i = 0; i < pos.size(); i++) {
-            BlipLayout.Pos p = pos.get(i);
-            Blip b = blips[Math.max(0, Math.min(blips.length - 1, p.src.tag))];
-            double a = Math.toRadians(p.angleDeg);
-            float bx = cx + (float) Math.cos(a) * radius * p.radiusRatio;
-            float by = cy + (float) Math.sin(a) * radius * p.radiusRatio;
+        for (RadarAnimator.State st : anim.states()) {
+            if (!st.visible()) continue;
+            double a = Math.toRadians(st.angleDeg);
+            float bx = cx + (float) Math.cos(a) * radius * st.ratio;
+            float by = cy + (float) Math.sin(a) * radius * st.ratio;
 
             // 余辉：被光束扫过最亮，随后按角度差缓慢回落（只在扫描时变化）
-            float alpha = 0.94f;
+            float alpha = st.alpha * 0.94f;
             if (spinning) {
-                float diff = ((sweepAngle - p.angleDeg) % 360f + 360f) % 360f;
-                alpha = diff <= 22f ? 1f
-                        : GLOW_MIN + (1f - GLOW_MIN) * Math.max(0f, 1f - (diff - 22f) / 200f);
+                float diff = ((sweepAngle - st.angleDeg) % 360f + 360f) % 360f;
+                alpha = st.alpha * (diff <= 22f ? 1f
+                        : GLOW_MIN + (1f - GLOW_MIN) * Math.max(0f, 1f - (diff - 22f) / 200f));
             }
+            int alpha255 = (int) (Math.max(0f, Math.min(1f, alpha)) * 255f);
 
-            int level = lv(b);
+            int level = Math.max(0, Math.min(4, st.level));
             int color = AmberTheme.signalColor(level);
 
-            if (p.aggregated()) {
+            if (st.count > 0) {
                 // 这一格塞不下这么多点：画一个「×N」的标，比硬挤成一坨信息量大
                 pDot.setColor(color);
-                pDot.setAlpha(235);
-                cv.drawCircle(bx, by, dp(9f), pDot);
-                pText.setTextSize(dp(9f));
-                pText.setColor(AmberTheme.ON_ACCENT);
-                cv.drawText(String.valueOf(p.count), bx, by + dp(3.2f), pText);
+                pDot.setAlpha(alpha255);
+                cv.drawCircle(bx, by, dp(9f) * st.alpha, pDot);
+                if (st.alpha > 0.5f) {
+                    pText.setTextSize(dp(9f));
+                    pText.setColor(AmberTheme.ON_ACCENT);
+                    pText.setAlpha((int) ((st.alpha - 0.5f) * 2f * 255f));
+                    cv.drawText(String.valueOf(st.count), bx, by + dp(3.2f), pText);
+                    pText.setAlpha(255);
+                }
                 continue;
             }
+
             if (level >= 4) {   // 最强档：一圈细亮环
                 pEdge.setColor(AmberTheme.ACCENT_SOFT);
                 pEdge.setStyle(Paint.Style.STROKE);
-                pEdge.setAlpha((int) (alpha * 170));
-                cv.drawCircle(bx, by, p.dotR + dp(1.6f), pEdge);
+                pEdge.setAlpha((int) (st.alpha * 170));
+                cv.drawCircle(bx, by, st.dotR + dp(1.6f), pEdge);
             }
 
             pDot.setColor(color);
-            pDot.setAlpha((int) (alpha * 255));
-            if (b.is5G) {
+            pDot.setAlpha(alpha255);
+            if (st.is5G) {
                 // 5G：空心环 —— 用**填充方式**区分频段，不占用颜色通道
                 pDot.setStyle(Paint.Style.STROKE);
                 pDot.setStrokeWidth(dp(1.5f));
-                cv.drawCircle(bx, by, p.dotR, pDot);
+                cv.drawCircle(bx, by, st.dotR, pDot);
                 pDot.setStyle(Paint.Style.FILL);
             } else {
-                cv.drawCircle(bx, by, p.dotR, pDot);
+                cv.drawCircle(bx, by, st.dotR, pDot);
             }
 
-            if (!b.secured) {   // 未加密：红边（比上一版粗一点，深底上要看得见）
+            if (!st.secured) {   // 未加密：红边（深底上要看得见）
                 pEdge.setColor(AmberTheme.DANGER);
-                pEdge.setAlpha((int) (alpha * 235));
-                cv.drawCircle(bx, by, p.dotR + dp(1.7f), pEdge);
+                pEdge.setAlpha((int) (st.alpha * 235));
+                cv.drawCircle(bx, by, st.dotR + dp(1.7f), pEdge);
             }
         }
     }

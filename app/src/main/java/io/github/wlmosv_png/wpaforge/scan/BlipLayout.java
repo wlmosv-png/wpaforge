@@ -28,18 +28,25 @@ public final class BlipLayout {
         public final int channel;
         public final boolean is5G;
         public final int level;
+        /** 是否加密（布局不看，绘制与动画状态要用） */
+        public final boolean secured;
         /** 调用方自己的下标 —— 输出按输入顺序对齐，靠它取回原始对象（别用身份去反查） */
         public final int tag;
 
         public In(String key, int channel, boolean is5G, int level) {
-            this(key, channel, is5G, level, 0);
+            this(key, channel, is5G, level, true, 0);
         }
 
         public In(String key, int channel, boolean is5G, int level, int tag) {
+            this(key, channel, is5G, level, true, tag);
+        }
+
+        public In(String key, int channel, boolean is5G, int level, boolean secured, int tag) {
             this.key = key == null ? "" : key;
             this.channel = channel;
             this.is5G = is5G;
             this.level = level;
+            this.secured = secured;
             this.tag = tag;
         }
     }

@@ -102,7 +102,7 @@ Shizuku 要在每次连接时借 binder，免 Root 走 `WifiNetworkSpecifier` �
 不依赖 Gradle，两段式手工链：
 
 ```sh
-WP_VERSION_CODE=116 WP_VERSION_NAME=1.9.26 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
+WP_VERSION_CODE=117 WP_VERSION_NAME=1.9.26 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
 sh 2-build-dex.sh                                       # 桌面侧：javac + d8 + 签名（需 WP_FORGE_KS* 变量）
 ```
 

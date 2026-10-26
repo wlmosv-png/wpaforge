@@ -2011,7 +2011,9 @@ public class MainActivity extends Activity {
         cap.setTextSize(10.5f);
         cap.setTextColor(AmberTheme.TEXT_FAINT);
         row.addView(cap);
-        for (int i = 0; i < labels.length; i++) {
+        // ringLabels() 是按「由外到内」排的（下标 0 = 最外环 = 最弱），
+        // 这里**倒着显示**，读序才和「由内到外」的说明对得上
+        for (int i = labels.length - 1; i >= 0; i--) {
             row.addView(legendChip(labels[i], colors[i]));
         }
         box.addView(row);
@@ -2080,10 +2082,19 @@ public class MainActivity extends Activity {
         }
         radarStatsBox.addView(statCell(L.s("2.4G", "2.4G"), n24 + L.s(" 台", "")));
         radarStatsBox.addView(statCell(L.s("5G", "5G"), n5 + L.s(" 台", "")));
-        radarStatsBox.addView(statCell(L.s("最挤", "Busiest"),
-                busiestN > 0 ? L.s("ch " + busiest + " · " + busiestN + " 台",
-                        "ch " + busiest + " \u00b7 " + busiestN) : "\u2014"));
+        // 这一格最容易被挤爆：去掉「台」这种会顶到边上的字，
+        // 数值一律用「ch 6 · 3」的短写法
+        radarStatsBox.addView(statCellWide(L.s("最挤", "Busiest"),
+                busiestN > 0 ? "ch " + busiest + " \u00b7 " + busiestN : "\u2014"));
         radarStatsBox.addView(statCell(L.s("未加密", "Open"), open + L.s(" 台", "")));
+    }
+
+    /** 「最挤」那格再宽一点（内容最长） */
+    private View statCellWide(String label, String value) {
+        LinearLayout box = (LinearLayout) statCell(label, value);
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) box.getLayoutParams();
+        lp.weight = 1.35f;
+        return box;
     }
 
     /** 关键数字的一格：上面小标签、下面数值 */

@@ -78,8 +78,28 @@ public class RadarSweep extends View {
      * 最强档从 0.40 外移到 0.51：中心留出一圈干净的空，读数与点都不打架。
      */
     private static final float[] RING = {0.97f, 0.855f, 0.74f, 0.625f, 0.51f};
-    /** 环刻度文字（与该环的档位一一对应）。 */
+    /**
+     * 环刻度文字（与该环的档位一一对应，下标＝档位）。
+     *
+     * <p><b>这些字现在不画在盘上了。</b>上一版把它们排在最后一步画，
+     * 结果是"点被数字压住"（用户截图）。盘面本来就窄，文字与点在同一个平面
+     * 抢位置，怎么调 z 序都是输 —— 所以改成：**盘上只留信道，dBm 刻度走盘下的图例**。
+     * 档位顺序仍然由这里定义，图例与测试都从 {\@link #ringLabels()} 取，
+     * 不允许在别处另写一份。
+     */
     private static final String[] RING_LABEL = {"\u2264-90", "-80", "-70", "-60", "\u2265-50"};
+
+    /** 图例用：五档 dBm 文字（由内到外＝由强到弱） */
+    public static String[] ringLabels() {
+        return RING_LABEL.clone();
+    }
+
+    /** 图例用：七档……五档信号色的取样点（下标＝档位） */
+    public static int[] ringColors() {
+        int[] c = new int[RING.length];
+        for (int i = 0; i < c.length; i++) c[i] = AmberTheme.signalColor(i);
+        return c;
+    }
     /** 每档的点半径（dp，下标＝档位）。 */
     private static final float[] DOT_DP = {3.0f, 3.6f, 4.2f, 4.8f, 5.4f};
     /** 被光束扫过之后的余辉：从亮到暗的最低值。 */
@@ -246,18 +266,9 @@ public class RadarSweep extends View {
         // ── 4. 落点：**按信道扇区分组**，组内按 BSSID 排序（位置稳定）
         drawBlips(cv, cx, cy, radius);
 
-        // ── 5. 环上的 dBm 刻度：**最后画**，保证永远压在点之上（原来被点盖住）
-        for (int i = 0; i < RING.length; i++) {
-            float rr = radius * RING[i];
-            float tx = cx + dp(5);
-            float ty = cy - rr + dp(3);
-            float tw = pScale.measureText(RING_LABEL[i]);
-            pPatch.setColor(AmberTheme.CARD);
-            pPatch.setAlpha(255);
-            RectF patch = new RectF(tx - dp(3), ty - dp(9), tx + tw + dp(3), ty + dp(4));
-            cv.drawRoundRect(patch, dp(3), dp(3), pPatch);
-            cv.drawText(RING_LABEL[i], tx, ty, pScale);
-        }
+        // ── 5. 信道标签最后画 + 底色片：盘上文字只剩这 7 个短标（1/6/11 与 4 个 5G 组），
+        //      压在点上也只是压一点点，比"点被数字盖住"好读得多
+        drawSectorLabels(cv, cx, cy, radius);
 
         // ── 6. 中心：大数字 + 副文字
         if (!centerText.isEmpty()) {
@@ -301,27 +312,40 @@ public class RadarSweep extends View {
                     cy + (float) Math.sin(r) * radius, pSector);
         }
 
-        // 2.4G 只标 1 / 6 / 11（唯一互不重叠的三条），5G 标组范围
-        pBand.setTextSize(dp(8.5f));
+    }
+
+    /** 扇区标签：2.4G 只标 1 / 6 / 11，5G 标组范围；带底色片，画在点之上 */
+    private void drawSectorLabels(Canvas cv, float cx, float cy, float radius) {
+        pBand.setTextSize(dp(9f));
         for (int ch = 1; ch <= ChannelMap.CH_24_COUNT; ch++) {
             if (!ChannelMap.isKey24Channel(ch)) continue;
-            double r = Math.toRadians(ChannelMap.slotCenter(false, ch));
-            float rr = radius * 0.905f;
             pBand.setColor(AmberTheme.ACCENT_MID);
-            String t = String.valueOf(ch);
-            float tx = cx + (float) Math.cos(r) * rr;
-            float ty = cy + (float) Math.sin(r) * rr + dp(3);
-            cv.drawText(t, tx, ty, pBand);
+            drawTinyLabel(cv, cx, cy, radius, ChannelMap.slotCenter(false, ch),
+                    String.valueOf(ch), false);
         }
         for (int g = 0; g < ChannelMap.GROUP_5_COUNT; g++) {
-            double r = Math.toRadians(g * ChannelMap.slotWidth(true) + ChannelMap.slotWidth(true) / 2f);
-            float rr = radius * 0.905f;
             pBand.setColor(AmberTheme.TEXT_FAINT);
-            String t = String.format(Locale.ROOT, "%d-%d", g == 0 ? 36 : g == 1 ? 52 : g == 2 ? 100 : 149,
-                    g == 0 ? 48 : g == 1 ? 64 : g == 2 ? 144 : 165);
-            cv.drawText(t, cx + (float) Math.cos(r) * rr,
-                    cy + (float) Math.sin(r) * rr + dp(3), pBand);
+            drawTinyLabel(cv, cx, cy, radius,
+                    g * ChannelMap.slotWidth(true) + ChannelMap.slotWidth(true) / 2f,
+                    ChannelMap.slotLabel(true, g == 0 ? 36 : g == 1 ? 52 : g == 2 ? 100 : 149),
+                    true);
         }
+    }
+
+    /** 一个带底色片的小标签，落在 radius*0.905 的位置 */
+    private void drawTinyLabel(Canvas cv, float cx, float cy, float radius,
+                               float angleDeg, String text, boolean wide) {
+        double r = Math.toRadians(angleDeg);
+        float rr = radius * 0.90f;
+        float tx = cx + (float) Math.cos(r) * rr;
+        float ty = cy + (float) Math.sin(r) * rr + dp(3);
+        float tw = pBand.measureText(text);
+        pPatch.setColor(AmberTheme.CARD);
+        pPatch.setAlpha(215);
+        RectF patch = new RectF(tx - tw / 2f - dp(3), ty - dp(9),
+                tx + tw / 2f + dp(3), ty + dp(4));
+        cv.drawRoundRect(patch, dp(3), dp(3), pPatch);
+        cv.drawText(text, tx, ty, pBand);
     }
 
     /**
@@ -357,6 +381,17 @@ public class RadarSweep extends View {
 
             int level = lv(b);
             int color = AmberTheme.signalColor(level);
+
+            if (p.aggregated()) {
+                // 这一格塞不下这么多点：画一个「×N」的标，比硬挤成一坨信息量大
+                pDot.setColor(color);
+                pDot.setAlpha(235);
+                cv.drawCircle(bx, by, dp(9f), pDot);
+                pText.setTextSize(dp(9f));
+                pText.setColor(AmberTheme.ON_ACCENT);
+                cv.drawText(String.valueOf(p.count), bx, by + dp(3.2f), pText);
+                continue;
+            }
             if (level >= 4) {   // 最强档：一圈细亮环
                 pEdge.setColor(AmberTheme.ACCENT_SOFT);
                 pEdge.setStyle(Paint.Style.STROKE);

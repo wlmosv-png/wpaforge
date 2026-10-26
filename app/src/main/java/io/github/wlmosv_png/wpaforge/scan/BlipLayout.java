@@ -53,12 +53,25 @@ public final class BlipLayout {
         public final float radiusRatio;
         /** 点半径（像素） */
         public final float dotR;
+        /**
+         * 汇聚标记：这一格塞不下这么多点了，改成画一个「×N」的标。
+         *
+         * <p>为什么不做成"点更小一点硬塞"：几十个点叠在一起既看不出数量、
+         * 也看不出谁是谁，还不如直接告诉你「这条信道这一档有 N 台」——
+         * 而"这条信道很挤"本身就是用户要的结论。
+         */
+        public final int count;
 
-        Pos(In src, float angleDeg, float radiusRatio, float dotR) {
+        Pos(In src, float angleDeg, float radiusRatio, float dotR, int count) {
             this.src = src;
             this.angleDeg = angleDeg;
             this.radiusRatio = radiusRatio;
             this.dotR = dotR;
+            this.count = count;
+        }
+
+        public boolean aggregated() {
+            return count > 0;
         }
     }
 
@@ -67,11 +80,11 @@ public final class BlipLayout {
     /** 同一扇区内点太多时的子环偏移（半径比例） */
     public static final float ROW_OFFSET = 0.042f;
     /** 子环最多拆几道（再多会串到邻档的带上） */
-    public static final int MAX_ROWS = 3;
+    public static final int MAX_ROWS = 4;
     /** 半径比例的安全范围（不许跑出盘，也不许压到中心文字） */
     public static final float MIN_RATIO = 0.30f, MAX_RATIO = 1.0f;
-    /** 点径下限（像素） */
-    public static final float MIN_DOT_DP = 1.9f;
+    /** 点径下限（dp）—— 挤到极限也得看得见，但**不许为了好看而互相盖住** */
+    public static final float MIN_DOT_DP = 1.4f;
 
     private BlipLayout() {}
 
@@ -129,13 +142,26 @@ public final class BlipLayout {
 
         // 扇区在该环上的弧长 → 一层能放几个点（按点径 + 间隔算）
         float arc = (float) (radiusPx * ringR * Math.toRadians(widthDeg));
-        float need = dotDp[level] * density * DOT_GAP;
-        int perRow = Math.max(1, (int) (arc / need));
+        float minDot = MIN_DOT_DP * density;
+
+        // 一层能放几个：点径下限 × 3（点 + 空隙 + 点）
+        int perRow = Math.max(1, (int) (arc / (minDot * 3f)));
+        int capacity = perRow * MAX_ROWS;
+        if (n > capacity) {
+            // 塞不下 → 汇聚成一个计数标，别硬挤
+            out.add(new Pos(sorted.get(from), ChannelMap.slotCenter(is5G, channel),
+                    ringR, minDot, n));
+            return;
+        }
         int rows = Math.max(1, Math.min(MAX_ROWS, (int) Math.ceil(n / (float) perRow)));
         int cols = (int) Math.ceil(n / (float) rows);
 
-        float dotR = Math.min(dotDp[level] * density, (arc / Math.max(1, cols)) / 2f * 1.4f);
-        dotR = Math.max(MIN_DOT_DP * density, dotR);
+        // 点径必须服从**角向间距**：相邻两点之间要放得下两个半径。
+        // 旧式子的系数是 1.4（比间距还大），所以"明明算过容量"点还是叠在一起
+        // —— 用户截图上那处叠着的三四个点就是这么来的。
+        float spacing = arc / (cols + 1f);
+        float dotR = Math.min(dotDp[level] * density, spacing / 2f * 0.85f);
+        dotR = Math.max(minDot, dotR);
 
         for (int k = 0; k < n; k++) {
             int row = k / cols;
@@ -143,7 +169,7 @@ public final class BlipLayout {
             float angle = startDeg + widthDeg * (col + 1) / (cols + 1f);
             float rr = ringR + (row - (rows - 1) / 2f) * ROW_OFFSET;
             rr = Math.max(MIN_RATIO, Math.min(MAX_RATIO, rr));
-            out.add(new Pos(sorted.get(from + k), angle, rr, dotR));
+            out.add(new Pos(sorted.get(from + k), angle, rr, dotR, 0));
         }
     }
 

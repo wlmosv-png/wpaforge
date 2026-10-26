@@ -251,6 +251,15 @@ public class ThemeConsistencyTest {
         ok("停下不再画指针（扫描结束就是干净刻度盘）", radar != null
                 && radar.contains("if (spinning) {"));
         ok("中心显示网络数 + 最强 dBm", set.contains("个网络 · 最强 "));
+        ok("盘上不再写 dBm 文字（刻度走盘下图例，避免压住点）", radar != null
+                && !radar.contains("cv.drawText(RING_LABEL[i]"));
+        ok("图例从 RadarSweep 取刻度（不许另写一份）", set.contains("RadarSweep.ringLabels()")
+                && set.contains("RadarSweep.ringColors()"));
+        ok("雷达卡有图例与关键数字", set.contains("private View radarLegend()")
+                && set.contains("private void renderRadarStats(List<NetRecord> nets)"));
+        ok("塞不下时画汇聚计数标（不硬挤）", radar != null
+                && radar.contains("if (p.aggregated())")
+                && layoutBlips != null && layoutBlips.contains("capacity"));
         ok("雷达一 AP 一点：blips 长度＝可见网络数",
                 set.contains("RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()]"));
 

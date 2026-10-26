@@ -96,6 +96,8 @@ public class MainActivity extends Activity {
     private RadarSweep radar;
     /** 信号分布板：五档统计 + 最强若干台的横向条（不再用单调柱状图）。 */
     private LinearLayout signalBoard;
+    /** 雷达卡下面的「关键数字」行（每次扫描后重填） */
+    private LinearLayout radarStatsBox;
     private ChannelBars channelBars;
     private LinearLayout netList;
     /** 观测页的已存 WiFi 卡片；缓存上次结果，不重复读 root */
@@ -1988,6 +1990,124 @@ public class MainActivity extends Activity {
      * <p>数据来源、筛选语义、扫描频率与全部回调**与改版前一致**；这一版只重排布局、
      * 统一配色与尺寸，并把「当前生效的筛选」显示出来（改版前筛选片没有选中态）。
      */
+    /**
+     * 雷达图例：五档信号色 + dBm 区间，并说明实心/空心＝2.4G/5G。
+     *
+     * <p>刻度值不在这里另写一份 —— 从 {@link RadarSweep#ringLabels()} 取，
+     * 与盘上画环用的是同一组常量。
+     */
+    private View radarLegend() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, px(10), 0, 0);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        String[] labels = RadarSweep.ringLabels();
+        int[] colors = RadarSweep.ringColors();
+        TextView cap = new TextView(this);
+        cap.setText(L.s("由内到外：", "Inner to outer: "));
+        cap.setTextSize(10.5f);
+        cap.setTextColor(AmberTheme.TEXT_FAINT);
+        row.addView(cap);
+        for (int i = 0; i < labels.length; i++) {
+            row.addView(legendChip(labels[i], colors[i]));
+        }
+        box.addView(row);
+
+        TextView band = new TextView(this);
+        band.setText(L.s("● 实心 = 2.4G    ○ 空心 = 5G    圆心 = 信号最强",
+                "● filled = 2.4G    ○ hollow = 5G    centre = strongest"));
+        band.setTextSize(10.5f);
+        band.setTextColor(AmberTheme.TEXT_FAINT);
+        band.setPadding(0, px(5), 0, 0);
+        box.addView(band);
+        return box;
+    }
+
+    /** 图例里的一格：小圆点 + dBm 文字 */
+    private View legendChip(String label, int color) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = px(9);
+        box.setLayoutParams(lp);
+
+        View dot = new View(this);
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        g.setColor(color);
+        dot.setBackground(g);
+        box.addView(dot, new LinearLayout.LayoutParams(px(8), px(8)));
+
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextSize(10.5f);
+        t.setTextColor(AmberTheme.TEXT_DIM);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tlp.leftMargin = px(4);
+        box.addView(t, tlp);
+        return box;
+    }
+
+    /**
+     * 雷达卡的关键数字：频段分布 / 最挤的信道 / 未加密台数。
+     *
+     * <p>这三个数是**从雷达盘上读不出来、但看盘的人一定会问**的问题：
+     * 「几个是 5G 的」「哪条信道最挤」「有几个连密码都没有」。
+     */
+    private void renderRadarStats(List<NetRecord> nets) {
+        if (radarStatsBox == null) return;
+        radarStatsBox.removeAllViews();
+        int n24 = 0, n5 = 0, open = 0;
+        int[] perChannel = new int[200];
+        for (NetRecord r : nets) {
+            if (r.is5Ghz) n5++;
+            else n24++;
+            if (r.security == NetRecord.Security.OPEN || r.security == NetRecord.Security.WEP) open++;
+            if (!r.is5Ghz && r.channel > 0 && r.channel < perChannel.length) perChannel[r.channel]++;
+        }
+        int busiest = 0, busiestN = 0;
+        for (int ch = 1; ch <= 14; ch++) {
+            if (perChannel[ch] > busiestN) {
+                busiestN = perChannel[ch];
+                busiest = ch;
+            }
+        }
+        radarStatsBox.addView(statCell(L.s("2.4G", "2.4G"), n24 + L.s(" 台", "")));
+        radarStatsBox.addView(statCell(L.s("5G", "5G"), n5 + L.s(" 台", "")));
+        radarStatsBox.addView(statCell(L.s("最挤", "Busiest"),
+                busiestN > 0 ? L.s("ch " + busiest + " · " + busiestN + " 台",
+                        "ch " + busiest + " \u00b7 " + busiestN) : "\u2014"));
+        radarStatsBox.addView(statCell(L.s("未加密", "Open"), open + L.s(" 台", "")));
+    }
+
+    /** 关键数字的一格：上面小标签、下面数值 */
+    private View statCell(String label, String value) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setLayoutParams(new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(10f);
+        l.setTextColor(AmberTheme.TEXT_FAINT);
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(13f);
+        v.setTextColor(AmberTheme.TEXT);
+        v.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        v.setSingleLine(true);
+        v.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        box.addView(l);
+        box.addView(v);
+        return box;
+    }
+
     private void buildObserveTab() {
         // ① 扫描卡：雷达放进卡片，中心数字仍由 RadarSweep 自己画
         LinearLayout radarCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
@@ -1996,6 +2116,14 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, px(232)));
         radar.setCenterText(L.s("扫描中", "Scanning"),
                 L.s("正在探测周边网络", "Probing nearby networks"));
+        // 雷达盘上只留信道标（盘面太窄，文字和点抢位置怎么调都是输），
+        // dBm 刻度与频段含义做成盘下的图例；再配一行关键数字，
+        // 免得这张卡除了一个圆盘之外什么都没说。
+        radarCard.addView(radarLegend());
+        radarStatsBox = new LinearLayout(this);
+        radarStatsBox.setOrientation(LinearLayout.HORIZONTAL);
+        radarStatsBox.setPadding(0, px(8), 0, 0);
+        radarCard.addView(radarStatsBox);
         LinearLayout.LayoutParams rcp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rcp.bottomMargin = px(AmberTheme.GAP_CARD);
@@ -2283,6 +2411,7 @@ public class MainActivity extends Activity {
                             && r.security != NetRecord.Security.WEP);
         }
         radar.setBlips(blips);
+        renderRadarStats(visible);
         renderSignalBoard(visible);
 
         netList.removeAllViews();

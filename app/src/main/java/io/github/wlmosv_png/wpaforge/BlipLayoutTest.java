@@ -87,6 +87,7 @@ public class BlipLayoutTest {
         boolean dup = false;
         for (int i = 0; i < cp.size(); i++) {
             for (int j = i + 1; j < cp.size(); j++) {
+                if (cp.get(i).aggregated() || cp.get(j).aggregated()) continue;
                 if (Math.abs(cp.get(i).angleDeg - cp.get(j).angleDeg) < 0.001f
                         && Math.abs(cp.get(i).radiusRatio - cp.get(j).radiusRatio) < 0.001f) {
                     dup = true;
@@ -94,6 +95,50 @@ public class BlipLayoutTest {
             }
         }
         ok("12 台挤在同一信道也不重合（拆子环）", !dup, "");
+        // 新硬的约束：任意两点的**像素距离**必须容得下两个半径
+        List<BlipLayout.In> crowd2 = new ArrayList<>();
+        for (int i = 0; i < 40; i++) crowd2.add(new BlipLayout.In("C" + i, 6, false, 4, i));
+        List<BlipLayout.Pos> cp2 = run(crowd2);
+        float worst = Float.MAX_VALUE;
+        for (int i = 0; i < cp2.size(); i++) {
+            for (int j = i + 1; j < cp2.size(); j++) {
+                double a1 = Math.toRadians(cp2.get(i).angleDeg), a2 = Math.toRadians(cp2.get(j).angleDeg);
+                float r1 = cp2.get(i).radiusRatio * RADIUS, r2 = cp2.get(j).radiusRatio * RADIUS;
+                float dx = (float) (Math.cos(a1) * r1 - Math.cos(a2) * r2);
+                float dy = (float) (Math.sin(a1) * r1 - Math.sin(a2) * r2);
+                float d = (float) Math.hypot(dx, dy);
+                float need = cp2.get(i).dotR + cp2.get(j).dotR;
+                if (d - need < worst) worst = d - need;
+            }
+        }
+        ok("40 台同信道同档：不硬挤，改成汇聚计数标", cp2.size() == 1 && cp2.get(0).aggregated()
+                && cp2.get(0).count == 40, cp2.toString());
+        ok("汇聚标落在该扇区中心", cp2.size() == 1
+                && Math.abs(cp2.get(0).angleDeg - ChannelMap.slotCenter(false, 6)) < 0.01f, "");
+        ok("汇聚标在正确档位环上", cp2.size() == 1
+                && Math.abs(cp2.get(0).radiusRatio - RING[4]) < 0.001f, "");
+
+        // 塞得下的拥挤场景：任意两点的像素距离必须容得下两个半径
+        List<BlipLayout.In> crowd3 = new ArrayList<>();
+        for (int i = 0; i < 9; i++) crowd3.add(new BlipLayout.In("D" + i, 6, false, 2, i));
+        List<BlipLayout.Pos> cp3 = run(crowd3);
+        float worst3 = Float.MAX_VALUE;
+        for (int i = 0; i < cp3.size(); i++) {
+            for (int j = i + 1; j < cp3.size(); j++) {
+                double a1 = Math.toRadians(cp3.get(i).angleDeg), a2 = Math.toRadians(cp3.get(j).angleDeg);
+                float r1 = cp3.get(i).radiusRatio * RADIUS, r2 = cp3.get(j).radiusRatio * RADIUS;
+                float dx = (float) (Math.cos(a1) * r1 - Math.cos(a2) * r2);
+                float dy = (float) (Math.sin(a1) * r1 - Math.sin(a2) * r2);
+                float d = (float) Math.hypot(dx, dy);
+                float need = cp3.get(i).dotR + cp3.get(j).dotR;
+                if (d - need < worst3) worst3 = d - need;
+            }
+        }
+        ok("9 台同信道同档：任意两点不重叠（含像素距离）", worst3 > -0.3f
+                && cp3.stream().allMatch(p -> !p.aggregated()), "最坏余量 " + worst3 + "px");
+        boolean smallOk = true;
+        for (BlipLayout.Pos p : cp3) if (p.dotR < BlipLayout.MIN_DOT_DP * DENSITY - 0.01f) smallOk = false;
+        ok("点径不低于下限", smallOk, "");
         boolean layered = false;
         for (BlipLayout.Pos p : cp) if (Math.abs(p.radiusRatio - RING[3]) > 0.001f) layered = true;
         ok("挤的时候确实拆了子环", layered, "");

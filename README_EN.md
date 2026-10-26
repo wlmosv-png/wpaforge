@@ -1,10 +1,10 @@
 <div align="center">
 
-# WPAForge ⚡
+<img src="docs/banner.svg" alt="WPAForge" width="100%">
 
-**Try to recover the WPA password of your own router — from your phone.**
-
-Bring your own wordlist, or let it generate candidates for the target; every candidate costs one real association attempt.
+**Try to recover your own router's WPA password, candidate by candidate.**
+Candidates are built for the target from its SSID and your hints, then each one is really
+associated; curated built-in dictionaries, or bring your own.
 
 [![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
@@ -13,9 +13,12 @@ Bring your own wordlist, or let it generate candidates for the target; every can
 [![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
 [![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-[中文](README.md) · **English** · [🎬 Full demo](https://wlmosv.dpdns.org/wpaforge/#demo) · [Website](https://wlmosv.dpdns.org/wpaforge/) · [Download](https://github.com/wlmosv-png/wpaforge/releases/latest) · [Discussions](https://github.com/wlmosv-png/wpaforge/discussions)
-
-<img src="docs/banner.svg" alt="WPAForge" width="100%">
+<p>
+<a href="https://github.com/wlmosv-png/wpaforge/releases/latest"><img src="https://img.shields.io/badge/Download-latest%20APK-FFB800?style=for-the-badge&logo=android&logoColor=black" alt="Download"></a>
+<a href="https://wlmosv.dpdns.org/wpaforge/"><img src="https://img.shields.io/badge/Website-wlmosv.dpdns.org-1F6FEB?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Website"></a>
+<a href="https://github.com/wlmosv-png/wpaforge/discussions"><img src="https://img.shields.io/badge/Discussions-GitHub-6E7681?style=for-the-badge&logo=github&logoColor=white" alt="Discussions"></a>
+<a href="README.md"><img src="https://img.shields.io/badge/README-%E4%B8%AD%E6%96%87-4493F8?style=for-the-badge&logo=googletranslate&logoColor=white" alt="中文"></a>
+</p>
 
 <img src="docs/shots/v122/ui-overview-v122.gif" alt="WPAForge UI overview" width="100%">
 

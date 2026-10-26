@@ -15,6 +15,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
+
+import io.github.wlmosv_png.wpaforge.ui.DictIcons;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -601,8 +604,12 @@ public class DictActivity extends Activity {
         //
         // 注意：长按必须挂到**整行的每一个子控件**上。只挂容器没用 ——
         // 手指落在按钮或文字上时，长按会被那个子控件吃掉（上一版就是这么失效的）。
+        // 长按整行也能选（保留），但**选完必须 refresh()** ——
+        // 不刷新的话行底色不变、顶部「已选 N 本 · 合并」那条也不出现，
+        // 用户看到的就是"选了没反应、根本没法合并"（上一版就是这么坏的）。
         final View.OnLongClickListener longPress = v -> {
             toggleSelect(e);
+            refresh();
             return true;
         };
         box.setOnLongClickListener(longPress);
@@ -611,6 +618,25 @@ public class DictActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = px(8);
         box.setLayoutParams(lp);
+
+        // 行首的选择圈：**不用长按也能选**。
+        // 长按是 Android 的多选习惯，但第一次用的人不会想到，于是"合并"根本找不到入口。
+        ImageView pick = new ImageView(this);
+        pick.setImageDrawable(DictIcons.sized(
+                selected.contains(e) ? DictIcons.Kind.PICKED : DictIcons.Kind.PICK,
+                selected.contains(e) ? AmberTheme.ACCENT : TEXT_DIM, dp, 22f));
+        pick.setContentDescription(L.s("选择", "Select"));
+        pick.setPadding(0, 0, px(12), 0);
+        pick.setOnClickListener(v -> {
+            toggleSelect(e);
+            refresh();
+        });
+        box.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(android.view.Gravity.TOP);
+        headRow.addView(pick, new LinearLayout.LayoutParams(px(34),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -631,7 +657,9 @@ public class DictActivity extends Activity {
         badge.setPadding(px(8), px(2), px(8), px(2));
         top.addView(badge);
 
-        box.addView(top);
+        headRow.addView(top, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(headRow);
 
         TextView meta = new TextView(this);
         meta.setText(e.sizeLabel() + "   " + e.file.getName());
@@ -655,7 +683,10 @@ public class DictActivity extends Activity {
 
         if (!selected.isEmpty()) {
             // 多选进行中：点整行也能切换，不必精准点到别处
-            box.setOnClickListener(v -> toggleSelect(e));
+            box.setOnClickListener(v -> {
+                toggleSelect(e);
+                refresh();
+            });
         }
         box.addView(ops);
 
@@ -1206,7 +1237,9 @@ public class DictActivity extends Activity {
 
     private void doMerge() {
         if (selected.size() < 2) {
-            Toast.makeText(this, "请先选择至少 2 个字典（点「选择」）", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, L.s("先勾选至少 2 本字典：点每行左边的圆圈，或长按整行",
+                            "Tick at least 2 dictionaries: tap the circle on the left, or long-press a row"),
+                    Toast.LENGTH_LONG).show();
             return;
         }
         final List<File> files = new ArrayList<>();
@@ -1238,8 +1271,26 @@ public class DictActivity extends Activity {
             File target = new File(DictStore.defaultDir(this), name + ".txt");
             new Thread(() -> {
                 int n = DictStore.merge(files, target, 500000);
+                // 合并完顺手报出"其中多少条已经跑过" —— 用户不用翻日志也知道会跳过什么
+                int skipped = 0;
+                String key = Prefs.targetKey(DictActivity.this);
+                if (key != null && !key.isEmpty()) {
+                    io.github.wlmosv_png.wpaforge.audit.TriedSet tried =
+                            io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
+                                    io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(
+                                            DictActivity.this, key));
+                    // 流式统计：合并结果可能有几十万行，不能整份读进内存
+                    skipped = io.github.wlmosv_png.wpaforge.audit.TriedSet.countIn(target, tried);
+                }
+                final int skipN = skipped;
                 ui.post(() -> {
-                    Toast.makeText(this, L.s("合并完成，共 ", "Merge complete, ") + n + L.s(" 条", " entries"),
+                    Toast.makeText(DictActivity.this, skipN > 0
+                                    ? L.s("合并完成，共 " + n + " 条；其中 " + skipN
+                                            + " 条本目标跑过，开始时会自动跳过",
+                                          "Merged " + n + " entries; " + skipN
+                                                  + " already tried on this target will be skipped")
+                                    : L.s("合并完成，共 " + n + " 条",
+                                          "Merge complete, " + n + " entries"),
                             Toast.LENGTH_LONG).show();
                     refresh();
                 });

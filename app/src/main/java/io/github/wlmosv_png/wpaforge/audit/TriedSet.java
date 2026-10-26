@@ -33,12 +33,28 @@ public final class TriedSet {
     /** 单目标上限。一条 8 字节，100 万条 = 8 MB。超了只提示、不静默丢。 */
     public static final int MAX = 1_000_000;
 
+    /**
+     * 两段式存放，为了**摊还 O(log n)** 而不是 O(n)：
+     *
+     * <pre>
+     *   [0, sortedN)  已排序、已去重  → 二分查找
+     *   [sortedN, n)  新加进来的尾巴  → 线性扫（很短）
+     * </pre>
+     *
+     * <p>上一版是"每次 add 都查一遍（触发全量排序）"，实测 12000 条要 323 ms，
+     * 而且随条数平方增长 —— 这正是跑长任务时"越跑越卡"的那类坑。
+     * 现在每 {@link #SORT_CHUNK} 条才整理一次，剩下的靠线性扫尾巴，
+     * 而尾巴最多只有 SORT_CHUNK 条。
+     */
     private long[] buf;
     private int n;
-    /** 是否已排序（contains 需要）；add 之后置 false，查询前补齐 */
-    private boolean sorted = true;
+    /** [0, sortedN) 是已排序去重的 */
+    private int sortedN;
     private boolean dirty;
     private boolean overflow;
+
+    /** 尾巴攒到多少条就整理一次（越大越省 CPU，越大线性扫越慢） */
+    private static final int SORT_CHUNK = 256;
 
     public TriedSet() {
         buf = new long[512];
@@ -75,7 +91,7 @@ public final class TriedSet {
     public boolean add(String pw) {
         if (pw == null) return false;
         long h = hash(pw);
-        if (containsHash(h)) return false;
+        if (find(h)) return false;
         if (n >= MAX) {
             overflow = true;
             return false;
@@ -85,27 +101,30 @@ public final class TriedSet {
             buf = Arrays.copyOf(buf, Math.min(cap, MAX));
         }
         buf[n++] = h;
-        sorted = false;
         dirty = true;
+        if (n - sortedN > SORT_CHUNK) ensureSorted();   // 摊还整理
         return true;
     }
 
-    private boolean containsHash(long h) {
-        if (n == 0) return false;
-        ensureSorted();
-        return Arrays.binarySearch(buf, 0, n, h) >= 0;
+    /** 先查已排序前缀（二分），再线性扫尾巴（至多 SORT_CHUNK 条） */
+    private boolean find(long h) {
+        if (sortedN > 0 && Arrays.binarySearch(buf, 0, sortedN, h) >= 0) return true;
+        for (int i = sortedN; i < n; i++) {
+            if (buf[i] == h) return true;
+        }
+        return false;
     }
 
+    /** 把尾巴并进已排序前缀：整体排序 + 去重 */
     private void ensureSorted() {
-        if (sorted || n == 0) return;
+        if (sortedN == n) return;
         Arrays.sort(buf, 0, n);
-        // 去重（排序后相邻比较）
         int w = 0;
         for (int i = 0; i < n; i++) {
             if (w == 0 || buf[w - 1] != buf[i]) buf[w++] = buf[i];
         }
         n = w;
-        sorted = true;
+        sortedN = w;
     }
 
     public int size() { return n; }
@@ -119,7 +138,7 @@ public final class TriedSet {
 
     public void clear() {
         n = 0;
-        sorted = true;
+        sortedN = 0;
         dirty = true;
     }
 
@@ -153,7 +172,7 @@ public final class TriedSet {
                 t.buf[i] = v;
             }
             t.n = cnt;
-            t.sorted = false;      // 落盘时是排好的，但外部可能被改过 —— 查前补一次排序
+            t.sortedN = 0;         // 落盘时是排好的，但文件可能被外部改过 —— 查前补一次排序
             t.dirty = false;
         } catch (Exception e) {
             warn("已试集合读取失败，按空集合继续: " + e);
@@ -229,6 +248,30 @@ public final class TriedSet {
             h *= 0x100000001b3L;
         }
         return h;
+    }
+
+    /**
+     * 流式统计一个字典文件里有多少条命中本集合 —— **不把文件读进内存**。
+     *
+     * <p>为什么需要：合并后的字典可能几十万行，用 readLines 统计会一次性
+     * 建几十万个 String，手机上很容易直接 OOM。这里逐行读、逐行判、只记数字。
+     */
+    public static int countIn(File dictFile, TriedSet tried) {
+        if (dictFile == null || !dictFile.isFile() || tried == null || tried.size() == 0) return 0;
+        int hits = 0;
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(new java.io.FileInputStream(dictFile),
+                        java.nio.charset.StandardCharsets.UTF_8), 1 << 16)) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                String v = line.replace("\uFEFF", "").trim();
+                if (v.isEmpty() || v.startsWith("#")) continue;
+                if (tried.contains(v)) hits++;
+            }
+        } catch (Exception e) {
+            warn("统计已试条数失败: " + e);
+        }
+        return hits;
     }
 
     /** 纯逻辑版：给测试用，不碰文件系统 */

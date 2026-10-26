@@ -132,6 +132,12 @@ public class MainActivity extends Activity {
     private static final String SRC_FILE = "file";
     /** 通用生成器的条数是确定的，算一次就缓存 */
     private int genericDictCount = 0;
+    /**
+     * 当前字典里**本目标已经跑过**的条数（-1 = 还没算）。
+     * 它必须显示在界面上，不能只写日志 —— 用户不看日志的话，
+     * 看到"3000 条的字典只跑了 1200 条"只会以为程序坏了。
+     */
+    private int currentDictSkipped = -1;
     private AuditEngine engine;
 
     // 试连页组件
@@ -3067,8 +3073,12 @@ public class MainActivity extends Activity {
             dictStatus.setText(L.s("当前字典: 未选择", "Current dictionary: none"));
             return;
         }
+        String skip = (currentDictSkipped > 0)
+                ? L.s("（其中 " + currentDictSkipped + " 条本目标跑过，将自动跳过）",
+                      " (" + currentDictSkipped + " already tried here \u2014 will be skipped)")
+                : "";
         dictStatus.setText(L.s("当前字典: ", "Current dictionary: ")
-                + sourceLabel(currentDictSource) + " · " + n + L.s(" 条", " entries"));
+                + sourceLabel(currentDictSource) + " · " + n + L.s(" 条", " entries") + skip);
     }
 
     /**
@@ -3126,8 +3136,7 @@ public class MainActivity extends Activity {
                                 "Not filled. Phone / birthday / pinyin / floor \u2014 best payoff")
                         : L.f("已填 %d 项 · 可出 %d 条", "%d filled \u00b7 %d candidates",
                                 cur.count(), seedCount))
-                        + (pick.canFillFromTemplate()
-                                ? L.s(" · 可用默认模板", " \u00b7 template available") : ""),
+                        ,
                 false,
                 dd -> showSeedDialog());
 
@@ -3205,6 +3214,22 @@ public class MainActivity extends Activity {
                 io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
     }
 
+    /** 换目标后重算"将跳过多少条" —— 否则显示的还是上一个目标的数字 */
+    private void refreshSkippedForCurrentDict() {
+        currentDictSkipped = countSkipped(currentDict);
+        updateDictStatus();
+    }
+
+    /** 这份候选里有多少条本目标已经跑过（会显示在界面上） */
+    private int countSkipped(java.util.List<Candidate> list) {
+        if (list == null || list.isEmpty()) return 0;
+        io.github.wlmosv_png.wpaforge.audit.TriedSet t = triedForCurrentTarget();
+        if (t.size() == 0) return 0;
+        int n = 0;
+        for (Candidate c : list) if (t.contains(c.password)) n++;
+        return n;
+    }
+
     /** 来源代码 → 显示文案 */
     private String sourceLabel(String code) {
         if (SRC_PROFILE.equals(code)) return L.s("画像派生", "profile-derived");
@@ -3273,25 +3298,20 @@ public class MainActivity extends Activity {
         final io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick pick = profileForCurrentTarget();
         final io.github.wlmosv_png.wpaforge.audit.SeedModel cur = pick.seeds;
 
-        String where = Prefs.targetLabel(this).isEmpty()
-                ? L.s("还没选择网络", "no network picked yet")
-                : Prefs.targetLabel(this);
         String origin;
         if (pick.hasOwn && cur.isEmpty()) {
-            origin = L.s("本目标已标记为「不用线索」。", "This target is marked as \"no hints\".");
+            origin = L.s("这个网标记为「不用线索」。", "Marked as \"no hints\" for this network.");
         } else if (pick.hasOwn) {
-            origin = L.s("这份线索是本目标专用的。", "These hints belong to THIS target only.");
+            origin = L.s("只对下面这个网生效。", "Only applies to the network at the bottom.");
         } else {
-            origin = L.s("本目标还没填过 —— 默认是空的，不会自动套用别的网填过的东西。",
-                    "Nothing saved for this target \u2014 it starts empty and never "
-                            + "inherits what you typed for another network.");
+            origin = L.s("还没填过。填进去的会排在候选最前面。",
+                    "Empty for now. What you fill in goes to the front of the queue.");
         }
 
         io.github.wlmosv_png.wpaforge.ui.NetDialog d =
                 new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
                         L.s("已知密码线索", "Known password hints"),
-                        L.s("目标: ", "Target: ") + where + "\n" + origin + "\n"
-                                + L.s("只存本机、不联网、不上传。",
+                        origin + "\n" + L.s("只存本机、不联网、不上传。",
                                 "Stored on device only, never uploaded."));
 
         final android.widget.EditText phone = d.addField(
@@ -3326,38 +3346,11 @@ public class MainActivity extends Activity {
             ssidRow[0].setText(ssidToggleLabel(ssidOn[0]));
         });
 
-        // 本目标为空且存在默认模板时，给一个**显式**带入的入口。
-        // 之前是自动带入，结果"清空本目标"看起来完全没生效（清完又冒出来）——
-        // 用户的直觉是对的：每个网不一样，默认就该是空的。
-        if (pick.canFillFromTemplate() && pick.template != null) {
-            final io.github.wlmosv_png.wpaforge.audit.SeedModel tp = pick.template;
-            d.addItemKeepOpen(L.f("从默认模板填充（%d 项）",
-                            "Fill from default template (%d)", pick.templateCount),
-                    dd -> {
-                        phone.setText(joinComma(tp.phones));
-                        names.setText(joinComma(tp.names));
-                        bday.setText(tp.birthday);
-                        house.setText(tp.houseNo);
-                        landline.setText(tp.landline);
-                        custom.setText(joinComma(tp.customs));
-                        ssidOn[0] = tp.useSsid;
-                        ssidRow[0].setText(ssidToggleLabel(ssidOn[0]));
-                        appendStream(L.s("已从默认模板填入（旧口令不继承，填完记得按「保存」）。",
-                                "Filled from the default template (old password not inherited; "
-                                        + "press Save)."));
-                    });
+        // 在编辑哪个网写在**底部**小字里：它是必要信息（否则不知道改的是谁的档案），
+        // 但不该抢顶部的位置 —— 用户明确说过不希望在标题那行看到 wifi 名字。
+        if (!Prefs.targetLabel(this).isEmpty()) {
+            d.addHint(L.s("正在编辑: ", "Editing: ") + Prefs.targetLabel(this));
         }
-
-        // 把当前填写内容提升为"默认模板" —— 同一家的多个 AP 就不必重填
-        d.addItem(L.s("把以上内容设为默认模板（以后新网络自动带上）",
-                        "Save the above as the default template"),
-                dd -> {
-                    io.github.wlmosv_png.wpaforge.audit.SeedModel m =
-                            readSeedForm(phone, names, bday, house, landline, oldPw, custom, ssidOn[0]);
-                    io.github.wlmosv_png.wpaforge.audit.ProfileStore.saveTemplate(this, m);
-                    appendStream(L.s("已设为默认模板（旧口令不会被继承）。",
-                            "Saved as default template (the old password is never inherited)."));
-                });
 
         d.setNegative(L.s("清空本目标", "Clear this target"), dd -> {
             String k = key == null || key.isEmpty() ? currentTargetKey() : key;
@@ -3571,6 +3564,7 @@ public class MainActivity extends Activity {
         currentDictName = name;
         currentDictPath = path == null ? "" : path;
         currentDictSource = source == null ? "" : source;
+        currentDictSkipped = countSkipped(list);
         updateDictStatus();
         updateConnectDict();
         Toast.makeText(this, L.f("已应用 %d 条", "Applied %d entries",
@@ -3660,6 +3654,7 @@ public class MainActivity extends Activity {
                 currentDictName = e.name;
                 currentDictSource = SRC_FILE;
                 currentDictPath = e.file.getAbsolutePath();
+                currentDictSkipped = countSkipped(rl);
                 updateDictStatus();
                 updateConnectDict();
                 appendLog("已加载 " + e.name + " -> " + rl.size() + L.s(" 条", " entries"));
@@ -3728,6 +3723,7 @@ public class MainActivity extends Activity {
                     targetNet = arr[which];
                     Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
                     updateTargetLabel();
+                    refreshSkippedForCurrentDict();
                     deriveFromTarget();
                 })
                 .setNegativeButton(L.s("取消", "Cancel"), null)
@@ -4472,6 +4468,8 @@ public class MainActivity extends Activity {
                 try {
                     targetNet = t.toNetRecord();
                     Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
+                    updateTargetLabel();
+                    refreshSkippedForCurrentDict();
                 } catch (Throwable ignored) {}
             }
         }
@@ -5310,6 +5308,7 @@ public class MainActivity extends Activity {
                 targetNet = arr[idx];
                 Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
                 updateTargetLabel();
+                refreshSkippedForCurrentDict();
             });
         }
         td.setNegative(L.s("取消", "Cancel"), null);
@@ -5363,6 +5362,15 @@ public class MainActivity extends Activity {
     }
 
     private void startConnect() {
+        // 跳过是"看不见的行为"，必须在**界面**上说出来。
+        // 用户不看日志的话，3000 条的字典只跑 1200 条只会让他以为坏了。
+        if (currentDictSkipped > 0) {
+            String msg = L.s("这本字典有 " + currentDictSkipped + " 条你已经跑过，会自动跳过（按网络分开记）",
+                    currentDictSkipped + " candidates were already tried on this network "
+                            + "and will be skipped");
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            appendStream(msg);
+        }
         if (targetNet == null) {
             Toast.makeText(this, L.s("请先选择目标网络", "Select a target network first"), Toast.LENGTH_SHORT).show();
             return;

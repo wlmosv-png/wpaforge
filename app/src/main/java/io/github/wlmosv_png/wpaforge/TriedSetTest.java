@@ -110,53 +110,27 @@ public class TriedSetTest {
         ok("空集合 → 一条都不跳", TriedSet.filterCount(
                 Arrays.asList("a1234567", "b1234567"), new TriedSet()) == 0, "");
 
-        System.out.println("== 线索档案：按目标、旧口令不继承 ==");
-        SeedModel tpl = new SeedModel();
-        SeedModel.addPhone(tpl, "13800000001");
-        SeedModel.addName(tpl, "zhangwei");
-        tpl.birthday = "19900101";
-        tpl.houseNo = "802";
-        tpl.landline = "051288889999";
-        tpl.oldPassword = "wojiadewangluo2023";
-        SeedModel.addCustom(tpl, "ceshiyixia");
-        tpl.useSsid = true;
+        System.out.println("== 线索档案：只有本目标一种来源 ==");
+        // 用户砍掉了"默认模板"：原话「每个 wifi 都是不一样的，你把这个设计了有啥用」。
+        // 所以这里只钉三件事：没处理过=空、清空过=空且不可复活、有档案=用自己的。
+        ProfileStore.Pick n1 = ProfileStore.decide(null);
+        ok("从没处理过 → 空", n1.seeds.isEmpty(), n1.seeds.masked());
+        ok("从没处理过 → hasOwn=false", !n1.hasOwn, "");
 
-        SeedModel inher = ProfileStore.inherit(tpl);
-        ok("继承：手机号", inher.phones.equals(tpl.phones), inher.phones.toString());
-        ok("继承：拼音", inher.names.equals(tpl.names), inher.names.toString());
-        ok("继承：生日/门牌/宽带", inher.birthday.equals("19900101")
-                && inher.houseNo.equals("802") && inher.landline.equals("051288889999"), "");
-        ok("继承：自由词", inher.customs.equals(tpl.customs), "");
-        ok("继承：SSID 开关", inher.useSsid, "");
-        ok("**旧口令不继承**", inher.oldPassword.isEmpty(), inher.oldPassword);
-
-        System.out.println("== 回归：清空过的目标不能再被模板填一遍 ==");
-        ProfileStore.Pick pk1 = ProfileStore.decide(null, tpl);
-        ok("没处理过 → 内容是空的（不自动带模板）", pk1.seeds.isEmpty(), pk1.seeds.masked());
-        ok("没处理过 → hasOwn=false", !pk1.hasOwn, "");
-        ok("没处理过 → 提示可填充", pk1.canFillFromTemplate(), "");
-        ok("模板项数正确", pk1.templateCount == tpl.count(), pk1.templateCount + "");
-        ok("模板内容里旧口令已被剥掉",
-                pk1.template != null && pk1.template.oldPassword.isEmpty(), "");
-
-        ProfileStore.Pick pk2 = ProfileStore.decide(new SeedModel(), tpl);
-        ok("清空过的目标 → 内容仍是空的", pk2.seeds.isEmpty(), pk2.seeds.masked());
-        ok("清空过的目标 → hasOwn=true（持久决定）", pk2.hasOwn, "");
-        // 关键不变式：**清空后打开，字段必须是空的**（这就是用户报的那条）。
-        // 至于"从默认模板填充"按钮还在不在 —— 它在，而且是好事：
-        // 那是用户主动点的动作，不是自动带入。清空 ≠ 把退路也封死。
-        ok("清空过的目标 → 打开时字段为空（不自动带）", pk2.seeds.isEmpty(), pk2.seeds.masked());
-        ok("清空后的填充入口仍在，但只能手动点（绝不自动）", pk2.canFillFromTemplate(), "");
+        // ★ 用户报的 bug：「清空之后点开又出现以前输入的线索」。
+        //   现在清空写的是"空档案"，而 decide(空档案) 必须仍然是空。
+        ProfileStore.Pick n2 = ProfileStore.decide(new SeedModel());
+        ok("**清空过的目标 → 打开仍是空**", n2.seeds.isEmpty(), n2.seeds.masked());
+        ok("清空过的目标 → hasOwn=true（持久决定）", n2.hasOwn, "");
 
         SeedModel mine = new SeedModel();
         SeedModel.addPhone(mine, "13900000002");
         mine.oldPassword = "only-for-this-net";
-        ProfileStore.Pick pk3 = ProfileStore.decide(mine, tpl);
+        ProfileStore.Pick n3 = ProfileStore.decide(mine);
         ok("有本目标档案 → 用本目标的",
-                pk3.hasOwn && pk3.seeds.oldPassword.equals("only-for-this-net"), "");
-        ok("有本目标档案 → 不提示填充", !pk3.canFillFromTemplate(), "");
-        ProfileStore.Pick pk4 = ProfileStore.decide(null, null);
-        ok("既没档案也没模板 → 空且不提示", pk4.seeds.isEmpty() && !pk4.canFillFromTemplate(), "");
+                n3.hasOwn && n3.seeds.oldPassword.equals("only-for-this-net"), "");
+        ok("本目标档案里没有别的网的东西",
+                n3.seeds.phones.size() == 1 && n3.seeds.phones.get(0).equals("13900000002"), "");
 
         System.out.println("== 档案编解码与目标键共用 ==");
         SeedModel one = new SeedModel();

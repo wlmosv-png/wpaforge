@@ -29,7 +29,9 @@ public final class DictIcons extends Drawable {
         FILE,      // 文件：文档（圆角矩形 + 三条线）
         GENERIC,   // 通用：齿轮（圆 + 八根齿）
         ARROW,     // 右侧 ›
-        CHECK      // 右侧 ✓
+        CHECK,     // 右侧 ✓
+        PICK,      // 多选框：空心圆（未选）
+        PICKED     // 多选框：实心圆 + 勾（已选）
     }
 
     private final Kind kind;
@@ -125,6 +127,22 @@ public final class DictIcons extends Drawable {
             case CHECK: {
                 cv.drawLine(cx - u * 0.30f, cy + u * 0.02f, cx - u * 0.075f, cy + u * 0.255f, p);
                 cv.drawLine(cx - u * 0.075f, cy + u * 0.255f, cx + u * 0.31f, cy - u * 0.255f, p);
+                break;
+            }
+            case PICK: {
+                // 空心圆：一眼看出"这里能选"
+                cv.drawCircle(cx, cy, u * 0.38f, p);
+                break;
+            }
+            case PICKED: {
+                // 实心圆 + 勾：选中态要一眼可辨，所以用填色 + 反色勾
+                Paint f = new Paint(p);
+                f.setStyle(Paint.Style.FILL);
+                cv.drawCircle(cx, cy, u * 0.40f, f);
+                p.setColor(AmberTheme.ON_ACCENT);   // 勾画在琥珀底上，用深色
+                p.setStrokeWidth(Math.max(1.6f, u * 0.115f));
+                cv.drawLine(cx - u * 0.20f, cy + u * 0.02f, cx - u * 0.05f, cy + u * 0.18f, p);
+                cv.drawLine(cx - u * 0.05f, cy + u * 0.18f, cx + u * 0.21f, cy - u * 0.17f, p);
                 break;
             }
             default:

@@ -3126,8 +3126,8 @@ public class MainActivity extends Activity {
                                 "Not filled. Phone / birthday / pinyin / floor \u2014 best payoff")
                         : L.f("已填 %d 项 · 可出 %d 条", "%d filled \u00b7 %d candidates",
                                 cur.count(), seedCount))
-                        + (pick.fromTemplate && !pick.hasOwn
-                                ? L.s(" · 来自默认模板", " \u00b7 from default template") : ""),
+                        + (pick.canFillFromTemplate()
+                                ? L.s(" · 可用默认模板", " \u00b7 template available") : ""),
                 false,
                 dd -> showSeedDialog());
 
@@ -3173,19 +3173,34 @@ public class MainActivity extends Activity {
      * 优先本目标档案；没有就从默认模板继承（**旧口令不继承**，见 ProfileStore.inherit）。
      * 返回的 fromTemplate 用来在界面和日志里显式说明"这不是本目标专用"。
      */
-    private io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick profileForCurrentTarget() {
+    /**
+     * 当前目标键（**全应用唯一入口**）。
+     *
+     * 踩过的坑：保存和清空各算了一次 key，保存回退到 targetNet 算出来的键、
+     * 清空直接用 SharedPreferences 里的值 —— 后者为空时去删 `unknown.seeds`，
+     * 文件根本没删掉，用户看到的就是"清空了再打开内容还在"。
+     * 现在只留这一个算法，并且算出来就写回去（自愈）。
+     */
+    private String currentTargetKey() {
         String key = Prefs.targetKey(this);
-        if (key == null || key.isEmpty()) {
-            key = io.github.wlmosv_png.wpaforge.audit.TriedSet.targetKey(
-                    targetNet == null ? "" : targetNet.bssid,
-                    targetNet == null ? "" : targetNet.ssid);
+        if (key != null && !key.isEmpty()) return key;
+        if (targetNet == null) return "";
+        key = io.github.wlmosv_png.wpaforge.audit.TriedSet.targetKey(
+                targetNet.bssid, targetNet.ssid);
+        if (!key.isEmpty() && !"unknown".equals(key)) {
+            Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);   // 自愈：写回
         }
-        return io.github.wlmosv_png.wpaforge.audit.ProfileStore.pick(this, key);
+        return key;
+    }
+
+    private io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick profileForCurrentTarget() {
+        return io.github.wlmosv_png.wpaforge.audit.ProfileStore.pick(this, currentTargetKey());
     }
 
     /** 本目标的已试集合（界面预览用；不存在就是空的） */
     private io.github.wlmosv_png.wpaforge.audit.TriedSet triedForCurrentTarget() {
-        String key = Prefs.targetKey(this);
+        String key = currentTargetKey();
+        if (key == null || key.isEmpty()) return new io.github.wlmosv_png.wpaforge.audit.TriedSet();
         return io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
                 io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
     }
@@ -3254,22 +3269,23 @@ public class MainActivity extends Activity {
      * 只存本机私有 SP，日志与界面一律走掩码。
      */
     private void showSeedDialog() {
-        final String key = Prefs.targetKey(this);
+        final String key = currentTargetKey();
         final io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick pick = profileForCurrentTarget();
         final io.github.wlmosv_png.wpaforge.audit.SeedModel cur = pick.seeds;
 
         String where = Prefs.targetLabel(this).isEmpty()
                 ? L.s("还没选择网络", "no network picked yet")
                 : Prefs.targetLabel(this);
-        String origin = pick.hasOwn
-                ? L.s("这份线索是**本目标专用**的。", "These hints belong to THIS target only.")
-                : (pick.fromTemplate
-                        ? L.s("本目标还没填过 —— 下面是默认模板带过来的。\n"
-                                        + "不是同一家的网，请先按「清空本目标」。旧口令永不从模板继承。",
-                                "Nothing saved for this target \u2014 fields below come from your "
-                                        + "default template. Clear them if this is someone else's "
-                                        + "network. The old password is never inherited.")
-                        : L.s("本目标还没填过。", "Nothing saved for this target yet."));
+        String origin;
+        if (pick.hasOwn && cur.isEmpty()) {
+            origin = L.s("本目标已标记为「不用线索」。", "This target is marked as \"no hints\".");
+        } else if (pick.hasOwn) {
+            origin = L.s("这份线索是本目标专用的。", "These hints belong to THIS target only.");
+        } else {
+            origin = L.s("本目标还没填过 —— 默认是空的，不会自动套用别的网填过的东西。",
+                    "Nothing saved for this target \u2014 it starts empty and never "
+                            + "inherits what you typed for another network.");
+        }
 
         io.github.wlmosv_png.wpaforge.ui.NetDialog d =
                 new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
@@ -3310,6 +3326,28 @@ public class MainActivity extends Activity {
             ssidRow[0].setText(ssidToggleLabel(ssidOn[0]));
         });
 
+        // 本目标为空且存在默认模板时，给一个**显式**带入的入口。
+        // 之前是自动带入，结果"清空本目标"看起来完全没生效（清完又冒出来）——
+        // 用户的直觉是对的：每个网不一样，默认就该是空的。
+        if (pick.canFillFromTemplate() && pick.template != null) {
+            final io.github.wlmosv_png.wpaforge.audit.SeedModel tp = pick.template;
+            d.addItemKeepOpen(L.f("从默认模板填充（%d 项）",
+                            "Fill from default template (%d)", pick.templateCount),
+                    dd -> {
+                        phone.setText(joinComma(tp.phones));
+                        names.setText(joinComma(tp.names));
+                        bday.setText(tp.birthday);
+                        house.setText(tp.houseNo);
+                        landline.setText(tp.landline);
+                        custom.setText(joinComma(tp.customs));
+                        ssidOn[0] = tp.useSsid;
+                        ssidRow[0].setText(ssidToggleLabel(ssidOn[0]));
+                        appendStream(L.s("已从默认模板填入（旧口令不继承，填完记得按「保存」）。",
+                                "Filled from the default template (old password not inherited; "
+                                        + "press Save)."));
+                    });
+        }
+
         // 把当前填写内容提升为"默认模板" —— 同一家的多个 AP 就不必重填
         d.addItem(L.s("把以上内容设为默认模板（以后新网络自动带上）",
                         "Save the above as the default template"),
@@ -3322,18 +3360,16 @@ public class MainActivity extends Activity {
                 });
 
         d.setNegative(L.s("清空本目标", "Clear this target"), dd -> {
-            io.github.wlmosv_png.wpaforge.audit.ProfileStore.clearTarget(this, key);
-            appendStream(L.s("已清空本目标的线索。", "Cleared hints for this target."));
+            String k = key == null || key.isEmpty() ? currentTargetKey() : key;
+            io.github.wlmosv_png.wpaforge.audit.ProfileStore.clearTarget(this, k);
+            appendStream(L.s("已清空本目标的线索（这个网不会再自动套用任何内容）。",
+                    "Cleared hints for this target (nothing will be auto-filled here again)."));
             updateDictStatus();
         });
         d.setPositive(L.s("保存", "Save"), dd -> {
             io.github.wlmosv_png.wpaforge.audit.SeedModel m =
                     readSeedForm(phone, names, bday, house, landline, oldPw, custom, ssidOn[0]);
-            final String k = key == null || key.isEmpty()
-                    ? io.github.wlmosv_png.wpaforge.audit.TriedSet.targetKey(
-                            targetNet == null ? "" : targetNet.bssid,
-                            targetNet == null ? "" : targetNet.ssid)
-                    : key;
+            final String k = key == null || key.isEmpty() ? currentTargetKey() : key;
             io.github.wlmosv_png.wpaforge.audit.ProfileStore.saveTarget(this, k, m);
 
             io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();

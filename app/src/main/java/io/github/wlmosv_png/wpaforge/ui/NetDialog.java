@@ -292,6 +292,18 @@ public final class NetDialog {
     }
 
     /**
+     * 同 {@link #addItem}，但**点了不关弹窗**。
+     *
+     * <p>用于"就地改表单"的辅助动作（比如"从默认模板填充"）——
+     * 关掉弹窗的话用户还得重新打开一遍才能保存。
+     */
+    public TextView addItemKeepOpen(String text, OnClick cb) {
+        TextView t = addItem(text, null);
+        if (cb != null) t.setOnClickListener(v -> cb.onClick(this));
+        return t;
+    }
+
+    /**
      * 带自绘图标的列表项：`[图标] 标题 / 副标题 ………… [右侧图标]`
      *
      * 为什么另起一个方法而不改 {@link #addItem}：字典管理页等处还在用它，

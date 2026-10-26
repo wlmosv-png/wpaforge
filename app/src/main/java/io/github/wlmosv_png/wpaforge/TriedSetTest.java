@@ -130,6 +130,34 @@ public class TriedSetTest {
         ok("继承：SSID 开关", inher.useSsid, "");
         ok("**旧口令不继承**", inher.oldPassword.isEmpty(), inher.oldPassword);
 
+        System.out.println("== 回归：清空过的目标不能再被模板填一遍 ==");
+        ProfileStore.Pick pk1 = ProfileStore.decide(null, tpl);
+        ok("没处理过 → 内容是空的（不自动带模板）", pk1.seeds.isEmpty(), pk1.seeds.masked());
+        ok("没处理过 → hasOwn=false", !pk1.hasOwn, "");
+        ok("没处理过 → 提示可填充", pk1.canFillFromTemplate(), "");
+        ok("模板项数正确", pk1.templateCount == tpl.count(), pk1.templateCount + "");
+        ok("模板内容里旧口令已被剥掉",
+                pk1.template != null && pk1.template.oldPassword.isEmpty(), "");
+
+        ProfileStore.Pick pk2 = ProfileStore.decide(new SeedModel(), tpl);
+        ok("清空过的目标 → 内容仍是空的", pk2.seeds.isEmpty(), pk2.seeds.masked());
+        ok("清空过的目标 → hasOwn=true（持久决定）", pk2.hasOwn, "");
+        // 关键不变式：**清空后打开，字段必须是空的**（这就是用户报的那条）。
+        // 至于"从默认模板填充"按钮还在不在 —— 它在，而且是好事：
+        // 那是用户主动点的动作，不是自动带入。清空 ≠ 把退路也封死。
+        ok("清空过的目标 → 打开时字段为空（不自动带）", pk2.seeds.isEmpty(), pk2.seeds.masked());
+        ok("清空后的填充入口仍在，但只能手动点（绝不自动）", pk2.canFillFromTemplate(), "");
+
+        SeedModel mine = new SeedModel();
+        SeedModel.addPhone(mine, "13900000002");
+        mine.oldPassword = "only-for-this-net";
+        ProfileStore.Pick pk3 = ProfileStore.decide(mine, tpl);
+        ok("有本目标档案 → 用本目标的",
+                pk3.hasOwn && pk3.seeds.oldPassword.equals("only-for-this-net"), "");
+        ok("有本目标档案 → 不提示填充", !pk3.canFillFromTemplate(), "");
+        ProfileStore.Pick pk4 = ProfileStore.decide(null, null);
+        ok("既没档案也没模板 → 空且不提示", pk4.seeds.isEmpty() && !pk4.canFillFromTemplate(), "");
+
         System.out.println("== 档案编解码与目标键共用 ==");
         SeedModel one = new SeedModel();
         SeedModel.addPhone(one, "13900000002");

@@ -50,9 +50,9 @@ public final class ProfileStore {
         return read(file(ctx, key));
     }
 
+    /** 本目标是否处理过（**空档案也算** —— 见 clearTarget 的语义说明） */
     public static boolean hasTarget(Context ctx, String key) {
-        File f = file(ctx, key);
-        return f.isFile() && f.length() > 0;
+        return file(ctx, key).isFile();
     }
 
     /** 默认模板；没设过返回 null */
@@ -72,9 +72,16 @@ public final class ProfileStore {
         return write(new File(dir(ctx), DEFAULT_NAME), m);
     }
 
+    /**
+     * 清空本目标的线索。
+     *
+     * **写成"空档案"而不是删文件** —— 两者语义不一样：
+     *   没有档案  = 从没处理过这个目标
+     *   空档案    = 用户明确说过"这个网不用线索"
+     * 前者将来可能被模板填充，后者永远保持空。用户点了清空就该是后者。
+     */
     public static boolean clearTarget(Context ctx, String key) {
-        File f = file(ctx, key);
-        return !f.exists() || f.delete();
+        return write(file(ctx, key), new SeedModel());
     }
 
     /** 本目标档案键（与已试集合同一套规则：BSSID 优先） */
@@ -83,30 +90,58 @@ public final class ProfileStore {
     }
 
     /**
-     * 解析"该给这个目标用哪份线索"。
+     * 解析"这个目标该用哪份线索"。
      *
-     * 返回的 {@link Pick#fromTemplate} 告诉界面：这份内容是从默认模板继承来的，
-     * **不是本目标专用** —— 界面必须把这件事显式写出来，否则用户会拿
-     * 上一家的手机号去猜这一家。
+     * **不自动继承默认模板** —— 这一点是用户教回来的：
+     * 之前会自动把模板内容填进来，结果"清空本目标"看起来完全没生效
+     * （清完再打开，模板的内容又冒出来了）。
+     * 用户的直觉是对的：每个网不一样，**默认就该是空的**。
+     *
+     * 模板只在用户明确点「从默认模板填充」时才带进来，
+     * 可用项数通过 {@link Pick#templateCount} 告诉界面。
      */
     public static final class Pick {
+        /** 本目标档案（没有档案就是空模型） */
         public final SeedModel seeds;
-        public final boolean fromTemplate;
+        /** 本目标是否保存过（含"保存为空"—— 那是"这个网不用线索"的持久决定） */
         public final boolean hasOwn;
+        /** 默认模板有几项（0 = 没设过） */
+        public final int templateCount;
+        /** 模板内容（已去掉旧口令），可按需带入 */
+        public final SeedModel template;
 
-        Pick(SeedModel s, boolean fromTemplate, boolean hasOwn) {
+        Pick(SeedModel s, boolean hasOwn, int templateCount, SeedModel template) {
             this.seeds = s;
-            this.fromTemplate = fromTemplate;
             this.hasOwn = hasOwn;
+            this.templateCount = templateCount;
+            this.template = template;
+        }
+
+        /** 界面上要不要显示"从默认模板填充" */
+        public boolean canFillFromTemplate() {
+            return templateCount > 0 && seeds.isEmpty();
         }
     }
 
     public static Pick pick(Context ctx, String key) {
-        SeedModel own = loadTarget(ctx, key);
-        if (own != null) return new Pick(own, false, true);
-        SeedModel tpl = loadTemplate(ctx);
-        if (tpl != null && !tpl.isEmpty()) return new Pick(inherit(tpl), true, false);
-        return new Pick(new SeedModel(), false, false);
+        return decide(loadTarget(ctx, key), loadTemplate(ctx));
+    }
+
+    /**
+     * {@link #pick} 的**纯逻辑部分**，抽出来是为了能在桌面单测里钉住那条回归：
+     * **清空过的目标（空档案）绝不能再被模板内容填一遍**。
+     *
+     * <p>用户报的正是这个：清了、再打开又出现以前输入的线索。
+     * 当时两层原因 —— ① 保存与清空用了不同的 key，文件压根没删掉；
+     * ② 即使删掉，这里也会自动从模板继承。两个都改了。
+     *
+     * @param own 本目标档案，null = 从没处理过
+     * @param tpl 默认模板，null = 没设过
+     */
+    public static Pick decide(SeedModel own, SeedModel tpl) {
+        int count = (tpl == null || tpl.isEmpty()) ? 0 : tpl.count();
+        SeedModel tplClean = (tpl == null) ? null : inherit(tpl);
+        return new Pick(own == null ? new SeedModel() : own, own != null, count, tplClean);
     }
 
     /**
@@ -147,7 +182,9 @@ public final class ProfileStore {
     }
 
     private static SeedModel read(File f) {
-        if (f == null || !f.isFile() || f.length() == 0) return null;
+        if (f == null || !f.isFile()) return null;
+        // 存在但为空 = 用户清空过，返回空模型（不是 null）—— 见 clearTarget
+        if (f.length() == 0) return new SeedModel();
         try (BufferedReader r = new BufferedReader(new InputStreamReader(
                 new FileInputStream(f), StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();

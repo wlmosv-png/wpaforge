@@ -2,7 +2,7 @@
 
 # WPAForge ⚡
 
-**Crack the WPA password of the router in front of you — right on your phone.**
+**Try to recover the WPA password of your own router — from your phone.**
 
 [![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%208%2B-3DDC84?style=flat-square)]()
 [![Root](https://img.shields.io/badge/requires-root-red?style=flat-square)]()
 
-**English** · [中文](README.md)
+[中文](README.md) · **English** · [🎬 Full demo](https://wlmosv.dpdns.org/wpaforge/#demo) · [Website](https://wlmosv.dpdns.org/wpaforge/) · [Download](https://github.com/wlmosv-png/wpaforge/releases/latest) · [Discussions](https://github.com/wlmosv-png/wpaforge/discussions)
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
@@ -23,72 +23,124 @@
 
 ---
 
-## How it finds the password
+> ### Before you start
+>
+> - **Root is required** (Android 8.0+): the verdict path relies on `su + cmd wifi`.
+> - **Use it only on networks you own or have written permission to test.** Association
+>   attempts against networks you do not own are illegal, and the AP logs your MAC and time.
+> - Everything runs on-device. Nothing is uploaded; recovered passphrases are stored
+>   encrypted, locally.
 
-No dictionary grind. It guesses first — a few hundred candidates built from what this
-particular router is likely to have been set to, ranked, then tried top-down. The
-dictionary is the fallback, not the main act.
+## Contents
 
-**The guesses have evidence behind them.** For an SSID like `FAST_E972` it builds
-`fast2026`, `FAST#2026`, `e972e972`, `fast@2026` on the spot — none of which exist in
-any ready-made list. The vendor name comes from the IEEE OUI registry (419 KB,
-15,913 entries shipped inside the APK); when a BSSID isn't in the table the field
-stays empty rather than showing a made-up brand.
+- [What it does](#what-it-does)
+- [How it finds passwords](#how-it-finds-passwords)
+- [Dictionaries: bring your own, or use the built-ins](#dictionaries-bring-your-own-or-use-the-built-ins)
+- [Verdicts: prefer "uncertain" over a false hit](#verdicts-prefer-uncertain-over-a-false-hit)
+- [Observe: see which channel to use at a glance](#observe-see-which-channel-to-use-at-a-glance)
+- [Quick start](#quick-start)
+- [Screenshots](#screenshots)
+- [How it compares](#how-it-compares)
+- [Known limits](#known-limits)
+- [Install](#install)
+- [Building](#building)
+- [License](#license)
 
-**Every candidate costs a real association attempt.** A fast AP answers in about a
-second, a slow one takes five or more. A phone can hold only one association at a
-time — an Android limit, not something to work around — which is exactly why
-candidate quality beats quantity: a hundred thousand blind attempts is measured in
-days, a few hundred targeted ones usually finish in minutes.
+## What it does
 
-**Success has exactly one definition: a completed 4-Way Handshake.** SSID, supplicant
-state and IP must all come from the *same line* of output; miss one and it does not
-count. netId is *attribution evidence*, not a requirement: only when both this attempt
-and the status frame report a valid non-zero netId that disagree does the result drop
-to "unconfirmed" (neither a success nor a wrong passphrase); missing or zero netId never
-vetoes. It would rather report "uncertain" than report a false hit — that rule came from
-an incident where the system popped "could not connect to BTWIFL_0923" while the app
-claimed it had connected.
-
-**Lock the screen and it keeps going; kill it and it resumes.** Progress is persisted
-continuously (throttled to at most one write per 20 attempts).
-
-## What else is in there
-
+- **Generates candidates on the spot, per target**: SSID, vendor, house number, names,
+  birthdays, phone numbers can all be used as evidence
+- **Works with the built-in dictionaries, or with your own imported / downloaded ones** —
+  both run exactly the same way
+- Really associates once per candidate, and gives a per-candidate verdict:
+  **hit / wrong passphrase / uncertain**
+- Ranking is **by your own local record**: the dictionary screen states "hit 57/73 here,
+  one hit per ~2 attempts"
 - Multi-target queue: a list of targets runs in order, each pausable / resumable
-- LAN recon: after associating, sweeps the subnet for live hosts and common ports,
-  groups them by vendor, writes an exportable report
-- Observe tab: channel-occupancy chart with a suggested channel, bandwidth and Wi-Fi
-  generation, filterable by WPS
-- Connection control: pin one AP with `-b` when several share an SSID; optionally use
-  a fresh random MAC per attempt
-- Self-audit: reads the WiFi networks saved on the phone and ranks their passphrases
-  against common-password lists
-- WPS attack (its own tab): decides whether an AP can be attacked at all during the scan,
-  keyed on `km=WPS` / `WPS-M2D`. Four candidate layers — vendor BSSID→PIN algorithms, a
-  built-in weak-PIN table, your own imported list, full enumeration — plus a halving
-  attack and resumable state
-- Offline verification: import `.cap` / `.hc22000`, both the EAPOL and PMKID paths —
-  10,000 candidates in about 37 s on this phone
-- Dictionary management: content search (contains / prefix / suffix / regex), long-press
-  multi-select merge, large dictionaries no longer lose data on edit
+- Observe page: spectrum radar plus channel occupancy and advice
+- LAN recon: live hosts and common ports on the same subnet, grouped by vendor, exportable
+- WPS: four candidate layers (vendor algorithms / built-in weak PINs / custom list / full
+  enumeration), plus the half-handshake attack and resume
+- Offline check of `.cap` / `.hc22000` (EAPOL and PMKID paths; 10k entries in ~37 s)
+- Dictionary search, merge and editing (contains / prefix / suffix / regex)
+- Keeps running with the screen locked; survives being killed (progress is persisted)
 
-## Install
+## How it finds passwords
 
-> **Root required** · Android 8.0+
+Three ways — pick whichever suits you:
 
-[**⬇️ Download latest APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
+**① Generate for the target.** If the SSID is `FAST_E972`, it produces `fast_e972`,
+`faste972`, `fast2026` and the like. Only when you supply hints (names, birthdays, phone
+numbers) does it produce `zhangwei1990` or `138xxxxxxxx`. Vendor names come from the IEEE
+OUI table shipped inside the app; when a lookup fails it stays empty rather than inventing one.
 
-No root, no luck — detection relies on `su + cmd wifi`. The Shizuku and rootless channels were removed
-in 1.9.24 (code and dependencies removed): Shizuku needs a binder call per association, and the rootless path (`WifiNetworkSpecifier`)
-pops a system dialog for every candidate — neither can carry a dictionary walk.
+**② Use the built-in dictionaries.** Seven curated tables: common weak passwords, pure
+digits, WPA top lists, Chinese high-frequency, yearly top lists. Each one states why it is
+worth keeping — just open it.
+
+**③ Use your own.** Import a txt file, or download one from the in-app online sources.
+They run exactly like the built-ins, and they earn their own record.
+
+**Every candidate costs one real association attempt.** A fast AP answers in a second;
+a slow one takes five or more. A phone can only be associated with one network at a time —
+that is an Android limit, not a design choice — so *which* candidate you try first matters
+far more than how many you have: 100,000 blind attempts is a matter of days, a few hundred
+well-ordered ones usually finish in minutes.
+
+## Dictionaries: bring your own, or use the built-ins
+
+The built-ins are curated, not bulk: the multi-hundred-thousand-row tables are gone,
+because across 107 real hits on the author's own device none of them ever produced one.
+Your imported dictionaries are first-class — they run, merge and build a record just like
+the built-ins. After a run, the dictionary screen looks like this:
+
+```text
+01 built-in common weak       core · hit 57/73 · ~2 attempts per hit
+xato top 10000                    hit 14/14 · ~23 attempts per hit
+```
+
+The default sort is by hit rate: the table that proved itself on *your* network runs first.
+That record is read from the first few columns of the local history only — no passphrase
+is ever decrypted for it.
+
+## Verdicts: prefer "uncertain" over a false hit
+
+Every candidate ends with one of three verdicts, each with evidence behind it:
+
+| Verdict | Evidence |
+|---|---|
+| **Hit** | 4-Way Handshake completed, with SSID / supplicant state / IP **from the same output line** |
+| **Wrong passphrase** | Observable failure evidence (e.g. the AP re-sends handshake frame 1) |
+| **Uncertain** | The time budget expired with nothing observed — its own column, never counted as "already tried" |
+
+netId is used as **attribution evidence only**: it downgrades to "uncertain" just when both
+sides report a valid non-zero netId and they disagree; missing or zero never vetoes.
+
+This came out of a real failure: an early build showed a system dialog "could not connect to
+BTWIFL_0923" while the app reported "connected". It would rather miss a hit than report a
+false one.
+
+## Observe: see which channel to use at a glance
+
+The dial *is* a spectrum: the upper half is the 14 channels of 2.4G, the lower half the four
+5G bands; radius is signal strength, strongest nearest the centre. **The more dots share a
+sector, the busier that channel is.**
+
+Underneath it, the conclusion without counting anything yourself:
+
+```text
+2.4G 25   5G 4   busiest ch 5 · 7   open 0   best -20 dBm
+```
+
+The header is a single line — `Updated just now` / `Updated Ns ago`, extended to
+`+2 new · -1 gone` when devices appear or leave.
 
 ## Quick start
 
 ```text
 1. Open "Observe", scan for nearby networks, pick your target
-2. Open "Crack", load a dictionary (or let it derive one on the spot)
-3. Hit start, lock the screen — the found password gets flagged
+2. Open "Crack": let it generate candidates, or load a built-in / your own dictionary
+3. Hit start, lock the screen — the passphrase is flagged and can be copied with one tap
 ```
 
 ## Screenshots
@@ -107,32 +159,72 @@ pops a system dialog for every candidate — neither can carry a dictionary walk
 </p>
 <p align="center"><sub>① Observe (spectrum radar) · ② Crack (progress &amp; rate) · ③ Hit (passphrase + one-tap copy) · ④ Dictionaries (ranked by hit rate, with local record)<br>⑤ LAN recon (devices &amp; open ports) · ⑥ Signal distribution &amp; channel advice · ⑦ Audit (dictionary / strength / offline check) · ⑧ Settings (permissions &amp; keep-alive)</sub></p>
 
+## How it compares
+
+| Approach | What you need | Speed | Effort |
+|---|---|---|---|
+| **WPAForge** | one rooted phone | candidates generated on the spot; a few hundred usually take minutes | tap start |
+| aircrack-ng on a PC + capture | laptop, monitor-mode adapter, an already captured handshake | depends on the wordlist; big ones take days | command line, capturing |
+| Termux scripts on a phone | a Linux environment, external adapter | mostly aircrack in a wrapper | fiddly setup |
+| Online cracking sites | hand the handshake to someone else | queue | your capture leaves your machine |
+
+It is good at the passwords people actually set on home routers. A random 12-character
+passphrase is out of scope — that one is what WPA3 is for.
+
+## Known limits
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| It keeps trying, never hits | the passphrase is not in the candidate set | import your own dictionary, or raise the candidate budget |
+| Everything fails immediately | the target is WPA3 / PMF, or WPA2-WPA3 transition | association attempts alone cannot get through |
+| Some APs are missing | the phone lacks 6GHz, or randomised MAC is on | turn randomised MAC off and rescan |
+| Permission errors | Root not granted, or the ROM blocks `cmd wifi` | run the 6-step self-check on the settings page |
+| Killed mid-run | battery optimisation | whitelist it; progress is persisted and it resumes |
+
+## Install
+
+> **Root required** · Android 8.0+
+
+[**⬇️ Download the latest APK**](https://github.com/wlmosv-png/wpaforge/releases/latest)
+
+Why Root is mandatory: the verdict path needs `su + cmd wifi`. The Shizuku and no-root
+channels were removed in 1.9.24 (including their code): Shizuku borrows a binder on every
+connection, and the no-root `WifiNetworkSpecifier` path pops a system dialog per candidate —
+neither survives a per-candidate dictionary sweep.
+
 ## Building
 
-No Gradle, two manual stages:
+No Gradle; a two-stage manual chain:
 
 ```sh
-WP_VERSION_CODE=122 WP_VERSION_NAME=1.9.26 sh 1-aapt2.sh  # device: aapt2 resource compile (version set here)
-sh 2-build-dex.sh                                       # desktop: javac + d8 + sign (needs WP_FORGE_KS* vars)
+WP_VERSION_CODE=122 WP_VERSION_NAME=1.9.26 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
+sh 2-build-dex.sh                                       # desktop side: javac + d8 + signing (needs WP_FORGE_KS*)
 ```
 
-Output `build/out/wpaforge-signed.apk`, fully explicit build chain. The defaults inside `1-aapt2.sh`
-are only a fallback — always pass the version explicitly for a release, or you will ship a lower version
-than what is already online.
+Output: `build/out/wpaforge-signed.apk`. The version defaults in `1-aapt2.sh` are only a
+fallback — releases must pass them explicitly, or you will build a version that lags behind.
+
+## Feedback
+
+Device compatibility, failing-AP characteristics, feature ideas → [Discussions](https://github.com/wlmosv-png/wpaforge/discussions);
+confirmed bugs → [issue template](https://github.com/wlmosv-png/wpaforge/issues/new/choose).
 
 ---
 
-## Usage boundary
+## Scope of use
 
-**Use only on networks you are authorized to access** (your own router, labs, authorized pentests). Association attempts against unauthorized networks are illegal, and the router logs your MAC and time.
-
----
+**Only on networks you are authorised to test** (your own router, a lab, an authorised penetration test). Association attempts against networks you do not own are illegal, and the AP will log your MAC address and the time.
 
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE)
 
-Design trade-offs and pitfalls (config-reuse false positives, detection timing, `finally` clobbering results) live in [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md).
+Design trade-offs and the bugs behind them (config-reuse false positives, verdict timing,
+`finally` overwriting results) live in [`doc/TECHNICAL-NOTES.md`](doc/TECHNICAL-NOTES.md).
+
+---
+
+**If this helped you, a ⭐ on the repo is the entire feature request list.**
 
 ## Star History
 
@@ -144,12 +236,7 @@ Design trade-offs and pitfalls (config-reuse false positives, detection timing, 
 
 ## My other projects
 
-| Project | What it does |
+| Project | What it is |
 |---|---|
-| **[TGAutoSign](https://github.com/wlmosv-png/TGAutoSign)** | Xposed module for Telegram auto check-in — multi-account slots, group sign-in detection, scheduled plans, themed UI. Manage targets with `/jmb` in any chat. |
-| **[apk-index](https://github.com/wlmosv-png/apk-index)** | APK static indexing & reverse-engineering search — parses AXML, indexes each dex, finds hook points by string / signature / structure. MCP-ready. |
-
----
-
-**If this saved you time, hit ⭐ on the repo — that is the entire wishlist.**
-Questions and device-compat reports: [Discussions](https://github.com/wlmosv-png/wpaforge/discussions).
+| **[TGAutoSign](https://github.com/wlmosv-png/TGAutoSign)** | Xposed module for Telegram auto check-in — account slots, group check-in verdicts, schedules, themes. Send `/jmb` in any chat to manage targets. |
+| **[apk-index](https://github.com/wlmosv-png/apk-index)** | Static APK index and reverse-engineering search — AXML parsing, per-dex index, lookup hook points by string / signature / structure, MCP interface. |

@@ -496,6 +496,31 @@ public class DictActivity extends Activity {
         pathLabel.setText(L.s("目录: ", "Directory: ") + dir.getAbsolutePath());
         listBox.removeAllViews();
 
+        /* 顶部状态行：本目标已经试过多少条。
+         * 这是"换字典不再重复跑"的可见证据 —— 用户得先看见它，
+         * 才会相信"合并后跑的时候不会重复"。 */
+        {
+            String key = Prefs.targetKey(this);
+            String label = Prefs.targetLabel(this);
+            if (key != null && !key.isEmpty()) {
+                io.github.wlmosv_png.wpaforge.audit.TriedSet tried =
+                        io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
+                                io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
+                TextView info = new TextView(this);
+                info.setText(tried.size() > 0
+                        ? L.s("目标 ", "Target ") + (label.isEmpty() ? "?" : label)
+                                + L.s(" 已试过 ", " already tried ") + tried.size()
+                                + L.s(" 条 —— 跑字典时会自动跳过，不重复劳动",
+                                      " entries \u2014 auto-skipped when running, no repeats")
+                        : L.s("目标 ", "Target ") + (label.isEmpty() ? "?" : label)
+                                + L.s(" 还没有已试记录", " has no tried record yet"));
+                info.setTextSize(11.5f);
+                info.setTextColor(tried.size() > 0 ? AmberTheme.OK : TEXT_DIM);
+                info.setPadding(px(4), 0, px(4), px(8));
+                listBox.addView(info);
+            }
+        }
+
         List<DictStore.Entry> entries = DictStore.scan(dir);
 
         // 只丢弃「已经不在列表里」的选择（比如刚被删掉），**不整体清空** ——
@@ -1187,8 +1212,22 @@ public class DictActivity extends Activity {
         final List<File> files = new ArrayList<>();
         for (DictStore.Entry e : selected) files.add(e.file);
 
+        String triedNote = "";
+        {
+            String key = Prefs.targetKey(this);
+            if (key != null && !key.isEmpty()) {
+                int n = io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
+                        io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key)).size();
+                if (n > 0) {
+                    triedNote = L.s("\n合并结果里跑过的 " + n + " 条候选会在跑的时候自动跳过（按目标分别记）。",
+                            "\nThe " + n + " candidates already tried on this target will be "
+                                    + "skipped automatically (tracked per target).");
+                }
+            }
+        }
         NetDialog dlg = new NetDialog(this,
-                L.s("合并 ", "Merge ") + files.size() + L.s(" 个字典", " dictionaries from the old folder"), L.s("重复项会自动去掉。", "Duplicates are removed automatically."));
+                L.s("合并 ", "Merge ") + files.size() + L.s(" 个字典", " dictionaries from the old folder"),
+                L.s("重复项会自动去掉。", "Duplicates are removed automatically.") + triedNote);
         EditText et = dlg.addField(L.s("合并后的名称", "Merged name"),
                 "合并-" + System.currentTimeMillis() % 10000);
         dlg.addHint(L.s("合并后生成一个新的普通字典，原字典不受影响。", "Creates a new plain dictionary; the originals are untouched."));

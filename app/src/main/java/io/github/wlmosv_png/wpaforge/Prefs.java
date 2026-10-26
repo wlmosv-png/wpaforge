@@ -45,6 +45,11 @@ public final class Prefs {
     public static final int DEFAULT_BUDGET = 120;
     /** 「字典怎么选」说明是否已看过（只看一次，之后从弹窗里手动打开） */
     private static final String K_DICT_GUIDE = "dict_guide_seen";
+    /** 当前目标（线索档案与已试集合都按它分档） */
+    private static final String K_TARGET_KEY = "target_key";
+    private static final String K_TARGET_LABEL = "target_label";
+    /** 老版本的单槽线索是否已迁到"默认模板" */
+    private static final String K_PROFILE_MIGRATED = "profile_migrated";
 
     private Prefs() {}
 
@@ -65,6 +70,45 @@ public final class Prefs {
 
     public static void clearSeeds(Context ctx) {
         sp(ctx).edit().remove(K_SEEDS).apply();
+    }
+
+    // ---------------- 当前目标 ----------------
+
+    /**
+     * 记住"现在在弄哪个网"。线索档案与已试集合都按这个键分档 ——
+     * 换网络时它们各自就位，不会把上一家的信息套过来。
+     */
+    public static void setTarget(Context ctx, String bssid, String ssid) {
+        String key = io.github.wlmosv_png.wpaforge.audit.TriedSet.targetKey(bssid, ssid);
+        String label = (ssid == null || ssid.isEmpty() ? "?" : ssid)
+                + (bssid == null || bssid.isEmpty() ? "" : " · " + bssid);
+        sp(ctx).edit().putString(K_TARGET_KEY, key)
+                .putString(K_TARGET_LABEL, label).apply();
+    }
+
+    /** 当前目标键；没选过目标时返回空串 */
+    public static String targetKey(Context ctx) {
+        return sp(ctx).getString(K_TARGET_KEY, "");
+    }
+
+    /** 当前目标显示名（SSID · BSSID） */
+    public static String targetLabel(Context ctx) {
+        return sp(ctx).getString(K_TARGET_LABEL, "");
+    }
+
+    // ---------------- 线索迁移与原始读取 ----------------
+
+    /** 老版本的单槽线索原文（迁移用） */
+    public static String seedsRaw(Context ctx) {
+        return sp(ctx).getString(K_SEEDS, "");
+    }
+
+    public static boolean profileMigrated(Context ctx) {
+        return sp(ctx).getBoolean(K_PROFILE_MIGRATED, false);
+    }
+
+    public static void setProfileMigrated(Context ctx) {
+        sp(ctx).edit().putBoolean(K_PROFILE_MIGRATED, true).apply();
     }
 
     public static boolean dictGuideSeen(Context ctx) {

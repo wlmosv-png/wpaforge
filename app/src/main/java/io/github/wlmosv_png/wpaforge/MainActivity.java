@@ -3085,9 +3085,10 @@ public class MainActivity extends Activity {
      * 图标全部来自 {@link DictIcons}，Canvas 自绘，不依赖 emoji 字体。
      */
     private void showDictSource() {
-        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
+        final io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick pick = profileForCurrentTarget();
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur = pick.seeds;
         final int budget = Prefs.deriveBudget(this);
+        final io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
 
         // 画像能出多少条：拿真实实现算一次（几毫秒），没有目标就用占位目标
         int seedCount = 0;
@@ -3109,15 +3110,24 @@ public class MainActivity extends Activity {
                         L.s("先填线索最划算：实测命中有一半发生在第 1 条。",
                                 "Fill hints first \u2014 half of the real hits landed on candidate #1."));
         d.addHint(L.s("当前: ", "Now: ") + sourceLabel(currentDictSource)
-                + (dictCount() > 0 ? " · " + dictCount() + L.s(" 条", " entries") : ""));
+                + (dictCount() > 0 ? " · " + dictCount() + L.s(" 条", " entries") : "")
+                + "\n" + L.s("本目标: ", "This target: ")
+                + (Prefs.targetLabel(this).isEmpty() ? L.s("未选择网络", "no network picked")
+                        : Prefs.targetLabel(this))
+                + (tried.size() > 0
+                        ? L.s(" · 已试过 " + tried.size() + " 条（会自动跳过）",
+                              " \u00b7 " + tried.size() + " already tried (auto-skipped)")
+                        : ""));
 
         d.addIconItem(DictIcons.Kind.PROFILE,
                 L.s("已知密码线索", "Known hints"),
-                cur.isEmpty()
+                (cur.isEmpty()
                         ? L.s("还没填。手机号 / 生日 / 姓名拼音 / 门牌 —— 最值钱的一步",
                                 "Not filled. Phone / birthday / pinyin / floor \u2014 best payoff")
                         : L.f("已填 %d 项 · 可出 %d 条", "%d filled \u00b7 %d candidates",
-                                cur.count(), seedCount),
+                                cur.count(), seedCount))
+                        + (pick.fromTemplate && !pick.hasOwn
+                                ? L.s(" · 来自默认模板", " \u00b7 from default template") : ""),
                 false,
                 dd -> showSeedDialog());
 
@@ -3133,7 +3143,9 @@ public class MainActivity extends Activity {
 
         d.addIconItem(DictIcons.Kind.FILE,
                 L.s("用自己的字典文件", "Use your own wordlist"),
-                L.s("从手机里挑一份现成的词表", "Pick an existing wordlist from the phone"),
+                L.s("从手机里挑一份现成的词表", "Pick an existing wordlist from the phone")
+                        + (tried.size() > 0
+                                ? L.s(" · 跑过的会自动跳过", " \u00b7 already-tried skipped") : ""),
                 SRC_FILE.equals(currentDictSource),
                 dd -> showDictPicker());
 
@@ -3153,6 +3165,29 @@ public class MainActivity extends Activity {
             Prefs.setDictGuideSeen(this);
             showDictGuide();
         }
+    }
+
+    /**
+     * 取"当前目标该用哪份线索"。
+     *
+     * 优先本目标档案；没有就从默认模板继承（**旧口令不继承**，见 ProfileStore.inherit）。
+     * 返回的 fromTemplate 用来在界面和日志里显式说明"这不是本目标专用"。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick profileForCurrentTarget() {
+        String key = Prefs.targetKey(this);
+        if (key == null || key.isEmpty()) {
+            key = io.github.wlmosv_png.wpaforge.audit.TriedSet.targetKey(
+                    targetNet == null ? "" : targetNet.bssid,
+                    targetNet == null ? "" : targetNet.ssid);
+        }
+        return io.github.wlmosv_png.wpaforge.audit.ProfileStore.pick(this, key);
+    }
+
+    /** 本目标的已试集合（界面预览用；不存在就是空的） */
+    private io.github.wlmosv_png.wpaforge.audit.TriedSet triedForCurrentTarget() {
+        String key = Prefs.targetKey(this);
+        return io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
+                io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
     }
 
     /** 来源代码 → 显示文案 */
@@ -3219,15 +3254,29 @@ public class MainActivity extends Activity {
      * 只存本机私有 SP，日志与界面一律走掩码。
      */
     private void showSeedDialog() {
-        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
+        final String key = Prefs.targetKey(this);
+        final io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick pick = profileForCurrentTarget();
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur = pick.seeds;
+
+        String where = Prefs.targetLabel(this).isEmpty()
+                ? L.s("还没选择网络", "no network picked yet")
+                : Prefs.targetLabel(this);
+        String origin = pick.hasOwn
+                ? L.s("这份线索是**本目标专用**的。", "These hints belong to THIS target only.")
+                : (pick.fromTemplate
+                        ? L.s("本目标还没填过 —— 下面是默认模板带过来的。\n"
+                                        + "不是同一家的网，请先按「清空本目标」。旧口令永不从模板继承。",
+                                "Nothing saved for this target \u2014 fields below come from your "
+                                        + "default template. Clear them if this is someone else's "
+                                        + "network. The old password is never inherited.")
+                        : L.s("本目标还没填过。", "Nothing saved for this target yet."));
 
         io.github.wlmosv_png.wpaforge.ui.NetDialog d =
                 new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
                         L.s("已知密码线索", "Known password hints"),
-                        L.s("填了命中率显著提高。只存本机、不联网、不上传。",
-                                "Filling these raises the hit rate a lot. "
-                                        + "Stored on device only, never uploaded."));
+                        L.s("目标: ", "Target: ") + where + "\n" + origin + "\n"
+                                + L.s("只存本机、不联网、不上传。",
+                                "Stored on device only, never uploaded."));
 
         final android.widget.EditText phone = d.addField(
                 L.s("手机号，多个用逗号分开（最多 4）", "Phone number(s), comma separated (max 4)"),
@@ -3254,7 +3303,6 @@ public class MainActivity extends Activity {
         d.addHint(L.s("留空即只按通用弱口令+中文高频派生。",
                 "Leave blank to derive from common + Chinese weak lists only."));
 
-        // SSID 派生开关：默认关 —— 实测里它一次都没贡献过命中，却是候选量最大的一块
         final boolean[] ssidOn = {cur.useSsid};
         final android.widget.TextView[] ssidRow = new android.widget.TextView[1];
         ssidRow[0] = d.addItem(ssidToggleLabel(ssidOn[0]), dd -> {
@@ -3262,26 +3310,33 @@ public class MainActivity extends Activity {
             ssidRow[0].setText(ssidToggleLabel(ssidOn[0]));
         });
 
-        d.setNegative(L.s("取消", "Cancel"), null);
+        // 把当前填写内容提升为"默认模板" —— 同一家的多个 AP 就不必重填
+        d.addItem(L.s("把以上内容设为默认模板（以后新网络自动带上）",
+                        "Save the above as the default template"),
+                dd -> {
+                    io.github.wlmosv_png.wpaforge.audit.SeedModel m =
+                            readSeedForm(phone, names, bday, house, landline, oldPw, custom, ssidOn[0]);
+                    io.github.wlmosv_png.wpaforge.audit.ProfileStore.saveTemplate(this, m);
+                    appendStream(L.s("已设为默认模板（旧口令不会被继承）。",
+                            "Saved as default template (the old password is never inherited)."));
+                });
+
+        d.setNegative(L.s("清空本目标", "Clear this target"), dd -> {
+            io.github.wlmosv_png.wpaforge.audit.ProfileStore.clearTarget(this, key);
+            appendStream(L.s("已清空本目标的线索。", "Cleared hints for this target."));
+            updateDictStatus();
+        });
         d.setPositive(L.s("保存", "Save"), dd -> {
             io.github.wlmosv_png.wpaforge.audit.SeedModel m =
-                    new io.github.wlmosv_png.wpaforge.audit.SeedModel();
-            for (String p : splitComma(phone.getText().toString())) {
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.addPhone(m, p);
-            }
-            for (String n : splitComma(names.getText().toString())) {
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.addName(m, n);
-            }
-            m.birthday = bday.getText().toString().trim();
-            m.houseNo = house.getText().toString().trim();
-            m.landline = landline.getText().toString().trim();
-            m.oldPassword = oldPw.getText().toString().trim();
-            for (String c : splitComma(custom.getText().toString())) {
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.addCustom(m, c);
-            }
-            m.useSsid = ssidOn[0];
-            Prefs.setSeeds(this, m.encode());
+                    readSeedForm(phone, names, bday, house, landline, oldPw, custom, ssidOn[0]);
+            final String k = key == null || key.isEmpty()
+                    ? io.github.wlmosv_png.wpaforge.audit.TriedSet.targetKey(
+                            targetNet == null ? "" : targetNet.bssid,
+                            targetNet == null ? "" : targetNet.ssid)
+                    : key;
+            io.github.wlmosv_png.wpaforge.audit.ProfileStore.saveTarget(this, k, m);
 
+            io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
             io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result probe =
                     io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(
                             targetNet == null
@@ -3292,12 +3347,19 @@ public class MainActivity extends Activity {
                                     : targetNet,
                             Prefs.deriveBudget(this),
                             null, m, io.github.wlmosv_png.wpaforge.audit.CnHot.load(this));
+            int skipped = 0;
+            for (Candidate c : probe.candidates) if (tried.contains(c.password)) skipped++;
+
             appendStream(m.isEmpty()
                     ? L.s("线索已清空", "Hints cleared")
                     : L.f("线索已保存 %d 项: %s", "Saved %d hint(s): %s", m.count(), m.masked()));
             appendStream(L.f("按线索可生成 %d 条候选（预算 %d）",
                     "%d candidates from hints (budget %d)",
                     probe.candidates.size(), Prefs.deriveBudget(this)));
+            if (skipped > 0) {
+                appendStream(L.f("其中 %d 条本目标已试过，跑的时候会自动跳过。",
+                        "%d already tried on this target \u2014 skipped automatically.", skipped));
+            }
             if (!m.isEmpty()) {
                 appendStream(L.s("线索已变，请重新「按目标派生」后入队。",
                         "Hints changed \u2014 derive again before queueing."));
@@ -3305,6 +3367,31 @@ public class MainActivity extends Activity {
             updateDictStatus();
         });
         d.show();
+    }
+
+    /** 把表单读成一个 SeedModel（保存与"设为模板"共用一份读法，避免两处不一致） */
+    private static io.github.wlmosv_png.wpaforge.audit.SeedModel readSeedForm(
+            android.widget.EditText phone, android.widget.EditText names,
+            android.widget.EditText bday, android.widget.EditText house,
+            android.widget.EditText landline, android.widget.EditText oldPw,
+            android.widget.EditText custom, boolean useSsid) {
+        io.github.wlmosv_png.wpaforge.audit.SeedModel m =
+                new io.github.wlmosv_png.wpaforge.audit.SeedModel();
+        for (String p : splitComma(phone.getText().toString())) {
+            io.github.wlmosv_png.wpaforge.audit.SeedModel.addPhone(m, p);
+        }
+        for (String n : splitComma(names.getText().toString())) {
+            io.github.wlmosv_png.wpaforge.audit.SeedModel.addName(m, n);
+        }
+        m.birthday = bday.getText().toString().trim();
+        m.houseNo = house.getText().toString().trim();
+        m.landline = landline.getText().toString().trim();
+        m.oldPassword = oldPw.getText().toString().trim();
+        for (String c : splitComma(custom.getText().toString())) {
+            io.github.wlmosv_png.wpaforge.audit.SeedModel.addCustom(m, c);
+        }
+        m.useSsid = useSsid;
+        return m;
     }
 
     private static String ssidToggleLabel(boolean on) {
@@ -3342,9 +3429,10 @@ public class MainActivity extends Activity {
             return;
         }
         final String ssid = targetNet.ssid;
-        // 线索在**点击那一刻**读一次并固定下来：线程里再读就可能与入队时不一致
-        final io.github.wlmosv_png.wpaforge.audit.SeedModel seeds =
-                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
+        // 线索在**点击那一刻**读一次并固定下来：线程里再读就可能与入队时不一致。
+        // 取的是**本目标**的档案（没有就从默认模板继承，旧口令不继承）。
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel seeds = profileForCurrentTarget().seeds;
+        final io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
         appendStream(L.f("正在按 SSID「%s」生成定向载荷...",
                 "Deriving candidates from SSID \"%s\"...", ssid));
         if (!seeds.isEmpty()) {
@@ -3359,12 +3447,24 @@ public class MainActivity extends Activity {
                             seeds, io.github.wlmosv_png.wpaforge.audit.CnHot.load(this));
             // 文件名带线索指纹：换了线索再派生就不会撞上旧文件，
             // 服务端续跑也不会拿到错位的那一份
+            // 落盘前剔掉本目标已试过的：这样落盘文件本身就不含重复，
+            // 换字典/重跑时不会又把它们跑一遍（服务侧还会再兜一次底）。
+            java.util.List<Candidate> fresh = new java.util.ArrayList<>(r.candidates.size());
+            int skipped = 0;
+            for (Candidate c : r.candidates) {
+                if (tried.contains(c.password)) { skipped++; continue; }
+                fresh.add(c);
+            }
             final String nm = L.s("SSID 派生 · ", "SSID-derived · ") + ssid
                     + (seeds.isEmpty() ? "" : " · " + seeds.fingerprint());
-            final String path = saveDictToFile(r.candidates, nm);
+            final String path = saveDictToFile(fresh, nm);
+            final int skipN = skipped;
             ui.post(() -> {
-                applyDict(r.candidates, nm, path, SRC_PROFILE);
-                appendStream(L.f("定向载荷就绪: %d 发", "Derived %d candidates", r.candidates.size()));
+                applyDict(fresh, nm, path, SRC_PROFILE);
+                appendStream(L.f("定向载荷就绪: %d 发", "Derived %d candidates", fresh.size()));
+                if (skipN > 0) {
+                    appendStream(L.f("已跳过 %d 条本目标试过的候选", "%d already tried, skipped", skipN));
+                }
                 appendStream(r.explanation);
             });
         }).start();
@@ -3590,6 +3690,7 @@ public class MainActivity extends Activity {
                 .setTitle(L.s("选择要派生的目标", "Pick a target to derive from"))
                 .setItems(labels.toArray(new String[0]), (d, which) -> {
                     targetNet = arr[which];
+                    Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
                     updateTargetLabel();
                     deriveFromTarget();
                 })
@@ -4334,6 +4435,7 @@ public class MainActivity extends Activity {
             if (t != null && t.ssid != null && !t.ssid.isEmpty()) {
                 try {
                     targetNet = t.toNetRecord();
+                    Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
                 } catch (Throwable ignored) {}
             }
         }
@@ -5170,6 +5272,7 @@ public class MainActivity extends Activity {
             final int idx = i;
             td.addItem(labels.get(i), dd -> {
                 targetNet = arr[idx];
+                Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
                 updateTargetLabel();
             });
         }
@@ -5283,7 +5386,8 @@ public class MainActivity extends Activity {
         // 所以先直接写持久化队列，不依赖服务实例 —— 避免 NPE。
         final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
                 currentDictPath, currentDictName,
-                targetDictEnabled, smartSortEnabled, Prefs.mode(this), Prefs.seeds(this));
+                targetDictEnabled, smartSortEnabled, Prefs.mode(this),
+                profileForCurrentTarget().seeds.encode());
         queueCache.clear();
         queueCache.addAll(TaskQueue.load(this));
         renderQueue();

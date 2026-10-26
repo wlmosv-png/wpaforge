@@ -26,6 +26,7 @@ import io.github.wlmosv_png.wpaforge.audit.ShellSession;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
+import io.github.wlmosv_png.wpaforge.audit.TriedSet;
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
 
 /**
@@ -364,6 +365,18 @@ public class CrackService extends Service {
         return currentTask;
     }
 
+    /** 本目标的"已试候选"集合（跑的时候往里记，下次不重复） */
+    private volatile TriedSet triedSet;
+    /**
+     * 载入 triedSet 时用的目标键。
+     *
+     * <p>落盘必须用它，**不能用"界面上当前的目标"** —— 用户可以排了 B209 的队、
+     * 再切到 B211 看，这样写就会把 B209 的记录写到 B211 档案里，
+     * 直接违反"跨目标绝不共享"这条不变式。
+     */
+    private volatile String triedKey;
+    private int triedSinceFlush = 0;
+
     /**
      * 服务**正在使用**的那份候选列表（只读用途：界面回前台后重建显示）。
      *
@@ -419,6 +432,7 @@ public class CrackService extends Service {
 
     /** 暂停：当前任务保留进度，队列原地等待 */
     public void pause() {
+        flushTried();   // 暂停时把"已试"落盘，避免被系统回收后重跑一截
         // ★ 最关键的一步：把「暂停」真正送到引擎。
         //
         // 历史事故（2026-10-23 实机复现）：这里以前**只**通知免-root
@@ -876,6 +890,35 @@ public class CrackService extends Service {
                 log(L.s("智能排序: 已关闭", "Smart ranking: off"));
             }
 
+            /* ── 跳过本目标已经试过的候选 ────────────────────────────────
+             * 这是"换字典不再重复劳动"的落点。判据是**候选的哈希**，不是 offset ——
+             * offset 只对同一份字典有效，换字典/合并字典就作废，而哈希集合照常生效。
+             *
+             * 只在本目标内生效：同一个候选在别的网失败，不代表这个网也失败。 */
+            {
+                triedKey = TriedSet.targetKey(task.bssid, task.ssid);
+                triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
+                triedSinceFlush = 0;
+                if (triedSet.size() > 0) {
+                    List<Candidate> keep = new ArrayList<>(work.size());
+                    int skipped = 0;
+                    for (Candidate c : work) {
+                        if (triedSet.contains(c.password)) { skipped++; continue; }
+                        keep.add(c);
+                    }
+                    if (skipped > 0) {
+                        log(L.f("已跳过 %d 条本目标试过的候选（本目标累计 %d 条）",
+                                "Skipped %d already-tried candidates on this target (%d total)",
+                                skipped, triedSet.size()));
+                    }
+                    work = keep;
+                }
+                if (triedSet.isOverflow()) {
+                    log(L.s("提示: 本目标的已试记录已达上限，更早的记录不再计入。",
+                            "Note: tried-record limit reached for this target."));
+                }
+            }
+
             currentDict = work;
             if (task.dictSize <= 0) {
                 task.dictSize = currentDict.size();
@@ -884,7 +927,13 @@ public class CrackService extends Service {
         }
 
         if (currentDict.isEmpty()) {
-            log(L.s("候选为空，跳过", "Empty candidate set, skipping"));
+            if (triedSet != null && triedSet.size() > 0) {
+                log(L.s("这本字典的候选在本目标上都试过了 —— 换一本字典，或到字典页清空已试记录。",
+                        "Every candidate here has already been tried on this target \u2014 "
+                                + "use another dictionary or clear the tried record."));
+            } else {
+                log(L.s("候选为空，跳过", "Empty candidate set, skipping"));
+            }
             task.state = TaskQueue.State.DONE_MISS;
             TaskQueue.update(this, task);
             notifyQueue();
@@ -995,6 +1044,19 @@ public class CrackService extends Service {
             public void onAttemptResult(CrackEngine.Attempt a) {
                 // 心跳：回到前台时用它判断「后台期间是不是被系统挂起过」
                 Prefs.beat(CrackService.this, System.currentTimeMillis());
+
+                /* 记入"本目标已试"。
+                 * **只记有明确结论的**（密码错误 / 命中）——
+                 * 超时、无结论、通道出错都不记：那些下次还应该再试一次，
+                 * 记进去等于把没真正验证过的候选当成"已排除"。 */
+                if (triedSet != null && a.password != null && !a.password.isEmpty()) {
+                    boolean definite = a.isSuccess()
+                            || a.verdict == CrackEngine.Verdict.AUTH_FAIL;
+                    if (definite && triedSet.add(a.password) && ++triedSinceFlush >= 32) {
+                        triedSinceFlush = 0;
+                        flushTried();
+                    }
+                }
                 // 不要再覆盖引擎给出的 detail。
                 //
                 // 旧代码把 UNKNOWN 一律改写成「无法确认（当前连着目标，但可能是原有连接）」，
@@ -1095,6 +1157,14 @@ public class CrackService extends Service {
      * 按「≥2 秒 或 ≥20 条」落一次，可靠性与开销兼顾。
      * 命中时由 finishTask 立即落盘，不走这里。
      */
+    /** 把"已试集合"落盘。失败只记一行日志 —— 丢了最多重跑，不会出错。 */
+    private void flushTried() {
+        TriedSet t = triedSet;
+        String key = triedKey;
+        if (t == null || key == null || key.isEmpty() || !t.isDirty()) return;
+        t.save(TriedSet.fileFor(this, key));
+    }
+
     private void saveProgress(TaskQueue.Task ft, int offset, boolean force) {
         if (ft == null || offset <= 0) return;
         long now = System.currentTimeMillis();
@@ -1114,6 +1184,7 @@ public class CrackService extends Service {
 
     private void finishTask(TaskQueue.Task ft, String outcomeName,
                             int tested, int offset, String hitPassword) {
+        flushTried();
         ft.offset = offset;
         ft.testedThisRun += tested;
         ft.elapsedMs += System.currentTimeMillis() - taskStartAt;

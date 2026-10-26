@@ -3,69 +3,79 @@ package io.github.wlmosv_png.wpaforge.ui;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.RectF;
-import android.graphics.Shader;
 import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.view.View;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+import io.github.wlmosv_png.wpaforge.scan.BlipLayout;
+import io.github.wlmosv_png.wpaforge.scan.ChannelMap;
+
 /**
- * 信号雷达 —— 极坐标刻度盘（2026-10-24 第二次重做）。
+ * 信号雷达 —— 极坐标刻度盘（2026-10-26 第三次重做：频谱盘）。
  *
- * <h3>上一版为什么"怪异"（用户反馈）</h3>
- * <ol>
- *   <li><b>点全挤在圆心</b>：半径按 {@code 1 - (rssi+100)/70} 连续映射，而实测网络
- *       集中在 -40~-70dBm，算出来几乎都贴到内圈下限，外圈完全空着 ——
- *       看起来就是"一团黄球堆在中间"；</li>
- *   <li><b>光晕叠成一坨</b>：每个强点画 2.1 倍半径的半透明大圆，几十个一叠，
- *       糊成一片黄雾；</li>
- *   <li><b>乱跳</b>：每个点各自按相位做正弦抖动，像抽筋，不像仪表；</li>
- *   <li><b>扫描线僵在半空</b>：扫描结束后指针还冻在某个角度，像坏掉的表针。</li>
- * </ol>
- *
- * <h3>现在的做法：档位即刻度，点沿环均匀铺开</h3>
+ * <h3>历史<\/h3>
  * <ul>
- *   <li><b>五道信号环</b>（≥-50 / -60 / -70 / -80 / ≤-90 dBm，越强越靠里），
- *       环上标出 dBm 刻度 —— "越强越靠里"这件事从此**可读**，而不只是好看；</li>
- *   <li><b>一 AP 一点</b>，落在自己档位的那道环上；同一道环内的点沿圆周**均匀铺开**，
- *       所以永远不会重叠、也不会堆在圆心；</li>
- *   <li><b>不抖</b>：点的位置与大小固定（大小按档位 3.0→5.4dp）。唯一的"活"来自扫描 ——
- *       被光束扫过的点会亮起来，随后按角度差缓慢回落，像真雷达的余辉；</li>
- *   <li><b>不转的时候就是一张干净的刻度盘</b>：扫描结束不画指针，也不后台出帧（省电）。</li>
- * </ul>
+ *   <li><b>第一版<\/b>：点全挤圆心、光晕糊成黄雾、每点各自抖动（用户：\"一团黄球\"）；<\/li>
+ *   <li><b>第二版<\/b>：档位即刻度（5 道环）、点沿圆周均匀铺开、不抖。结构对了，
+ *       但**方位角仍是装饰** —— 位置来自\"按信号排序的序号\"，信号一抖点就换位，
+ *       新 AP 进来其余点全体挪一格；23 个网络谁是谁也无从对应；<\/li>
+ *   <li><b>本版<\/b>：方位角＝<b>信道<\/b>。圆盘变成频谱环：上半圆是 2.4G 的
+ *       14 个信道，下半圆是 5G 的 4 个 UNII 组（见 {@link ChannelMap}）。<\/li>
+ * <\/ul>
  *
- * <p>未加密的点套一圈细红边（与列表里的红胶囊同一套语义）；最强档再加一层很淡的光晕。
+ * <h3>这一版解决什么<\/h3>
+ * <ol>
+ *   <li><b>能读<\/b>：同一扇区里点越多 = 这条信道越挤。这正是用户要做的决定
+ *       ——「我该把路由改到哪条」，而且与 {@link ChannelBars} \/
+ *       {@code ChannelAnalyzer} 的推荐互相印证；<\/li>
+ *   <li><b>位置稳定<\/b>：信道不变，方位就不变。扇区内按 BSSID 排序，新 AP 只在自己的
+ *       扇区里插空，不会让全场重排；<\/li>
+ *   <li><b>刻度不再被压住<\/b>：环上的 dBm 刻度挪到**最后一步**画（点之上），
+ *       底片不透明 —— 原来画在点之前，用户截图里 {@code ≥-50} 那一格正被亮点盖住；<\/li>
+ *   <li><b>扫描光束不再盖数据<\/b>：实心黄扇换成\"指针 + 拖尾\"，不填充任何面，
+ *       余辉也调浅（原来 20% 不透明度的扇形压在右下 1/4 的数据上）。<\/li>
+ * <\/ol>
+ *
+ * <p>频段用**填充方式**区分而不是颜色：2.4G 实心、5G 空心环。这样不占用
+ * 颜色通道（颜色留给信号强度与\"未加密\"的红边），色盲用户也分得清。
  */
 public class RadarSweep extends View {
 
-    /**
-     * 一个落点。
-     *
-     * @param angleDeg 建议方位角：仅用于同档位内的排序（保证刷新时位置稳定），
-     *                 实际方位由视图在该环上均匀分配，避免重叠
-     * @param level    信号档位 0..4（0 最弱）
-     * @param secured  是否加密（未加密套红边）
-     */
+    /** 一个落点。 */
     public static final class Blip {
-        public final float angleDeg;
+        /** 稳定身份（BSSID）：同扇区内按它排序，保证刷新后位置不乱跳 */
+        public final String key;
+        /** 信道（2.4G 1..14；5G 36..177；未知填 0） */
+        public final int channel;
+        public final boolean is5G;
+        /** 信号档位 0..4（0 最弱） */
         public final int level;
+        /** 是否加密（未加密套红边） */
         public final boolean secured;
 
-        public Blip(float angleDeg, int level, boolean secured) {
-            this.angleDeg = angleDeg;
+        public Blip(String key, int channel, boolean is5G, int level, boolean secured) {
+            this.key = key == null ? "" : key;
+            this.channel = channel;
+            this.is5G = is5G;
             this.level = level;
             this.secured = secured;
+        }
+
+        /** 老调用方兼容：没有信道信息时落到 2.4G 的第 1 个扇区（不丢点、不抛异常） */
+        public Blip(float angleDeg, int level, boolean secured) {
+            this("", 0, false, level, secured);
         }
     }
 
     /**
      * 五道信号环的半径比例（下标＝档位，越大越靠里）。
-     *
-     * <p>最内环从 0.40 外移到 0.51：原来最强档的点紧贴中心的大数字，
-     * 加上刻度字也在那儿，看起来就是"中间一团"。现在中心留出一圈干净的空，
-     * 强信号的那道环在中层，读数与点都不打架。
+     * 最强档从 0.40 外移到 0.51：中心留出一圈干净的空，读数与点都不打架。
      */
     private static final float[] RING = {0.97f, 0.855f, 0.74f, 0.625f, 0.51f};
     /** 环刻度文字（与该环的档位一一对应）。 */
@@ -73,21 +83,18 @@ public class RadarSweep extends View {
     /** 每档的点半径（dp，下标＝档位）。 */
     private static final float[] DOT_DP = {3.0f, 3.6f, 4.2f, 4.8f, 5.4f};
     /** 被光束扫过之后的余辉：从亮到暗的最低值。 */
-    private static final float GLOW_MIN = 0.55f;
-    /** 同一道环内两点之间至少保留的点径倍数（防稠密用）。 */
-    private static final float DOT_GAP = 2.7f;
-    /** 同档超过单环容量时的分层偏移（半径比例）。 */
-    private static final float LAYER_OFFSET = 0.075f;
+    private static final float GLOW_MIN = 0.72f;
 
     private Blip[] blips = new Blip[0];
     private final Paint pRing = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pAxis = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint pSweep = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pSector = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pDrum = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pDot = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pText = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pScale = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pBand = new Paint(Paint.ANTI_ALIAS_FLAG);
     /** 刻度字底下的色块（与卡片同色）。 */
     private final Paint pPatch = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -109,8 +116,12 @@ public class RadarSweep extends View {
         pAxis.setStrokeWidth(dp(1f));
         pAxis.setColor(AmberTheme.GRID);
 
+        pSector.setStyle(Paint.Style.STROKE);
+        pSector.setStrokeWidth(dp(0.8f));
+        pSector.setColor(AmberTheme.GRID);
+
         pEdge.setStyle(Paint.Style.STROKE);
-        pEdge.setStrokeWidth(dp(1.1f));
+        pEdge.setStrokeWidth(dp(1.6f));
         pEdge.setColor(AmberTheme.DANGER);
 
         pText.setTextAlign(Paint.Align.CENTER);
@@ -119,6 +130,11 @@ public class RadarSweep extends View {
         pScale.setTextAlign(Paint.Align.LEFT);
         pScale.setTextSize(dp(9f));
         pScale.setColor(AmberTheme.TEXT_FAINT);
+
+        pBand.setTextAlign(Paint.Align.CENTER);
+        pBand.setTextSize(dp(9f));
+        pBand.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
     }
 
     private float dp(float v) {
@@ -194,129 +210,177 @@ public class RadarSweep extends View {
         float cx = w / 2f, cy = h / 2f;
         float radius = Math.min(w, h) / 2f - dp(16);
 
-        // ── 刻度盘：五道信号环 + 细化十字轴 + 环上的 dBm 刻度
+        // ── 1. 刻度盘：五道信号环 + 细十字轴
         for (int i = 0; i < RING.length; i++) {
-            float rr = radius * RING[i];
-            cv.drawCircle(cx, cy, rr, pRing);
-            // 刻度做成**纵轴上的刻度尺**（上半天、写在纵轴右侧）：
-            // 斜排会跟中心的数字、以及点挤在一起；竖排一眼就能读出"哪道环是多少 dBm"。
-            // 底下垫一块与卡片同色的底片，点多的时候刻度也不会被点压住。
-            float tx = cx + dp(5);
-            float ty = cy - rr + dp(3);
-            float tw = pScale.measureText(RING_LABEL[i]);
-            pPatch.setColor(AmberTheme.CARD);
-            pPatch.setAlpha(238);
-            RectF patch = new RectF(tx - dp(3), ty - dp(9), tx + tw + dp(3), ty + dp(4));
-            cv.drawRoundRect(patch, dp(3), dp(3), pPatch);
-            cv.drawText(RING_LABEL[i], tx, ty, pScale);
+            cv.drawCircle(cx, cy, radius * RING[i], pRing);
         }
-        for (int i = 1; i <= 3; i++) {   // 细十字轴（比环更淡）
+        for (int i = 1; i <= 3; i++) {
             float rr = radius * i / 3.4f;
             float d = rr * 0.42f;
             cv.drawLine(cx - d, cy, cx + d, cy, pAxis);
             cv.drawLine(cx, cy - d, cx, cy + d, pAxis);
         }
 
-        // ── 扫描：只在扫描时画（停下就是一张干净的盘）
+        // ── 2. 扇区分隔：方位角＝信道，所以这条线是「频谱的分格」
+        drawSectors(cv, cx, cy, radius);
+
+        // ── 3. 扫描：指针 + 拖尾（**不填充扇形**，别盖住数据）
         if (spinning) {
-            RectF oval = new RectF(cx - radius, cy - radius, cx + radius, cy + radius);
-            pSweep.setShader(new LinearGradient(cx, cy, cx + radius, cy,
-                    new int[]{Color.TRANSPARENT, AmberTheme.ACCENT_GLOW}, null,
-                    Shader.TileMode.CLAMP));
-            cv.drawArc(oval, sweepAngle - 46, 46, true, pSweep);
-            pSweep.setShader(null);
-
             double rad = Math.toRadians(sweepAngle);
-            float ex = cx + (float) Math.cos(rad) * radius;
-            float ey = cy + (float) Math.sin(rad) * radius;
-            pDrum.setColor(AmberTheme.ACCENT);
-            pDrum.setStrokeWidth(dp(1.6f));
-            cv.drawLine(cx, cy, ex, ey, pDrum);
+            for (int i = 5; i >= 0; i--) {
+                double a = Math.toRadians(sweepAngle - i * 3.4f);
+                float al = (1f - i / 6f) * 0.45f;
+                pDrum.setColor(AmberTheme.ACCENT);
+                pDrum.setAlpha((int) (al * 255));
+                pDrum.setStrokeWidth(dp(i == 0 ? 1.8f : 1.0f));
+                cv.drawLine(cx + (float) Math.cos(a) * radius * 0.12f,
+                        cy + (float) Math.sin(a) * radius * 0.12f,
+                        cx + (float) Math.cos(a) * radius,
+                        cy + (float) Math.sin(a) * radius, pDrum);
+            }
+            pDrum.setAlpha(255);
+            cv.drawCircle(cx + (float) Math.cos(rad) * radius,
+                    cy + (float) Math.sin(rad) * radius, dp(2.4f), pDrum);
         }
 
-        // ── 落点：按档位分桶，桶内沿环均匀铺开。
-        //
-        // 稠密处理（WiFi 很多时）：单环容量按「环周长 / 点直径 / 间隔」算，
-        // 超过容量就**自动分层**（同一档位拆成 2~3 道子环），点径再按层内点数收缩。
-        // 这样 20 台和 120 台都不会糊成一圈 —— 既能一 AP 一点，也不重叠。
-        int[] bucketSize = new int[RING.length];
-        for (Blip b : blips) bucketSize[lv(b)]++;
-        int[] layers = new int[RING.length];
-        int[] perLayer = new int[RING.length];
+        // ── 4. 落点：**按信道扇区分组**，组内按 BSSID 排序（位置稳定）
+        drawBlips(cv, cx, cy, radius);
+
+        // ── 5. 环上的 dBm 刻度：**最后画**，保证永远压在点之上（原来被点盖住）
         for (int i = 0; i < RING.length; i++) {
-            int n = bucketSize[i];
-            float ringLen = (float) (2 * Math.PI * radius * RING[i]);
-            int cap = Math.max(1, (int) (ringLen / (dp(DOT_DP[i]) * DOT_GAP)));
-            // 最多拆三道子环：再多就会串到邻档的带上，反而看不出档位
-            layers[i] = Math.max(1, Math.min(3, (int) Math.ceil(n / (float) cap)));
-            perLayer[i] = (int) Math.ceil(n / (float) layers[i]);
-        }
-        int[] used = new int[RING.length];
-        for (Blip b : blips) {
-            int level = lv(b);
-            int idx = used[level]++;
-            int n = Math.max(1, perLayer[level]);
-            int layer = idx / n;                       // 第几道子环
-            int slot = idx % n;
-            // 每档整体偏转一点，避免不同环上的点排成同一根辐条
-            float angle = (360f * slot / n) + level * 26f + layer * (180f / Math.max(1, n));
-
-            float ringR = RING[level];
-            if (layers[level] > 1) {
-                // 子环围绕该档环向外/向内错开；夹在 0.28~1.0 之间不越界
-                float off = (layer - (layers[level] - 1) / 2f) * LAYER_OFFSET;
-                ringR = Math.max(0.28f, Math.min(1f, ringR + off));
-            }
-            double a = Math.toRadians(angle);
-            float rr = radius * ringR;
-            float bx = cx + (float) Math.cos(a) * rr;
-            float by = cy + (float) Math.sin(a) * rr;
-
-            // 余辉：被光束扫过最亮，随后按角度差缓慢回落（只在扫描时变化）
-            float alpha = 0.92f;
-            if (spinning) {
-                float diff = ((sweepAngle - angle) % 360f + 360f) % 360f;
-                alpha = diff <= 26f ? 1f
-                        : GLOW_MIN + (1f - GLOW_MIN) * Math.max(0f, 1f - (diff - 26f) / 220f);
-            }
-
-            // 点径：档位基准，随「本层点数」收缩 —— 挤的时候自动变小，永不粘连
-            float ringLen = (float) (2 * Math.PI * radius * ringR);
-            float dotR = Math.min(dp(DOT_DP[level]), ringLen / (DOT_GAP * n) / 2f * 1.5f);
-            dotR = Math.max(dp(1.9f), dotR);
-
-            int color = AmberTheme.signalColor(level);
-            if (level >= 4) {
-                // 最强档：一圈**细亮环**（原来那层大光晕会被看成"糊"，这里换成清晰的环）
-                pEdge.setColor(AmberTheme.ACCENT_SOFT);
-                pEdge.setStyle(Paint.Style.STROKE);
-                pEdge.setAlpha((int) (alpha * 170));
-                cv.drawCircle(bx, by, dotR + dp(1.6f), pEdge);
-                pEdge.setColor(AmberTheme.DANGER);
-            }
-            pDot.setColor(color);
-            pDot.setAlpha((int) (alpha * 255));
-            cv.drawCircle(bx, by, dotR, pDot);
-
-            if (!b.secured) {   // 未加密：细红边（与列表红胶囊同一语义）
-                pEdge.setAlpha((int) (alpha * 220));
-                cv.drawCircle(bx, by, dotR + dp(1.4f), pEdge);
-            }
+            float rr = radius * RING[i];
+            float tx = cx + dp(5);
+            float ty = cy - rr + dp(3);
+            float tw = pScale.measureText(RING_LABEL[i]);
+            pPatch.setColor(AmberTheme.CARD);
+            pPatch.setAlpha(255);
+            RectF patch = new RectF(tx - dp(3), ty - dp(9), tx + tw + dp(3), ty + dp(4));
+            cv.drawRoundRect(patch, dp(3), dp(3), pPatch);
+            cv.drawText(RING_LABEL[i], tx, ty, pScale);
         }
 
-        // ── 中心：大数字 + 副文字
+        // ── 6. 中心：大数字 + 副文字
         if (!centerText.isEmpty()) {
-            pText.setTextSize(dp(26));
+            pText.setTextSize(dp(24));
             pText.setColor(AmberTheme.TEXT);
             cv.drawText(centerText, cx, cy - dp(2), pText);
-            pText.setTextSize(dp(11));
+            pText.setTextSize(dp(10.5f));
             pText.setColor(AmberTheme.TEXT_DIM);
-            cv.drawText(subText, cx, cy + dp(16), pText);
+            cv.drawText(subText, cx, cy + dp(15), pText);
         }
 
         if (spinning) {
             sweepAngle = (sweepAngle + dt * 62f) % 360f;   // 约 5.8 秒一圈
             postInvalidateOnAnimation();
+        }
+    }
+
+    /** 扇区分隔线 + 频段标签（2.4G 在上半圆，5G 在下半圆） */
+    private void drawSectors(Canvas cv, float cx, float cy, float radius) {
+        float w24 = ChannelMap.slotWidth(false);
+        for (int i = 0; i <= ChannelMap.CH_24_COUNT; i++) {
+            float a = ChannelMap.HALF + i * w24;
+            boolean divider = (i == 0 || i == ChannelMap.CH_24_COUNT);
+            // 只切颜色：主题色自带 alpha，再 setAlpha 会把透明度覆盖成不透明
+            pSector.setColor(divider ? AmberTheme.HAIRLINE : AmberTheme.GRID);
+            double r = Math.toRadians(a);
+            cv.drawLine(cx + (float) Math.cos(r) * radius * 0.51f,
+                    cy + (float) Math.sin(r) * radius * 0.51f,
+                    cx + (float) Math.cos(r) * radius,
+                    cy + (float) Math.sin(r) * radius, pSector);
+        }
+        float w5 = ChannelMap.slotWidth(true);
+        for (int i = 0; i <= ChannelMap.GROUP_5_COUNT; i++) {
+            float a = i * w5;
+            double r = Math.toRadians(a);
+            pSector.setColor(i == 0 || i == ChannelMap.GROUP_5_COUNT
+                    ? AmberTheme.HAIRLINE : AmberTheme.GRID);
+            cv.drawLine(cx + (float) Math.cos(r) * radius * 0.51f,
+                    cy + (float) Math.sin(r) * radius * 0.51f,
+                    cx + (float) Math.cos(r) * radius,
+                    cy + (float) Math.sin(r) * radius, pSector);
+        }
+
+        // 2.4G 只标 1 / 6 / 11（唯一互不重叠的三条），5G 标组范围
+        pBand.setTextSize(dp(8.5f));
+        for (int ch = 1; ch <= ChannelMap.CH_24_COUNT; ch++) {
+            if (!ChannelMap.isKey24Channel(ch)) continue;
+            double r = Math.toRadians(ChannelMap.slotCenter(false, ch));
+            float rr = radius * 0.905f;
+            pBand.setColor(AmberTheme.ACCENT_MID);
+            String t = String.valueOf(ch);
+            float tx = cx + (float) Math.cos(r) * rr;
+            float ty = cy + (float) Math.sin(r) * rr + dp(3);
+            cv.drawText(t, tx, ty, pBand);
+        }
+        for (int g = 0; g < ChannelMap.GROUP_5_COUNT; g++) {
+            double r = Math.toRadians(g * ChannelMap.slotWidth(true) + ChannelMap.slotWidth(true) / 2f);
+            float rr = radius * 0.905f;
+            pBand.setColor(AmberTheme.TEXT_FAINT);
+            String t = String.format(Locale.ROOT, "%d-%d", g == 0 ? 36 : g == 1 ? 52 : g == 2 ? 100 : 149,
+                    g == 0 ? 48 : g == 1 ? 64 : g == 2 ? 144 : 165);
+            cv.drawText(t, cx + (float) Math.cos(r) * rr,
+                    cy + (float) Math.sin(r) * rr + dp(3), pBand);
+        }
+    }
+
+    /**
+     * 落点：几何全部交给 {@link BlipLayout}（纯逻辑、有单测），
+     * 视图这里只管画 —— 位置对不对由测试保证，不靠肉眼。
+     */
+    private void drawBlips(Canvas cv, float cx, float cy, float radius) {
+        if (blips.length == 0) return;
+
+        List<BlipLayout.In> ins = new ArrayList<>(blips.length);
+        for (int i = 0; i < blips.length; i++) {
+            Blip b = blips[i];
+            ins.add(new BlipLayout.In(b.key, b.channel, b.is5G, lv(b), i));
+        }
+
+        float density = getResources().getDisplayMetrics().density;
+        List<BlipLayout.Pos> pos = BlipLayout.layout(ins, radius, density, RING, DOT_DP);
+
+        for (int i = 0; i < pos.size(); i++) {
+            BlipLayout.Pos p = pos.get(i);
+            Blip b = blips[Math.max(0, Math.min(blips.length - 1, p.src.tag))];
+            double a = Math.toRadians(p.angleDeg);
+            float bx = cx + (float) Math.cos(a) * radius * p.radiusRatio;
+            float by = cy + (float) Math.sin(a) * radius * p.radiusRatio;
+
+            // 余辉：被光束扫过最亮，随后按角度差缓慢回落（只在扫描时变化）
+            float alpha = 0.94f;
+            if (spinning) {
+                float diff = ((sweepAngle - p.angleDeg) % 360f + 360f) % 360f;
+                alpha = diff <= 22f ? 1f
+                        : GLOW_MIN + (1f - GLOW_MIN) * Math.max(0f, 1f - (diff - 22f) / 200f);
+            }
+
+            int level = lv(b);
+            int color = AmberTheme.signalColor(level);
+            if (level >= 4) {   // 最强档：一圈细亮环
+                pEdge.setColor(AmberTheme.ACCENT_SOFT);
+                pEdge.setStyle(Paint.Style.STROKE);
+                pEdge.setAlpha((int) (alpha * 170));
+                cv.drawCircle(bx, by, p.dotR + dp(1.6f), pEdge);
+            }
+
+            pDot.setColor(color);
+            pDot.setAlpha((int) (alpha * 255));
+            if (b.is5G) {
+                // 5G：空心环 —— 用**填充方式**区分频段，不占用颜色通道
+                pDot.setStyle(Paint.Style.STROKE);
+                pDot.setStrokeWidth(dp(1.5f));
+                cv.drawCircle(bx, by, p.dotR, pDot);
+                pDot.setStyle(Paint.Style.FILL);
+            } else {
+                cv.drawCircle(bx, by, p.dotR, pDot);
+            }
+
+            if (!b.secured) {   // 未加密：红边（比上一版粗一点，深底上要看得见）
+                pEdge.setColor(AmberTheme.DANGER);
+                pEdge.setAlpha((int) (alpha * 235));
+                cv.drawCircle(bx, by, p.dotR + dp(1.7f), pEdge);
+            }
         }
     }
 

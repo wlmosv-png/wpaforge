@@ -214,22 +214,43 @@ public class ThemeConsistencyTest {
         ok("雷达是五道信号环刻度盘（越强越靠里 + 环上标 dBm）", radar != null
                 && radar.contains("private static final float[] RING")
                 && radar.contains("private static final String[] RING_LABEL"));
-        ok("同档内的点沿圆周均匀铺开（不挤圆心）", radar != null
-                && radar.contains("float angle = (360f * slot / n) + level * 26f + layer *")
-                && radar.contains("int[] bucketSize = new int[RING.length];"));
-        ok("WiFi 很多时自动分层 + 点径收缩（不会糊成一圈）", radar != null
-                && radar.contains("int[] layers = new int[RING.length];")
-                && radar.contains("Math.min(3, (int) Math.ceil(n / (float) cap))")
-                && radar.contains("float dotR = Math.min(dp(DOT_DP[level]),"
-                                  + " ringLen / (DOT_GAP * n) / 2f * 1.5f);"));
+        // 2026-10-26 第三次重做：方位角＝信道。以下几条把新契约钉住，
+        // 免得以后有人又把它改回「按信号排序的序号当角度」——那样点会乱跳。
+        String layoutBlips = read(SRC + "scan/BlipLayout.java");
+        ok("方位角＝信道（几何在 BlipLayout，视图不再自己算）", radar != null
+                && layoutBlips != null
+                && layoutBlips.contains("ChannelMap.slotIndex(")
+                && layoutBlips.contains("ChannelMap.slotStart(")
+                && !radar.contains("i * 137.508f"));
+        ok("扇区内按 BSSID 稳定排序（刷新不乱跳）", layoutBlips != null
+                && layoutBlips.contains("sorted.sort((a, b) -> {")
+                && layoutBlips.contains("a.key.compareToIgnoreCase(b.key)"));
+        ok("2.4G / 5G 分半圆，并画扇区分隔线", radar != null
+                && radar.contains("ChannelMap.HALF + i * w24")
+                && radar.contains("i * w5"));
+        ok("落点几何走纯逻辑（可单测，不靠肉眼）", radar != null
+                && radar.contains("BlipLayout.layout(ins, radius, density, RING, DOT_DP)"));
+        ok("扇区里点太多时自动分层 + 点径收缩", layoutBlips != null
+                && layoutBlips.contains("int rows = Math.max(1, Math.min(MAX_ROWS,")
+                && layoutBlips.contains("float dotR = Math.min(dotDp[level] * density,"));
+        ok("频段用填充方式区分（2.4G 实心 / 5G 空心）", radar != null
+                && radar.contains("pDot.setStyle(Paint.Style.STROKE);")
+                && radar.contains("if (b.is5G) {"));
         ok("刻度字带底色块（点多也不糊掉刻度）", radar != null
                 && radar.contains("pPatch.setColor(AmberTheme.CARD);"));
+        ok("dBm 刻度在点之后画（不会被点压住）", radar != null
+                && radar.indexOf("drawBlips(cv, cx, cy, radius);")
+                   < radar.indexOf("pPatch.setColor(AmberTheme.CARD);"));
         ok("点不再抖动（没有相位/脉动，只有扫描余辉）", radar != null
                 && !radar.contains("phase")
                 && !radar.contains("pulse")
                 && radar.contains("GLOW_MIN"));
+        ok("扫描光束不填充扇形（不再盖住数据）", radar != null
+                && !radar.contains("drawArc(")
+                && radar.contains("// ── 3. 扫描：指针 + 拖尾（**不填充扇形**，别盖住数据）"));
         ok("停下不再画指针（扫描结束就是干净刻度盘）", radar != null
-                && radar.contains("if (spinning) {\n            RectF oval"));
+                && radar.contains("if (spinning) {"));
+        ok("中心显示网络数 + 最强 dBm", set.contains("个网络 · 最强 "));
         ok("雷达一 AP 一点：blips 长度＝可见网络数",
                 set.contains("RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()]"));
 

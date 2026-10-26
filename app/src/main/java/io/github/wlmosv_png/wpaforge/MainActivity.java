@@ -2261,17 +2261,24 @@ public class MainActivity extends Activity {
             if (passFilter(r)) visible.add(r);
         }
 
-        radar.setCenterText(String.valueOf(visible.size()), L.s("个网络", "networks"));
+        // 中心：网络数 + 最强那台的 dBm（用户最关心的两个数，放在最省眼力的位置）
+        int bestRssi = Integer.MIN_VALUE;
+        for (NetRecord r : visible) bestRssi = Math.max(bestRssi, r.rssi);
+        radar.setCenterText(String.valueOf(visible.size()),
+                visible.isEmpty() ? L.s("个网络", "networks")
+                        : L.s("个网络 · 最强 " + bestRssi + " dBm",
+                                "networks \u00b7 best " + bestRssi + " dBm"));
 
-        // 雷达：**一 AP 一点**，每点落在自己档位的那道环上（越强越靠里），
-        // 同一道环内由视图沿圆周均匀铺开 —— 既不会重叠，也不会堆在圆心。
-        // 这里只交「档位 + 是否加密」，方位角仅用于同档内的稳定排序。
+        // 雷达：**一 AP 一点**，半径＝信号档位（越强越靠里），**方位角＝信道**。
+        // 圆盘因此是一张频谱图：上半圆 2.4G 的 14 条信道、下半圆 5G 的 4 个 UNII 组，
+        // 同一扇区里点越多＝那条信道越挤。信道不变方位就不变，
+        // 所以刷新时点不会乱跳（旧的写法把「按信号排序的序号」当角度，一抖就换位）。
         List<NetRecord> byStrong = new ArrayList<>(visible);
         java.util.Collections.sort(byStrong, (a, b) -> b.rssi - a.rssi);
         RadarSweep.Blip[] blips = new RadarSweep.Blip[byStrong.size()];
         for (int i = 0; i < byStrong.size(); i++) {
             NetRecord r = byStrong.get(i);
-            blips[i] = new RadarSweep.Blip(i * 137.508f, r.signalLevel(),
+            blips[i] = new RadarSweep.Blip(r.bssid, r.channel, r.is5Ghz, r.signalLevel(),
                     r.security != NetRecord.Security.OPEN
                             && r.security != NetRecord.Security.WEP);
         }

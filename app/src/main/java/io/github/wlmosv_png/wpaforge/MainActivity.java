@@ -795,6 +795,17 @@ public class MainActivity extends Activity {
     private TextView wpsLogView;
     private TextView wpsImportLine;
 
+    /** 已知可打（Pixie）名单：按钮 + 诊断行 */
+    private Button wpsVulnBtn;
+    private TextView wpsVulnDiag;
+    /** 已加载的名单条目；null = 还没加载 */
+    private java.util.List<io.github.wlmosv_png.wpaforge.wps.VulnWsc.Entry> vulnEntries;
+    /** 名单文件是否已落盘 */
+    private boolean vulnListExists = false;
+    private volatile boolean vulnBusy = false;
+    /** supplicant 控制通道自检：-1 未知 / 0 不通（回包被系统策略拦）/ 1 通 */
+    private volatile int wpsCtrlOk = -1;
+
     private final java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Target> wpsTargets
             = new java.util.ArrayList<>();
     private io.github.wlmosv_png.wpaforge.wps.WpsController.Target wpsPicked;
@@ -852,6 +863,20 @@ public class MainActivity extends Activity {
         wpsScanStatus.setTextColor(AmberTheme.TEXT_DIM);
         wpsScanStatus.setVisibility(View.GONE);
         wpsTargetCard.addView(wpsScanStatus, topGap(6));
+
+        // 已知可打（Pixie）名单：一条按钮 + 一行诊断。
+        // 诊断不是装饰 —— 通道被系统策略拦掉时列表里全是「能力未知」，
+        // 没有这一行，用户会把它读成「这些 AP 都没问题」。
+        wpsVulnBtn = btnSecondary("");
+        wpsVulnBtn.setOnClickListener(v -> downloadVulnList());
+        wpsTargetCard.addView(wpsVulnBtn, topGap(8));
+
+        wpsVulnDiag = new TextView(this);
+        wpsVulnDiag.setTextSize(11f);
+        wpsVulnDiag.setTextColor(AmberTheme.TEXT_DIM);
+        wpsVulnDiag.setPadding(px(4), px(2), px(4), px(2));
+        wpsTargetCard.addView(wpsVulnDiag, topGap(4));
+        refreshVulnUi();
 
         Button addTargetBtn = btnSecondary(L.s("手动添加目标（扫不到的弱信号 AP 用这个）",
                 "Add target by BSSID (for weak APs the scan misses)"));
@@ -1205,18 +1230,27 @@ public class MainActivity extends Activity {
         }
         wpsTargets.clear();
         renderWpsTargets();
+        wpsCtrlOk = -1;
         wpsScanBusy(true, L.s("扫描中…", "Scanning…"));
         new Thread(() -> {
+            loadVulnList();     // 名单：读盘一次 + 进程内缓存
             java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Target> list =
                     io.github.wlmosv_png.wpaforge.wps.WpsController.scan(this,
                             new io.github.wlmosv_png.wpaforge.wps.WpsController.Listener() {
                                 @Override
                                 public void onLine(String line) {
                                     if (line == null) return;
+                                    if (line.startsWith("CTRL_OK=")) {
+                                        wpsCtrlOk = "1".equals(line.substring(8).trim()) ? 1 : 0;
+                                        return;
+                                    }
                                     if (line.startsWith("AP=")) {
                                         final io.github.wlmosv_png.wpaforge.wps.WpsController.Target t =
                                                 io.github.wlmosv_png.wpaforge.wps.WpsController.parseApLine(line);
                                         if (t != null) {
+                                            // 设备名读不到就不判：宁可不标，不编
+                                            t.vuln = io.github.wlmosv_png.wpaforge.wps.VulnWsc
+                                                    .match(t.wpsDevice, vulnEntries);
                                             runOnUiThread(() -> {
                                                 wpsTargets.add(t);
                                                 renderWpsTargets();
@@ -1256,6 +1290,8 @@ public class MainActivity extends Activity {
                 wpsScanBusy(false, "");
                 wpsTargets.clear();
                 wpsTargets.addAll(list);
+                matchAllTargets();      // scan() 返回的是新解析出的对象，标记要补一遍
+                refreshVulnUi();
                 renderWpsTargets();
                 // 结论写进扫描状态行；「目标」那行只表示当前选中项（语义更清楚）
                 if (wpsScanStatus != null) {
@@ -1337,6 +1373,8 @@ public class MainActivity extends Activity {
             }
             if (!tg.wpsMethods.isEmpty()) cap.append("  ").append(tg.wpsMethods);
             if (!tg.wpsDevice.isEmpty()) cap.append("  · ").append(tg.wpsDevice);
+            String vdet = io.github.wlmosv_png.wpaforge.wps.VulnUi.detail(tg.vuln, zh);
+            if (!vdet.isEmpty()) cap.append("  ★ ").append(vdet);
 
             TextView caps = new TextView(this);
             caps.setText(cap.toString());
@@ -1380,6 +1418,22 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             chlp.topMargin = px(6);
             right.addView(chip, chlp);
+
+            // 名单命中：单独一枚标记，不改动原来那枚「可试/不建议」的语义
+            String vshort = tg.vulnShort(zh);
+            if (!vshort.isEmpty()) {
+                TextView vchip = new TextView(this);
+                vchip.setText(vshort);
+                vchip.setTextSize(FS_TINY);
+                vchip.setTextColor(AmberTheme.ACCENT_SOFT);
+                vchip.setGravity(Gravity.CENTER);
+                vchip.setBackground(roundBg(AmberTheme.ACCENT_BG, AmberTheme.RADIUS_CHIP));
+                vchip.setPadding(px(8), px(3), px(8), px(3));
+                LinearLayout.LayoutParams vclp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                vclp.topMargin = px(6);
+                right.addView(vchip, vclp);
+            }
 
             item.addView(right);
             item.setOnClickListener(v -> {
@@ -1628,6 +1682,8 @@ public class MainActivity extends Activity {
                             t.wpsDevice = info.device;
                             t.pairingWindow = info.pairingWindow;
                             t.devPwdId = info.devPwdId;
+                            loadVulnList();
+                            t.vuln = io.github.wlmosv_png.wpaforge.wps.VulnWsc.match(info.device, vulnEntries);
                             boolean dup = false;
                             for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target x : wpsTargets) {
                                 if (x.bssid.equalsIgnoreCase(b)) dup = true;
@@ -1645,6 +1701,72 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton(L.s("取消", "Cancel"), null)
                 .show();
+    }
+
+    // ---------------- 已知可打（Pixie）名单 ----------------
+
+    /** 界面语言：与全站一致的单点判断。 */
+    private static boolean zhUi() {
+        return L.s("a", "b").equals("a");
+    }
+
+    /** 读名单（VulnWscStore 自带进程内缓存；读不到就是空表，不抛）。 */
+    private void loadVulnList() {
+        vulnListExists = io.github.wlmosv_png.wpaforge.wps.VulnWscStore.exists(this);
+        vulnEntries = io.github.wlmosv_png.wpaforge.wps.VulnWscStore.load(this);
+    }
+
+    /** 用当前名单重算所有目标的标记。设备名为空的不判 —— 读不到就不标。 */
+    private void matchAllTargets() {
+        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+            t.vuln = t.wpsDevice.isEmpty() ? null
+                    : io.github.wlmosv_png.wpaforge.wps.VulnWsc.match(t.wpsDevice, vulnEntries);
+        }
+    }
+
+    /** 名单按钮文案 + 诊断行。数字全部来自实测：名单条数、目标数、读到设备名的个数、命中个数。 */
+    private void refreshVulnUi() {
+        if (vulnEntries == null && !vulnBusy) loadVulnList();
+        int entries = vulnEntries == null ? 0 : vulnEntries.size();
+        if (wpsVulnBtn != null) {
+            wpsVulnBtn.setText(io.github.wlmosv_png.wpaforge.wps.VulnUi
+                    .listButton(vulnListExists, entries, vulnBusy, zhUi()));
+            wpsVulnBtn.setEnabled(!vulnBusy);
+        }
+        if (wpsVulnDiag == null) return;
+        int named = 0, hits = 0;
+        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+            if (!t.wpsDevice.isEmpty()) named++;
+            if (t.vuln != null) hits++;
+        }
+        io.github.wlmosv_png.wpaforge.wps.VulnUi.Diag d = io.github.wlmosv_png.wpaforge.wps.VulnUi.diagnose(
+                vulnListExists, entries, wpsTargets.size(), named, hits,
+                wpsCtrlOk == 1, zhUi());
+        wpsVulnDiag.setText(d.text);
+        wpsVulnDiag.setTextColor(d.action ? DANGER : AmberTheme.TEXT_DIM);
+    }
+
+    /** 下载/更新名单。阻塞式网络调用放子线程，回来再刷界面。 */
+    private void downloadVulnList() {
+        if (vulnBusy) return;
+        vulnBusy = true;
+        refreshVulnUi();
+        new Thread(() -> {
+            io.github.wlmosv_png.wpaforge.wps.VulnWscStore.Result r = io.github.wlmosv_png.wpaforge.wps.VulnWscStore.update(this);
+            runOnUiThread(() -> {
+                vulnBusy = false;
+                loadVulnList();
+                matchAllTargets();
+                refreshVulnUi();
+                renderWpsTargets();
+                Toast.makeText(this, r.ok
+                        ? L.s("名单已更新：" + r.entries + " 条",
+                              "List updated: " + r.entries + " entries")
+                        : L.s("名单下载失败：" + r.message,
+                              "List download failed: " + r.message),
+                        Toast.LENGTH_LONG).show();
+            });
+        }, "vuln-list").start();
     }
 
     /** 体检范围按钮的文案。 */

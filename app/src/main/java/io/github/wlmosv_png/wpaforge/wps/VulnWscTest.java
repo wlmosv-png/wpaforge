@@ -182,6 +182,39 @@ public class VulnWscTest {
         ok("Tenda 文案含 PIN",
                 td != null && VulnWsc.label(td, true).contains("123456"), "");
 
+        System.out.println("== 泛称设备名不得命中（真实名单复现：修复前 6/6 全误标） ==");
+        List<VulnWsc.Entry> real2 = L(
+                "ADSL Router EV-2006-07-27",
+                "AIR3G WSC Wireless Access Point AIR3G WSC Device",
+                "Enhanced Wireless Router F6D4230-4 v1",
+                "Wireless WPS Router <#ZVMODELVZ#>",
+                "AirLive Wireless Gigabit AP AirLive Wireless Gigabit AP",
+                "WPS Router RT-N12E");
+        ok("裸泛称 Wireless WPS Router 不命中",
+                VulnWsc.match("Wireless WPS Router", real2) == null, "");
+        ok("裸泛称 Wireless Router 不命中",
+                VulnWsc.match("Wireless Router", real2) == null, "");
+        ok("裸泛称 WPS Router 不命中",
+                VulnWsc.match("WPS Router", real2) == null, "");
+        ok("裸泛称 Wireless Access Point 不命中",
+                VulnWsc.match("Wireless Access Point", real2) == null, "");
+        ok("裸泛称 ADSL Router 不命中",
+                VulnWsc.match("ADSL Router", real2) == null, "");
+        ok("裸泛称 Wireless 不命中",
+                VulnWsc.match("Wireless", real2) == null, "");
+        ok("泛称+型号 仍必须命中（不能一刀切）",
+                VulnWsc.match("Wireless WPS Router RT-N12E", real2) != null, "");
+        ok("泛称+型号 被条目包含时也命中",
+                VulnWsc.match("WPS Router RT-N12E", real2) != null, "");
+        ok("重复泛称不算裸泛称（名单里真有这种条目，别误杀）",
+                VulnWsc.match("Wireless Router Wireless Router",
+                        L("Wireless Router Wireless Router")) != null, "");
+        ok("isGenericName 认裸泛称", VulnWsc.isGenericName("wirelessaccesspoint"), "");
+        ok("isGenericName 不认带型号", !VulnWsc.isGenericName("dlinkrouterdir615h1"), "");
+        ok("isGenericName(null) 为假", !VulnWsc.isGenericName(null), "");
+        ok("N/A 归一化后是 na，不再是死条目",
+                VulnWsc.isGenericName(VulnWsc.normalize("N/A")), "");
+
         System.out.println("=== VulnWsc 测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
     }

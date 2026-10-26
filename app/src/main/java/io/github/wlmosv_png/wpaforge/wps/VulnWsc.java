@@ -30,10 +30,10 @@ public final class VulnWsc {
     /** 短于这个长度不许参与匹配（否则 "net"、"wifi" 这种词会到处命中） */
     public static final int MIN_MATCH_LEN = 5;
 
-    /** 名单里这些是"泛称"，不是型号：命中它们等于没命中 */
+    /** 名单里这些是"泛称"，不是型号：它们只说明设备自报了一个没有型号信息的大路货名字 */
     private static final String[] GENERIC = {
             "wirelessrouter", "wirelessaccesspoint", "wirelesswpsrouter", "wpsrouter",
-            "wirelessgigabitap", "adslrouter", "adsl", "gponont", "n/a", "router",
+            "wirelessgigabitap", "adslrouter", "adsl", "gponont", "na", "router",
             "accesspoint", "wireless", "wlan", "ap",
     };
 
@@ -137,6 +137,15 @@ public final class VulnWsc {
         return sb.toString();
     }
 
+    /** 设备名（已归一化）是否只是泛称 —— 泛称不含型号信息，不能用来判「已知可打」。 */
+    static boolean isGenericName(String normalizedDevice) {
+        if (normalizedDevice == null) return false;
+        for (String g : GENERIC) {
+            if (normalizedDevice.equals(g)) return true;
+        }
+        return false;
+    }
+
     /**
      * 设备名 → 命中条目。
      *
@@ -146,6 +155,12 @@ public final class VulnWsc {
     public static Match match(String deviceName, List<Entry> entries) {
         String dev = normalize(deviceName);
         if (dev.length() < MIN_MATCH_LEN || entries == null) return null;
+        // 设备名本身就是泛称 → 不含任何型号信息，匹配结果必然是噪声。
+        // 实测（真实名单 164 条 × 裸泛称设备名）：「Wireless WPS Router」「Wireless Router」
+        // 「Wireless Access Point」「ADSL Router」「Wireless」「WPS Router」全被误标成
+        // 已知可打 —— 名单里的泛称词总是嵌在长条目中（如 "ADSL Router EV-2006-07-27"），
+        // 「条目包含设备名」这条反向包含会把裸泛称整个吃进去。
+        if (isGenericName(dev)) return null;
 
         Entry best = null;
         for (Entry e : entries) {

@@ -179,6 +179,23 @@ passphrase is out of scope — that one is what WPA3 is for.
 | Some APs are missing | the phone lacks 6GHz, or randomised MAC is on | turn randomised MAC off and rescan |
 | Permission errors | Root not granted, or the ROM blocks `cmd wifi` | run the 6-step self-check on the settings page |
 | Killed mid-run | battery optimisation | whitelist it; progress is persisted and it resumes |
+| WPS targets show "capability unknown" and no device name | SELinux does not let the supplicant reply to the root domain | add one allow rule, see below |
+
+### WPS channel (root required)
+
+Reading the reported WPS device name, configuration methods and pairing window means asking
+wpa_supplicant over its control channel. On some systems (measured: ColorOS 15 / Android 15)
+SELinux does not let the supplicant send the reply back to the root domain, so you get an AP
+list but "capability unknown" and no device names. WPAForge says so on the WPS page instead
+of showing a silent "all fine".
+
+Fix: drop a `sepolicy.rule` file into any Magisk module directory with one line:
+
+```
+allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto
+```
+
+Reboot to apply; delete the file to revert.
 
 ## Install
 
@@ -196,7 +213,7 @@ neither survives a per-candidate dictionary sweep.
 No Gradle; a two-stage manual chain:
 
 ```sh
-WP_VERSION_CODE=122 WP_VERSION_NAME=1.9.26 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
+WP_VERSION_CODE=123 WP_VERSION_NAME=1.9.27 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop side: javac + d8 + signing (needs WP_FORGE_KS*)
 ```
 

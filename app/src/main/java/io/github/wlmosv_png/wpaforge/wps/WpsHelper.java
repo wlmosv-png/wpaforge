@@ -205,6 +205,22 @@ public final class WpsHelper {
             }
 
             /*
+             * 通道自检：部分系统（实测 ColorOS 15 / Android 15）的 SELinux 策略不允许
+             * supplicant 往 root(magisk) 域回包 —— avc denied { sendto },
+             * scontext=u:r:hal_wifi_supplicant_default:s0 tcontext=u:r:magisk:s0。
+             * 症状是「命令发得出去、回包收不回来」，上层只会看到一屏 UNKNOWN，
+             * 用户无从判断是「这些 AP 真没能力」还是「压根没读到」。
+             * 所以这里直接测一次 STATUS，把结论打给界面。
+             */
+            if (c != null) {
+                String chk = c.cmd("STATUS");
+                System.out.println("CTRL_OK=" + (chk != null && !chk.trim().isEmpty() ? "1" : "0"));
+            } else {
+                System.out.println("CTRL_OK=0");
+            }
+            System.out.flush();
+
+            /*
              * 补第二数据源：supplicant 自己的 BSS 表。
              *
              * 为什么必须补：framework 的 list-scan-results 和 supplicant 的 BSS 表

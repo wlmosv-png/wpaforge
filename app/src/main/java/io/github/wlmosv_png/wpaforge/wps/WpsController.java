@@ -107,6 +107,14 @@ public final class WpsController {
         /** 体检细节（关联毫秒 + 日志指纹），列表上一起显示 */
         public String reconDetail = "";
 
+        /** 已知可打（Pixie）名单的命中结果；null = 未命中，或设备名还没读到 */
+        public VulnWsc.Match vuln;
+
+        /** 命中名单的短标记（列表胶囊用）；没命中返回空串 */
+        public String vulnShort(boolean zh) {
+            return VulnUi.shortLabel(vuln, zh);
+        }
+
         /** 体检结论 → 人话。READY 才是「值得开打」的目标。 */
         public String reconLabel(boolean zh) {
             switch (recon == null ? "" : recon) {

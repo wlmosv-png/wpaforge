@@ -1436,3 +1436,56 @@ Android 9+ 对 `startScan()` 有约 30 秒的频率限制，**超频时系统直
 - 新增 `ScanGateTest` 30 项（闸门三态 / 向上取整 / 冷却 / 差异比对 / 大小写空白）。
 - `ThemeConsistencyTest` 补 4 条（有重扫控件 / 状态行 / 差异 / 节流如实显示）。
 - 门禁 **2662 通过 / 0 失败**。出包 **1.9.26 (120)**：1,219,794 B，装机启动无崩溃。
+
+## 三·补、WPS 通道：**回包被 SELinux 拦掉**（2026-10-26 实测定论）
+
+### 症状
+WPS 扫描能出 AP 列表（走 `cmd wifi list-scan-results`），但 `BSS_ENUM=0`、
+每个目标 `verdict=UNKNOWN`、`wps_device_name` 全空 —— 凡 supplicant 派生的数据全读不到。
+原来界面上只显示「能力未知」，用户无从区分「这些 AP 真没能力」和「压根没读到」。
+
+### 根因（内核审计铁证）
+```
+avc: denied { sendto } comm="wpa_supplicant"
+  path=0070726F62655F3330333934        # \0probe_<pid> —— 客户端的抽象 socket
+  scontext=u:r:hal_wifi_supplicant_default:s0
+  tcontext=u:r:magisk:s0
+  tclass=unix_dgram_socket permissive=0
+```
+helper 经 `su -c ...` 跑在 magisk 域，supplicant 策略不允许往该域回包 →「发得出去、收不回来」。
+**三种独立复现一致**：app 自带 `WpsHelper`、`/vendor/bin/wpa_cli`、自写 LocalSocket 探针（4 种寻址全试）。
+`Conn.read()` 把超时吞成空串，所以上层只看到 UNKNOWN。
+
+### 判定链上踩过的坑
+- **文件系统 inode ≠ socket inode**。`stat -c %i /data/vendor/wifi/wpa/sockets/wlan0` 给的是
+  socket **文件**的 inode；fd 里的 `socket:[数字]` 是另一个空间。拿它比对会误判「socket 是僵尸」。
+  正解是看 `/proc/net/unix`（`St=03` 即 LISTEN，inode 67118737 属于 supplicant 的 fd）。
+- `su -Z u:r:shell:s0` 换域**更差**：shell 域连 bind/connect 都 EACCES。
+- 客户端绑**抽象名**才收得到回包；绑 `/data/vendor/wifi/wpa/sockets/wpa_ctrl_*` 文件路径的变体
+  即使补了规则也不通（机制未验；不影响结论，app 的 `Conn` 本来就是抽象绑定）。
+
+### 修法（已验证）
+```
+allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto
+```
+- 内存注入验证：`magiskpolicy --live "allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto"`
+  （**MagiskPolicy 语法不带 `:` 和 `{}`**，带冒号会 Syntax error）。
+- 补上后同一个 helper：`BSS_ENUM` 0 → 34、`AP_COUNT` 21 → 23、verdict 从全 UNKNOWN 变
+  `PIN_OK` / `NO_PIN`、设备名出 `BroadcomAP` / `fiberhome ONT` / `huawei_ONT` / `E5576-821` /
+  `PSDN-TC32-10`。
+- **持久化**：`/data/adb/modules/wpaforge-wps-sepolicy/sepolicy.rule`（本机已建，重启生效；
+  删目录即撤销）。
+
+### 名单匹配的真实命中率（vulnwsc.txt 164 条 / 3499 B）
+本机 23 个 AP、5 个不同设备名（BroadcomAP / fiberhome ONT / huawei_ONT / E5576-821 /
+PSDN-TC32-10）**命中 0 个**。阳性对照 5/5 命中、负对照 2/2 未命中。
+→ 标记的价值在「碰到名单里的型号能提前说」，不是「每次都有结论」。
+
+### 代码落点
+| 文件 | 作用 |
+|---|---|
+| `wps/VulnWsc.java` | 名单解析 / 归一化 / 匹配（含裸泛称拒判） |
+| `wps/VulnWscStore.java` | 按需下载落盘（许可不明不进包），复用字典源多通道探测 |
+| `wps/VulnUi.java` | 标记文案 + 状态诊断（纯逻辑，可离线测） |
+| `WpsHelper` | 新增 `CTRL_OK=1|0`：扫描时探一次 `STATUS`，把通道结论交给界面 |
+| `MainActivity` | 扫描/下载/渲染接线 + `wpsVulnBtn` / `wpsVulnDiag` |

@@ -165,6 +165,22 @@ netId 只当**归属证据**：只有本条尝试与状态两侧都拿到非零 
 | 部分 AP 扫不到 | 手机不支持 6GHz，或本机开了随机 MAC | 关掉本机随机 MAC 再扫 |
 | 报权限错误 | Root 没给，或 ROM 禁了 `cmd wifi` | 看设置页那 6 步自检 |
 | 中途被系统杀掉 | 后台省电策略 | 加白名单；进度会落盘，重开续跑 |
+| WPS 目标的「能力」全是未知、没有设备名 | 系统 SELinux 不允许 supplicant 向 root 域回包 | 加一条放行规则，见下一节 |
+
+### WPS 通道（需要 Root）
+
+WPS 页要显示「WPS 设备名 / 能力 / 配对窗口」，只能通过 wpa_supplicant 的控制通道去问它。
+部分系统（实测 ColorOS 15 / Android 15）的 SELinux 策略不允许 supplicant 向 root 域回包，
+症状是：AP 列表扫得出来，但每个目标的「能力」都是未知、也没有设备名。
+WPAForge 会在 WPS 页直接说明这一点，不会静默显示成「没问题」。
+
+放行办法：在任意 Magisk 模块目录下加一个 `sepolicy.rule`，内容一行：
+
+```
+allow hal_wifi_supplicant_default magisk unix_dgram_socket sendto
+```
+
+重启生效；删掉该文件回车即撤销。
 
 ## 安装
 
@@ -181,7 +197,7 @@ netId 只当**归属证据**：只有本条尝试与状态两侧都拿到非零 
 不依赖 Gradle，两段式手工链：
 
 ```sh
-WP_VERSION_CODE=122 WP_VERSION_NAME=1.9.26 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
+WP_VERSION_CODE=123 WP_VERSION_NAME=1.9.27 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
 sh 2-build-dex.sh                                       # 桌面侧：javac + d8 + 签名（需 WP_FORGE_KS* 变量）
 ```
 

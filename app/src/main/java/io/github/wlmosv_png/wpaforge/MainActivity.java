@@ -3865,12 +3865,14 @@ public class MainActivity extends Activity {
         // 又用弱灰小图标不抢主按钮的位置（它是"说明"，不是操作）。
         ImageView help = new ImageView(this);
         help.setImageDrawable(DictIcons.sized(DictIcons.Kind.HELP,
-                AmberTheme.TEXT_DIM, dp, 20f));
+                AmberTheme.ACCENT, dp, 20f));
         help.setContentDescription(L.s("说明", "Help"));
-        help.setPadding(px(6), px(6), px(6), px(6));
-        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hlp.leftMargin = px(6);
+        // 显式尺寸，不用 WRAP_CONTENT —— 上一版就是栽在这里：
+        // DictIcons 没有 intrinsic size 时 ImageView 按 0 测量，图标只剩几个像素
+        help.setPadding(px(9), px(9), px(9), px(9));
+        help.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(px(38), px(38));
+        hlp.leftMargin = px(8);
         help.setLayoutParams(hlp);
         help.setOnClickListener(v -> showCrackHelp());
         netTop.addView(help);
@@ -4603,37 +4605,41 @@ public class MainActivity extends Activity {
      *
      * @return 形如 {@code 01 内置弱口令常用（57 次）}；样本太少返回空串
      */
-    private String topHitDictName() {
-        try {
-            java.util.Map<String, Integer> hits = new java.util.HashMap<>();
-            for (io.github.wlmosv_png.wpaforge.audit.HistStore.Record r
-                    : io.github.wlmosv_png.wpaforge.audit.HistStore.load(this)) {
-                if (!r.hit || r.dictName == null || r.dictName.isEmpty()) continue;
-                Integer c = hits.get(r.dictName);
-                hits.put(r.dictName, c == null ? 1 : c + 1);
-            }
-            String best = "";
-            int n = 0;
-            for (java.util.Map.Entry<String, Integer> e : hits.entrySet()) {
-                if (e.getValue() > n) { n = e.getValue(); best = e.getKey(); }
-            }
-            return n >= 3 ? best + L.s("（" + n + " 次）", " (" + n + " hits)") : "";
-        } catch (Throwable t) {
-            return "";
+    private io.github.wlmosv_png.wpaforge.audit.HistStore.Summary histSummary;
+    private long histSummaryAt = 0L;
+
+    /**
+     * 历史统计（带缓存）。
+     *
+     * <p>**不解密**：走 {@code HistStore.summary()} —— 只解析前 8 列。
+     * 之前这里调了两次 {@code load()}，而 load 会对每条命中记录走一次
+     * Keystore 解密（用户 107 条命中 = 200+ 次），弹窗因此卡一下。
+     * 缓存 30 秒，避免反复读盘。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.HistStore.Summary histSummary() {
+        long now = System.currentTimeMillis();
+        if (histSummary == null || now - histSummaryAt > 30_000L) {
+            histSummary = io.github.wlmosv_png.wpaforge.audit.HistStore.summary(this);
+            histSummaryAt = now;
         }
+        return histSummary;
+    }
+
+    /** 本机命中最多的字典（形如 {@code 01 内置弱口令常用（57 次）}）；样本不足返回空串 */
+    private String topHitDictName() {
+        io.github.wlmosv_png.wpaforge.audit.HistStore.Summary s = histSummary();
+        if (s.topDict.isEmpty()) return "";
+        return s.topDict + L.s("（" + s.topDictHits + " 次）", " (" + s.topDictHits + " hits)");
     }
 
     /** 本机真实战绩：跑过多少次、命中多少次 —— 比任何安慰话都有说服力 */
     private String localTrackRecord() {
         try {
-            java.util.List<io.github.wlmosv_png.wpaforge.audit.HistStore.Record> rs =
-                    io.github.wlmosv_png.wpaforge.audit.HistStore.load(this);
-            if (rs.isEmpty()) return "";
-            int hits = 0;
-            for (io.github.wlmosv_png.wpaforge.audit.HistStore.Record r : rs) if (r.hit) hits++;
-            return L.s("本机记录：跑过 " + rs.size() + " 次，命中 " + hits + " 次"
-                            + (hits > 0 ? " —— 工具是能中的，只是这次方向不对。" : "。"),
-                    "On this device: " + rs.size() + " runs, " + hits + " hits.");
+            io.github.wlmosv_png.wpaforge.audit.HistStore.Summary s = histSummary();
+            if (s.runs == 0) return "";
+            return L.s("本机记录：跑过 " + s.runs + " 次，命中 " + s.hits + " 次"
+                            + (s.hits > 0 ? " —— 工具是能中的，只是这次方向不对。" : "。"),
+                    "On this device: " + s.runs + " runs, " + s.hits + " hits.");
         } catch (Throwable t) {
             return "";
         }
@@ -5305,6 +5311,7 @@ public class MainActivity extends Activity {
                 lastOutcomeColor = "DONE_HIT".equals(outcome) ? OK_GREEN
                         : "STOPPED".equals(outcome) ? DANGER : io.github.wlmosv_png
                                 .wpaforge.ui.AmberTheme.TEXT_DIM;
+                histSummary = null;      // 有新记录，让统计缓存失效
                 if ("DONE_HIT".equals(outcome)) {
                     appendStreamColored(L.s("⚡ 密钥命中 ", "★ HIT!") + task.ssid + " = "
                             + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, hitPassword),
@@ -7641,7 +7648,16 @@ public class MainActivity extends Activity {
     // ---------------- 破解记录 ----------------
 
     private void showHistory() {
-        java.util.List<HistStore.Record> list = HistStore.load(this);
+        /* 读历史**必须放后台**：`load()` 对每条命中记录都要走一次
+         * Android Keystore 解密（用户 107 条命中 → 107 次），在主线程上跑
+         * 会明显卡一下。这一页确实需要明文（要显示口令），所以是搬线程而不是免解密。 */
+        new Thread(() -> {
+            final java.util.List<HistStore.Record> list = HistStore.load(MainActivity.this);
+            ui.post(() -> showHistoryDialog(list));
+        }, "wpaforge-hist").start();
+    }
+
+    private void showHistoryDialog(final java.util.List<HistStore.Record> list) {
         if (list.isEmpty()) {
             NetDialog.info(this, L.s("破解记录", "Crack history"), L.s("还没有记录。跑一次破解就会自动记下来。", "No records yet. One crack run will start recording automatically."));
             return;
@@ -7662,6 +7678,7 @@ public class MainActivity extends Activity {
         if (list.size() > show) d.addHint(L.s("只显示最近 ", "Showing most recent ") + show + " 条。");
         d.setDanger(L.s("清空记录", "Clear records"), dd -> {
             HistStore.clear(this);
+            histSummary = null;
             Toast.makeText(this, L.s("已清空", "Cleared"), Toast.LENGTH_SHORT).show();
         });
         d.setNegative(L.s("关闭", "Close"), null);

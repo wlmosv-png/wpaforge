@@ -1022,3 +1022,34 @@ refreshQueue();              // ← 更新了 queueCache，却**没有重画状�
 
 ### 门禁
 **2407 通过 / 0 失败**。装机 110 / 1.9.40。
+
+---
+
+## 十七、2026-10-26 第十五轮：「?」图标看不见 + 点开卡一下
+
+### ① 图标只剩几个像素（用户："那个点很小很小 根本看不到"）
+根因：**`DictIcons` 没有实现 `getIntrinsicWidth/Height`**。
+ImageView 用 `WRAP_CONTENT` 时会问 Drawable 要固有尺寸，拿不到（-1）就按 0 测量
+—— 于是 20dp 的图标塌成几个像素。字典页那几处因为写了显式 LayoutParams 才没露馅。
+
+修：
+- `DictIcons` 补 `getIntrinsicWidth/Height`（返回 bounds 尺寸）—— **根治**，任何
+  WRAP_CONTENT 场景都不会再塌
+- 该处改为显式 `px(38) × px(38)` + `CARD_3` 淡底圆角 + **琥珀色 20dp 图标**
+  （原来用弱灰 TEXT_DIM，即使尺寸对了也不够显眼）
+- 渲染预览确认：对比图 `/sdcard/Download/wpaforge-help-row-preview.png`
+
+### ② 点开卡一下
+根因：`HistStore.Record.fromLine` 对**每条命中记录**都调 `SecretBox.open()`
+—— 走 Android Keystore 解密。用户 107 条命中 = 107 次 Keystore。
+而我调了**两次** `load()`（`localTrackRecord` + `topHitDictName`）→ 200+ 次。
+
+修：
+- `HistStore.summary(ctx)`：新路径，**只读前 8 列、完全不解密**
+- `foldLine()/build()` 抽成纯函数，`HistorySummaryTest`（10 例）钉住
+  「行里塞无法解密的假密文，统计结果照样正确」——即证明它没去解密
+- MainActivity 合并成一次调用 + **30 秒缓存**；跑完一轮让缓存失效
+- 同类问题一并修：**破解记录页**也在主线程解密 → 挪到后台线程
+
+### 门禁
+**2417 通过 / 0 失败**（新增 HistorySummaryTest 10 例）。装机 111 / 1.9.41。

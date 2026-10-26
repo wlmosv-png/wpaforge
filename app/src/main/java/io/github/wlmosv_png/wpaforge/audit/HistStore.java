@@ -134,7 +134,7 @@ public final class HistStore {
                 long timeMs = Long.parseLong(p[0]);
                 String ssid = unesc(p[1]);
                 String bssid = unesc(p[2]);
-                String dict = unesc(p[3]);
+                String dict = Record.unesc(p[3]);
                 int size = Integer.parseInt(p[4]);
                 int tested = Integer.parseInt(p[5]);
                 long elapsed = Long.parseLong(p[6]);
@@ -162,11 +162,11 @@ public final class HistStore {
             }
         }
 
-        private static String esc(String s) {
+        static String esc(String s) {
             return s.replace("\\", "\\\\").replace(",", "\\c").replace("\n", "\\n");
         }
 
-        private static String unesc(String s) {
+        static String unesc(String s) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < s.length(); i++) {
                 char c = s.charAt(i);
@@ -187,6 +187,77 @@ public final class HistStore {
     private static final String FILE_NAME = "history.csv";
 
     /** 只读路径，供迁移流程使用。 */
+    /**
+     * 只统计用的摘要。
+     *
+     * <p>**为什么单独一条路径**：`load()` 里每条命中记录都会调
+     * {@link SecretBox#open} 走一次 Android Keystore 解密，100 条命中就是
+     * 100 次 Keystore 操作（实测几百毫秒到几秒）。而"跑过几次、命中几次、
+     * 哪本字典命中最多"**完全不需要明文** —— 只解析前 8 列即可。
+     *
+     * <p>踩过的坑：说明弹窗打开时卡一下，就是因为调了两次 `load()`。
+     */
+    public static final class Summary {
+        public final int runs;
+        public final int hits;
+        /** 命中最多的字典名；样本不足为空串 */
+        public final String topDict;
+        public final int topDictHits;
+
+        Summary(int runs, int hits, String topDict, int topDictHits) {
+            this.runs = runs;
+            this.hits = hits;
+            this.topDict = topDict == null ? "" : topDict;
+            this.topDictHits = topDictHits;
+        }
+    }
+
+    /** 只读前 8 列，**不解密任何东西** */
+    public static Summary summary(Context ctx) {
+        File f = file(ctx);
+        if (!f.isFile()) return new Summary(0, 0, "", 0);
+        int[] tally = new int[2];                       // {runs, hits}
+        java.util.Map<String, Integer> per = new java.util.HashMap<>();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) foldLine(line, tally, per);
+        } catch (Exception ignored) {
+        }
+        return build(tally, per);
+    }
+
+    /**
+     * 单行 → 统计贡献。**刻意只看前 8 列**（到 hit 标志为止）。
+     *
+     * <p>第 9/10 列是标签与密文，读它们就要走 Keystore 解密 ——
+     * 统计完全不需要明文。抽成纯函数是为了能在桌面单测里把这条假设钉住
+     * （以后有人在统计路径里顺手读第 10 列，测试会红）。
+     */
+    public static void foldLine(String line, int[] tally, java.util.Map<String, Integer> per) {
+        if (line == null) return;
+        String[] p = line.split(",", -1);
+        if (p.length < 8) return;                       // 至少要有到 hit 标志的 8 列
+        tally[0]++;
+        if (!"1".equals(p[7])) return;
+        tally[1]++;
+        String dict = Record.unesc(p[3]);
+        if (!dict.isEmpty()) {
+            Integer c = per.get(dict);
+            per.put(dict, c == null ? 1 : c + 1);
+        }
+    }
+
+    /** 汇总（topDict 至少要有 3 次命中才给，避免样本太少误导） */
+    public static Summary build(int[] tally, java.util.Map<String, Integer> per) {
+        String best = "";
+        int bn = 0;
+        for (java.util.Map.Entry<String, Integer> e : per.entrySet()) {
+            if (e.getValue() > bn) { bn = e.getValue(); best = e.getKey(); }
+        }
+        return new Summary(tally[0], tally[1], bn >= 3 ? best : "", bn);
+    }
+
     public static File fileOf(Context ctx) {
         return new File(ctx.getFilesDir(), FILE_NAME);
     }

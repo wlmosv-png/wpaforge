@@ -179,6 +179,23 @@ public final class DictIcons extends Drawable {
         }
     }
 
+    /**
+     * 固有尺寸 = 当前 bounds 的宽高。
+     *
+     * <p>**没有这两个方法就是 bug**：ImageView 用 WRAP_CONTENT 时会去问
+     * Drawable 要 intrinsic size，拿不到（-1）就按 0 测量 ——
+     * 表现是"图标只有几个像素、根本看不见"。这一版就是这样踩的。
+     */
+    @Override
+    public int getIntrinsicWidth() {
+        return getBounds().width();
+    }
+
+    @Override
+    public int getIntrinsicHeight() {
+        return getBounds().height();
+    }
+
     @Override
     public void setAlpha(int alpha) {
         p.setAlpha(alpha);

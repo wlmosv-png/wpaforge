@@ -67,6 +67,15 @@ public class CrackService extends Service {
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
+        /**
+         * 收尾（把用户原来的网络配置写回去）结束。
+         *
+         * <p>用 default 实现：这是给界面加的一条**补充信息**，
+         * 老实现类不必为了它改代码。
+         *
+         * @param summary 人类可读的结论，例：{@code 已恢复 : OK}
+         */
+        default void onRestoreDone(String summary) { }
     }
 
     private final List<UiCallback> callbacks = new ArrayList<>();
@@ -238,12 +247,14 @@ public class CrackService extends Service {
                             mine, taskId,
                             e2 -> io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.settle(hit, e2));
             if (o == null) {
-                log(L.s("本次未执行收尾恢复: ", "no restore this time: ")
-                        + io.github.wlmosv_png.wpaforge.audit.RestoreRunner.lastSummary());
+                String why = io.github.wlmosv_png.wpaforge.audit.RestoreRunner.lastSummary();
+                log(L.s("本次未执行收尾恢复: ", "no restore this time: ") + why);
+                for (UiCallback cb : callbacks) cb.onRestoreDone(why);
                 return;
             }
             restoreEntry = mine;
             log(L.s("配置收尾结论: ", "Config settle result: ") + o.summary());
+            for (UiCallback cb : callbacks) cb.onRestoreDone(o.summary());
         } catch (Throwable t) {
             log(L.s("配置恢复异常（不影响任务本身）: ",
                     "restore threw (task itself unaffected): ") + t);

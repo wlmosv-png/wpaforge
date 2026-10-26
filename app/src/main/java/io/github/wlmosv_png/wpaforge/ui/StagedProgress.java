@@ -66,6 +66,21 @@ public class StagedProgress extends View {
 
     private boolean done = false;
 
+    /* ── 更亮的一套分层配色（用户反馈"进度条有点暗"）──────────────
+     * 旧版三层用的是 ACCENT_DIM(0xFF7A5300)/ACCENT_MID/ACCENT ——
+     * 最外层那条几乎是暗棕色，整根条看着没精神。
+     * 现在三层改成"由深到亮"的暖色梯度，并且**每层内部再用横向渐变**，
+     * 让填充区自带明暗过渡，而不是一块平色。 */
+    /* 配色定稿（渲染出来对比过两版）：
+     *   A 版外层起点 0xFF9A6A00 → 满进度时整条是暗棕色，看着"没跑满"；
+     *   B 版起点提到 0xFFC68A00 → 满进度是金色，三层仍然分得清。选 B。 */
+    private int tint0 = 0xFFC68A00;   // 外层起点（金）
+    private int tint1 = 0xFFE0A200;   // 中层起点（亮金）
+    private int tint2 = AmberTheme.ACCENT;
+    private int tintHi = AmberTheme.ACCENT_SOFT;   // 每层渐变的亮端
+    private final Paint pEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pHi = new Paint(Paint.ANTI_ALIAS_FLAG);
+
     /* ---------- 动画状态 ---------- */
     /** 当前**显示**的进度（0..1），逐帧向 stages 里的目标值逼近 */
     private final float[] shown = new float[]{0f, 0f, 0f};
@@ -262,41 +277,87 @@ public class StagedProgress extends View {
         }
 
         // ---- 三层轨道 ----
+        // 视觉重做（用户反馈"有点暗""特效设计一下"）：
+        //   · 轨道加一条极淡内描边，跟卡片底色分开，不再像"一条黑影"
+        //   · 填充用**横向渐变**（深→亮），而不是一块平色
+        //   · 高光带改成**软边渐变**（透明→亮→透明），比原来的方块柔和
+        //   · 填充前端加一个**呼吸光点**，明确指示"推进到这里"
+        //   · 完成时整体转绿，并再扫一遍高光收尾
         final float barH = dp(9);
         final float gap = dp(6);
+        long now = System.currentTimeMillis();
         for (int i = 0; i < stages.size(); i++) {
             Stage st = stages.get(i);
             float top = y;
             float radius = barH / 2f;
 
-            // 轨道底
             RectF r = new RectF(0, top, w, top + barH);
             cv.drawRoundRect(r, radius, radius, pTrack);
+            pEdge.setStyle(Paint.Style.STROKE);
+            pEdge.setStrokeWidth(Math.max(1f, dp(0.8f)));
+            pEdge.setColor(done ? AmberTheme.OK_DIM : 0x2AFFFFFF);
+            cv.drawRoundRect(r, radius, radius, pEdge);
 
-            // 填充：用动画后的显示值，而不是直接跳目标值
             float v = i < 3 ? shown[i] : st.value;
             if (v > 0.001f) {
                 float fw = Math.max(barH, w * v);
-                RectF f = new RectF(0, top, fw, top + barH);
-                cv.drawRoundRect(f, radius, radius, pFill[Math.min(i, pFill.length - 1)]);
 
-                // 流光：在内层条上叠一道更亮的窄带，持续左→右扫。
-                // 表达「正在推进」—— 静止的进度条看起来像卡住了。
-                // 只画在最外层（i==0）那条上，避免三条各扫一道显得杂乱。
+                // 每层一个横向渐变：深端 → 亮端
+                int c0, c1;
+                if (done) {
+                    c0 = AmberTheme.OK_DIM;
+                    c1 = AmberTheme.OK_MID;
+                } else {
+                    c0 = i == 0 ? tint0 : (i == 1 ? tint1 : tint2);
+                    c1 = i == 0 ? tint1 : (i == 1 ? tint2 : tintHi);
+                }
+                Paint f = pFill[Math.min(i, pFill.length - 1)];
+                f.setShader(new android.graphics.LinearGradient(
+                        r.left, 0, Math.max(r.left + 1, r.left + fw), 0, c0, c1,
+                        android.graphics.Shader.TileMode.CLAMP));
+                RectF rf = new RectF(0, top, fw, top + barH);
+                cv.drawRoundRect(rf, radius, radius, f);
+
+                // 填充区顶部一道 1.2dp 的微高光 —— 让条看起来是"管子"而不是色块
+                pHi.setShader(null);
+                pHi.setColor(0x2EFFFFFF);
+                pHi.setStrokeWidth(Math.max(1f, dp(1.2f)));
+                pHi.setStyle(Paint.Style.STROKE);
+                cv.drawLine(fw > radius * 2 ? radius : 0,
+                        top + Math.max(1f, dp(1.2f)),
+                        Math.max(0, fw - radius),
+                        top + Math.max(1f, dp(1.2f)), pHi);
+                pHi.setStyle(Paint.Style.FILL);
+
+                // 高光：软边渐变带，持续左→右扫（表达"正在推进"）
                 if (i == 0 && !done && v > 0.02f) {
-                    float glowW = Math.max(dp(28), w * 0.10f);
+                    float glowW = Math.max(dp(34), w * 0.14f);
                     float cx = (w + glowW) * sweep - glowW * 0.5f;
                     float l = Math.max(0, cx - glowW * 0.5f);
                     float r2 = Math.min(fw, cx + glowW * 0.5f);
                     if (r2 > l) {
-                        // 呼吸：透明度做正弦脉动，避免死板
-                        double phase = (System.currentTimeMillis() % 1600) / 1600.0;
-                        int a = (int) (46 + 40 * Math.sin(phase * Math.PI * 2));
-                        pGlow.setColor(Color.argb(Math.max(0, Math.min(120, a)), 255, 236, 179));
-                        RectF g = new RectF(l, top, r2, top + barH);
-                        cv.drawRoundRect(g, radius, radius, pGlow);
+                        double phase = (now % 1600) / 1600.0;
+                        int a = (int) (70 + 60 * Math.sin(phase * Math.PI * 2));
+                        a = Math.max(20, Math.min(150, a));
+                        pHi.setShader(new android.graphics.LinearGradient(
+                                l, 0, r2, 0,
+                                new int[]{Color.argb(0, 255, 255, 255),
+                                        Color.argb(a, 255, 246, 214),
+                                        Color.argb(0, 255, 255, 255)},
+                                new float[]{0f, 0.5f, 1f},
+                                android.graphics.Shader.TileMode.CLAMP));
+                        cv.drawRoundRect(new RectF(l, top, r2, top + barH), radius, radius, pHi);
                     }
+                    // 前端呼吸光点：越接近完成越亮
+                    float dot = barH * 0.62f;
+                    double ph2 = (now % 900) / 900.0;
+                    int da = (int) (120 + 90 * Math.sin(ph2 * Math.PI * 2));
+                    pHi.setShader(null);
+                    pHi.setColor(Color.argb(Math.max(40, Math.min(230, da)),
+                            255, 250, 230));
+                    cv.drawCircle(fw - radius, top + radius, dot * 0.5f, pHi);
                 }
+                f.setShader(null);
             }
 
             // 行尾标签（第几层 / 百分比）

@@ -776,3 +776,44 @@ needsCleanupRetry → 再来一遍 remove + verify
 
 ### 门禁
 2387 通过 / 0 失败。装机 104 / 1.9.34。
+
+---
+
+## 十一、2026-10-26 第九轮：结果卡 NPE（线上抓到）+ 进度条视觉重做
+
+### 用户报的三件事
+1. 「收尾完成的提示呢」「跑完了怎么显示收尾中呢」
+2. 「进度条有点暗，颜色重新设计；特效也设计一下」
+3. 「日志给我抛出了异常」
+
+### 根因（第 1、3 条是同一个 bug）
+```
+队列执行异常:
+java.lang.NullPointerException: Attempt to write to field
+'int android.view.ViewGroup$MarginLayoutParams.leftMargin'
+on a null object reference in method 'MainActivity.showResultCard'
+```
+`AmberTheme.action()` 造的 Button **没有 layoutParams**，我直接强转去写 leftMargin → NPE。
+后果链：`showResultCard` 抛异常 → `onTaskDone` 里后面的 `renderProgressCardState()`
+没执行 → **界面永远停在"收尾中"** → 结果卡从未出现过。
+
+修法：
+1. 新增 `actionButton(label, kind, leftMarginDp, listener)` 工厂：永远新建 LP 再挂。
+2. `onTaskDone` 里把 `showResultCard` 包 try/catch 并在攻击流报一行 ——
+   界面异常不许把状态机留在中间态。
+
+### 收尾提示
+- `UiCallback` 加 `default void onRestoreDone(String summary)`（default 实现，老实现不用改）
+- 结算卡多一行：`收尾完成 · 原来的网络已写回（已恢复 : OK）`
+- 收尾期文案改人话：`破解已经跑完 ✓ 现在把你原来连的那个网写回去，最长等 15 秒（已等 3 秒）`
+
+### 进度条视觉重做
+渲染两版对比后定稿：
+- 旧外层起点 `0xFF9A6A00` → 满进度是**暗棕**，看着"没跑满"（用户说"有点暗"）
+- 新外层起点 `0xFFC68A00`；三层 = 金 / 亮金 / 淡金
+- 填充改**横向渐变**、高光带改**软边渐变**、前端加**呼吸光点**、
+  顶部 1.2dp 微高光、轨道加极淡内描边
+- 预览图：`/sdcard/Download/wpaforge-progress-preview.png`
+
+### 门禁
+2387 通过 / 0 失败。装机 105 / 1.9.35。

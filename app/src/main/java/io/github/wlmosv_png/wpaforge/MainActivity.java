@@ -204,6 +204,8 @@ public class MainActivity extends Activity {
     private boolean finishingNow = false;
     private TextView finishNote;
     private long finishingStartedAt = 0L;
+    /** 服务在收尾结束时给的结论（例：已恢复 : OK），显示在结算卡上 */
+    private String lastRestoreSummary = "";
 
     /**
      * 收尾计时。
@@ -224,11 +226,14 @@ public class MainActivity extends Activity {
             if (finishNote != null) {
                 finishNote.setVisibility(View.VISIBLE);
                 finishNote.setText(sec <= 16L
-                        ? L.s("正在把你原来的网络配置写回去 · 已等 " + sec + " 秒（最多约 15 秒）",
-                              "Restoring your previous network \u00b7 " + sec + "s (up to ~15s)")
-                        : L.s("已等 " + sec + " 秒 · 比预期久，仍在读回确认（细节见攻击流）",
-                              "Waiting " + sec + "s \u00b7 longer than expected, still verifying "
-                                      + "(see the stream)"));
+                        ? L.s("破解已经跑完 ✓ 现在把你原来连的那个网写回去，最长等 15 秒"
+                                      + "（已等 " + sec + " 秒）",
+                              "Cracking is done \u2713 currently restoring the network you were "
+                                      + "on before (up to 15s, " + sec + "s elapsed)")
+                        : L.s("还在写回原来的网络 · 已等 " + sec + " 秒（超过预期的 15 秒，"
+                                      + "细节见攻击流）",
+                              "Still restoring the previous network \u00b7 " + sec
+                                      + "s (past the 15s estimate, see the stream)"));
             }
             ui.postDelayed(this, 500L);
         }
@@ -4477,33 +4482,25 @@ public class MainActivity extends Activity {
             why.append("\n").append(L.s("本网络累计已排除 " + tried.size() + " 条（下次不会重复跑）",
                     tried.size() + " candidates ruled out on this network so far"));
         }
+        if (!lastRestoreSummary.isEmpty()) {
+            why.append("\n").append(L.s("收尾完成 · 原来的网络已写回（", "Wrap-up done \u00b7 previous network restored (")
+                    + lastRestoreSummary + "）");
+        }
         resultWhy.setText(why.toString());
 
         resultActions.removeAllViews();
-        Button again = AmberTheme.action(this, dp,
-                L.s("填线索再试", "Add hints & retry"), AmberTheme.BTN_PRIMARY);
-        again.setOnClickListener(v -> {
-            hideResultCard();
-            showSeedDialog();
-        });
-        resultActions.addView(again);
-        Button bigger = AmberTheme.action(this, dp,
-                L.s("换更大的字典", "Bigger dictionary"), AmberTheme.BTN_SECONDARY);
-        bigger.setOnClickListener(v -> {
-            hideResultCard();
-            showDictSource();
-        });
-        LinearLayout.LayoutParams blp = (LinearLayout.LayoutParams) bigger.getLayoutParams();
-        blp.leftMargin = px(8);
-        bigger.setLayoutParams(blp);
-        resultActions.addView(bigger);
-        Button giveUp = AmberTheme.action(this, dp,
-                L.s("先算了", "Leave it"), AmberTheme.BTN_NEUTRAL);
-        giveUp.setOnClickListener(v -> hideResultCard());
-        LinearLayout.LayoutParams glp = (LinearLayout.LayoutParams) giveUp.getLayoutParams();
-        glp.leftMargin = px(8);
-        setSafe(giveUp, glp);
-        resultActions.addView(giveUp);
+        resultActions.addView(actionButton(L.s("填线索再试", "Add hints & retry"),
+                AmberTheme.BTN_PRIMARY, 0, v -> {
+                    hideResultCard();
+                    showSeedDialog();
+                }));
+        resultActions.addView(actionButton(L.s("换更大的字典", "Bigger dictionary"),
+                AmberTheme.BTN_SECONDARY, 8, v -> {
+                    hideResultCard();
+                    showDictSource();
+                }));
+        resultActions.addView(actionButton(L.s("先算了", "Leave it"),
+                AmberTheme.BTN_NEUTRAL, 8, v -> hideResultCard()));
 
         resultCard.setVisibility(View.VISIBLE);
         // 候选区还在显示最后一条 —— 标题改成"最后试的"，明确告诉用户已经结束了
@@ -4512,9 +4509,25 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 让 LayoutParams 一定落地（有些 Button 建出来还没有 lp） */
-    private static void setSafe(View v, LinearLayout.LayoutParams lp) {
-        v.setLayoutParams(lp);
+    /**
+     * 结算卡上的按钮。
+     *
+     * <p>**为什么要有这个工厂**：`AmberTheme.action()` 造出来的 Button
+     * 是没有 layoutParams 的，直接 `(LinearLayout.LayoutParams) b.getLayoutParams()`
+     * 拿到 null，再写 leftMargin 就 NPE。线上日志抓到过这个崩
+     * （`showResultCard` 抛 NullPointerException → 结果卡没出来，
+     * 界面永远停在"收尾中"，看起来就是卡死）。
+     * 所以这里永远新建一套 LP 再挂上去。
+     */
+    private Button actionButton(String label, int kind, int leftMarginDp,
+                                android.view.View.OnClickListener l) {
+        Button b = AmberTheme.action(this, dp, label, kind);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = px(leftMarginDp);
+        b.setLayoutParams(lp);
+        b.setOnClickListener(l);
+        return b;
     }
 
     private void hideResultCard() {
@@ -5060,7 +5073,15 @@ public class MainActivity extends Activity {
             finishingNow = false;
             ui.removeCallbacks(finishingTick);
             if (finishNote != null) finishNote.setVisibility(View.GONE);
-            showResultCard(task, outcome);
+            /* 界面代码抛异常**不能**把状态机留在"收尾中"。
+             * 线上就是这么卡住的：showResultCard 里 NPE → 后面的
+             * renderProgressCardState 没执行 → 界面永远停在收尾中。 */
+            try {
+                showResultCard(task, outcome);
+            } catch (Throwable t) {
+                appendStreamColored(L.s("结算卡显示失败（不影响破解结果）: ",
+                        "result card failed (result unaffected): ") + t, DANGER);
+            }
             ui.post(() -> {
                 // 只用于显示：把服务报回来的真实结论记下来给进度卡的状态行用。
                 // 这里**不判定**成功/失败，只是把 outcome 换个说法展示。
@@ -5146,6 +5167,11 @@ public class MainActivity extends Activity {
         @Override
         public void onLog(String line) {
             ui.post(() -> appendStream(line));
+        }
+
+        @Override
+        public void onRestoreDone(String summary) {
+            ui.post(() -> lastRestoreSummary = summary == null ? "" : summary);
         }
     };
 
@@ -5634,6 +5660,7 @@ public class MainActivity extends Activity {
 
     private void startConnect() {
         hideResultCard();
+        lastRestoreSummary = "";
         // 跳过是"看不见的行为"，必须在**界面**上说出来。
         // 用户不看日志的话，3000 条的字典只跑 1200 条只会让他以为坏了。
         if (currentDictSkipped > 0) {

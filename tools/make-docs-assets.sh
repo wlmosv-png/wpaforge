@@ -23,8 +23,12 @@
 set -e
 
 IN="${1:?用法: sh tools/make-docs-assets.sh <截图目录> <输出目录>}"
-OUT="${2:?用法: sh tools/make-docs-assets.sh <截图目录> <输出目录>}"
-SHOTS="$OUT/screenshots"
+OUT="${2:?用法: sh tools/make-docs-assets.sh <截图目录> <输出目录> [版本标签]}"
+# 版本标签进路径：docs/shots/v122/… —— **同一个 URL 换内容 GitHub 不会失效缓存**
+# （CDN 会一直 HIT 旧字节，加查询串也没用），所以每版换一个目录，
+# 顺带文件名也改成有语义的（01-observe 比 shot01 好认）。
+TAG="${3:-v}"
+SHOTS="$OUT/shots/$TAG"
 mkdir -p "$SHOTS"
 
 CROP="crop=1080:2286:0:90"
@@ -42,10 +46,11 @@ prep() {
 
 echo "== 单图 =="
 i=0
-for name in shot01 shot02 shot03 shot04 shot05 shot06 shot07 shot08; do
+for name in 01-observe 02-crack 03-found 04-dicts 05-lan 06-channels 07-audit 08-settings; do
   i=$((i+1))
-  [ -f "$IN/$name.png" ] || { echo "  （缺 $name.png，跳过）"; continue; }
-  prep "$IN/$name.png" "$SHOTS/$name.png"
+  src="$IN/shot0$i.png"
+  [ -f "$src" ] || { echo "  （缺 shot0$i.png，跳过）"; continue; }
+  prep "$src" "$SHOTS/$name.png"
 done
 
 # 交叉淡入 GIF：n 帧，每帧停留 $1 秒，转场 $2 秒
@@ -83,7 +88,7 @@ echo "== 界面速览 GIF（4 帧）=="
 if [ -f "$IN/gif-a.png" ] && [ -f "$IN/gif-b.png" ] \
    && [ -f "$IN/gif-c.png" ] && [ -f "$IN/gif-d.png" ]; then
   for f in gif-a gif-b gif-c gif-d; do ffmpeg -y -loglevel error -i "$IN/$f.png" -vf "$CROP" "/tmp/$f.raw.png"; done
-  make_gif "$OUT/demo-ui.gif" "$HOLD" 0.5 /tmp/gif-a.raw.png /tmp/gif-b.raw.png /tmp/gif-c.raw.png /tmp/gif-d.raw.png
+  make_gif "$SHOTS/ui-overview.gif" "$HOLD" 0.5 /tmp/gif-a.raw.png /tmp/gif-b.raw.png /tmp/gif-c.raw.png /tmp/gif-d.raw.png
 else
   echo "  （gif-a..d.png 不全，跳过）"
 fi
@@ -91,7 +96,7 @@ fi
 echo "== 命中 GIF（2 帧）=="
 if [ -f "$IN/hit-a.png" ] && [ -f "$IN/hit-b.png" ]; then
   for f in hit-a hit-b; do ffmpeg -y -loglevel error -i "$IN/$f.png" -vf "$CROP" "/tmp/$f.raw.png"; done
-  make_gif "$OUT/demo-hit.gif" "$HOLD" 0.6 /tmp/hit-a.raw.png /tmp/hit-b.raw.png
+  make_gif "$SHOTS/hit-crack-to-found.gif" "$HOLD" 0.6 /tmp/hit-a.raw.png /tmp/hit-b.raw.png
 else
   echo "  （hit-a/hit-b.png 不全，跳过）"
 fi

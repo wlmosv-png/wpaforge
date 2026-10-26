@@ -15,11 +15,11 @@
 
 <img src="docs/banner.svg" alt="WPAForge" width="100%">
 
-<img src="docs/demo-ui.gif" alt="WPAForge UI overview" width="100%">
+<img src="docs/shots/v122/ui-overview.gif" alt="WPAForge UI overview" width="100%">
 
 <sub>UI overview — observe → crack → hit → dictionaries, four steps (2s per frame)</sub>
 
-<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="docs/demo-hit.gif" alt="Real-device screenshots: the 15th candidate hits" width="46%"></a>
+<a href="https://www.bilibili.com/video/BV1b1np6YE7U"><img src="docs/shots/v122/hit-crack-to-found.gif" alt="Real-device screenshots: the 15th candidate hits" width="46%"></a>
 
 </div>
 
@@ -96,16 +96,16 @@ pops a system dialog for every candidate — neither can carry a dictionary walk
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/shot01.png" width="23%">
-  <img src="docs/screenshots/shot02.png" width="23%">
-  <img src="docs/screenshots/shot03.png" width="23%">
-  <img src="docs/screenshots/shot04.png" width="23%">
+  <img src="docs/shots/v122/01-observe.png" width="23%">
+  <img src="docs/shots/v122/02-crack.png" width="23%">
+  <img src="docs/shots/v122/03-found.png" width="23%">
+  <img src="docs/shots/v122/04-dicts.png" width="23%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/shot05.png" width="23%">
-  <img src="docs/screenshots/shot06.png" width="23%">
-  <img src="docs/screenshots/shot07.png" width="23%">
-  <img src="docs/screenshots/shot08.png" width="23%">
+  <img src="docs/shots/v122/05-lan.png" width="23%">
+  <img src="docs/shots/v122/06-channels.png" width="23%">
+  <img src="docs/shots/v122/07-audit.png" width="23%">
+  <img src="docs/shots/v122/08-settings.png" width="23%">
 </p>
 <p align="center"><sub>① Observe (spectrum radar) · ② Crack (progress &amp; rate) · ③ Hit (passphrase + one-tap copy) · ④ Dictionaries (ranked by hit rate, with local record)<br>⑤ LAN recon (devices &amp; open ports) · ⑥ Signal distribution &amp; channel advice · ⑦ Audit (dictionary / strength / offline check) · ⑧ Settings (permissions &amp; keep-alive)</sub></p>
 

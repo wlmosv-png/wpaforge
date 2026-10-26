@@ -20,6 +20,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.Toast;
 
 import java.io.File;
@@ -3859,6 +3860,21 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         secLp.leftMargin = px(10);
         netTop.addView(netSecChip, secLp);
+
+        // 「?」说明入口：放在第一张卡的顶行最右 —— 那是视线的第一落点，
+        // 又用弱灰小图标不抢主按钮的位置（它是"说明"，不是操作）。
+        ImageView help = new ImageView(this);
+        help.setImageDrawable(DictIcons.sized(DictIcons.Kind.HELP,
+                AmberTheme.TEXT_DIM, dp, 20f));
+        help.setContentDescription(L.s("说明", "Help"));
+        help.setPadding(px(6), px(6), px(6), px(6));
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hlp.leftMargin = px(6);
+        help.setLayoutParams(hlp);
+        help.setOnClickListener(v -> showCrackHelp());
+        netTop.addView(help);
+
         netCard.addView(netTop);
 
         // 第二层：信号 · 信道 · 频段（等宽，数字能对齐）
@@ -4633,6 +4649,117 @@ public class MainActivity extends Activity {
                 (sec / 3600) + "h " + ((sec % 3600) / 60) + "m");
     }
 
+    /**
+     * 破解原理说明（「?」入口）。
+     *
+     * <p>七节，按"从是什么到为什么"排：
+     *   ① 它在干什么 ② 为什么不用大字典 ③ 候选从哪来（含社会工程学判断基准）
+     *   ④ 判断依据（判定链） ⑤ 没中是怎么回事（+本机真实数字）
+     *   ⑥ 现实里会让它失效的三件事 ⑦ 边界
+     *
+     * <p>末尾两个跳转直接接上已有能力（填线索 / 选字典），形成闭环。
+     */
+    private void showCrackHelp() {
+        StringBuilder b = new StringBuilder();
+
+        b.append(L.s("① 它在干什么\n"
+                        + "把\"人可能设的密码\"按可能性从高到低，一条一条**真的去连一次**。\n"
+                        + "连上了，那条就是对的。\n\n",
+                "1) What it does\nRanks likely passwords and **really tries them, one by one**. "
+                        + "If the join succeeds, that one is right.\n\n"));
+
+        b.append(L.s("② 为什么不翻几十万条大字典\n"
+                        + "Android 一次只能连一个网络，每条要 2~4 秒。10 万条按 3 秒算 ≈ 83 小时。\n"
+                        + "所以关键不是\"字典多大\"，而是**最可能的那几十条有没有排在最前面**。\n\n",
+                "2) Why not a 100k-entry list\nAndroid can only be on one network at a time, "
+                        + "2\u20134s per try. 100k entries \u2248 83 hours.\n"
+                        + "So it is not about list size \u2014 it is about putting the most likely "
+                        + "few dozen first.\n\n"));
+
+        b.append(L.s("③ 候选从哪来（三层）\n"
+                        + "· 你填的线索（最准）：手机号 / 生日 / 姓名拼音 / 门牌\n"
+                        + "  —— 这些**不在任何字典里**，只有你知道\n"
+                        + "· 中文高频：5201314、woaini520、zhangwei123\n"
+                        + "· 通用短表：12345678、88888888、admin123 —— 跨设备命中率最高\n\n"
+                        + "为什么一个手机号只出 3 种形态？\n"
+                        + "人对密码的改动**极小**：一个手机号通常只会写成 全号 / 后 8 位 / 前面加个 1。"
+                        + "主流工具（CUPP、hashcat 规则集）也只做这几种。\n"
+                        + "把它来回变形——截中间几位、补个零、尾号重复——只会造出**没人用过的串**，"
+                        + "白占一次尝试。\n"
+                        + "所以派生的准则是：**值少但准**（每个线索最多 3 条），靠"
+                        + "**维度之间互拼**扩展（zhangwei + 门牌 → zhangwei802），"
+                        + "而不是对单个值反复变形。\n\n",
+                "3) Where candidates come from\n"
+                        + "\u00b7 Your hints (most accurate): phone / birthday / pinyin / house no.\n"
+                        + "  These are in no wordlist \u2014 only you know them.\n"
+                        + "\u00b7 Chinese high-frequency: 5201314, woaini520, zhangwei123\n"
+                        + "\u00b7 Common short list: 12345678, 88888888, admin123\n\n"
+                        + "Why only 3 forms per phone number?\n"
+                        + "People modify passwords **very little**. A phone number is usually "
+                        + "typed as-is, its last 8 digits, or with a leading 1. Established tools "
+                        + "do the same.\n"
+                        + "Reshaping it (slicing the middle, padding zeros, repeating the tail) "
+                        + "only produces strings **nobody ever used**.\n"
+                        + "So the rule is: **few but right**, expanded by **combining facts** "
+                        + "(name + house no.), not by mangling one value.\n\n"));
+
+        b.append(L.s("④ 判断依据（本项目最讲究的地方）\n"
+                        + "\"看起来连上了\" ≠ \"这条密码对\"。回连旧网、缓存凭据、旧配置，"
+                        + "都能让状态显示 COMPLETED。\n"
+                        + "所以只认一种证据：**SSID 逐字相等 + supplicant COMPLETED + 拿到有效 IP**，"
+                        + "三条必须**来自同一行状态**。\n"
+                        + "宁可报\"不确定\"，也不报\"成功\"。\n\n",
+                "4) How success is decided (the strict part)\n"
+                        + "\"It looks connected\" \u2260 \"this password is right\". Reconnecting to "
+                        + "an old network, cached credentials or stale config can all show COMPLETED.\n"
+                        + "So only one piece of evidence counts: **SSID exact match + supplicant "
+                        + "COMPLETED + a valid IP**, all three **from the same status line**.\n"
+                        + "It would rather say \"unknown\" than claim a false success.\n\n"));
+
+        StringBuilder miss = new StringBuilder();
+        miss.append(L.s("⑤ 没中是怎么回事\n"
+                        + "· 没中是**常态**，不是故障\n"
+                        + "· 三种没中要分开：这本里确实没有 / 有 N 条没结论（**不算排除**）/ 没跑完\n"
+                        + "· 试过的会被记住（**按网络分开**），换字典不会重复跑\n",
+                "5) What \"no match\" means\n"
+                        + "\u00b7 No match is the **normal** outcome, not a failure\n"
+                        + "\u00b7 Three kinds: truly not in this list / N inconclusive "
+                        + "(**not ruled out**) / not finished\n"
+                        + "\u00b7 Tried candidates are remembered **per network**, so switching "
+                        + "lists does not re-run them\n"));
+        String rec = localTrackRecord();
+        if (!rec.isEmpty()) miss.append(L.s("\n本机记录：", "\nOn this device: ")).append(rec);
+        String top = topHitDictName();
+        if (!top.isEmpty()) {
+            miss.append(L.s("\n本机命中最多的是「" + top + "」—— 换这本通常更划算",
+                    "\nMost hits here came from \"" + top + "\""));
+        }
+        b.append(miss).append("\n\n");
+
+        b.append(L.s("⑥ 现实里会让它失效的三件事\n"
+                        + "· 目标开了 **WPA3 / PMF**：靠\"猜密码去连\"打不动，会一直失败\n"
+                        + "· 密码**不在候选集合**里：跑完也没中 → 补线索，或换更大的字典\n"
+                        + "· **信号弱 / 距离远**：会出现大量\"没结论\"——不是密码错，是没拿到证据\n\n",
+                "6) Three real-world blockers\n"
+                        + "\u00b7 Target uses **WPA3 / PMF**: guessing by connecting will just fail\n"
+                        + "\u00b7 The password is **not in the candidate set**: add hints or use "
+                        + "a bigger list\n"
+                        + "\u00b7 **Weak signal / far away**: lots of \"inconclusive\" results \u2014 "
+                        + "not a wrong password, just no evidence\n\n"));
+
+        b.append(L.s("⑦ 边界\n只用于**你自己拥有或已获授权**的网络。对别人的网就是违法。",
+                "7) Scope\nFor networks **you own or are explicitly authorised to test** only."));
+
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.s("这是怎么破解的？", "How does this work?"), b.toString());
+        d.addItem(L.s("去填线索（提高命中率）", "Add hints (raises hit rate)"),
+                dd -> showSeedDialog());
+        d.addItem(L.s("怎么选字典", "Which wordlist to pick"), dd -> showDictSource());
+        d.setPositive(L.s("知道了", "Got it"), null);
+        d.show();
+    }
+
     /** 一条淡分隔线，用于把顶部状态卡里的几行分开 */
     private View divider() {
         View v = new View(this);
@@ -4891,11 +5018,14 @@ public class MainActivity extends Activity {
                                 + " lines · tap “All” to view"));
             } else {
                 boolean ready = targetNet != null && currentDict != null && !currentDict.isEmpty();
-                connectEmptyHint.setText(ready
+                // 空状态里带一句「看原理」—— 还没跑过的人最需要它
+                connectEmptyHint.setText((ready
                         ? L.s("准备就绪\n点下面的「▶ 开始」",
                                 "Ready\nTap “▶ Start” below")
                         : L.s("先选目标和字典\n（点上面两行可以更换）",
-                                "Pick a target and a dictionary first\n(tap the lines above to change)"));
+                                "Pick a target and a dictionary first\n(tap the lines above to change)"))
+                        + L.s("\n\n右上角「?」看它是怎么破解的",
+                                "\n\nTap “?” at the top right to see how it works"));
             }
         }
     }

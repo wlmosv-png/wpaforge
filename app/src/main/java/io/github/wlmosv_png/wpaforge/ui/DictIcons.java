@@ -32,7 +32,8 @@ public final class DictIcons extends Drawable {
         CHECK,     // 右侧 ✓
         PICK,      // 多选框：空心圆（未选）
         PICKED,    // 多选框：实心圆 + 勾（已选）
-        MORE       // 行内「⋯」：更多操作
+        MORE,      // 行内「⋯」：更多操作
+        HELP       // 「?」：说明入口（圆 + 问号）
     }
 
     private final Kind kind;
@@ -128,6 +129,25 @@ public final class DictIcons extends Drawable {
             case CHECK: {
                 cv.drawLine(cx - u * 0.30f, cy + u * 0.02f, cx - u * 0.075f, cy + u * 0.255f, p);
                 cv.drawLine(cx - u * 0.075f, cy + u * 0.255f, cx + u * 0.31f, cy - u * 0.255f, p);
+                break;
+            }
+            case HELP: {
+                // 圆圈 + 问号。形体渲染出来比过三版：
+                //   A 上弧 + 拐两段的钩 —— 22dp 下钩糊掉，看着只剩"弧+点"
+                //   C 弧开角过大 —— 小尺寸下问号臃肿
+                //   **B 上弧 + 一笔斜线直接落到中心下方** —— 小尺寸下弧与点被连起来，最像问号
+                cv.drawCircle(cx, cy, u * 0.42f, p);
+                float qr = u * 0.15f;
+                float qcy = cy - u * 0.14f;
+                cv.drawArc(new RectF(cx - qr, qcy - qr, cx + qr, qcy + qr),
+                        170f, 210f, false, p);
+                double end = Math.toRadians(20.0);      // 弧终点（170+210=380≡20°）
+                p.setStrokeWidth(Math.max(1.4f, u * 0.085f));
+                cv.drawLine(cx + qr * (float) Math.cos(end), qcy + qr * (float) Math.sin(end),
+                        cx, cy + u * 0.085f, p);
+                Paint f = new Paint(p);
+                f.setStyle(Paint.Style.FILL);
+                cv.drawCircle(cx, cy + u * 0.255f, u * 0.058f, f);
                 break;
             }
             case MORE: {

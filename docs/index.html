@@ -3,10 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WPAForge · 已迁移至 wlmosv.dpdns.org</title>
+<title>WPAForge · 安卓原生 WPA/WPA2 密码审计</title>
 <link rel="canonical" href="https://wlmosv.dpdns.org/wpaforge/">
 <meta name="robots" content="noindex,follow">
 <meta http-equiv="refresh" content="0;url=https://wlmosv.dpdns.org/wpaforge/">
+
+<!-- ── 分享卡片 ────────────────────────────────────────────────
+     这几行是给「抓链」用的：Telegram / X / 微信 / 酷安 贴链接时，
+     有没有 og:image 决定出不出卡片图。
+     这个页面虽然会自动跳转到主站，但**老链接仍然能访问**（Pages 一直开着），
+     所以它照样会被抓到 —— 之前这里一个 og 标签都没有，贴老链接就是一条光链接。
+     og:image 必须绝对 URL；用的是仓库里现成的 docs/og.png（Pages 正在提供）。 -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="WPAForge">
+<meta property="og:title" content="WPAForge · 安卓原生 WPA/WPA2 密码审计工具">
+<meta property="og:description" content="按 SSID 与已知线索现场派生候选，逐条真实关联验证；只认同一行状态里的四条证据，宁可报不确定也不报假成功。需要 Root，仅限自有或已获授权的网络。">
+<meta property="og:url" content="https://wlmosv-png.github.io/wpaforge/">
+<meta property="og:image" content="https://wlmosv-png.github.io/wpaforge/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="WPAForge · 安卓原生 WPA/WPA2 密码审计工具">
+<meta name="twitter:image" content="https://wlmosv-png.github.io/wpaforge/og.png">
+
 <style>
 :root{--bg:#0b0d0b;--fg:#d9e6da;--dim:#6f7f72;--accent:#7dffa8;--line:#212a22}
 *{box-sizing:border-box}
@@ -17,6 +34,10 @@ color:var(--fg);font:15px/1.8 ui-monospace,SFMono-Regular,Menlo,Consolas,"Songti
 a{color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent);word-break:break-all}
 h1{font-size:19px;margin:0 0 12px;letter-spacing:.04em}
 p{margin:0 0 12px;color:var(--dim);font-size:13.5px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0 6px}
+.btn{display:inline-block;padding:9px 14px;border:1px solid var(--accent);color:var(--accent);
+border-bottom:1px solid var(--accent);font-size:13px;letter-spacing:.03em}
+.btn.plain{border-color:var(--line);color:var(--dim)}
 </style>
 </head>
 <body>
@@ -25,6 +46,14 @@ p{margin:0 0 12px;color:var(--dim);font-size:13.5px}
   <h1>WPAForge 已迁移</h1>
   <p>这个页面（wlmosv-png.github.io）不再维护，站点统一到主站：</p>
   <p><a href="https://wlmosv.dpdns.org/wpaforge/">https://wlmosv.dpdns.org/wpaforge/</a></p>
+
+  <!-- 跳转有 0.5 秒左右的延迟；顺手给两个最常用的去处，
+       省得用户为了下载还得等跳转完再找一遍。 -->
+  <div class="row">
+    <a class="btn" href="https://github.com/wlmosv-png/wpaforge/releases/latest/download/WPAForge.apk">下载最新版</a>
+    <a class="btn plain" href="https://github.com/wlmosv-png/wpaforge/releases/latest">更新日志</a>
+  </div>
+
   <p>没有自动跳转？点上面那个链接。</p>
 </div>
 <script>location.replace("https://wlmosv.dpdns.org/wpaforge/");</script>

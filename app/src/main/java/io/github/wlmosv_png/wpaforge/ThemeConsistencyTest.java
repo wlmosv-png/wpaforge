@@ -251,7 +251,11 @@ public class ThemeConsistencyTest {
                 && !radar.contains("tailFrom")
                 && radar.contains("drawArc(rim, a0, a1 - a0, false, pDrum)"));
         ok("扫掠根部贴外环（不再是悬空的几根针）", radar != null
-                && radar.contains("final float tailDeg = 46f"));
+                && radar.contains("final float tailDeg = 78f")
+                && radar.contains("cv.drawArc(rim, a0, a1 - a0, false, pDrum)"));
+        ok("扫掠够厚够长（盘大，不能显得瘦弱）", radar != null
+                && radar.contains("dp(26f)")
+                && radar.contains("dp(14f)"));
         ok("停下不再画指针（扫描结束就是干净刻度盘）", radar != null
                 && radar.contains("if (spinning) {"));
         ok("中心只留「数字 + 个网络」（长副文字会撞内环的点）",
@@ -268,6 +272,16 @@ public class ThemeConsistencyTest {
                 && set.contains("RadarSweep.ringColors()"));
         ok("雷达卡有图例与关键数字", set.contains("private View radarLegend()")
                 && set.contains("private void renderRadarStats(List<NetRecord> nets)"));
+        ok("有「重新扫描」控件（用户能主动刷新）", set.contains("radarRefreshBtn")
+                && set.contains("private void onRefreshClicked()")
+                && set.contains("DictIcons.Kind.REFRESH"));
+        ok("状态行显示「最后更新 N 秒前」", set.contains("最后更新 ")
+                && set.contains("scanner.lastResultsAt()"));
+        ok("刷新带「新增 / 消失」差异（刷新才有信息量）", set.contains("ScanDiff.of(lastBssids, now)")
+                && set.contains("lastDiff.label("));
+        ok("系统频率限制如实显示（不是点了没反应）", set.contains("scanner.scanGateLabel()")
+                && read(SRC + "scan/ScanGate.java") != null
+                && read(SRC + "scan/ScanGate.java").contains("系统限制了扫描频率"));
         ok("塞不下时画汇聚计数标（不硬挤）", radar != null
                 && radar.contains("if (st.count > 0)")
                 && layoutBlips != null && layoutBlips.contains("capacity"));

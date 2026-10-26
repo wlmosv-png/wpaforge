@@ -33,7 +33,8 @@ public final class DictIcons extends Drawable {
         PICK,      // 多选框：空心圆（未选）
         PICKED,    // 多选框：实心圆 + 勾（已选）
         MORE,      // 行内「⋯」：更多操作
-        HELP       // 「?」：说明入口（圆 + 问号）
+        HELP,      // 「?」：说明入口（圆 + 问号）
+        REFRESH    // 「↻」：重新扫描（开口圆弧 + 箭头）
     }
 
     private final Kind kind;
@@ -148,6 +149,25 @@ public final class DictIcons extends Drawable {
                 Paint f = new Paint(p);
                 f.setStyle(Paint.Style.FILL);
                 cv.drawCircle(cx, cy + u * 0.255f, u * 0.058f, f);
+                break;
+            }
+            case REFRESH: {
+                // 开口圆弧 + 一个箭头尖：比"一整圈 + 箭头"更清楚（整圈在小尺寸下
+                // 会和"进度环"混淆），也避免在 20dp 下糊成一坨
+                RectF arc = new RectF(cx - u * 0.34f, cy - u * 0.34f,
+                        cx + u * 0.34f, cy + u * 0.34f);
+                cv.drawArc(arc, -70, 290, false, p);
+                Paint f = new Paint(p);
+                f.setStyle(Paint.Style.FILL);
+                // 箭头尖落在圆弧起点（约 -70°）处，指向顺时针方向
+                float ax = cx + (float) Math.cos(Math.toRadians(-70)) * u * 0.34f;
+                float ay = cy + (float) Math.sin(Math.toRadians(-70)) * u * 0.34f;
+                android.graphics.Path tri = new android.graphics.Path();
+                tri.moveTo(ax + u * 0.13f, ay - u * 0.02f);
+                tri.lineTo(ax - u * 0.03f, ay - u * 0.16f);
+                tri.lineTo(ax - u * 0.10f, ay + u * 0.06f);
+                tri.close();
+                cv.drawPath(tri, f);
                 break;
             }
             case MORE: {

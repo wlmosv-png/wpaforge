@@ -45,9 +45,12 @@ public final class Scanner {
     private static final String TAG = "WPAForgeScan";
     private BroadcastReceiver receiver;
     private boolean running;
-    private long lastScanRequestAt;
-    /** 主动 startScan 的最小间隔，Android 限制约 30s，这里给 15s 以免被系统丢弃 */
-    private static final long MIN_SCAN_INTERVAL_MS = 15_000L;
+    /** 扫描节流闸门：能不能扫、还要等多久、上次为什么没扫成（界面据此禁用按钮） */
+    private final ScanGate gate = new ScanGate();
+    /** 上次拿到结果的时间（界面显示「最后更新 X 秒前」） */
+    private volatile long lastResultsAt = 0;
+    /** 是否至少拿到过一次结果 */
+    private volatile boolean everHadResults = false;
     private static final long POLL_INTERVAL_MS = 5_000L;
     /** 特权通道两次尝试之间的最小间隔，避免频繁起 su 进程 */
     private static final long PRIV_MIN_INTERVAL_MS = 20_000L;
@@ -180,17 +183,23 @@ public final class Scanner {
         }
     };
 
-    /** 主动请求扫描，受系统频率限制，失败不报错（被动路径会兜底） */
-    private void requestScan() {
+    /**
+     * 主动请求扫描。**受系统频率限制**，被拒时记进闸门（界面据此显示倒计时），
+     * 而不是静默失败 —— 用户点了按钮没反应会以为软件坏了。
+     *
+     * @return true = 这次请求真的发出去了
+     */
+    public boolean requestNow() {
         long now = System.currentTimeMillis();
-        if (now - lastScanRequestAt < MIN_SCAN_INTERVAL_MS) return;
-        lastScanRequestAt = now;
+        if (!gate.allowed(now)) {
+            android.util.Log.d(TAG, "扫描被闸门挡下，还需 " + gate.remainingMs(now) + "ms");
+            return false;
+        }
+        boolean ok = false;
         try {
-            boolean ok = wifi.startScan();
+            ok = wifi != null && wifi.startScan();
             if (!ok) {
-                // startScan 返回 false = 系统拒绝了这次扫描
-                // （通常是频率限制：两次扫描间隔太近）
-                android.util.Log.d(TAG, "startScan 被拒绝（可能触发频率限制）");
+                android.util.Log.d(TAG, "startScan 被拒（频率限制）：界面会显示倒计时");
             }
         } catch (SecurityException e) {
             lastDiag = "SCAN_PERMISSION: " + e.getMessage();
@@ -199,10 +208,43 @@ public final class Scanner {
             lastDiag = "SCAN_" + e.getClass().getSimpleName();
             android.util.Log.w(TAG, "startScan 失败", e);
         }
+        gate.markRequest(now, ok);
+        return ok;
+    }
+
+    /** 距下次可扫描还有多少毫秒（0 = 现在就能扫） */
+    public long msUntilNextScan() {
+        return gate.remainingMs(System.currentTimeMillis());
+    }
+
+    /** 闸门状态文案，直接给界面用 */
+    public String scanGateLabel() {
+        return gate.label(System.currentTimeMillis());
+    }
+
+    /** 上次请求有没有被系统接受 */
+    public boolean lastScanAccepted() {
+        return gate.lastAccepted();
+    }
+
+    /** 上次拿到结果的时间戳；0 = 还没拿到过 */
+    public long lastResultsAt() {
+        return lastResultsAt;
+    }
+
+    public boolean everHadResults() {
+        return everHadResults;
+    }
+
+    /** 内部轮询用：受闸门限制，不说话 */
+    private void requestScan() {
+        requestNow();
     }
 
     /** 读取当前结果并回调。空结果时附带诊断，让界面能说清原因。 */
     public void emit() {
+        lastResultsAt = System.currentTimeMillis();
+        everHadResults = true;
         List<NetRecord> records = readNow();
         if (records.isEmpty()) {
             String d = lastDiag;

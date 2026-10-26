@@ -98,6 +98,19 @@ public class MainActivity extends Activity {
     private LinearLayout signalBoard;
     /** 雷达卡下面的「关键数字」行（每次扫描后重填） */
     private LinearLayout radarStatsBox;
+    /** 雷达卡头部：左侧状态（最后更新 / 系统限流倒计时），右侧「重新扫描」 */
+    private TextView radarStatus;
+    private Button radarRefreshBtn;
+    /** 上次扫描的 BSSID 集合，用来算「新增 / 消失」 */
+    private java.util.List<String> lastBssids;
+    private io.github.wlmosv_png.wpaforge.scan.ScanDiff.Result lastDiff;
+    /** 1 秒一跳的文案刷新（只有观测页在前台时才跑） */
+    private final Runnable statusTick = new Runnable() {
+        @Override public void run() {
+            if (currentTab == 0) updateRadarStatus();
+            ui.postDelayed(this, 1000);
+        }
+    };
     private ChannelBars channelBars;
     private LinearLayout netList;
     /** 观测页的已存 WiFi 卡片；缓存上次结果，不重复读 root */
@@ -731,10 +744,14 @@ public class MainActivity extends Activity {
         if (index == 0) {
             if (radar != null) radar.startSpin();
             if (scanner != null) scanner.start();
+            ui.removeCallbacks(statusTick);
+            ui.post(statusTick);
         } else {
+            ui.removeCallbacks(statusTick);
             if (radar != null) radar.stopSpin();
             if (scanner != null) scanner.stop();
         }
+        updateRadarStatus();
 
         // 回到破解页：刷新队列与日志（内容不用重建）
         if (index == 2) {
@@ -1991,6 +2008,57 @@ public class MainActivity extends Activity {
      * 统一配色与尺寸，并把「当前生效的筛选」显示出来（改版前筛选片没有选中态）。
      */
     /**
+     * 刷新雷达卡头部：状态文案 + 按钮可用性。
+     *
+     * <p>三种状态：能扫（按钮可点）／冷却中（按钮变暗，文案给出秒数）／
+     * 上次被系统拒（文案说明是"系统限制了频率"，不是软件坏了）。
+     */
+    private void updateRadarStatus() {
+        if (radarStatus == null || radarRefreshBtn == null) return;
+        long now = System.currentTimeMillis();
+        long wait = scanner == null ? 0 : scanner.msUntilNextScan();
+        boolean ready = wait <= 0;
+
+        StringBuilder sb = new StringBuilder();
+        long last = scanner == null ? 0 : scanner.lastResultsAt();
+        if (last <= 0) {
+            sb.append(L.s("还没扫描到网络", "No scan results yet"));
+        } else {
+            long sec = Math.max(0, (now - last) / 1000);
+            sb.append(L.s("最后更新 " + sec + " 秒前", "Updated " + sec + "s ago"));
+            if (lastDiff != null && lastDiff.changed()) {
+                sb.append(" · ").append(lastDiff.label(" · "));
+            }
+        }
+        if (!ready) {
+            sb.append(" · ").append(scanner == null ? "" : scanner.scanGateLabel());
+        }
+        String text = sb.toString();
+        if (!text.contentEquals(radarStatus.getText())) radarStatus.setText(text);
+
+        radarRefreshBtn.setEnabled(ready);
+        radarRefreshBtn.setTextColor(ready ? AmberTheme.ACCENT : AmberTheme.TEXT_FAINT);
+        radarRefreshBtn.setText(L.s("↻ 重新扫描", "↻ Rescan"));
+        radarRefreshBtn.setCompoundDrawablesWithIntrinsicBounds(
+                io.github.wlmosv_png.wpaforge.ui.DictIcons.sized(
+                        io.github.wlmosv_png.wpaforge.ui.DictIcons.Kind.REFRESH,
+                        ready ? AmberTheme.ACCENT : AmberTheme.TEXT_FAINT, dp, 13f), null, null, null);
+        radarRefreshBtn.setCompoundDrawablePadding(px(6));
+        radarRefreshBtn.setAlpha(ready ? 1f : 0.55f);
+    }
+
+    /** 用户点「重新扫描」 */
+    private void onRefreshClicked() {
+        if (scanner == null) return;
+        boolean sent = scanner.requestNow();
+        if (radar != null) radar.startSpin();
+        updateRadarStatus();
+        if (!sent) {
+            Toast.makeText(this, scanner.scanGateLabel(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
      * 雷达图例：五档信号色 + dBm 区间，并说明实心/空心＝2.4G/5G。
      *
      * <p>刻度值不在这里另写一份 —— 从 {@link RadarSweep#ringLabels()} 取，
@@ -2127,8 +2195,39 @@ public class MainActivity extends Activity {
         // ① 扫描卡：雷达放进卡片，中心数字仍由 RadarSweep 自己画
         LinearLayout radarCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         radar = new RadarSweep(this);
+        // 头部行：左＝状态（最后更新 / 系统限流倒计时），右＝重新扫描。
+        // 系统对 startScan 有约 30 秒的频率限制，按钮必须**如实反映**能不能按，
+        // 否则用户点了没反应，只会以为软件坏了。
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        radarStatus = new TextView(this);
+        radarStatus.setTextSize(11.5f);
+        radarStatus.setTextColor(AmberTheme.TEXT_DIM);
+        radarStatus.setSingleLine(true);
+        head.addView(radarStatus, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        radarRefreshBtn = new Button(this);
+        radarRefreshBtn.setAllCaps(false);
+        radarRefreshBtn.setTextSize(12f);
+        radarRefreshBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        radarRefreshBtn.setMinWidth(0);
+        radarRefreshBtn.setMinimumWidth(0);
+        radarRefreshBtn.setMinHeight(0);
+        radarRefreshBtn.setMinimumHeight(0);
+        radarRefreshBtn.setStateListAnimator(null);
+        radarRefreshBtn.setPadding(px(12), px(8), px(12), px(8));
+        radarRefreshBtn.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
+        radarRefreshBtn.setOnClickListener(v -> onRefreshClicked());
+        head.addView(radarRefreshBtn);
+        radarCard.addView(head);
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hlp.bottomMargin = px(6);
+        head.setLayoutParams(hlp);
+
         radarCard.addView(radar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(232)));
+                ViewGroup.LayoutParams.MATCH_PARENT, px(224)));
         radar.setCenterText(L.s("扫描中", "Scanning"),
                 L.s("正在探测周边网络", "Probing nearby networks"));
         // 雷达盘上只留信道标（盘面太窄，文字和点抢位置怎么调都是输），
@@ -2381,7 +2480,15 @@ public class MainActivity extends Activity {
         @Override
         public void onResults(List<NetRecord> records) {
             lastRecords = records;
-            if (currentTab == 0) renderRecords(records);
+            // 与上一次比对：刷新这件事才有信息量（新增/消失了几台）
+            java.util.List<String> now = new java.util.ArrayList<>();
+            for (NetRecord r : records) now.add(r.bssid);
+            lastDiff = io.github.wlmosv_png.wpaforge.scan.ScanDiff.of(lastBssids, now);
+            lastBssids = now;
+            if (currentTab == 0) {
+                renderRecords(records);
+                updateRadarStatus();
+            }
         }
 
         @Override

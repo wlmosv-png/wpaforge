@@ -315,26 +315,42 @@ public class RadarSweep extends View {
         // 现在把扫掠做成**贴在外环上的一段彗尾**：根部即外环，不存在悬空问题，
         // 也不遮挡盘内的任何数据；方向感由「尾部渐暗 + 尖端亮点」给出。
         if (spinning) {
-            final float tailDeg = 46f;
-            final int seg = 9;
+            // 尺寸口径（用户反馈「圈很大，扫掠显得瘦弱」）：
+            // 盘半径 ≈ 200dp 量级，拖尾要够长够厚才撑得住这个画面 ——
+            // 78° 弧长 + 14dp 粗 + 内层 26dp 柔光，合起来才是一条"光带"而不是一根细线。
+            final float tailDeg = 78f;
+            final int seg = 12;
+            RectF glow = new RectF(cx - radius * 0.90f, cy - radius * 0.90f,
+                    cx + radius * 0.90f, cy + radius * 0.90f);
             RectF rim = new RectF(cx - radius * 0.945f, cy - radius * 0.945f,
                     cx + radius * 0.945f, cy + radius * 0.945f);
+
+            // ① 内层柔光：更宽更淡，给"光带扫过"的体积感
             pDrum.setStyle(Paint.Style.STROKE);
             pDrum.setColor(AmberTheme.ACCENT);
-            pDrum.setStrokeWidth(dp(11f));
+            pDrum.setStrokeWidth(dp(26f));
             for (int i = seg - 1; i >= 0; i--) {
                 float a1 = sweepAngle - tailDeg * i / seg;
                 float a0 = sweepAngle - tailDeg * (i + 1) / seg;
-                pDrum.setAlpha((int) (255 * 0.50f * (1f - i / (float) seg)));
+                pDrum.setAlpha((int) (255 * 0.13f * (1f - i / (float) seg)));
+                cv.drawArc(glow, a0, a1 - a0, false, pDrum);
+            }
+
+            // ② 外层实心带：贴在外环上，根部即外环
+            pDrum.setStrokeWidth(dp(14f));
+            for (int i = seg - 1; i >= 0; i--) {
+                float a1 = sweepAngle - tailDeg * i / seg;
+                float a0 = sweepAngle - tailDeg * (i + 1) / seg;
+                pDrum.setAlpha((int) (255 * 0.62f * (1f - i / (float) seg)));
                 cv.drawArc(rim, a0, a1 - a0, false, pDrum);
             }
 
-            // 尖端：两段渐弱的短线，给方向感；根部接在外缘弧上，不悬空
+            // ③ 尖端：两段渐弱的短线 + 亮点，给方向感
             double rad = Math.toRadians(sweepAngle);
             pDrum.setStyle(Paint.Style.STROKE);
-            pDrum.setStrokeWidth(dp(2.2f));
+            pDrum.setStrokeWidth(dp(2.6f));
             float[] rs = {1.00f, 0.945f, 0.90f};
-            float[] als = {0.75f, 0.32f, 0.0f};
+            float[] als = {0.80f, 0.34f, 0.0f};
             for (int i = 0; i + 1 < rs.length; i++) {
                 pDrum.setAlpha((int) (255 * als[i]));
                 cv.drawLine(cx + (float) Math.cos(rad) * radius * rs[i],
@@ -345,7 +361,7 @@ public class RadarSweep extends View {
             pDrum.setStyle(Paint.Style.FILL);
             pDrum.setAlpha(255);
             cv.drawCircle(cx + (float) Math.cos(rad) * radius,
-                    cy + (float) Math.sin(rad) * radius, dp(2.4f), pDrum);
+                    cy + (float) Math.sin(rad) * radius, dp(3.0f), pDrum);
         }
 
         // ── 4. 落点：**按信道扇区分组**，组内按 BSSID 排序（位置稳定）

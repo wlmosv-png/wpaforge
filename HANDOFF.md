@@ -741,3 +741,38 @@ boolean definite = a.isSuccess() || a.verdict == CrackEngine.Verdict.AUTH_FAIL;
 
 ### 门禁
 **2387 通过 / 0 失败**。装机 103 / 1.9.33。
+
+---
+
+## 十、2026-10-26 第八轮：收尾要等 15 秒（用户报"跑完了进度条还在动"）
+
+### 根因（代码级）
+`ConfigRestorer.restore()`：
+```
+removeTarget(ssid)                          → shell，快
+readd(ssid, ...)                            → sh(cmd, 20000) 超时 20s
+if (readd.issued) waitConnected(ssid, READD_WAIT_MS=15000)   ← **最多等 15 秒**
+verify()                                    → status 5s + list-networks 6s
+needsCleanupRetry → 再来一遍 remove + verify
+```
+`restoreAfterRun` 在 `onTaskDone` **之前**调用 → UI 整个收尾期都停在"收尾中"。
+最坏路径（readd 超时 + wait 超时 + 重试）可达 60~70 秒，典型 ≈ 15 秒 + 若干 shell 往返。
+
+### 为什么用户觉得是卡死
+1. 状态行只说"收尾中"，**不说在等什么、还要等多久**；
+2. 进度条**还在放流动效**（100% 了但动画没停）；
+3. 文案被截断成"正在恢复原来的…"。
+
+### 改法（全部在 UI 侧，不动判定链）
+1. **进入收尾立刻收掉进度条** —— 它已经没信息可给，留着只会继续动画
+   （`StagedProgress.onVisibilityChanged(GONE)` 会立即 `animating = false`，已核对）
+2. **加一行计时**：`正在把你原来的网络配置写回去 · 已等 6 秒（最多约 15 秒）`
+   超过 16 秒改口：`已等 N 秒 · 比预期久，仍在读回确认（细节见攻击流）`
+3. 状态行缩短成「收尾中」（详情交给下面那行，不再被截断）
+
+### 顺带的旁证（用户截图里就有）
+字典卡写「中文口令 TOP 100 · 77 条」，进度卡写「总数 55」→
+**22 条被已试集合过滤掉了**，跳过功能在生产路径上确认生效。
+
+### 门禁
+2387 通过 / 0 失败。装机 104 / 1.9.34。

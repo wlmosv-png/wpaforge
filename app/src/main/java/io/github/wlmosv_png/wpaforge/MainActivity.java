@@ -202,6 +202,37 @@ public class MainActivity extends Activity {
     private LinearLayout resultActions;
     /** 收尾中：候选跑完了但服务还在恢复临时网络配置 —— 别让界面停在"运行中 100%" */
     private boolean finishingNow = false;
+    private TextView finishNote;
+    private long finishingStartedAt = 0L;
+
+    /**
+     * 收尾计时。
+     *
+     * <p>为什么必须做：收尾里有一段 `ConfigRestorer.waitConnected(ssid, 15000)`
+     * —— 要把用户原来的网络写回去、并**轮询最多 15 秒**等它连上。
+     * 旧版这段时间界面只有一句"收尾中"，用户不知道在等什么、还要等多久，
+     * 进度条还在放流动效 → 看起来就是卡死。
+     */
+    private final Runnable finishingTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!finishingNow) {
+                if (finishNote != null) finishNote.setVisibility(View.GONE);
+                return;
+            }
+            long sec = Math.max(0, (System.currentTimeMillis() - finishingStartedAt) / 1000);
+            if (finishNote != null) {
+                finishNote.setVisibility(View.VISIBLE);
+                finishNote.setText(sec <= 16L
+                        ? L.s("正在把你原来的网络配置写回去 · 已等 " + sec + " 秒（最多约 15 秒）",
+                              "Restoring your previous network \u00b7 " + sec + "s (up to ~15s)")
+                        : L.s("已等 " + sec + " 秒 · 比预期久，仍在读回确认（细节见攻击流）",
+                              "Waiting " + sec + "s \u00b7 longer than expected, still verifying "
+                                      + "(see the stream)"));
+            }
+            ui.postDelayed(this, 500L);
+        }
+    };
     private TextView hitPw;
     private TextView hitMeta;
     /** 日志全量（含被筛掉的）；streamBuffer 只是它的「可见视图」 */
@@ -4037,6 +4068,16 @@ public class MainActivity extends Activity {
         frlp.topMargin = px(10);
         progressCard.addView(footRow, frlp);
 
+        finishNote = new TextView(this);
+        finishNote.setTextSize(11.5f);
+        finishNote.setTextColor(ACCENT);
+        finishNote.setLineSpacing(px(3), 1f);
+        finishNote.setVisibility(View.GONE);
+        LinearLayout.LayoutParams fnlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fnlp.topMargin = px(10);
+        progressCard.addView(finishNote, fnlp);
+
         pageConnect.addView(progressCard, cardLp(AmberTheme.GAP_CARD));
 
         // ================= ⑤ 状态与事件卡 =================
@@ -4328,7 +4369,7 @@ public class MainActivity extends Activity {
             color = ACCENT;
         } else if (running || st == TaskQueue.State.RUNNING) {
             text = finishingNow
-                    ? L.s("收尾中 · 正在恢复原来的网络配置", "Finishing · restoring the network config")
+                    ? L.s("收尾中", "Finishing up")
                     : L.s("运行中", "Running");
             color = ACCENT;
         } else if (st == TaskQueue.State.PENDING) {
@@ -4996,7 +5037,20 @@ public class MainActivity extends Activity {
                             ? L.s("剩余 待估", "ETA —") : el);
                 }
                 // 候选跑完了但还没收到"结束"回调 → 收尾中（恢复临时网络配置等）
-                finishingNow = total > 0 && tested >= total;
+                boolean nowFinishing = total > 0 && tested >= total;
+                if (nowFinishing && !finishingNow) {
+                    // 第一次进入收尾：把进度条收掉。
+                    // 它已经没有信息可给（100% 了），留着只会继续放流动效 ——
+                    // 那正是用户说的"跑完了进度条还在动，像卡住"。
+                    finishingStartedAt = System.currentTimeMillis();
+                    if (connectProgress != null) {
+                        connectProgress.setDone(false);
+                        connectProgress.setVisibility(View.GONE);
+                    }
+                    ui.removeCallbacks(finishingTick);
+                    ui.post(finishingTick);
+                }
+                finishingNow = nowFinishing;
                 renderProgressCardState();
             });
         }
@@ -5004,6 +5058,8 @@ public class MainActivity extends Activity {
         @Override
         public void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome) {
             finishingNow = false;
+            ui.removeCallbacks(finishingTick);
+            if (finishNote != null) finishNote.setVisibility(View.GONE);
             showResultCard(task, outcome);
             ui.post(() -> {
                 // 只用于显示：把服务报回来的真实结论记下来给进度卡的状态行用。

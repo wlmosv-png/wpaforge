@@ -193,6 +193,15 @@ public class MainActivity extends Activity {
     private LinearLayout candBox;
     /** 命中卡片：产品的巅峰时刻，值得单独一块 */
     private LinearLayout hitCard;
+
+    /* ── 结算卡：跑完之后给出的"结论"，不是一个空状态 ──────────────
+     * 破解的常态结果是"没中"。工具的**常态状态**没做好，用户就会觉得是坏的。
+     * 所以跑完不再只把状态改成"已结束"，而是换一张有结论、有解释、有下一步的卡。 */
+    private LinearLayout resultCard;
+    private TextView resultTitle, resultSub, resultWhy;
+    private LinearLayout resultActions;
+    /** 收尾中：候选跑完了但服务还在恢复临时网络配置 —— 别让界面停在"运行中 100%" */
+    private boolean finishingNow = false;
     private TextView hitPw;
     private TextView hitMeta;
     /** 日志全量（含被筛掉的）；streamBuffer 只是它的「可见视图」 */
@@ -3920,6 +3929,39 @@ public class MainActivity extends Activity {
 
         pageConnect.addView(hitCard, cardLp(AmberTheme.GAP_CARD));
 
+        // ================= ④b 结算卡（跑完之后的结论）=================
+        resultCard = AmberTheme.card(this, dp, R);
+        resultCard.setVisibility(View.GONE);
+
+        resultTitle = new TextView(this);
+        resultTitle.setTextSize(AmberTheme.FS_STATE);
+        resultTitle.setTextColor(TEXT);
+        resultTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        resultCard.addView(resultTitle);
+
+        resultSub = new TextView(this);
+        resultSub.setTextSize(AmberTheme.FS_BODY);
+        resultSub.setTextColor(TEXT_DIM);
+        LinearLayout.LayoutParams rslp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rslp.topMargin = px(4);
+        resultCard.addView(resultSub, rslp);
+
+        resultWhy = new TextView(this);
+        resultWhy.setTextSize(12.5f);
+        resultWhy.setTextColor(AmberTheme.TEXT_DIM);
+        resultWhy.setLineSpacing(px(4), 1f);
+        LinearLayout.LayoutParams rwlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rwlp.topMargin = px(10);
+        resultCard.addView(resultWhy, rwlp);
+
+        resultActions = new LinearLayout(this);
+        resultActions.setOrientation(LinearLayout.HORIZONTAL);
+        resultActions.setPadding(0, px(12), 0, 0);
+        resultCard.addView(resultActions);
+        pageConnect.addView(resultCard, cardLp(AmberTheme.GAP_CARD));
+
         // ================= ④ 任务进度卡 =================
         progressCard = AmberTheme.card(this, dp, R);
 
@@ -4285,7 +4327,9 @@ public class MainActivity extends Activity {
             text = L.s("已暂停 · 进度已保留", "Paused · progress kept");
             color = ACCENT;
         } else if (running || st == TaskQueue.State.RUNNING) {
-            text = L.s("运行中", "Running");
+            text = finishingNow
+                    ? L.s("收尾中 · 正在恢复原来的网络配置", "Finishing · restoring the network config")
+                    : L.s("运行中", "Running");
             color = ACCENT;
         } else if (st == TaskQueue.State.PENDING) {
             text = L.s("准备中", "Preparing");
@@ -4309,6 +4353,160 @@ public class MainActivity extends Activity {
                     : L.s("任务进行中 · 可暂停或停止", "Task active · pause or stop"));
             actionsHint.setTextColor(AmberTheme.TEXT_FAINT);
         }
+    }
+
+    // ================================================================ 结算卡
+
+    /**
+     * 跑完之后给结论。
+     *
+     * <p>设计要点（用户提的"跑完还没出来，用户觉得是垃圾"）：
+     *  1. **把"没中"当成一等公民**：它是一个正常、明确、可解释的结果，不是空状态；
+     *  2. **三种"没中"必须分开**：全部有结论 ≠ 有 N 条无结论 ≠ 没跑完。
+     *     跟判定链"宁可报不确定，也不报假成功"是同一条原则；
+     *  3. **用本机真实战绩当依据**，而不是空口安慰；
+     *  4. **给下一步**，并且允许放弃（不给退路，用户只会卸载）。
+     */
+    private void showResultCard(TaskQueue.Task task, String outcome) {
+        if (resultCard == null || task == null) return;
+        if ("DONE_HIT".equals(outcome)) {
+            resultCard.setVisibility(View.GONE);   // 命中已经有专门的命中卡
+            return;
+        }
+        final int tested = task.testedThisRun;
+        final int total = task.dictSize;
+        final int inconclusive = task.missInconclusive;
+        final String ssid = task.ssid == null ? "" : task.ssid;
+
+        String title;
+        int titleColor;
+        if ("PAUSED".equals(outcome)) {
+            title = L.s("试到第 " + Math.max(task.offset, tested) + " 条停了",
+                    "Stopped at candidate " + Math.max(task.offset, tested));
+            titleColor = ACCENT;
+        } else if ("STOPPED".equals(outcome)) {
+            title = L.s("已停止 · 试了 " + tested + " 条", "Stopped after " + tested);
+            titleColor = AmberTheme.TEXT_DIM;
+        } else if (tested == 0 && total > 0) {
+            title = L.s("这本字典的候选都跑过了", "Every candidate here was already tried");
+            titleColor = ACCENT;
+        } else if (inconclusive > 0) {
+            title = L.s("跑完了，但有 " + inconclusive + " 条没结论",
+                    "Finished, but " + inconclusive + " had no verdict");
+            titleColor = ACCENT;
+        } else {
+            title = L.s("这本字典里没有", "Not in this dictionary");
+            titleColor = TEXT;      // 中性色：这是正常结果，不是错误
+        }
+        resultTitle.setText(title);
+        resultTitle.setTextColor(titleColor);
+
+        StringBuilder sub = new StringBuilder();
+        sub.append(L.s("试了 " + tested + " 条", tested + " tried"));
+        if (total > 0) sub.append(L.s(" · 这本共 " + total + " 条", " of " + total));
+        sub.append(L.s(" · 用了 ", " \u00b7 took ")).append(fmtDuration(task.elapsedMs));
+        resultSub.setText(sub.toString());
+
+        // 「为什么」——这里必须说人话，而且优先用本机真实数据
+        StringBuilder why = new StringBuilder();
+        if ("PAUSED".equals(outcome)) {
+            why.append(L.s("进度已经存下来了，点「继续」接着跑，不会从头再来。",
+                    "Progress is saved \u2014 Resume continues from here."));
+        } else if (tested == 0 && total > 0) {
+            why.append(L.s("这本字典的候选以前都试过，所以这次没有可跑的新候选。"
+                            + "\n换一本字典就行，已经跑过的不会重复跑。",
+                    "All candidates in this dictionary were tried before, so there was nothing "
+                            + "new to run. Just pick another dictionary \u2014 tried ones are skipped."));
+        } else if (inconclusive > 0) {
+            why.append(L.s("没结论 = 路由器没给出明确答复（信号弱、响应慢、或中途换过信道）。"
+                            + "这些**不算被排除**，下次跑同一本会重新试它们。",
+                    "No verdict means the router gave no clear answer (weak signal, slow reply, "
+                            + "or a channel change). These are NOT ruled out and will be retried."));
+        } else {
+            why.append(L.s("破解是逐条试，试完没有就是没有 —— 这不是故障。"
+                            + "\n家用密码最常见的是手机号、生日、门牌，这些大多不在这本字典里。",
+                    "Cracking is one candidate at a time: exhausted means exhausted. "
+                            + "Home passwords are usually a phone number, birthday or house "
+                            + "number \u2014 most of those are not in this list."));
+            String rec = localTrackRecord();
+            if (!rec.isEmpty()) why.append("\n").append(rec);
+        }
+        io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
+        if (tried.size() > 0) {
+            why.append("\n").append(L.s("本网络累计已排除 " + tried.size() + " 条（下次不会重复跑）",
+                    tried.size() + " candidates ruled out on this network so far"));
+        }
+        resultWhy.setText(why.toString());
+
+        resultActions.removeAllViews();
+        Button again = AmberTheme.action(this, dp,
+                L.s("填线索再试", "Add hints & retry"), AmberTheme.BTN_PRIMARY);
+        again.setOnClickListener(v -> {
+            hideResultCard();
+            showSeedDialog();
+        });
+        resultActions.addView(again);
+        Button bigger = AmberTheme.action(this, dp,
+                L.s("换更大的字典", "Bigger dictionary"), AmberTheme.BTN_SECONDARY);
+        bigger.setOnClickListener(v -> {
+            hideResultCard();
+            showDictSource();
+        });
+        LinearLayout.LayoutParams blp = (LinearLayout.LayoutParams) bigger.getLayoutParams();
+        blp.leftMargin = px(8);
+        bigger.setLayoutParams(blp);
+        resultActions.addView(bigger);
+        Button giveUp = AmberTheme.action(this, dp,
+                L.s("先算了", "Leave it"), AmberTheme.BTN_NEUTRAL);
+        giveUp.setOnClickListener(v -> hideResultCard());
+        LinearLayout.LayoutParams glp = (LinearLayout.LayoutParams) giveUp.getLayoutParams();
+        glp.leftMargin = px(8);
+        setSafe(giveUp, glp);
+        resultActions.addView(giveUp);
+
+        resultCard.setVisibility(View.VISIBLE);
+        // 候选区还在显示最后一条 —— 标题改成"最后试的"，明确告诉用户已经结束了
+        if (candLabel != null) {
+            candLabel.setText(L.s("最后试的候选", "LAST TRIED"));
+        }
+    }
+
+    /** 让 LayoutParams 一定落地（有些 Button 建出来还没有 lp） */
+    private static void setSafe(View v, LinearLayout.LayoutParams lp) {
+        v.setLayoutParams(lp);
+    }
+
+    private void hideResultCard() {
+        if (resultCard != null) resultCard.setVisibility(View.GONE);
+        if (candLabel != null) {
+            candLabel.setText(L.s("当前候选", "CURRENT"));
+        }
+    }
+
+    /** 本机真实战绩：跑过多少次、命中多少次 —— 比任何安慰话都有说服力 */
+    private String localTrackRecord() {
+        try {
+            java.util.List<io.github.wlmosv_png.wpaforge.audit.HistStore.Record> rs =
+                    io.github.wlmosv_png.wpaforge.audit.HistStore.load(this);
+            if (rs.isEmpty()) return "";
+            int hits = 0;
+            for (io.github.wlmosv_png.wpaforge.audit.HistStore.Record r : rs) if (r.hit) hits++;
+            return L.s("本机记录：跑过 " + rs.size() + " 次，命中 " + hits + " 次"
+                            + (hits > 0 ? " —— 工具是能中的，只是这次方向不对。" : "。"),
+                    "On this device: " + rs.size() + " runs, " + hits + " hits.");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static String fmtDuration(long ms) {
+        if (ms <= 0) return "—";
+        long sec = ms / 1000;
+        if (sec < 60) return L.s(sec + " 秒", sec + "s");
+        if (sec < 3600) return L.s((sec / 60) + " 分 " + (sec % 60) + " 秒",
+                (sec / 60) + "m " + (sec % 60) + "s");
+        return L.s((sec / 3600) + " 小时 " + ((sec % 3600) / 60) + " 分",
+                (sec / 3600) + "h " + ((sec % 3600) / 60) + "m");
     }
 
     /** 一条淡分隔线，用于把顶部状态卡里的几行分开 */
@@ -4797,12 +4995,16 @@ public class MainActivity extends Activity {
                     statEtaView.setText(el.isEmpty()
                             ? L.s("剩余 待估", "ETA —") : el);
                 }
+                // 候选跑完了但还没收到"结束"回调 → 收尾中（恢复临时网络配置等）
+                finishingNow = total > 0 && tested >= total;
                 renderProgressCardState();
             });
         }
 
         @Override
         public void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome) {
+            finishingNow = false;
+            showResultCard(task, outcome);
             ui.post(() -> {
                 // 只用于显示：把服务报回来的真实结论记下来给进度卡的状态行用。
                 // 这里**不判定**成功/失败，只是把 outcome 换个说法展示。
@@ -4865,6 +5067,19 @@ public class MainActivity extends Activity {
                         // 停止后「剩余」不再有意义；已完成/总数/完成度保留真实值
                         if (statEtaView != null) statEtaView.setText(L.s("剩余 已中止", "ETA —"));
                         if (statRateView != null) statRateView.setText(L.s("速率 已中止", "rate —"));
+                    } else {
+                        /* 未命中（及其它终态）：**把进度条收掉**。
+                         * 旧版这里没有分支 → 跑完仍停在"100% + 流光动画 + 运行中"，
+                         * 用户盯着它等一个永远不会来的结果，然后觉得是垃圾。
+                         * 结论交给结算卡说，进度条没必要留在屏幕上继续转。 */
+                        connectProgress.setDone(false);
+                        connectProgress.setStages(new java.util.ArrayList<>());
+                        connectProgress.setText("", "");
+                        connectProgress.setVisibility(View.GONE);
+                        if (statEtaView != null) statEtaView.setText(L.s("剩余 —", "ETA —"));
+                        if (statRateView != null) {
+                            statRateView.setText(L.s("速率 已结束", "rate —"));
+                        }
                     }
                 }
                 renderProgressCardState();
@@ -5362,6 +5577,7 @@ public class MainActivity extends Activity {
     }
 
     private void startConnect() {
+        hideResultCard();
         // 跳过是"看不见的行为"，必须在**界面**上说出来。
         // 用户不看日志的话，3000 条的字典只跑 1200 条只会让他以为坏了。
         if (currentDictSkipped > 0) {

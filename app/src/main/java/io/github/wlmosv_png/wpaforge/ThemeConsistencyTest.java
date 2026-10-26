@@ -272,18 +272,19 @@ public class ThemeConsistencyTest {
                 && set.contains("RadarSweep.ringColors()"));
         ok("雷达卡有图例与关键数字", set.contains("private View radarLegend()")
                 && set.contains("private void renderRadarStats(List<NetRecord> nets)"));
-        ok("能主动刷新：状态行整行可点", set.contains("radarStatus.setOnClickListener(v -> onRefreshClicked())")
-                && set.contains("private void onRefreshClicked()")
-                && set.contains("DictIcons.Kind.REFRESH"));
-        ok("不要按钮外框（用户：不好那个按钮了，文字可以保留）",
-                !set.contains("radarRefreshBtn")
-                        && !set.contains("new Button(this);\n        radarRefreshBtn"));
-        ok("状态行显示「刚刚更新 / 最后更新 N 秒前」", set.contains("刚刚更新")
+        // 用户三次意见的最终形态：纯信息行 —— 不可点、不显示倒计时、没有图标
+        ok("状态行只说「什么时候扫的」", set.contains("刚刚更新")
                 && set.contains("最后更新 ")
                 && set.contains("scanner.lastResultsAt()"));
+        ok("状态行不可点（用户：不用点击更新了）", !set.contains("radarStatus.setOnClickListener")
+                && !set.contains("radarRefreshBtn")
+                && !set.contains("DictIcons.Kind.REFRESH"));
+        ok("有结果时不提系统限流（那是噪音）",
+                !set.contains("radarStatus.setText(text + ")
+                        && set.contains("if (records.isEmpty() && scanner != null"));
         ok("刷新带「新增 / 消失」差异（刷新才有信息量）", set.contains("ScanDiff.of(lastBssids, now)")
                 && set.contains("lastDiff.label("));
-        ok("系统频率限制如实显示（不是点了没反应）", set.contains("scanner.scanGateLabel()")
+        ok("系统频率限制只在「扫不到」时告知", set.contains("scanner.scanGateLabel()")
                 && read(SRC + "scan/ScanGate.java") != null
                 && read(SRC + "scan/ScanGate.java").contains("系统限制了扫描频率"));
         ok("塞不下时画汇聚计数标（不硬挤）", radar != null

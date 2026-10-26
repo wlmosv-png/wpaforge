@@ -99,11 +99,13 @@ public class MainActivity extends Activity {
     /** 雷达卡下面的「关键数字」行（每次扫描后重填） */
     private LinearLayout radarStatsBox;
     /**
-     * 雷达卡头部：**一行可点的状态文字**（最后更新 / 限流倒计时 / 轻点刷新）。
+     * 雷达卡头部：**一行纯状态文字** —— 只说「什么时候扫的」。
      *
-     * <p>原来这里是个带底框的按钮，用户反馈「不好那个按钮了，文字可以保留」——
-     * 一个描边方块压在卡片上确实重。现在整行就是控件：行首一个小刷新图标
-     * （可点时琥珀色、冷却时灰色），文字里写明「轻点刷新」。
+     * <p>演进过程（用户三次明确意见，别再往回改）：
+     * ① 带底框的按钮 →「不好那个按钮了，文字可以保留」；
+     * ② 整行可点 + 「轻点刷新」+ 倒计时 →「不用点击更新了，就显示啥时候扫描的就行了」。
+     * 所以现在是**不可点**的纯信息行：扫描由后台轮询自己维持，
+     * 用户不需要（也不应该）去操心系统那 30 秒的频率限制。
      */
     private TextView radarStatus;
     /** 上次扫描的 BSSID 集合，用来算「新增 / 消失」 */
@@ -2021,16 +2023,12 @@ public class MainActivity extends Activity {
     private void updateRadarStatus() {
         if (radarStatus == null) return;
         long now = System.currentTimeMillis();
-        long wait = scanner == null ? 0 : scanner.msUntilNextScan();
-        boolean ready = wait <= 0;
-
         StringBuilder sb = new StringBuilder();
         long last = scanner == null ? 0 : scanner.lastResultsAt();
         if (last <= 0) {
-            sb.append(L.s("还没扫描到网络", "No scan results yet"));
+            sb.append(L.s("正在扫描…", "Scanning\u2026"));
         } else {
             long sec = Math.max(0, (now - last) / 1000);
-            // 「0 秒前」读着别扭，头几秒直接说「刚刚更新」
             sb.append(sec <= 3
                     ? L.s("刚刚更新", "Updated just now")
                     : L.s("最后更新 " + sec + " 秒前", "Updated " + sec + "s ago"));
@@ -2038,30 +2036,8 @@ public class MainActivity extends Activity {
                 sb.append(" · ").append(lastDiff.label(" · "));
             }
         }
-        sb.append(" · ").append(ready
-                ? L.s("轻点刷新", "tap to refresh")
-                : (scanner == null ? "" : scanner.scanGateLabel()));
         String text = sb.toString();
         if (!text.contentEquals(radarStatus.getText())) radarStatus.setText(text);
-
-        // 行首图标：可点=琥珀、冷却=灰（一眼看出现在按不按得动）
-        radarStatus.setCompoundDrawablesWithIntrinsicBounds(
-                io.github.wlmosv_png.wpaforge.ui.DictIcons.sized(
-                        io.github.wlmosv_png.wpaforge.ui.DictIcons.Kind.REFRESH,
-                        ready ? AmberTheme.ACCENT : AmberTheme.TEXT_FAINT, dp, 12f),
-                null, null, null);
-        radarStatus.setTextColor(ready ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_FAINT);
-    }
-
-    /** 用户点「重新扫描」 */
-    private void onRefreshClicked() {
-        if (scanner == null) return;
-        boolean sent = scanner.requestNow();
-        if (radar != null) radar.startSpin();
-        updateRadarStatus();
-        if (!sent) {
-            Toast.makeText(this, scanner.scanGateLabel(), Toast.LENGTH_SHORT).show();
-        }
     }
 
     /**
@@ -2209,10 +2185,8 @@ public class MainActivity extends Activity {
         radarStatus.setTextColor(AmberTheme.TEXT_DIM);
         radarStatus.setSingleLine(true);
         radarStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        radarStatus.setCompoundDrawablePadding(px(7));
         radarStatus.setGravity(Gravity.CENTER_VERTICAL);
-        radarStatus.setPadding(px(2), px(10), px(2), px(10));   // 撑出可点区域
-        radarStatus.setOnClickListener(v -> onRefreshClicked());
+        radarStatus.setPadding(px(2), px(2), px(2), px(8));
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         hlp.bottomMargin = px(4);
@@ -2506,6 +2480,15 @@ public class MainActivity extends Activity {
 
         // 中心只放两个词：数字大、单位小。以前副文字带「· 最强 -41 dBm」，
         // 横向铺得太宽，会和内环的点/汇聚标撞在一起（截图里正压着）
+        // 一个网络都扫不到时，把「为什么没有」说清楚：权限/Wi-Fi 关/系统限流
+        // （有结果时不提限流 —— 那是噪音，用户也不该操心系统那 30 秒）
+        if (records.isEmpty() && scanner != null && !scanner.lastScanAccepted()) {
+            observeNotice.setText(L.s("暂时扫不到网络 · ", "No networks yet · ")
+                    + scanner.scanGateLabel());
+            observeNotice.setTextColor(DANGER);
+            observeNotice.setVisibility(View.VISIBLE);
+        }
+
         radar.setCenterText(String.valueOf(visible.size()), L.s("个网络", "networks"));
 
         // 雷达：**一 AP 一点**，半径＝信号档位（越强越靠里），**方位角＝信道**。

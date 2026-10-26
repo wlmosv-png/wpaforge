@@ -4091,7 +4091,11 @@ public class MainActivity extends Activity {
         eventCard = AmberTheme.card(this, dp, R);
 
         // 当前处理项（等宽大字 + 上两条）
-        candLabel = AmberTheme.label(this, L.s("当前候选", "CURRENT"));
+        // 词汇改过：原来叫「当前候选」—— 跑完之后它还挂在那儿，
+        // 会让用户以为"还在跑"。现在分两个词：
+        //   运行中 = 正在尝试（主动语态）
+        //   结束后 = 最后尝试（陈述事实，且**不说"完成"**——没找到不算完成）
+        candLabel = AmberTheme.label(this, L.s("正在尝试", "TRYING"));
         candRoll = new io.github.wlmosv_png.wpaforge.ui.CandidateRoll(this);
         LinearLayout.LayoutParams candLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -4539,9 +4543,10 @@ public class MainActivity extends Activity {
                 AmberTheme.BTN_NEUTRAL, 8, v -> hideResultCard()));
 
         resultCard.setVisibility(View.VISIBLE);
-        // 候选区还在显示最后一条 —— 标题改成"最后试的"，明确告诉用户已经结束了
+        // 候选区还留着最后一条 —— 标题换成陈述事实的词，明确告诉用户已经结束。
+        // 刻意不用「完成」：没找到不算完成，用「最后尝试」只说发生过什么。
         if (candLabel != null) {
-            candLabel.setText(L.s("最后试的候选", "LAST TRIED"));
+            candLabel.setText(L.s("最后尝试", "LAST TRIED"));
         }
     }
 
@@ -4568,9 +4573,10 @@ public class MainActivity extends Activity {
 
     private void hideResultCard() {
         if (resultCard != null) resultCard.setVisibility(View.GONE);
-        if (candLabel != null) {
-            candLabel.setText(L.s("当前候选", "CURRENT"));
-        }
+        /* **不重置候选区标题**。
+         * 之前这里会把标题改回「当前候选」，于是用户点「先算了」之后，
+         * 一张写着"已结束 · 未命中"的卡下面挂着"当前候选"——两句话打架。
+         * 标题只由 startConnect（开跑）和 showResultCard（结束）两处决定。 */
     }
 
     /**
@@ -5743,6 +5749,7 @@ public class MainActivity extends Activity {
         lastRestoreSummary = "";
         finishingNow = false;          // 防上轮异常残留，导致状态一直显示"收尾中"
         ui.removeCallbacks(finishingTick);
+        if (candLabel != null) candLabel.setText(L.s("正在尝试", "TRYING"));
         // 跳过是"看不见的行为"，必须在**界面**上说出来。
         // 用户不看日志的话，3000 条的字典只跑 1200 条只会让他以为坏了。
         if (currentDictSkipped > 0) {

@@ -782,12 +782,70 @@ public class DictActivity extends Activity {
                         io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
         if (tried.size() == 0) return null;
         TextView tv = new TextView(this);
-        tv.setText(L.s("本网络已试过 " + tried.size() + " 条 · 跑字典时自动跳过",
-                tried.size() + " candidates tried on this network \u00b7 skipped automatically"));
+        tv.setText(L.s("本网络已试过 " + tried.size() + " 条 · 跑字典时自动跳过 · 点这里看判定基准",
+                tried.size() + " tried on this network \u00b7 skipped automatically "
+                        + "\u00b7 tap for how it works"));
         tv.setTextSize(11f);
         tv.setTextColor(AmberTheme.OK);
-        tv.setPadding(px(2), 0, px(2), px(10));
+        tv.setPadding(px(2), px(4), px(2), px(12));
+        // 可点：把"过滤基准"讲清楚。
+        // 用户的原话是"字典太大我没法测，我就想知道过滤的基准"——
+        // 与其让人猜，不如把规则连同本机真实数字一起摆在页面上。
+        tv.setOnClickListener(v -> showFilterBasis());
         return tv;
+    }
+
+    /**
+     * 「过滤基准」说明。
+     *
+     * <p>为什么做成页面内可查：用户没法拿几百 MB 的字典做实验来验证"会不会重复跑"，
+     * 所以把**判据、记账时机、会重复的三种情况、上限**连同**本机真实数字**一起写出来，
+     * 他能自己对账（条数 = 记录文件字节数 ÷ 8）。
+     */
+    private void showFilterBasis() {
+        String key = Prefs.targetKey(this);
+        if (key == null || key.isEmpty()) return;
+        io.github.wlmosv_png.wpaforge.audit.TriedSet tried =
+                io.github.wlmosv_png.wpaforge.audit.TriedSet.load(
+                        io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key));
+        java.io.File f = io.github.wlmosv_png.wpaforge.audit.TriedSet.fileFor(this, key);
+        String when = f.isFile()
+                ? new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.ROOT)
+                        .format(new java.util.Date(f.lastModified()))
+                : L.s("还没写过", "not written yet");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(L.s("本网络已试过 ", "Tried on this network: ")).append(tried.size())
+                .append(L.s(" 条\n记录文件 ", "\nRecord file: "))
+                .append(f.isFile() ? (f.length() + " B") : "—")
+                .append(L.s("（每条 8 字节，条数 = 字节数 ÷ 8）\n最近写入 ",
+                        " (8 bytes each; count = bytes / 8)\nlast write: "))
+                .append(when).append("\n\n");
+
+        sb.append(L.s("▸ 判据是什么\n候选口令本身的 64 位哈希。不看字典文件、不看第几行、不看顺序。\n"
+                        + "所以换任何字典、任何顺序，都不会重复跑已经试过的。\n\n",
+                "▸ What counts as \"tried\"\nThe 64-bit hash of the candidate itself. "
+                        + "Not the file, not the line number, not the order.\n\n"));
+        sb.append(L.s("▸ 什么时候记账\n每条候选跑完、并且拿到**明确结论**（密码错误 / 命中）时才记。\n"
+                        + "超时、无结论的不记 —— 那些下次会重新试，因为它们还没被真正排除。\n\n",
+                "▸ When it is recorded\nAfter a candidate finishes with a **definite verdict** "
+                        + "(wrong password / hit). Timeouts and inconclusive ones are NOT "
+                        + "recorded.\n\n"));
+        sb.append(L.s("▸ 唯一会重复的三种情况\n"
+                        + "· 强杀进程：最后最多 32 条（约 2 分钟）的记账丢失\n"
+                        + "· 没结论的候选：故意不记，下次再试\n"
+                        + "· 换到别的网络：那是另一套记录（故意不共享 —— 同一个密码在别的网\n"
+                        + "  失败不代表这个网也失败）\n\n",
+                "▸ The only cases that repeat\n"
+                        + "· Process killed: up to the last 32 recordings (~2 min) are lost\n"
+                        + "· Inconclusive candidates: deliberately not recorded\n"
+                        + "· Another network: separate record (never shared)\n\n"));
+        sb.append(L.s("▸ 上限\n每个网络 100 万条（8 MB）。到顶会在日志里提示，不会静默丢弃。",
+                "▸ Limit\n1,000,000 entries per network (8 MB); you get a notice when reached."));
+
+        NetDialog d = new NetDialog(this, L.s("过滤基准", "How filtering works"), sb.toString());
+        d.setPositive(L.s("知道了", "Got it"), null);
+        d.show();
     }
 
     // ---------------------------------------------------------------- 进度（来自任务队列）

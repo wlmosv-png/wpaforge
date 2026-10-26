@@ -295,8 +295,14 @@ public class CrackPageLayoutTest {
                         && ma.contains("if (!streamLines.isEmpty()) {"));
 
         System.out.println("== 8. 双语与可访问性 ==");
+        /* 候选区标题的词汇是**有意改过**的（用户要求换个词）：
+         *   运行中 = 正在尝试（主动语态，说明"现在在干什么"）
+         *   结束后 = 最后尝试（陈述事实；**刻意不用"完成"** —— 没找到不算完成）
+         * 旧词「当前候选」跑完还挂在那儿，会让人以为还在跑，所以这里一并钉住新词。 */
         ok("新增文案都走 L.s 双语", theme != null && ma.contains("L.s(\"已完成\", \"TRIED\")")
-                && ma.contains("L.s(\"总数\", \"TOTAL\")") && ma.contains("L.s(\"当前候选\", \"CURRENT\")"));
+                && ma.contains("L.s(\"总数\", \"TOTAL\")")
+                && ma.contains("L.s(\"正在尝试\", \"TRYING\")")
+                && ma.contains("L.s(\"最后尝试\", \"LAST TRIED\")"));
         ok("状态文案区分 运行中/暂停/停止/命中/未命中/空闲",
                 ma.contains("L.s(\"运行中\", \"Running\")")
                         && ma.contains("L.s(\"已暂停 · 进度已保留\", \"Paused · progress kept\")")

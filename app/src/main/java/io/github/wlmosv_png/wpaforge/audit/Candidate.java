@@ -12,7 +12,8 @@ public final class Candidate {
         YEAR_SUFFIX,   // 词 + 年份
         PHONE_SEGMENT, // 手机号段
         VENDOR_RULE,   // 厂商默认规则推导
-        USER_DICT      // 用户自备词表
+        USER_DICT,     // 用户自备词表
+        USER_SEED      // 用户提供的线索（手机号 / 生日 / 拼音 / 门牌 / 自由词）派生
     }
 
     public final String password;

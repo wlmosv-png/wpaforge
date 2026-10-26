@@ -29,11 +29,31 @@ public final class Prefs {
     private static final String K_PIN_BSSID = "pin_bssid";   // 连接锁定到选中的那个 AP
     private static final String K_MAC_ROTATE = "mac_rotate";  // 每次尝试换随机 MAC
     private static final String K_LAST_BEAT = "last_beat_ms";  // 引擎心跳（检测被系统挂起）
+    /**
+     * 用户线索（手机号 / 生日 / 拼音 / 门牌 / 自由词）编码串，见 SeedModel.encode()。
+     * 存本机私有 SP，不外传；界面与日志一律走 SeedModel.masked()。
+     */
+    private static final String K_SEEDS = "target_seeds";
 
     private Prefs() {}
 
     private static SharedPreferences sp(Context ctx) {
         return ctx.getApplicationContext().getSharedPreferences(NAME, Context.MODE_PRIVATE);
+    }
+
+    // ---------------- 目标线索 ----------------
+
+    /** 线索编码串，空串表示没有 */
+    public static String seeds(Context ctx) {
+        return sp(ctx).getString(K_SEEDS, "");
+    }
+
+    public static void setSeeds(Context ctx, String encoded) {
+        sp(ctx).edit().putString(K_SEEDS, encoded == null ? "" : encoded).apply();
+    }
+
+    public static void clearSeeds(Context ctx) {
+        sp(ctx).edit().remove(K_SEEDS).apply();
     }
 
     // ---------------- 引擎心跳 ----------------

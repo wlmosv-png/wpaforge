@@ -3075,8 +3075,96 @@ public class MainActivity extends Activity {
                 dd -> deriveFromTarget());
         d.addItem(L.s("内置生成器（通用）", "Built-in generator (generic)"),
                 dd -> buildGenericDict());
+        // 线索排在最后：它是「派生」的加强项，不是必须项。
+        // 标题里直接报出已填几项，用户不用点进去才知道自己填没填过。
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
+        d.addItem(cur.isEmpty()
+                        ? L.s("已知线索（未填，可选）", "Known hints (none, optional)")
+                        : L.f("已知线索（%d 项）", "Known hints (%d)", cur.count()),
+                dd -> showSeedDialog());
         d.setNegative(L.s("取消", "Cancel"), null);
         d.show();
+    }
+
+    /**
+     * 「已知线索」录入。
+     *
+     * 为什么值得多这一步：手机号、生日、姓名拼音、门牌这些东西不在任何公开词表里，
+     * 但它们在自家网络上的命中率远高于「按 SSID 猜」。填了不是取巧 ——
+     * 一条候选要连好几秒，方向比数量重要得多。
+     *
+     * 全部可留空；留空时派生行为与旧版本完全一致。
+     * 只存本机私有 SP，日志与界面一律走掩码。
+     */
+    private void showSeedDialog() {
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel cur =
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
+
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.s("已知线索（全部可选）", "Known hints (all optional)"),
+                        L.s("填了命中率显著提高。只存本机、不联网、不上传。",
+                                "Filling these raises the hit rate a lot. "
+                                        + "Stored on device only, never uploaded."));
+
+        final android.widget.EditText phone = d.addField(
+                L.s("手机号，多个用逗号分开", "Phone number(s), comma separated"),
+                joinComma(cur.phones));
+        final android.widget.EditText bday = d.addField(
+                L.s("生日 19900101 / 900101 / 0101", "Birthday 19900101 / 900101 / 0101"),
+                cur.birthday);
+        final android.widget.EditText pinyin = d.addField(
+                L.s("姓名拼音 zhangwei", "Name pinyin, e.g. zhangwei"),
+                cur.namePinyin);
+        final android.widget.EditText house = d.addField(
+                L.s("门牌 / 楼层 / 房间号", "House / floor / room no."),
+                cur.houseNo);
+        final android.widget.EditText custom = d.addField(
+                L.s("自由词，多个用逗号分开", "Free words, comma separated"),
+                joinComma(cur.customs));
+        d.addHint(L.s("留空即只按 SSID 派生。", "Leave blank to derive from the SSID only."));
+
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.setPositive(L.s("保存", "Save"), dd -> {
+            io.github.wlmosv_png.wpaforge.audit.SeedModel m =
+                    new io.github.wlmosv_png.wpaforge.audit.SeedModel();
+            for (String p : splitComma(phone.getText().toString())) {
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.addPhone(m, p);
+            }
+            m.birthday = bday.getText().toString().trim();
+            m.namePinyin = pinyin.getText().toString().trim();
+            m.houseNo = house.getText().toString().trim();
+            for (String c : splitComma(custom.getText().toString())) {
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.addCustom(m, c);
+            }
+            Prefs.setSeeds(this, m.encode());
+            appendStream(m.isEmpty()
+                    ? L.s("线索已清空（仅按 SSID 派生）", "Hints cleared (SSID-only derivation)")
+                    : L.f("线索已保存 %d 项: %s", "Saved %d hint(s): %s", m.count(), m.masked()));
+            if (!m.isEmpty()) {
+                appendStream(L.s("线索已变，请重新「按目标 SSID 派生」后入队。",
+                        "Hints changed \u2014 derive again before queueing."));
+            }
+            updateDictStatus();
+        });
+        d.show();
+    }
+
+    private static String joinComma(java.util.List<String> list) {
+        if (list == null || list.isEmpty()) return "";
+        return android.text.TextUtils.join(",", list);
+    }
+
+    /** 逗号 / 顿号 / 分号 / 空白都当分隔符 —— 国内输入法下这几种都会出现 */
+    private static java.util.List<String> splitComma(String s) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (s == null) return out;
+        for (String x : s.split("[,，、;；\\s]+")) {
+            String v = x.trim();
+            if (!v.isEmpty()) out.add(v);
+        }
+        return out;
     }
 
     /**
@@ -3092,13 +3180,24 @@ public class MainActivity extends Activity {
             return;
         }
         final String ssid = targetNet.ssid;
+        // 线索在**点击那一刻**读一次并固定下来：线程里再读就可能与入队时不一致
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel seeds =
+                io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(Prefs.seeds(this));
         appendStream(L.f("正在按 SSID「%s」生成定向载荷...",
                 "Deriving candidates from SSID \"%s\"...", ssid));
+        if (!seeds.isEmpty()) {
+            appendStream(L.f("线索: %d 项（%s）", "Hints: %d item(s) (%s)",
+                    seeds.count(), seeds.masked()));
+        }
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
                     io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet, 20000,
-                            io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, targetNet.bssid));
-            final String nm = L.s("SSID 派生 · ", "SSID-derived · ") + ssid;
+                            io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, targetNet.bssid),
+                            seeds, io.github.wlmosv_png.wpaforge.audit.CnHot.load(this));
+            // 文件名带线索指纹：换了线索再派生就不会撞上旧文件，
+            // 服务端续跑也不会拿到错位的那一份
+            final String nm = L.s("SSID 派生 · ", "SSID-derived · ") + ssid
+                    + (seeds.isEmpty() ? "" : " · " + seeds.fingerprint());
             final String path = saveDictToFile(r.candidates, nm);
             ui.post(() -> {
                 applyDict(r.candidates, nm, path);
@@ -5015,7 +5114,7 @@ public class MainActivity extends Activity {
         // 所以先直接写持久化队列，不依赖服务实例 —— 避免 NPE。
         final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
                 currentDictPath, currentDictName,
-                targetDictEnabled, smartSortEnabled, Prefs.mode(this));
+                targetDictEnabled, smartSortEnabled, Prefs.mode(this), Prefs.seeds(this));
         queueCache.clear();
         queueCache.addAll(TaskQueue.load(this));
         renderQueue();

@@ -429,3 +429,53 @@ sh /data/local/tmp/eta/wp-queue.sh in     # 写回（cat 覆写保 inode + chown
 **仍未验证（保留 NOT RUN，不用单测冒充）**：
 - 「用**原口令重建**」分支（`hadPsk=1` + 真密文 + 真实已保存网络）——需要改动真实网络配置，执行边界禁止；
 - 恢复**执行过程中**进程被杀（本方案覆盖的是"记录在盘上 + 进程不在"这一等价前提）。
+
+---
+
+## 三、2026-10-26：线索驱动派生（P0+P1 一次做完）
+
+### 起因
+酷安有用户评论「自带的密码有点不接地气」。查代码后确认问题比「词表老」更具体：
+内置词表是英文数据集 + `[a-z]+日期` 全枚举，而派生链 9 个桶**全部以 SSID 为原料**，
+通用弱口令还写在循环末尾当兜底 —— 国内真实分布（手机号、生日、拼音+数字）
+反而排在最后或干脆不存在。
+
+### 这轮加了什么
+| 项 | 位置 |
+|---|---|
+| 线索模型（手机号×4 / 固话 / 生日 / 拼音 / 门牌 / 自由词×8） | `audit/SeedModel.java`（新） |
+| 线索展开器（含拼音音节切分取首字母 zhangwei→zw） | `audit/SeedDeriver.java`（新） |
+| 中文高频表 561 条（谐音数字/拼音词根/姓氏/家庭场景） | `assets/builtin/cn_top.txt`（新）+ `audit/CnHot.java`（新） |
+| 桶序：J 用户线索 → K 中文高频 → L 通用弱口令 → A~I 原样 | `audit/TargetDictBuilder.java` |
+| 排序加分：线索精确 +1000 / 片段 +500 / USER_SEED +300 / 中文高频 +260 | `audit/SmartSorter.java` |
+| 线索随任务落盘（`seedsJson`），续跑靠它重建同一份候选 | `audit/TaskQueue.java` |
+| 服务侧按任务里的线索重建候选；日志掩码 | `CrackService.java` |
+| 破解页「字典来源」加「已知线索」弹窗；落盘文件名带指纹 | `MainActivity.java` |
+| 内置字典释放清单 + `RELEASE_VERSION=3` | `audit/BuiltinDicts.java` |
+| 65 例 | `SeedDeriveTest.java`（新） |
+
+### 零回归怎么验的
+不填线索时**候选集合必须一模一样**（只允许顺序变化）。做法是拿 HEAD 的旧实现
+另编一份，对 4 个 SSID 逐一比对「去重排序后的 SHA-1」：
+
+```
+FAST_E972   count=959   set=e365f8db3929   新旧相同
+209         count=238   set=fccc16be8ebd   新旧相同
+小卖部WiFi5 count=511   set=b068692f6dbd   新旧相同
+CMCC-8F2A   count=1441  set=b1237d932fc3   新旧相同
+```
+
+顺序变化是预期内的：通用弱口令从「兜底」提到第三桶，所以 `FAST_E972` 的前 6 条
+从 `FAST_E972/…` 变成 `12345678/123456789/1234567890/88888888/66668888/888888888`。
+
+### 门禁
+Java 侧 **2308 通过 / 0 失败**（本轮 +65）。站点链接门禁 5 处不合格 ——
+**改动前就是红的**，原因是站点迁到 `wlmosv.dpdns.org/wpaforge/` 后
+`docs/index.html` 变成跳转页，而 `tools/check-site-links.py` 仍在那个文件里
+找永久直链与 og 标签。要么让它改看新站源文件，要么把这几项从门禁里摘掉，
+**这件事没做，留给下一轮定**。
+
+### 还没做
+版本号仍是 **95 / 1.9.25**（`1-aapt2.sh`）。发版时要一次改齐：
+`1-aapt2.sh` + `README.md` + `README_EN.md` + `CHANGELOG.md` + `RELEASE.md`
+（tag 注释）+ 站点，然后才出包。本轮只提交功能代码。

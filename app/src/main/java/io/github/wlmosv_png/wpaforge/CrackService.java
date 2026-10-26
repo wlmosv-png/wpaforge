@@ -16,10 +16,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
+import io.github.wlmosv_png.wpaforge.audit.CnHot;
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
+import io.github.wlmosv_png.wpaforge.audit.SeedModel;
 import io.github.wlmosv_png.wpaforge.audit.ShellSession;
 import io.github.wlmosv_png.wpaforge.audit.SmartSorter;
 import io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder;
@@ -839,9 +841,19 @@ public class CrackService extends Service {
 
             List<Candidate> work = base;
 
+            // 线索：**必须与入队时完全一致**，否则续跑的 offset 会对不上。
+            // 线索存在任务里（seedsJson），不是从界面现读 —— 界面可能已经改了。
+            final SeedModel seeds = SeedModel.decode(task.seedsJson);
+            final List<String> cnCommon = CnHot.load(this);
+            if (!seeds.isEmpty()) {
+                log(L.f("线索: 已启用 %d 项（%s）", "Seeds: %d item(s) (%s)",
+                        seeds.count(), seeds.masked()));
+            }
+
             if (task.useTargetDict) {
                 TargetDictBuilder.Result dr = TargetDictBuilder.build(task.toNetRecord(), 800,
-                        io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, task.bssid));
+                        io.github.wlmosv_png.wpaforge.scan.OuiLookup.vendor(this, task.bssid),
+                        seeds, cnCommon);
                 if (!dr.candidates.isEmpty()) {
                     List<Candidate> merged = new ArrayList<>();
                     java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
@@ -856,7 +868,7 @@ public class CrackService extends Service {
             }
 
             if (task.useSmartSort) {
-                work = SmartSorter.prioritize(task.toNetRecord(), work, 0);
+                work = SmartSorter.prioritize(task.toNetRecord(), work, 0, seeds, cnCommon);
                 log(L.s("智能排序: 已启用", "Smart ranking: on"));
             } else {
                 log(L.s("智能排序: 已关闭", "Smart ranking: off"));

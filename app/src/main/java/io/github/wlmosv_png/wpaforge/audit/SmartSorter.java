@@ -4,7 +4,9 @@ import io.github.wlmosv_png.wpaforge.L;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import io.github.wlmosv_png.wpaforge.core.NetRecord;
 
@@ -67,6 +69,17 @@ public final class SmartSorter {
      * 原始顺序里靠前的会被轻微加权，让字典作者的排序意图不至于完全丢失。
      */
     public static List<Candidate> prioritize(NetRecord target, List<Candidate> dict, int limit) {
+        return prioritize(target, dict, limit, null, null);
+    }
+
+    /**
+     * 带线索的排序。
+     *
+     * @param seeds    用户线索，可为 null（此时与旧行为完全一致）
+     * @param cnCommon 中文高频口令表，可为 null（不参与加分）
+     */
+    public static List<Candidate> prioritize(NetRecord target, List<Candidate> dict, int limit,
+                                             SeedModel seeds, List<String> cnCommon) {
         if (dict == null || dict.isEmpty()) return new ArrayList<>();
 
         String ssid = target == null ? "" : target.ssid;
@@ -78,10 +91,20 @@ public final class SmartSorter {
             if (mac.length() >= 6) macTail = mac.substring(mac.length() - 6).toLowerCase();
         }
 
+        // 线索索引：一次性建好，别在每条候选里重算
+        Set<String> seedExact = new HashSet<>();
+        List<String> seedFrag = new ArrayList<>();
+        if (seeds != null && !seeds.isEmpty()) {
+            for (String v : seeds.rawValues()) seedExact.add(v.toLowerCase(java.util.Locale.ROOT));
+            for (String v : SeedDeriver.derive(seeds)) seedExact.add(v.toLowerCase(java.util.Locale.ROOT));
+            seedFrag = SeedDeriver.fragments(seeds);
+        }
+        Set<String> cnSet = cnCommon == null ? null : new HashSet<>(cnCommon);
+
         List<Scored> scored = new ArrayList<>(dict.size());
         for (int i = 0; i < dict.size(); i++) {
             Candidate c = dict.get(i);
-            int s = score(c, ssidLower, ssidDigits, macTail, i, dict.size());
+            int s = score(c, ssidLower, ssidDigits, macTail, i, dict.size(), seedExact, seedFrag, cnSet);
             scored.add(new Scored(c, s, ""));
         }
 
@@ -94,10 +117,23 @@ public final class SmartSorter {
     }
 
     private static int score(Candidate c, String ssidLower, String ssidDigits,
-                             String macTail, int index, int total) {
+                             String macTail, int index, int total,
+                             Set<String> seedExact, List<String> seedFrag, Set<String> cnSet) {
         String p = c.password;
         String pl = p.toLowerCase();
         int s = 0;
+
+        // ---- 0. 用户线索（权重高于一切猜测）----
+        // 用户填的是「关于这个网的事实」：手机号、生日、拼音、门牌。
+        // 命中事实的候选给 1000 分，高于 SSID 完全一致的 900。
+        if (!seedExact.isEmpty() && seedExact.contains(pl)) s += 1000;
+        else if (!seedFrag.isEmpty()) {
+            for (String f : seedFrag) {
+                if (pl.contains(f)) { s += 500; break; }
+            }
+        }
+        if (c.origin == Candidate.Origin.USER_SEED) s += 300;
+        if (cnSet != null && cnSet.contains(pl)) s += 260;
 
         // ---- 1. 目标线索（权重最高） ----
         if (!ssidLower.isEmpty()) {

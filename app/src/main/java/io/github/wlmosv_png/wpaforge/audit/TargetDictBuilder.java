@@ -15,6 +15,9 @@ import io.github.wlmosv_png.wpaforge.core.NetRecord;
  * 如果字典里没有 "FAST_E972888" 这种派生口令，它永远排不出来。
  *
  * 本类根据目标的 SSID 文本与 BSSID，现场生成候选：
+ *   - 用户线索（手机号 / 生日 / 拼音 / 门牌 / 自由词，见 SeedDeriver）—— 优先级最高
+ *   - 内置中文高频口令表（cn_top.txt）
+ *   - 通用弱口令（含经典弱口令与纯数字规律）
  *   - SSID 原文与各种大小写变形
  *   - SSID 里的数字串及其重复/加后缀
  *   - 去掉分隔符后的合并串
@@ -30,8 +33,8 @@ public final class TargetDictBuilder {
     /** 常见连接符 */
     private static final char[] SEPARATORS = {'_', '-', '.', ' '};
 
-    /** 高频数字后缀 */
-    private static final String[] NUM_SUFFIX = {
+    /** 高频数字后缀。（包内可见：SeedDeriver 的线索展开复用同一份，避免两套规则漂移） */
+    static final String[] NUM_SUFFIX = {
             "0", "00", "000", "1", "11", "111", "12", "123", "1234", "12345",
             "123456", "520", "521", "1314", "888", "8888", "666", "6666",
             "999", "9999", "0000", "1111", "2023", "2024", "2025", "2026"
@@ -62,7 +65,7 @@ public final class TargetDictBuilder {
      * @param max    最多生成多少条
      */
     public static Result build(NetRecord target, int max) {
-        return build(target, max, null);
+        return build(target, max, null, null, null);
     }
 
     /**
@@ -71,6 +74,22 @@ public final class TargetDictBuilder {
      * @param vendorName OUI 表查到的厂商名，可为 null（查不到就不生成厂商词元桶）
      */
     public static Result build(NetRecord target, int max, String vendorName) {
+        return build(target, max, vendorName, null, null);
+    }
+
+    /** 带线索、不带内置中文高频表的派生（测试与旧调用方用这条） */
+    public static Result build(NetRecord target, int max, String vendorName, SeedModel seeds) {
+        return build(target, max, vendorName, seeds, null);
+    }
+
+    /**
+     * 全参派生。
+     *
+     * @param seeds    用户线索，可为 null 或空（为空时行为与「只有 SSID」的旧版本一致）
+     * @param cnCommon 内置中文高频口令表，可为 null（加载不到就不生成该桶）
+     */
+    public static Result build(NetRecord target, int max, String vendorName, SeedModel seeds,
+                               List<String> cnCommon) {
         if (target == null) {
             return new Result(new ArrayList<>(), L.s("未选择目标", "No target selected"));
         }
@@ -89,6 +108,44 @@ public final class TargetDictBuilder {
         // 按类别分桶，最后轮转交错 —— 保证前几十条就覆盖所有类别，
         // 而不是某一类（比如 SSID+后缀）把前面全占满。
         List<List<String>> buckets = new ArrayList<>();
+
+        // ---- J. 用户线索（最高优先）----
+        // 理由：用户填进来的是「关于这个网的事实」，而下面 A~I 全是猜测。
+        // 事实必须排在猜测前面，而且不能没被填就被跳过（那就退化成旧行为）。
+        if (seeds != null && !seeds.isEmpty()) {
+            List<String> j = SeedDeriver.derive(seeds);
+            if (!j.isEmpty()) {
+                buckets.add(j);
+                categories.add(L.s("用户线索", "user seeds"));
+            }
+        }
+
+        // ---- K. 中文高频口令 ----
+        // 旧版只有英文数据集（password / sunshine / football），国内真实分布
+        // 完全不在里面。这份表由 assets/builtin/cn_top.txt 提供，
+        // 加载不到就不生成该桶 —— 绝不硬编码一份替代品。
+        if (cnCommon != null && !cnCommon.isEmpty()) {
+            List<String> k = new ArrayList<>(cnCommon);
+            if (!k.isEmpty()) {
+                buckets.add(k);
+                categories.add(L.s("中文高频", "Chinese common"));
+            }
+        }
+
+        // ---- L. 通用弱口令（原先是「兜底」，排在所有桶之后）----
+        // 它的绝对命中数在真实数据里一直是最高的那一档，
+        // 却因为写成循环后的兜底而几乎永远轮不上。现在纳入轮转，排在第三位。
+        // 内容与旧版兜底完全一致，保证「候选集合」不变，只是顺序提前。
+        {
+            List<String> l = new ArrayList<>();
+            for (Candidate cw : new DictGenerator(400).classic().numericPatterns().build()) {
+                l.add(cw.password);
+            }
+            if (!l.isEmpty()) {
+                buckets.add(l);
+                categories.add(L.s("通用弱口令", "common weak"));
+            }
+        }
 
         // A. SSID 原文与核心变形
         List<String> a = new ArrayList<>();
@@ -327,15 +384,6 @@ public final class TargetDictBuilder {
             }
             if (!anyActive) break;   // 所有桶都读完了
         }
-
-        // 兜底：通用弱口令
-        int beforeWeak = pool.size();
-        DictGenerator g = new DictGenerator(400).classic().numericPatterns();
-        for (Candidate cw : g.build()) {
-            if (pool.size() >= limit) break;
-            add(pool, cw.password, limit);
-        }
-        if (pool.size() > beforeWeak) categories.add(L.s("通用弱口令", "common weak"));
 
         List<Candidate> out = new ArrayList<>();
         for (String pw : pool) {

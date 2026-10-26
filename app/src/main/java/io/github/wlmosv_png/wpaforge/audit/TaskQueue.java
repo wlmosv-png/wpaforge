@@ -91,6 +91,14 @@ public final class TaskQueue {
         public boolean useTargetDict = false;
         /** 是否启用智能排序 */
         public boolean useSmartSort = false;
+        /**
+         * 用户线索（手机号 / 生日 / 拼音 / 门牌 / 自由词）的编码串，见 SeedModel.encode()。
+         *
+         * 必须随任务落盘：续跑时要用**完全相同的规则**重建候选列表，
+         * 否则 offset 会对不上（这条在 executeTask 里已经写着，这里是它的延伸）。
+         * 空串表示没有线索 —— 此时行为与旧版本一致。
+         */
+        public String seedsJson = "";
         /** 破解模式：恒为 0=Root（历史字段，1/2 已在 1.9.24 废弃） */
         public int crackMode = 0;
         /**
@@ -121,6 +129,13 @@ public final class TaskQueue {
 
         public static Task from(NetRecord r, String dictPath, String dictName,
                                 boolean useTargetDict, boolean useSmartSort, int crackMode) {
+            return from(r, dictPath, dictName, useTargetDict, useSmartSort, crackMode, "");
+        }
+
+        /** 带线索的构造：seedsJson 见 {@link SeedModel#encode()}，空串表示无线索 */
+        public static Task from(NetRecord r, String dictPath, String dictName,
+                                boolean useTargetDict, boolean useSmartSort, int crackMode,
+                                String seedsJson) {
             Task t = new Task();
             t.id = "t" + System.currentTimeMillis() + "_" + (int) (Math.random() * 1000);
             t.ssid = r.ssid;
@@ -134,6 +149,7 @@ public final class TaskQueue {
             t.useTargetDict = useTargetDict;
             t.useSmartSort = useSmartSort;
             t.crackMode = crackMode;
+            t.seedsJson = seedsJson == null ? "" : seedsJson;
             return t;
         }
 
@@ -206,6 +222,7 @@ public final class TaskQueue {
                 o.put("tested", testedThisRun);
                 o.put("useTargetDict", useTargetDict);
                 o.put("useSmartSort", useSmartSort);
+                o.put("seeds", seedsJson == null ? "" : seedsJson);
                 o.put("crackMode", crackMode);
                 o.put("interrupted", interrupted);
                 o.put("lastRunId", lastRunId == null ? "" : lastRunId);
@@ -250,6 +267,7 @@ public final class TaskQueue {
             t.testedThisRun = o.optInt("tested", 0);
             t.useTargetDict = o.optBoolean("useTargetDict", false);
             t.useSmartSort = o.optBoolean("useSmartSort", false);
+            t.seedsJson = o.optString("seeds", "");
             t.crackMode = o.optInt("crackMode", 0);
             // 旧版本数据没有这两个字段 → 取默认值，不抛异常、不伪造
             t.interrupted = o.optBoolean("interrupted", false);
@@ -426,6 +444,13 @@ public final class TaskQueue {
 
     public static Task enqueue(Context ctx, NetRecord target, String dictPath, String dictName,
                                boolean useTargetDict, boolean useSmartSort, int crackMode) {
+        return enqueue(ctx, target, dictPath, dictName, useTargetDict, useSmartSort, crackMode, "");
+    }
+
+    /** 带线索入队。seedsJson 必须落盘 —— 续跑要靠它重建同一份候选列表。 */
+    public static Task enqueue(Context ctx, NetRecord target, String dictPath, String dictName,
+                               boolean useTargetDict, boolean useSmartSort, int crackMode,
+                               String seedsJson) {
         List<Task> list = load(ctx);
         // 同一个目标 + 同一个字典，避免重复排队
         for (Task t : list) {
@@ -436,7 +461,8 @@ public final class TaskQueue {
                 return t;
             }
         }
-        Task t = Task.from(target, dictPath, dictName, useTargetDict, useSmartSort, crackMode);
+        Task t = Task.from(target, dictPath, dictName, useTargetDict, useSmartSort, crackMode,
+                seedsJson);
         list.add(t);
         save(ctx, list);
         return t;

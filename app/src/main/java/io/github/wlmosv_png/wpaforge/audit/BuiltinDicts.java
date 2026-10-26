@@ -35,10 +35,13 @@ public final class BuiltinDicts {
             {"wpa_top447.txt",   L.s("06 WPA 高频真实口令 TOP 447.txt", "06 Real-world WPA top 447.txt")},
             {"xato_top.txt",     L.s("07 通用口令榜 TOP 3336.txt", "07 Common passwords top 3336.txt")},
             {"top2025.txt",      L.s("08 年度高频口令 TOP 146.txt", "08 Yearly top 146.txt")},
+            // 中文高频：谐音数字 / 拼音词根+数字 / 姓氏+数字 / 家庭场景。
+            // 前三份是英文数据集，对国内家庭网络几乎没有覆盖，这份补上那一块。
+            {"cn_top.txt",       L.s("09 中文高频口令.txt", "09 Chinese common.txt")},
     };
 
     /** 释放版本。改动内置内容时把这个数字加一，下次启动会重新释放。 */
-    private static final int RELEASE_VERSION = 2;   // 2: 新增三份真实弱口令榜
+    private static final int RELEASE_VERSION = 3;   // 3: 新增 09 中文高频口令
     private static final String MARK = ".builtin_v";
 
     private BuiltinDicts() {}

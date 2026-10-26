@@ -78,7 +78,7 @@ public class RadarSweep extends View {
      * 五道信号环的半径比例（下标＝档位，越大越靠里）。
      * 最强档从 0.40 外移到 0.51：中心留出一圈干净的空，读数与点都不打架。
      */
-    private static final float[] RING = {0.97f, 0.855f, 0.74f, 0.625f, 0.51f};
+    private static final float[] RING = {0.97f, 0.87f, 0.77f, 0.67f, 0.57f};
     /**
      * 环刻度文字（与该环的档位一一对应，下标＝档位）。
      *
@@ -307,20 +307,42 @@ public class RadarSweep extends View {
         // ── 2. 扇区分隔：方位角＝信道，所以这条线是「频谱的分格」
         drawSectors(cv, cx, cy, radius);
 
-        // ── 3. 扫描：指针 + 拖尾（**不填充扇形**，别盖住数据）
+        // ── 3. 扫描：外缘彗尾（根部**长在环上**，不是悬在空中的几根针）
+        //
+        // 两版都试过、都被用户否掉：
+        //   · 实心黄扇（从圆心铺开）→ 盖住数据；
+        //   · 从 0.34R 起的几根射线 → 「根部无支可倚，看着很难受」。
+        // 现在把扫掠做成**贴在外环上的一段彗尾**：根部即外环，不存在悬空问题，
+        // 也不遮挡盘内的任何数据；方向感由「尾部渐暗 + 尖端亮点」给出。
         if (spinning) {
-            double rad = Math.toRadians(sweepAngle);
-            for (int i = 5; i >= 0; i--) {
-                double a = Math.toRadians(sweepAngle - i * 3.4f);
-                float al = (1f - i / 6f) * 0.45f;
-                pDrum.setColor(AmberTheme.ACCENT);
-                pDrum.setAlpha((int) (al * 255));
-                pDrum.setStrokeWidth(dp(i == 0 ? 1.8f : 1.0f));
-                cv.drawLine(cx + (float) Math.cos(a) * radius * 0.12f,
-                        cy + (float) Math.sin(a) * radius * 0.12f,
-                        cx + (float) Math.cos(a) * radius,
-                        cy + (float) Math.sin(a) * radius, pDrum);
+            final float tailDeg = 46f;
+            final int seg = 9;
+            RectF rim = new RectF(cx - radius * 0.945f, cy - radius * 0.945f,
+                    cx + radius * 0.945f, cy + radius * 0.945f);
+            pDrum.setStyle(Paint.Style.STROKE);
+            pDrum.setColor(AmberTheme.ACCENT);
+            pDrum.setStrokeWidth(dp(11f));
+            for (int i = seg - 1; i >= 0; i--) {
+                float a1 = sweepAngle - tailDeg * i / seg;
+                float a0 = sweepAngle - tailDeg * (i + 1) / seg;
+                pDrum.setAlpha((int) (255 * 0.50f * (1f - i / (float) seg)));
+                cv.drawArc(rim, a0, a1 - a0, false, pDrum);
             }
+
+            // 尖端：两段渐弱的短线，给方向感；根部接在外缘弧上，不悬空
+            double rad = Math.toRadians(sweepAngle);
+            pDrum.setStyle(Paint.Style.STROKE);
+            pDrum.setStrokeWidth(dp(2.2f));
+            float[] rs = {1.00f, 0.945f, 0.90f};
+            float[] als = {0.75f, 0.32f, 0.0f};
+            for (int i = 0; i + 1 < rs.length; i++) {
+                pDrum.setAlpha((int) (255 * als[i]));
+                cv.drawLine(cx + (float) Math.cos(rad) * radius * rs[i],
+                        cy + (float) Math.sin(rad) * radius * rs[i],
+                        cx + (float) Math.cos(rad) * radius * rs[i + 1],
+                        cy + (float) Math.sin(rad) * radius * rs[i + 1], pDrum);
+            }
+            pDrum.setStyle(Paint.Style.FILL);
             pDrum.setAlpha(255);
             cv.drawCircle(cx + (float) Math.cos(rad) * radius,
                     cy + (float) Math.sin(rad) * radius, dp(2.4f), pDrum);
@@ -335,7 +357,7 @@ public class RadarSweep extends View {
 
         // ── 6. 中心：大数字 + 副文字
         if (!centerText.isEmpty()) {
-            pText.setTextSize(dp(24));
+            pText.setTextSize(dp(22));
             pText.setColor(AmberTheme.TEXT);
             String big = centerText;
             if (centerNumeric) {

@@ -2066,11 +2066,13 @@ public class MainActivity extends Activity {
         if (radarStatsBox == null) return;
         radarStatsBox.removeAllViews();
         int n24 = 0, n5 = 0, open = 0;
+        int bestRssi = Integer.MIN_VALUE;
         int[] perChannel = new int[200];
         for (NetRecord r : nets) {
             if (r.is5Ghz) n5++;
             else n24++;
             if (r.security == NetRecord.Security.OPEN || r.security == NetRecord.Security.WEP) open++;
+            bestRssi = Math.max(bestRssi, r.rssi);
             if (!r.is5Ghz && r.channel > 0 && r.channel < perChannel.length) perChannel[r.channel]++;
         }
         int busiest = 0, busiestN = 0;
@@ -2087,6 +2089,8 @@ public class MainActivity extends Activity {
         radarStatsBox.addView(statCellWide(L.s("最挤", "Busiest"),
                 busiestN > 0 ? "ch " + busiest + " \u00b7 " + busiestN : "\u2014"));
         radarStatsBox.addView(statCell(L.s("未加密", "Open"), open + L.s(" 台", "")));
+        radarStatsBox.addView(statCell(L.s("最强", "Best"),
+                bestRssi == Integer.MIN_VALUE ? "\u2014" : bestRssi + " dBm"));
     }
 
     /** 「最挤」那格再宽一点（内容最长） */
@@ -2400,13 +2404,9 @@ public class MainActivity extends Activity {
             if (passFilter(r)) visible.add(r);
         }
 
-        // 中心：网络数 + 最强那台的 dBm（用户最关心的两个数，放在最省眼力的位置）
-        int bestRssi = Integer.MIN_VALUE;
-        for (NetRecord r : visible) bestRssi = Math.max(bestRssi, r.rssi);
-        radar.setCenterText(String.valueOf(visible.size()),
-                visible.isEmpty() ? L.s("个网络", "networks")
-                        : L.s("个网络 · 最强 " + bestRssi + " dBm",
-                                "networks \u00b7 best " + bestRssi + " dBm"));
+        // 中心只放两个词：数字大、单位小。以前副文字带「· 最强 -41 dBm」，
+        // 横向铺得太宽，会和内环的点/汇聚标撞在一起（截图里正压着）
+        radar.setCenterText(String.valueOf(visible.size()), L.s("个网络", "networks"));
 
         // 雷达：**一 AP 一点**，半径＝信号档位（越强越靠里），**方位角＝信道**。
         // 圆盘因此是一张频谱图：上半圆 2.4G 的 14 条信道、下半圆 5G 的 4 个 UNII 组，

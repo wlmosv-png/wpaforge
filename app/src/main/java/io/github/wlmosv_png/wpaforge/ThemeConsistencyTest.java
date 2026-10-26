@@ -246,12 +246,22 @@ public class ThemeConsistencyTest {
                 && !radar.contains("phase")
                 && !radar.contains("pulse")
                 && radar.contains("GLOW_MIN"));
-        ok("扫描光束不填充扇形（不再盖住数据）", radar != null
-                && !radar.contains("drawArc(")
-                && radar.contains("// ── 3. 扫描：指针 + 拖尾（**不填充扇形**，别盖住数据）"));
+        ok("扫描不填充扇形（不盖数据、也不画悬空的射线）", radar != null
+                && !radar.contains(", true, pSweep")
+                && !radar.contains("tailFrom")
+                && radar.contains("drawArc(rim, a0, a1 - a0, false, pDrum)"));
+        ok("扫掠根部贴外环（不再是悬空的几根针）", radar != null
+                && radar.contains("final float tailDeg = 46f"));
         ok("停下不再画指针（扫描结束就是干净刻度盘）", radar != null
                 && radar.contains("if (spinning) {"));
-        ok("中心显示网络数 + 最强 dBm", set.contains("个网络 · 最强 "));
+        ok("中心只留「数字 + 个网络」（长副文字会撞内环的点）",
+                set.contains("radar.setCenterText(String.valueOf(visible.size()), L.s(\"个网络\", \"networks\"))")
+                        && !set.contains("个网络 \u00b7 最强 "));
+        ok("「最强」改由关键数字行承担", set.contains("statCell(L.s(\"最强\", \"Best\")"));
+        ok("环等间距（内环外移，不压中心文字）", radar != null
+                && radar.contains("RING = {0.97f, 0.87f, 0.77f, 0.67f, 0.57f}"));
+        ok("扫掠贴环，不从中心射出", radar != null
+                && !radar.contains("radius * 0.12f"));
         ok("盘上不再写 dBm 文字（刻度走盘下图例，避免压住点）", radar != null
                 && !radar.contains("cv.drawText(RING_LABEL[i]"));
         ok("图例从 RadarSweep 取刻度（不许另写一份）", set.contains("RadarSweep.ringLabels()")

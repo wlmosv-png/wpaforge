@@ -4,6 +4,8 @@
 
 **Try to recover the WPA password of your own router — from your phone.**
 
+Bring your own wordlist, or let it generate candidates for the target; every candidate costs one real association attempt.
+
 [![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=yellow)](https://github.com/wlmosv-png/wpaforge/stargazers)

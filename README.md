@@ -4,6 +4,8 @@
 
 **在手机上，试出你自己那台路由器的 WPA 密码。**
 
+字典随你挑 —— 用你自己收藏的，或用它按目标现场生成的；每条候选都真连验证一次。
+
 [![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=orange)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=blue&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=yellow)](https://github.com/wlmosv-png/wpaforge/stargazers)

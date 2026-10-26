@@ -3,13 +3,16 @@
 <img src="docs/banner.png" alt="WPAForge" width="100%">
 
 **在手机上，逐条试出你自己路由器的 WPA 密码。**
-按 SSID 与线索现场生成候选，逐条真实关联验证；内置精选字典，也能用你自己的。
 
-[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=4493F8&labelColor=2B2B33&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=FFD54F&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/stargazers)
+<sub>现场生成候选 · 逐条真实关联验证 · 内置精选字典，也能用你自己的</sub>
 
-**[⬇ 下载最新版](https://github.com/wlmosv-png/wpaforge/releases/latest)**　·　[官网](https://wlmosv.dpdns.org/wpaforge/)　·　[演示（B站）](https://www.bilibili.com/video/BV1b1np6YE7U)　·　[讨论](https://github.com/wlmosv-png/wpaforge/discussions)　·　[English](README_EN.md)
+[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=FFD54F&labelColor=1C1C24&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=E39A28&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/stargazers)
+<br>
+[![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)
+
+<sub>[English](README_EN.md)</sub>
 
 </div>
 

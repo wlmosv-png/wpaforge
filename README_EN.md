@@ -3,13 +3,16 @@
 <img src="docs/banner.png" alt="WPAForge" width="100%">
 
 **Try to recover your own router's WPA password, candidate by candidate.**
-Candidates are built for the target from its SSID and your hints, then each one is really associated; curated built-in dictionaries, or bring your own.
 
-[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=4493F8&labelColor=2B2B33&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=FFD54F&labelColor=2B2B33)](https://github.com/wlmosv-png/wpaforge/stargazers)
+<sub>candidates built for the target · every one really associated · curated dictionaries, or bring your own</sub>
 
-**[⬇ Download the latest APK](https://github.com/wlmosv-png/wpaforge/releases/latest)**　·　[Website](https://wlmosv.dpdns.org/wpaforge/)　·　[Discussions](https://github.com/wlmosv-png/wpaforge/discussions)　·　[中文](README.md)
+[![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=FFD54F&labelColor=1C1C24&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=E39A28&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/stargazers)
+<br>
+[![Website](https://img.shields.io/badge/website-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)
+
+<sub>[中文](README.md)</sub>
 
 </div>
 

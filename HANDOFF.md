@@ -817,3 +817,46 @@ on a null object reference in method 'MainActivity.showResultCard'
 
 ### 门禁
 2387 通过 / 0 失败。装机 105 / 1.9.35。
+
+---
+
+## 十二、2026-10-26 第十轮：收尾"卡住"的第二个真因 —— 跨线程碰 View
+
+### 用户第二张日志
+```
+配置收尾结论: 已恢复 : OK
+队列执行异常: android.view.ViewRootImpl$CalledFromWrongThreadException:
+  Only the original thread that created a view hierarchy can touch its views.
+  Expected: main  Calling: wpaforge-crack
+队列已结束
+```
+
+### 根因（我第 7 轮插错了位置）
+`onTaskDone` 里我把这几行写在了 `ui.post(...)` **外面**：
+```java
+finishingNow = false;
+ui.removeCallbacks(finishingTick);
+if (finishNote != null) finishNote.setVisibility(View.GONE);   // ← 工作线程碰 View
+showResultCard(task, outcome);                                  // ← 同上
+ui.post(() -> { ... });
+```
+`onTaskDone` 是**服务的工作线程**（wpaforge-crack）调进来的 → 直接抛
+CalledFromWrongThreadException → 后面的 `renderProgressCardState()` 没执行
+→ 界面留在「收尾中」。**这是"收尾还是有问题"的第二个（也是真正的）原因。**
+
+### 修法
+1. 全部挪进 `ui.post`，并在方法头写明"这个回调在工作线程，一个字都不许碰 View"。
+2. `showResultCard` **自带主线程守卫**（不在主线程就自己转投过去）——不依赖调用方小心。
+
+### 新增门禁：`UiThreadContractTest`（12 例）
+源码级检查：`svcCallback` 里 7 个回调方法体内，任何
+`setText/setVisibility/appendStream/showResultCard/renderQueue/Toast…`
+**必须出现在 `ui.post(` 之后**；外加两条反向保护（主线程守卫存在、
+不再强转 `getLayoutParams`）。
+
+**并且验证了这个门禁真的有效**：拿 HEAD（有 bug 的那版）跑 → 2 处失败，
+报出 `.setVisibility(View.GONE); 出现在 ui.post 之前`；修好后 12/12。
+拿 `/tmp/lintproj` 复制一份旧源码就能复现这个验证。
+
+### 门禁
+**2399 通过 / 0 失败**。装机 106 / 1.9.36。

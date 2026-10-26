@@ -4415,6 +4415,15 @@ public class MainActivity extends Activity {
      */
     private void showResultCard(TaskQueue.Task task, String outcome) {
         if (resultCard == null || task == null) return;
+        /* 主线程守卫：这个方法碰一堆 View，一旦被工作线程调到就是
+         * CalledFromWrongThreadException。与其在调用方逐处小心，
+         * 不如让它自己纠正 —— 只要不是在主线程，就转投过去。 */
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            final TaskQueue.Task t = task;
+            final String o = outcome;
+            ui.post(() -> showResultCard(t, o));
+            return;
+        }
         if ("DONE_HIT".equals(outcome)) {
             resultCard.setVisibility(View.GONE);   // 命中已经有专门的命中卡
             return;
@@ -5070,19 +5079,26 @@ public class MainActivity extends Activity {
 
         @Override
         public void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome) {
-            finishingNow = false;
-            ui.removeCallbacks(finishingTick);
-            if (finishNote != null) finishNote.setVisibility(View.GONE);
-            /* 界面代码抛异常**不能**把状态机留在"收尾中"。
-             * 线上就是这么卡住的：showResultCard 里 NPE → 后面的
-             * renderProgressCardState 没执行 → 界面永远停在收尾中。 */
-            try {
-                showResultCard(task, outcome);
-            } catch (Throwable t) {
-                appendStreamColored(L.s("结算卡显示失败（不影响破解结果）: ",
-                        "result card failed (result unaffected): ") + t, DANGER);
-            }
+            /* 这个回调是**服务的工作线程**（wpaforge-crack）调进来的，
+             * 所以这里**一个字都不许碰 View**。
+             *
+             * <p>线上抓到的第二次崩溃就是这个：
+             * {@code CalledFromWrongThreadException: Expected main, Calling wpaforge-crack}
+             * —— 我把 finishNote.setVisibility / showResultCard 写在了 ui.post 外面。
+             * 所有界面动作一律进 ui.post，没有例外。 */
             ui.post(() -> {
+                finishingNow = false;
+                ui.removeCallbacks(finishingTick);
+                if (finishNote != null) finishNote.setVisibility(View.GONE);
+                /* 界面代码抛异常**不能**把状态机留在"收尾中"：
+                 * 上一轮就是 showResultCard 里 NPE → 后面的
+                 * renderProgressCardState 没执行 → 界面永远停在收尾中。 */
+                try {
+                    showResultCard(task, outcome);
+                } catch (Throwable t) {
+                    appendStreamColored(L.s("结算卡显示失败（不影响破解结果）: ",
+                            "result card failed (result unaffected): ") + t, DANGER);
+                }
                 // 只用于显示：把服务报回来的真实结论记下来给进度卡的状态行用。
                 // 这里**不判定**成功/失败，只是把 outcome 换个说法展示。
                 lastOutcomeLabel = "DONE_HIT".equals(outcome)

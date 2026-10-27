@@ -12,8 +12,9 @@
 | 项目（Linux） | `/workspace/promo-wpaforge` |
 | 同一目录（Android） | `/data/local/tmp/eta/promo-wpaforge`（**同一挂载**，Linux 改完 Android 立即可见） |
 | 分支 / HEAD | `main`（`git log -1` = 本轮 commit，**尚未推送远端**） |
-| 版本号 | `94` / `1.9.24`（唯一来源是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`；APK 清单不写 versionName，`Ver.java` 一律读 PackageManager，所以只改这一处） |
-| 已装机 | `/data/local/tmp/wp.apk`（2,837,304 B；sha256 `c2759527…`；**94/1.9.24**） |
+| 版本号 | `124` / `1.9.28`（唯一来源是 `1-aapt2.sh` 的 `WP_VERSION_CODE` / `WP_VERSION_NAME`；APK 清单不写 versionName，`Ver.java` 一律读 PackageManager，所以只改这一处） |
+| 已装机 | `1.9.28` (124)：`/storage/emulated/0/Download/WPAForge-1.9.28-124.apk`（1,260,754 B；sha256 `2e1acbfd…7af02`） |
+| 已发布 | **`v1.9.28`（2026-10-27）**：tag → `c9a347f`，附件 `WPAForge.apk`；1.9.27 未单独发过 Release |
 | 门禁 | 40 个测试类 / **990 例全过**（`/workspace/wpf-gate.sh`，含站点链接门禁） |
 
 ---

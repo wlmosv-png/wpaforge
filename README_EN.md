@@ -52,6 +52,9 @@
 - Ranking is **by your own local record**: the dictionary screen states "hit 57/73 here,
   one hit per ~2 attempts"
 - Multi-target queue: a list of targets runs in order, each pausable / resumable
+- **Your own Wi-Fi config is left alone**: the target's original config is encrypted and
+  recorded before any destructive step, written back at the end and confirmed by read-back;
+  anything unresolved shows up under Restore state and can be retried / discarded
 - Observe page: spectrum radar plus channel occupancy and advice
 - LAN recon: live hosts and common ports on the same subnet, grouped by vendor, exportable
 - WPS: four candidate layers (vendor algorithms / built-in weak PINs / custom list / full
@@ -81,6 +84,26 @@ a slow one takes five or more. A phone can only be associated with one network a
 that is an Android limit, not a design choice — so *which* candidate you try first matters
 far more than how many you have: 100,000 blind attempts is a matter of days, a few hundred
 well-ordered ones usually finish in minutes.
+
+## Your own network is left intact
+
+Cracking means repeatedly removing the target config and re-adding it, so the finishing step
+decides whether your own network survives:
+
+- before anything destructive, the target's original config (with its sealed passphrase) is
+  written to a local record;
+- at the end: a hit keeps that correct config; every other outcome removes the candidate
+  leftovers and writes the original config back, then **reads back to confirm**;
+- "out of range", "currently on another network", "not connected within the window" are
+  **not** restore failures - success is judged only by whether the config was written back;
+- if the saved-network list cannot be read, no conclusion is drawn: the record is kept,
+  retryable, and treated as possibly leaving a residual config;
+- unresolved records are listed under **Restore state** on the Audit page, where each one can
+  be retried, inspected, or discarded (discarding removes only the local record, never the
+  system network config).
+
+Automatic retries are spaced (10 minutes) and capped (3 attempts), then archived;
+a new task for the **same target** is held back with an explanation while a record is unresolved.
 
 ## Dictionaries: bring your own, or use the built-ins
 
@@ -156,7 +179,7 @@ The header is a single line — `Updated just now` / `Updated Ns ago`, extended 
   <img src="docs/shots/v122/07-audit.png" width="23%">
   <img src="docs/shots/v122/08-settings.png" width="23%">
 </p>
-<p align="center"><sub>① Observe (spectrum radar) · ② Crack (progress &amp; rate) · ③ Hit (passphrase + one-tap copy) · ④ Dictionaries (ranked by hit rate, with local record)<br>⑤ LAN recon (devices &amp; open ports) · ⑥ Signal distribution &amp; channel advice · ⑦ Audit (dictionary / strength / offline check) · ⑧ Settings (permissions &amp; keep-alive)</sub></p>
+<p align="center"><sub>① Observe (spectrum radar) · ② Crack (progress &amp; rate) · ③ Hit (passphrase + one-tap copy) · ④ Dictionaries (ranked by hit rate, with local record)<br>⑤ LAN recon (devices &amp; open ports) · ⑥ Signal distribution &amp; channel advice · ⑦ Audit (restore state / dictionary / strength / offline check) · ⑧ Settings (permissions &amp; keep-alive)</sub></p>
 
 ## How it compares
 
@@ -179,6 +202,7 @@ passphrase is out of scope — that one is what WPA3 is for.
 | Some APs are missing | the phone lacks 6GHz, or randomised MAC is on | turn randomised MAC off and rescan |
 | Permission errors | Root not granted, or the ROM blocks `cmd wifi` | run the 6-step self-check on the settings page |
 | Killed mid-run | battery optimisation | whitelist it; progress is persisted and it resumes |
+| Finishing says "original passphrase unavailable" | the sealed passphrase is gone (Keystore unavailable, device change, cleared data) | reconnect manually; the record explains why under Restore state |
 | WPS targets show "capability unknown" and no device name | SELinux does not let the supplicant reply to the root domain | add one allow rule, see below |
 
 ### WPS channel (root required)

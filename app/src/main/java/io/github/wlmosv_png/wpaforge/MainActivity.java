@@ -2636,23 +2636,36 @@ public class MainActivity extends Activity {
 
         LinearLayout acts = new LinearLayout(this);
         acts.setOrientation(LinearLayout.HORIZONTAL);
-        Button retry = AmberTheme.action(this, dp, L.s("重试恢复", "Retry"), AmberTheme.BTN_PRIMARY);
+        // 三键**等宽 + 短文案**。
+        // 旧写法三个按钮都是 WRAP_CONTENT：最右边那个被挤窄，文字折成两行、
+        // 高度高出另外两个一截，整行看着是歪的。
+        Button retry = AmberTheme.action(this, dp, L.s("重试", "Retry"), AmberTheme.BTN_PRIMARY);
+        retry.setSingleLine(true);
         retry.setOnClickListener(v -> doRetryRestore(r));
-        acts.addView(retry);
-        Button clear = AmberTheme.action(this, dp, L.s("清理记录", "Discard"), AmberTheme.BTN_NEUTRAL);
+        Button clear = AmberTheme.action(this, dp, L.s("清理", "Clear"), AmberTheme.BTN_NEUTRAL);
+        clear.setSingleLine(true);
         clear.setOnClickListener(v -> confirmDiscardRestore(r));
-        LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp1.leftMargin = px(8);
-        acts.addView(clear, lp1);
-        Button detail = AmberTheme.action(this, dp, L.s("查看详情", "Details"), AmberTheme.BTN_SECONDARY);
+        Button detail = AmberTheme.action(this, dp, L.s("详情", "Info"), AmberTheme.BTN_NEUTRAL);
+        detail.setSingleLine(true);
         detail.setOnClickListener(v -> showRestoreDetail(r));
-        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp2.leftMargin = px(8);
-        acts.addView(detail, lp2);
+        acts.addView(retry, equalWeight(0));
+        acts.addView(clear, equalWeight(px(8)));
+        acts.addView(detail, equalWeight(px(8)));
         box.addView(acts, topGap(10));
         return box;
+    }
+
+    /**
+     * 行内等宽控件参数（weight=1）。
+     *
+     * <p>配合短文案与 {@code setSingleLine(true)}，同一行的按钮才会等高、不折行 ——
+     * 恢复状态卡片里那三个动作按钮就靠它排整齐。
+     */
+    private LinearLayout.LayoutParams equalWeight(int leftMarginPx) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp.leftMargin = leftMarginPx;
+        return lp;
     }
 
     /** 手动重试恢复（后台线程跑 shell，回来后刷新卡片）。 */

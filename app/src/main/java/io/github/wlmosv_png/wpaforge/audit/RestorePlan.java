@@ -85,6 +85,21 @@ public final class RestorePlan {
     /** 原本就没有已保存配置、且已确认无候选残留 —— 无需还原。 */
     public static final String NOTHING_TO_DO = "NOTHING-TO-DO";
     /**
+     * **未能确认**（审计修复）：读不到已保存网络列表，因此既不能确认写回成功，
+     * 也不能确认“没有候选残留”。
+     *
+     * <p>为什么要单独一个码：把“读不到”当成“列表里没有目标”，就等于把
+     * 未确认说成没有残留 —— 那是 fail-open。此码一律：不算成功、不删记录、
+     * 仍算可重试失败、并把残留风险保守标为 true。
+     */
+    public static final String UNVERIFIED = "UNVERIFIED";
+    /**
+     * 没有可执行的恢复步骤（记录已是终态）。
+     *
+     * <p>它**不是**成功，也不是失败：什么都没做，所以什么都不声明。
+     */
+    public static final String NO_STEPS = "NO-STEPS";
+    /**
      * @deprecated 1.9.28 起不再产生。连接观察不再决定恢复成败；
      *             写回失败请见 {@link #READD_FAILED} / {@link #READD_NOT_WRITTEN}。
      *             常量保留仅为读取/迁移旧记录。
@@ -187,6 +202,15 @@ public final class RestorePlan {
     public static final class Verify {
         /** 目标是否**仍**在已保存网络列表里。 */
         public final boolean listPresent;
+        /**
+         * **列表本身读到了吗**（审计修复）。
+         *
+         * <p>为什么要单独一个字段：{@code cmd wifi list-networks} 读失败时，
+         * “列表里没有目标”和“压根没读到列表”都会表现成 {@code listPresent=false}。
+         * 把后者当成前者就是 fail-open —— 会把“未确认”说成“没有残留”，
+         * 甚至说成“无需还原”。判定必须能区分这两件事。
+         */
+        public final boolean listReadable;
         /** {@code cmd wifi status} 读到的 SSID（可为 null）。 */
         public final String statusSsid;
         /** supplicant 状态（可为 null）。 */
@@ -194,16 +218,33 @@ public final class RestorePlan {
         /** 读到的 IP（可为 null）。 */
         public final String ip;
 
+        /**
+         * 四参构造：**默认认为“列表读到了”**（{@code listReadable=true}）。
+         *
+         * <p>为什么这样定：1.9.28 之前所有调用点用 {@code listPresent=false} 表达的
+         * 都是“列表读到了、里面没有目标”；“压根没读到列表”这个情形以前根本
+         * 无法表达（那正是 fail-open 的来源）。要让“读不到”显式化，就必须让四参
+         * 保持旧语义，而把“读不到”留给五参构造与 {@link #unknown()}。
+         */
         public Verify(boolean listPresent, String statusSsid,
                       String supplicantState, String ip) {
+            this(listPresent, statusSsid, supplicantState, ip, true);
+        }
+
+        public Verify(boolean listPresent, String statusSsid,
+                      String supplicantState, String ip, boolean listReadable) {
             this.listPresent = listPresent;
             this.statusSsid = statusSsid;
             this.supplicantState = supplicantState;
             this.ip = ip;
+            this.listReadable = listReadable;
         }
 
         /** 采不到（通道断、命令超时）→ 全部未知，一律按“没验证”处理。 */
-        public static Verify unknown() { return new Verify(false, null, null, null); }
+        public static Verify unknown() { return new Verify(false, null, null, null, false); }
+
+        /** 列表是否**没读到**（读失败 / 命令超时）。 */
+        public boolean listUnreadable() { return !listReadable; }
 
         /** 是否读到了可用信息（读不到就不能判成功）。 */
         public boolean readable() { return statusSsid != null || listPresent; }
@@ -218,7 +259,7 @@ public final class RestorePlan {
         }
 
         public String describe() {
-            return "list=" + (listPresent ? "yes" : "no")
+            return "list=" + (listReadable ? (listPresent ? "yes" : "no") : "UNREADABLE")
                     + " ssid=" + (statusSsid == null ? "<null>" : statusSsid)
                     + " state=" + (supplicantState == null ? "<null>" : supplicantState)
                     + " ip=" + (ip == null ? "<null>" : ip);
@@ -245,6 +286,14 @@ public final class RestorePlan {
         public final boolean residualRisk;
         /** 失败是否**可重试**（通道类/命令类失败可重试；口令不可读这类不可）。 */
         public final boolean retryable;
+        /**
+         * 本次是否**真的发出了写回命令**（{@code cmd wifi connect-network}）。
+         *
+         * <p>审计要求把「发起恢复次数」「实际写回次数」「验证失败次数」分开记：
+         * 一条记录可能被尝试了很多次，但每次都因为拿不到原口令密文而**根本没写回**。
+         * 用这个标志就能把它们区分开，见 {@link RestoreJournal.Entry#writeBackIssuedCount}。
+         */
+        public final boolean readdIssued;
 
         public final String code;
         public final Step failedAt;
@@ -265,6 +314,14 @@ public final class RestorePlan {
                 boolean writeBackConfirmed, boolean connObserved, boolean ipObserved,
                 boolean residualRisk, boolean retryable,
                 String code, Step failedAt, String detail) {
+            this(kept, restored, noWrongLeft, writeBackConfirmed, connObserved, ipObserved,
+                    residualRisk, retryable, false, code, failedAt, detail);
+        }
+
+        Outcome(boolean kept, boolean restored, boolean noWrongLeft,
+                boolean writeBackConfirmed, boolean connObserved, boolean ipObserved,
+                boolean residualRisk, boolean retryable, boolean readdIssued,
+                String code, Step failedAt, String detail) {
             this.kept = kept;
             this.restored = restored;
             this.noWrongLeft = noWrongLeft;
@@ -273,6 +330,7 @@ public final class RestorePlan {
             this.ipObserved = ipObserved;
             this.residualRisk = residualRisk;
             this.retryable = retryable;
+            this.readdIssued = readdIssued;
             this.code = code;
             this.failedAt = failedAt;
             this.detail = detail == null ? "" : detail;
@@ -332,6 +390,20 @@ public final class RestorePlan {
                     "无法清除候选配置：" + v.describe());
         }
 
+        // ── 审计修复：读不到列表就不许下结论 ──────────────────────────────
+        // 走到这里说明 removeOk=true，即“删除那一步自认为成功”——但如果列表
+        // 从头就读不到，连“删除是否成功”都无法确认。此时：
+        //   · 不能判成功（写回没被回读确认）；
+        //   · 不能判“没有残留”（可能还留着候选口令）；
+        //   · 更不能判“无需还原”（那会把未确认的脏状态当成干净）。
+        // 唯一正确的处理是：保留记录、标为可重试失败、保守标记残留风险。
+        // 例外：写回命令**自带回读确认**（readd.configPresent）时，事实已经成立。
+        if (!v.listReadable && !(readd != null && readd.configPresent)) {
+            return new Outcome(false, false, false, false, false, false,
+                    true, true, readd != null && readd.issued, UNVERIFIED, Step.VERIFY,
+                    "读不到已保存网络列表，无法确认目标配置状态：" + v.describe());
+        }
+
         // 原本就没有已保存配置（或快照失败拿不到口令）：
         // 这时“正确的结果”是目标**不在**列表里，而不是把它加回去。
         if (!e.hadPsk) {
@@ -366,8 +438,9 @@ public final class RestorePlan {
         if (!readd.configPresent && !v.listPresent) {
             // 到这里可以确定：列表里**没有**目标，所以不存在候选残留（noWrongLeft=true）——
             // 但这仍然不是成功：用户的原配置没能写回去（可见故障，可重试一次）。
+            // readdIssued=true：写回命令确实发出过（与“压根没写回”严格区分）。
             return new Outcome(false, false, true, false, false, false,
-                    false, true, READD_NOT_WRITTEN, Step.READD_ORIGINAL,
+                    false, true, readd.issued, READD_NOT_WRITTEN, Step.READD_ORIGINAL,
                     "重建命令已发出，但列表中未出现目标配置（写回未成功）：" + v.describe());
         }
 
@@ -377,7 +450,7 @@ public final class RestorePlan {
         boolean conn = v.connectedTo(e.ssid);
         boolean ipOk = isIpValid(v.ip);
         return new Outcome(false, true, true, true, conn, ipOk,
-                false, false, conn ? OK : WROTE_BACK, null,
+                false, false, true, conn ? OK : WROTE_BACK, null,
                 conn ? "已还原并观察到连上" : "原配置已写回并回读确认（此刻未观察到连上）");
     }
 
@@ -400,15 +473,24 @@ public final class RestorePlan {
                     "没有恢复记录，无法判断保留状态");
         }
         if (v == null) v = Verify.unknown();
-        if (!v.listPresent) {
+        if (!v.listReadable) {
+            // 审计修复：读不到列表就**不能**说“保留不成立”，更不能说“没有残留”——
+            // 那两种情况都会导致后面的动作基于未确认的事实。这里保守报未确认。
             return new Outcome(false, false, false, false, false, false,
-                    true, false, KEEP_NOT_WRITTEN, Step.KEEP_HIT_CONFIG,
+                    true, true, false, UNVERIFIED, Step.KEEP_HIT_CONFIG,
+                    "读不到已保存网络列表，无法确认保留是否成立：" + v.describe());
+        }
+        if (!v.listPresent) {
+            // 列表读到了、里面没有目标 ⇒ 没有候选残留（noWrongLeft=true）：
+            // 保留不成立要退回标准恢复，但“没有残留”这一点是确定的。
+            return new Outcome(false, false, true, false, false, false,
+                    false, false, false, KEEP_NOT_WRITTEN, Step.KEEP_HIT_CONFIG,
                     "回读不到目标配置，保留不成立（退回标准恢复）：" + v.describe());
         }
         boolean up = v.connectedTo(e.ssid);
         boolean ipOk = isIpValid(v.ip);
         Outcome o = new Outcome(true, false, true, true, up, ipOk,
-                false, false, KEPT, null,
+                false, false, false, KEPT, null,
                 up ? "此刻正连着目标，配置留着，以后会自动重连"
                    : "目标配置在已保存列表里，系统会按策略自动连");
         return o;

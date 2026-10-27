@@ -161,6 +161,24 @@ public final class RestoreJournal {
         /** 人工放弃标记（UI 上点过「清理记录」或「不再重试」）。 */
         public boolean abandoned = false;
 
+        // ── 审计要求：三类计数必须分开，不能只留一个 attempts ────────────────
+        /**
+         * **实际发出写回命令**的次数（{@code cmd wifi connect-network} 真的被执行）。
+         *
+         * <p>与 {@link #attempts} 的区别：{@code attempts} 计“恢复流程跑了几次”，
+         * 其中相当一部分会因为拿不到原口令密文（{@code canReadd()=false}）
+         * 而**根本没写回**。把两者混成一个数字，用户就会看到“已试 3/3”
+         * 而实际上一次都没写回。旧记录缺这个字段 → 0（不猜历史）。
+         */
+        public int writeBackIssuedCount = 0;
+        /**
+         * **读回验证未通过**的次数（UNVERIFIED / READD-FAILED / READD-NOT-WRITTEN）。
+         *
+         * <p>与 {@code attempts} 的区别：一次尝试可能连写回命令都没发出去
+         * （那不算“验证失败”，而是“没写回”）。
+         */
+        public int verifyFailures = 0;
+
         public Entry() {}
 
         public boolean armed() { return STAGE_ARMED.equals(stage); }
@@ -216,7 +234,18 @@ public final class RestoreJournal {
             return residualRisk || armed() || broken();
         }
 
-        /** 这条记录是不是**这个目标**的。 */
+        /**
+         * 这条记录是不是**这个目标**的。
+         *
+         * <h3>匹配规则（审计要求写清）</h3>
+         * <ul>
+         *   <li><b>按 SSID 比，不比 BSSID</b>：系统里同一个 SSID 只有**一条**已保存配置，
+         *       口令是共享的 —— 换一个 AP（BSSID 不同）仍然指向同一条配置，
+         *       所以「同 SSID 不同 BSSID」必须照样算同目标；</li>
+         *   <li><b>BSSID 未知（空）时同样按 SSID 判</b>：不猜、也不因为缺字段就放行；</li>
+         *   <li><b>SSID 不同 → 不同目标</b>：两条配置互不影响，不该互相阻塞。</li>
+         * </ul>
+         */
         public boolean sameTarget(String target) {
             if (target == null || target.isEmpty()) return false;
             return target.equals(ssid);
@@ -269,8 +298,12 @@ public final class RestoreJournal {
          *       风险已消除，不再挡任何任务；</li>
          *   <li>两者之外 → 保守按“有风险”处理。</li>
          * </ul>
-         * 无论哪一种，旧记录都**只再自动尝试最后 1 次**，到顶即归档 ——
-         * 1.9.27 那种“每次启动重试一次、永远失败”的循环到此为止。
+         * <h3>审计修复：不再伪造尝试次数</h3>
+         * 旧实现把 {@code attempts} 直接抬到 {@code MAX_ATTEMPTS-1}，于是界面上
+         * 那条事故记录显示「已试 3/3」—— 而它**真实尝试只有 1 次**（其余 2 次是
+         * 迁移凭空写上的）。这种数字会误导排查。现在迁移只做“按新状态机重新判定”，
+         * 计数从 0 开始按真实尝试累加；上限仍为 {@link #MAX_ATTEMPTS} 次，
+         * 配合 {@link #RETRY_COOLDOWN_MS} 依然保证有限、不会自锁。
          */
         public void migrateLegacy() {
             if (schema >= SCHEMA) return;
@@ -285,9 +318,10 @@ public final class RestoreJournal {
                 residualRisk = false;
                 writeBackConfirmed = true;
             }
-            attempts = Math.max(attempts, MAX_ATTEMPTS - 1);
+            // 审计修复：这里**不再**伪造尝试次数（旧实现写成 MAX_ATTEMPTS-1）。
+            // 真实次数从 attempts 现状开始累加；上限与冷却照旧兜底。
             failDetail = (failDetail == null ? "" : failDetail)
-                    + " · 迁移(1.9.27→1.9.28)：旧失败记录最多再自动尝试 1 次";
+                    + " · 迁移(1.9.27→1.9.28)：按新状态机重新判定，不伪造尝试次数";
         }
 
         public String toText() {
@@ -315,6 +349,8 @@ public final class RestoreJournal {
             kv(sb, "attempts", String.valueOf(attempts));
             kv(sb, "lastAttemptAt", String.valueOf(lastAttemptAt));
             kv(sb, "abandoned", abandoned ? "1" : "0");
+            kv(sb, "writeBackIssuedCount", String.valueOf(writeBackIssuedCount));
+            kv(sb, "verifyFailures", String.valueOf(verifyFailures));
             return sb.toString();
         }
 
@@ -352,6 +388,9 @@ public final class RestoreJournal {
                     case "attempts": e.attempts = (int) parseLong(v, 0L); break;
                     case "lastAttemptAt": e.lastAttemptAt = parseLong(v, 0L); break;
                     case "abandoned": e.abandoned = "1".equals(v); break;
+                    case "writeBackIssuedCount":
+                        e.writeBackIssuedCount = (int) parseLong(v, 0L); break;
+                    case "verifyFailures": e.verifyFailures = (int) parseLong(v, 0L); break;
                     default: break;   // 未知键：向前兼容，忽略而不是报错
                 }
             }
@@ -695,17 +734,37 @@ public final class RestoreJournal {
     /** 兼容旧名：清空记录。 */
     public static boolean clear() { return clearAll(); }
 
-    /** 是否存在**未解决**的记录（仍需重试或仍可能污染配置）。 */
+    /**
+     * 一条记录是否需要**人工关注**（唯一口径）。
+     *
+     * <p>审计修复：以前 {@link #pendingCount()} 用「blocking 或 needsRetry」，
+     * 而 {@link RestoreRunner#checkNewTask} 用「needsRetry 或 hasUnresolvedRisk」——
+     * 两个口径不一致时，界面上的条数与闸门实际拦的东西会对不上
+     * （典型：一条 ARCHIVED 但仍有残留风险的记录，界面说“没有待办”，
+     * 闸门却照样拦同目标）。现在两边共用这一个判据。
+     */
+    public static boolean needsAttention(Entry e) {
+        return e != null && (e.needsRetry() || e.blocking() || e.hasUnresolvedRisk());
+    }
+
+    /** 是否存在**未解决**的记录（仍需重试、仍阻塞，或仍有残留风险）。 */
     public static boolean hasPending() {
-        for (Entry e : loadAll()) if (e.blocking() || e.needsRetry()) return true;
+        for (Entry e : loadAll()) if (needsAttention(e)) return true;
         return false;
     }
 
-    /** 盘上待处理记录条数。 */
+    /** 盘上需要关注的记录条数（与 {@link RestoreRunner#checkNewTask} 同一口径）。 */
     public static int pendingCount() {
         int n = 0;
-        for (Entry e : loadAll()) if (e.blocking() || e.needsRetry()) n++;
+        for (Entry e : loadAll()) if (needsAttention(e)) n++;
         return n;
+    }
+
+    /** 需要关注的记录（按盘上顺序）。 */
+    public static java.util.List<Entry> pendingEntries() {
+        java.util.List<Entry> out = new java.util.ArrayList<>();
+        for (Entry e : loadAll()) if (needsAttention(e)) out.add(e);
+        return out;
     }
 
     /**

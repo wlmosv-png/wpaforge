@@ -179,7 +179,15 @@ public final class ConfigRestorer {
 
         List<RestorePlan.Step> steps = RestorePlan.steps(e);
         if (steps.isEmpty()) {
-            return RestorePlan.judge(e, verify(e.ssid), true, RestorePlan.ReaddResult.written());
+            // 没有可执行步骤（记录已是终态）。
+            //
+            // 审计修复：旧实现硬编码 removeOk=true + ReaddResult.written()，
+            // 等于对一条终态记录凭空断言“已写回” —— 界面上点「重试恢复」就会
+            // 得到“已还原”并把记录清掉，而实际什么都没做。现在返回 NO_STEPS：
+            // 不声明成功、不声明失败、也不改盘。
+            return new RestorePlan.Outcome(false, false, false, false, false, false,
+                    false, false, false, RestorePlan.NO_STEPS, null,
+                    "记录已是终态，本次没有可执行步骤");
         }
 
         boolean removeOk = removeTarget(e.ssid);
@@ -188,8 +196,10 @@ public final class ConfigRestorer {
         if (steps.contains(RestorePlan.Step.READD_ORIGINAL)) {
             String psk = SecretBox.open(e.sealedPsk);
             if (psk == null) {
-                // 加密通道不可用 → 不许退回明文，也不许假装能还原
-                android.util.Log.w(TAG, "原口令无法解开，跳过重建（不落明文）");
+                // 加密通道不可用 → 不许退回明文，也不许假装能还原。
+                // 用 logQuiet：JVM 单测里 android.util.Log 是会抛异常的 stub，
+                // 日志绝不该成为故障源（否则这条路径在测试里根本走不到）。
+                logQuiet("原口令无法解开，跳过重建（不落明文）");
                 readd = RestorePlan.ReaddResult.notIssued();
             } else {
                 readd = readd(e.ssid, e.security, psk);
@@ -228,13 +238,23 @@ public final class ConfigRestorer {
         public final boolean connected;
         /** 是否有有效 IP。 */
         public final boolean ipOk;
+        /**
+         * **列表是否读到了**（审计修复）。
+         *
+         * <p>{@code false} 时 {@link #configPresent} 没有意义 ——
+         * 安全检查本身不完整，界面必须如实说“检查不完整”，
+         * 不能拿一个未确认的结果去劝用户“放心清理”。
+         */
+        public final boolean listReadable;
         public final String detail;
 
-        Safety(String ssid, boolean configPresent, boolean connected, boolean ipOk, String detail) {
+        Safety(String ssid, boolean configPresent, boolean connected, boolean ipOk,
+               boolean listReadable, String detail) {
             this.ssid = ssid == null ? "" : ssid;
             this.configPresent = configPresent;
             this.connected = connected;
             this.ipOk = ipOk;
+            this.listReadable = listReadable;
             this.detail = detail == null ? "" : detail;
         }
 
@@ -243,6 +263,11 @@ public final class ConfigRestorer {
             if (ssid.isEmpty()) return "未指定目标";
             StringBuilder sb = new StringBuilder();
             sb.append("目标「").append(ssid).append("」");
+            if (!listReadable) {
+                sb.append("：**检查不完整**（读不到已保存网络列表，无法确认该目标当前有没有配置）");
+                sb.append("（").append(detail).append("）");
+                return sb.toString();
+            }
             sb.append(configPresent ? "有已保存配置" : "没有已保存配置");
             if (connected) sb.append("，此刻已连上");
             if (ipOk) sb.append("，有有效 IP");
@@ -258,11 +283,12 @@ public final class ConfigRestorer {
      * 它读 {@code cmd wifi list-networks} 与 {@code cmd wifi status}，**不改任何东西**。
      */
     public static Safety inspect(String ssid) {
-        if (ssid == null || ssid.isEmpty()) return new Safety("", false, false, false, "无目标");
-        boolean present = targetPresent(ssid);
+        if (ssid == null || ssid.isEmpty()) {
+            return new Safety("", false, false, false, true, "无目标");
+        }
         RestorePlan.Verify v = verify(ssid);
-        return new Safety(ssid, present, v.connectedTo(ssid),
-                RestorePlan.isIpValid(v.ip), v.describe());
+        return new Safety(ssid, v.listPresent, v.connectedTo(ssid),
+                RestorePlan.isIpValid(v.ip), v.listReadable, v.describe());
     }
 
     // ---------------------------------------------------------------- 命中保留
@@ -412,13 +438,23 @@ public final class ConfigRestorer {
         }
     }
 
-    /** 读回快照：列表是否含目标 + status 里的 SSID/状态/IP（同源绑定，见 StatusParser）。 */
+    /**
+     * 读回快照：列表是否含目标 + status 里的 SSID/状态/IP（同源绑定，见 StatusParser）。
+     *
+     * <p>审计修复：把「列表读到了、里面没有目标」与「列表压根没读到」分开上报。
+     * 旧实现两条路都返回 {@code listPresent=false}，判定层于是把“未确认”
+     * 当成“没有残留”，甚至当成“无需还原”—— 那是 fail-open。
+     */
     static RestorePlan.Verify verify(String ssid) {
-        boolean present = targetPresent(ssid);
+        String list = sh("cmd wifi list-networks", 6000);
+        boolean listReadable = list != null;
+        boolean present = listReadable && ListNetworksParser.findNetId(list, ssid) >= 0;
         String st = sh("cmd wifi status", 5000);
-        if (st == null) return new RestorePlan.Verify(present, null, null, null);
+        if (st == null) {
+            return new RestorePlan.Verify(present, null, null, null, listReadable);
+        }
         StatusParser.Result r = StatusParser.parse(st, ssid);
-        return new RestorePlan.Verify(present, r.currentSsid, r.supplicantState, r.ip);
+        return new RestorePlan.Verify(present, r.currentSsid, r.supplicantState, r.ip, listReadable);
     }
 
     /** 供日志使用的一行（**不含口令**）。 */

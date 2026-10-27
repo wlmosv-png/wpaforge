@@ -122,8 +122,10 @@ public class RestoreKeepHitTest {
         ok("回读不到配置 → 不算处置", !k3.resolved() && !k3.acceptable());
         ok("回读不到配置 → 失败点标在保留这一步",
                 k3.failedAt == RestorePlan.Step.KEEP_HIT_CONFIG);
-        ok("回读不到配置 → 允许退回标准恢复（该删就删）",
-                RestorePlan.needsCleanupRetry(k3));
+        ok("回读不到配置 → 不算处置、也不再需要额外补删",
+                !k3.resolved() && !k3.acceptable()
+                        && RestorePlan.KEEP_NOT_WRITTEN.equals(k3.code)
+                        && k3.noWrongLeft && !RestorePlan.needsCleanupRetry(k3));
         eq("null 记录 → NO-RECORD", RestorePlan.NO_RECORD,
                 RestorePlan.judgeKept(null, null).code);
         ok("通道读不到（unknown）→ 不许伪报保留",

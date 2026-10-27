@@ -186,8 +186,9 @@ public class RestoreStateMachineTest {
             ok("VERIFY 类失败 ⇒ 判定为“写回已确认”（这就是事实本身）",
                     e.writeBackConfirmed);
             ok("风险已消除（没有候选残留）", !e.residualRisk);
-            ok("只再自动尝试最后 1 次（旧记录不再无限重试）",
-                    e.remainingAttempts() == 1);
+            ok("按真实尝试计数：剩余次数仍是上限（不再伪造“已试 2 次”）",
+                    e.attempts == 0
+                            && e.remainingAttempts() == RestoreJournal.MAX_ATTEMPTS);
 
             RestoreRunner.Block blk = RestoreRunner.checkNewTask(
                     "t-new-task", "牛梦瑞诊所2");

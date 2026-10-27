@@ -131,18 +131,15 @@ public final class RestoreRunner {
      * 其余情况放行；若盘上还有**别的目标**的待办，会在 {@link Block#note} 里说明。
      */
     public static Block checkNewTask(String taskId, String ssid) {
-        List<RestoreJournal.Entry> all = RestoreJournal.loadAll();
         if (RestoreJournal.pendingUnknown()) {
             return new Block(true, RestoreGuard.Reason.JOURNAL_UNREADABLE,
                     "盘上的恢复记录无法解析（内容损坏或来自更高版本）："
                             + "无法确认是否还有别的目标未收尾，按未知处理",
                     null, "");
         }
-        List<RestoreJournal.Entry> pending = new ArrayList<>();
-        for (RestoreJournal.Entry e : all) {
-            if (e == null) continue;
-            if (e.needsRetry() || e.hasUnresolvedRisk()) pending.add(e);
-        }
+        // 与 RestoreJournal.pendingCount() 共用同一个判据（needsAttention），
+        // 否则界面条数与闸门实际拦截的东西会不一致（审计修复）。
+        List<RestoreJournal.Entry> pending = RestoreJournal.pendingEntries();
         for (RestoreJournal.Entry e : pending) {
             if (blocksTask(e, taskId, ssid)) {
                 return new Block(true, RestoreGuard.Reason.OTHER_PENDING,
@@ -344,6 +341,11 @@ public final class RestoreRunner {
      */
     public static void applyStage(RestoreJournal.Entry e, RestorePlan.Outcome o) {
         if (e == null || o == null) return;
+        if (RestorePlan.NO_STEPS.equals(o.code)) {
+            // 没有任何可执行步骤 = 什么都没做 → 不记尝试、不改阶段、不动盘。
+            // （否则对已终态记录点一次「重试」就会把它改写成别的终态。）
+            return;
+        }
         long now = System.currentTimeMillis();
         e.finishedAt = now;
         e.writeBackConfirmed = o.writeBackConfirmed;
@@ -351,6 +353,16 @@ public final class RestoreRunner {
         e.ipObserved = o.ipObserved;
         e.residualRisk = o.residualRisk;
         e.noteAttempt(now);
+        // 审计要求的三类计数分开记：
+        //   attempts             —— 恢复流程跑了几次（本行 noteAttempt）
+        //   writeBackIssuedCount —— 其中真的发出了写回命令的次数
+        //   verifyFailures       —— 读回验证没通过（未确认 / 没写回）的次数
+        if (o.readdIssued) e.writeBackIssuedCount++;
+        if (RestorePlan.UNVERIFIED.equals(o.code)
+                || RestorePlan.READD_FAILED.equals(o.code)
+                || RestorePlan.READD_NOT_WRITTEN.equals(o.code)) {
+            e.verifyFailures++;
+        }
         if (o.resolved()) {
             e.stage = o.kept ? RestoreJournal.STAGE_KEPT
                     : (RestorePlan.NOTHING_TO_DO.equals(o.code)

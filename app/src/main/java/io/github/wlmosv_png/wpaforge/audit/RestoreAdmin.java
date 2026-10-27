@@ -95,19 +95,19 @@ public final class RestoreAdmin {
         return RestoreJournal.pendingCount();
     }
 
-    /** 空态/汇总文案。 */
+    /** 空态/汇总文案（与闸门同一口径：见 {@link RestoreJournal#needsAttention}）。 */
     public static String summary() {
         List<RestoreJournal.Entry> all = RestoreJournal.loadAll();
         if (all.isEmpty()) {
             return L.s("没有待处理的恢复记录", "no pending restore records");
         }
-        int pending = 0;
-        for (RestoreJournal.Entry e : all) if (e.needsRetry() || e.blocking()) pending++;
+        int pending = RestoreJournal.pendingCount();
         if (pending == 0) {
             return L.f("有 %d 条历史记录（已归档，不影响新任务）",
                     "%d archived record(s), they do not block new tasks", all.size());
         }
-        return L.f("有 %d 条待处理记录", "%d pending record(s)", pending);
+        return L.f("有 %d 条待处理记录（含仍需人工确认的）",
+                "%d pending record(s), some may need manual action", pending);
     }
 
     /** 只读安全检查（清理前必须调用）。 */
@@ -143,6 +143,17 @@ public final class RestoreAdmin {
                     L.s("这条记录无法解析（损坏或版本不兼容），没有可重试的目标；"
                             + "请用「清理记录」处理",
                         "This record cannot be parsed; use Discard instead"), null);
+        }
+        // 已终态（ARCHIVED / RESOLVED）的记录，用户点「重试恢复」= 要**重开一轮真实恢复**：
+        // 必须先把阶段退回 ARMED 并落盘，否则 restore() 会发现没有可执行步骤而返回
+        // NO-STEPS —— 点了等于没点。（旧实现更糟：会凭空报“已还原”并清掉记录。）
+        if (e.settled()) {
+            e.stage = RestoreJournal.STAGE_ARMED;
+            e.abandoned = false;
+            e.failStep = "";
+            e.failDetail = (e.failDetail == null ? "" : e.failDetail)
+                    + L.s(" · 用户手动重试：阶段退回待收尾", " · manual retry: re-armed");
+            RestoreJournal.save(e);
         }
         // 归属校验只在有 taskId 时才有意义：旧格式记录（taskId 为空）直接走恢复，
         // 否则用户点了「重试」却永远得到“跳过”。
@@ -207,9 +218,20 @@ public final class RestoreAdmin {
         msg.append(L.s("。注意：清理记录 ≠ 恢复原 Wi-Fi 配置 —— ", 
                 ". Note: discarding a record does NOT restore your Wi-Fi config - "))
            .append(safe.describe());
-        if (safe.configPresent) {
+        if (!safe.listReadable) {
+            msg.append(L.s("；注意：安全检查本身不完整（读不到已保存网络列表），"
+                            + "该目标是否仍留有候选口令无法确认",
+                    "; note: the safety check itself was incomplete"));
+        } else if (safe.configPresent) {
             msg.append(L.s("；如需还原，请用「重试恢复」或手动重连该网络",
                     "; use Retry, or reconnect manually"));
+        }
+        if (e.residualRisk) {
+            msg.append(L.s("；该记录标记了「可能有候选残留」：清理只删本地记录，"
+                            + "**同目标**的新任务仍会被拦，直到残留被确认清除",
+                    "; this record is flagged as possibly leaving a residual config: "
+                            + "discarding only removes the local record, and new tasks for the "
+                            + "SAME target will still be blocked until that is cleared"));
         }
         return new DiscardResult(removed, backup, msg.toString());
     }

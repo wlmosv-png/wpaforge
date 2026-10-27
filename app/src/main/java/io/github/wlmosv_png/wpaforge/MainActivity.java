@@ -5153,12 +5153,12 @@ public class MainActivity extends Activity {
         resultWhy.setText(why.toString());
 
         resultActions.removeAllViews();
-        resultActions.addView(actionButton(L.s("填线索再试", "Add hints & retry"),
+        resultActions.addView(actionButton(L.s("填线索", "Add hints"),
                 AmberTheme.BTN_PRIMARY, 0, v -> {
                     hideResultCard();
                     showSeedDialog();
                 }));
-        resultActions.addView(actionButton(L.s("换更大的字典", "Bigger dictionary"),
+        resultActions.addView(actionButton(L.s("换字典", "Bigger dict"),
                 AmberTheme.BTN_SECONDARY, 8, v -> {
                     hideResultCard();
                     showDictSource();
@@ -5175,7 +5175,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 结算卡上的按钮。
+     * 结算卡上的按钮（**等宽单行**）。
      *
      * <p>**为什么要有这个工厂**：`AmberTheme.action()` 造出来的 Button
      * 是没有 layoutParams 的，直接 `(LinearLayout.LayoutParams) b.getLayoutParams()`
@@ -5183,12 +5183,18 @@ public class MainActivity extends Activity {
      * （`showResultCard` 抛 NullPointerException → 结果卡没出来，
      * 界面永远停在"收尾中"，看起来就是卡死）。
      * 所以这里永远新建一套 LP 再挂上去。
+     *
+     * <p>**为什么是 weight=1**：三个按钮都按内容宽度排（WRAP_CONTENT）时，
+     * 最右边那个会被挤窄 —— 文字折成两行、高度比另外两个高一截，整行是歪的。
+     * 等宽 + `setSingleLine(true)` 后，同一行的按钮必然等高、不折行
+     * （文案也要相应精简，见调用点）。
      */
     private Button actionButton(String label, int kind, int leftMarginDp,
                                 android.view.View.OnClickListener l) {
         Button b = AmberTheme.action(this, dp, label, kind);
+        b.setSingleLine(true);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         lp.leftMargin = px(leftMarginDp);
         b.setLayoutParams(lp);
         b.setOnClickListener(l);

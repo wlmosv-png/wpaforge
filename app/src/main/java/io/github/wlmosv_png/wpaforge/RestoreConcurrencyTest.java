@@ -77,19 +77,33 @@ public class RestoreConcurrencyTest {
                 RestoreRunner.runExclusiveForTask(entry("t1", RestoreJournal.STAGE_ARMED), "t2", job));
         eq("上面两种都没执行 job", 0, ran.get());
 
+        // 1.9.28 行为变更：别人的记录**不再一票否决**（记录按 taskId 分槽，
+        // 本任务写盘不会覆盖它，所以没有理由禁止一次只作用于本目标的操作）。
+        // 只有「同一目标 + 仍有未解决风险」才拦。
         RestoreJournal.Entry foreign = entry("t-other", RestoreJournal.STAGE_FAILED);
         RestoreJournal.save(foreign);
-        eq("盘上是别人的记录 → 放弃本次收尾恢复", null,
+        ok("别人的失败记录（无残留风险）不拦新任务",
+                !RestoreRunner.checkNewTask("mine", "LAB-TARGET").blocked);
+        eq("盘上是别人的记录 → 本次收尾照常执行", null,
                 RestoreRunner.runExclusiveForTask(entry("mine", RestoreJournal.STAGE_ARMED),
                         "mine", job));
-        eq("job 依然没被执行（不会拿别人的记录去恢复）", 0, ran.get());
-        ok("放弃原因被记录", RestoreRunner.lastSummary().contains("另一个任务"));
+        eq("job 执行了 1 次（不再因为别人的记录而永久拒绝）", 1, ran.get());
+
+        RestoreJournal.Entry risky = entry("t-other", RestoreJournal.STAGE_FAILED);
+        risky.residualRisk = true;
+        RestoreJournal.save(risky);
+        ok("同目标 + 有未解决风险 → 拦住",
+                RestoreRunner.checkNewTask("mine", "LAB-TARGET").blocked);
+        eq("同目标 + 有风险 → 本次收尾不动手", null,
+                RestoreRunner.runExclusiveForTask(entry("mine", RestoreJournal.STAGE_ARMED),
+                        "mine", job));
+        eq("job 依然没被执行（不会踩到别人的未完成恢复）", 1, ran.get());
 
         RestoreJournal.clear();
         eq("盘上清空后按我自己的记录执行", null,
                 RestoreRunner.runExclusiveForTask(entry("mine", RestoreJournal.STAGE_ARMED),
                         "mine", job));
-        eq("job 执行了 1 次", 1, ran.get());
+        eq("job 执行了 2 次", 2, ran.get());
 
         System.out.println("== F1c 串行化：同一时刻只有一条恢复在跑 ==");
         final RestoreJournal.Entry mine = entry("mine", RestoreJournal.STAGE_ARMED);
@@ -120,7 +134,7 @@ public class RestoreConcurrencyTest {
         RestoreRunner.runExclusiveForTask(e2, "mine", cur ->
                 RestorePlan.judge(cur, connected(), true, RestorePlan.ReaddResult.written()));
         eq("恢复成功 → 记录被清掉（幂等）", null, RestoreJournal.load());
-        ok("成功结论写进 lastSummary", RestoreRunner.lastSummary().contains("已恢复"));
+        ok("成功结论写进 lastSummary", RestoreRunner.lastSummary().contains("已还原"));
 
         RestoreJournal.Entry e3 = entry("mine", RestoreJournal.STAGE_ARMED);
         // 注意 Verify 的 listPresent=false：所谓「没写回」就是**列表里没有目标**，
@@ -137,7 +151,7 @@ public class RestoreConcurrencyTest {
                 RestoreRunner.lastSummary().contains(kept.failDetail.split(" · ")[0])
                         || RestoreRunner.lastSummary().contains("未"));
 
-        System.out.println("== F5 「已写回」与「已连上」必须分开 ==");
+        System.out.println("== F5 「已写回」与「已连上」必须分开（1.9.28 订正） ==");
         RestoreJournal.Entry e = entry("t1", RestoreJournal.STAGE_ARMED);
         RestorePlan.Outcome o = RestorePlan.judge(e,
                 new RestorePlan.Verify(false, null, null, null),
@@ -148,16 +162,16 @@ public class RestoreConcurrencyTest {
         ok("目标整个不在列表里 ⇒ 没有候选口令残留（noWrongLeft=true）", o.noWrongLeft);
         ok("因此不需要再删一次（删也删不到东西）", !RestorePlan.needsCleanupRetry(o));
         eq("与「未连上」是不同的原因码，不会互相冒充",
-                RestorePlan.VERIFY_FAILED,
+                RestorePlan.WROTE_BACK,
                 RestorePlan.judge(e, new RestorePlan.Verify(true, null, null, null),
                         true, RestorePlan.ReaddResult.issuedButMissing()).code);
 
         o = RestorePlan.judge(e,
                 new RestorePlan.Verify(true, null, null, null),
                 true, RestorePlan.ReaddResult.written());
-        eq("已写回但没连上 → VERIFY-FAILED（另一件事）",
-                RestorePlan.VERIFY_FAILED, o.code);
-        ok("不算恢复成功", !o.restored);
+        eq("已写回但没连上 → WROTE-BACK（配置层面已成功）",
+                RestorePlan.WROTE_BACK, o.code);
+        ok("算恢复成功（连接观察不参与成败）", o.restored && o.writeBackConfirmed);
         ok("但系统里的口令已不是候选口令 → 不该再删",
                 o.noWrongLeft && !RestorePlan.needsCleanupRetry(o));
 

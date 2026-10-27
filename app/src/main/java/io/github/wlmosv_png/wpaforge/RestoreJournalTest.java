@@ -135,7 +135,15 @@ public class RestoreJournalTest {
         RestoreJournal.Store broken = RestoreJournal.memory();
         broken.write("stage=ARMED\nssid=OTHER-TARGET\n\u8fd9\u884c\u6ca1\u6709\u7b49\u53f7\n");
         RestoreJournal.install(broken);
-        eq("损坏记录 → load() 拿不到（既有行为）", null, RestoreJournal.load());
+        // 1.9.28 行为变更：损坏记录不再“读成 null”（那等于装作没有待办）。
+        // 现在它会被标成 broken 记录 —— 既不冒充成功，也不静默消失。
+        RestoreJournal.Entry brokenEntry = RestoreJournal.load();
+        ok("损坏记录 → load() 能拿到，但标记为 broken",
+                brokenEntry != null && brokenEntry.broken());
+        ok("损坏记录不算终态、按未知处理（fail closed）、不冒充成功",
+                brokenEntry != null && !brokenEntry.settled()
+                        && brokenEntry.blocking()
+                        && !brokenEntry.writeBackConfirmed);
         ok("但 pendingUnknown() 必须为真（不许当成“没有记录”）",
                 RestoreJournal.pendingUnknown());
         ok("闸门据此拦住新任务",

@@ -169,21 +169,24 @@ public class CrackService extends Service {
     private io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision armRestore(TaskQueue.Task task) {
         io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.Snapshot snap = null;
         boolean journalSaved = false;
-        boolean otherPending = false;
         try {
             if (task == null || task.ssid == null || task.ssid.isEmpty()) {
                 return new io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision(
                         false, io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Reason
-                        .CHANNEL_UNREADABLE, "任务缺少目标 SSID");
+                        .CHANNEL_UNREADABLE, L.s("任务缺少目标 SSID", "task has no target SSID"));
             }
-            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry onDisk =
-                    io.github.wlmosv_png.wpaforge.audit.RestoreJournal.load();
-            otherPending = io.github.wlmosv_png.wpaforge.audit.RestoreRunner
-                    .otherTaskPending(onDisk, task.id)
-                    // F7：盘上有内容却读不出来 —— 不能当成「没有待办」。
-                    // 那条记录可能是另一个目标未完成的恢复，被本次 save 覆盖掉就
-                    // 永久丢失还原能力，而且不报错。未知一律按「有别人的待办」处理。
-                    || io.github.wlmosv_png.wpaforge.audit.RestoreJournal.pendingUnknown();
+            // 1) 冲突 / 记录不可解析 / 记录堆积（1.9.28）。
+            //    判据只按「同一目标 + 未解决风险」—— 别人的失败记录不再一票否决：
+            //    记录已按 taskId 分槽，本次写盘不会覆盖任何别人的记录。
+            io.github.wlmosv_png.wpaforge.audit.RestoreRunner.Block blk =
+                    io.github.wlmosv_png.wpaforge.audit.RestoreRunner
+                            .checkNewTask(task.id, task.ssid);
+            if (!blk.note.isEmpty()) log(L.s("提示: ", "note: ") + blk.note);
+            if (blk.blocked) {
+                // 被挡下：不快照、不写盘（写下去会覆盖/污染盘上那份别人的记录）。
+                return new io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision(
+                        false, blk.reason, blk.detail);
+            }
 
             String sec = io.github.wlmosv_png.wpaforge.audit.ConfigRestorer
                     .securityArg(task.toNetRecord().security);
@@ -191,9 +194,7 @@ public class CrackService extends Service {
                     ? task.id : task.lastRunId;
             snap = io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.snapshot(
                     task.id, task.ssid, task.bssid, sec, lineage);
-            // 只有在「没有别人的待办」时才写盘 —— 否则会覆盖掉那份待办记录。
-            journalSaved = !otherPending
-                    && io.github.wlmosv_png.wpaforge.audit.RestoreJournal.save(snap.entry);
+            journalSaved = io.github.wlmosv_png.wpaforge.audit.RestoreJournal.save(snap.entry);
             restoreEntry = snap.entry;
             log(L.s("配置恢复登记: ", "Restore journal: ")
                     + io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.describe(snap.entry)
@@ -206,10 +207,12 @@ public class CrackService extends Service {
         if (snap == null) {
             return new io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision(
                     false, io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Reason
-                    .JOURNAL_UNWRITABLE, "快照未能采集");
+                    .JOURNAL_UNWRITABLE, L.s("快照未能采集", "snapshot failed"));
         }
-        return io.github.wlmosv_png.wpaforge.audit.RestoreGuard
-                .decide(snap.facts(otherPending, journalSaved));
+        return io.github.wlmosv_png.wpaforge.audit.RestoreGuard.decide(
+                snap.facts(false, journalSaved,
+                        io.github.wlmosv_png.wpaforge.audit.RestoreJournal.pendingUnknown(),
+                        io.github.wlmosv_png.wpaforge.audit.RestoreJournal.pendingCount()));
     }
 
     /**
@@ -796,6 +799,8 @@ public class CrackService extends Service {
         if (!gate.proceed) {
             log(L.s("已阻止本次运行: ", "run blocked: ")
                     + io.github.wlmosv_png.wpaforge.audit.RestoreGuard.describe(gate));
+            // P1：把「阻塞原因 + 下一步」写给用户 —— 不把定向拦截伪装成普通暂停。
+            log(io.github.wlmosv_png.wpaforge.audit.RestoreRunner.blockHelp(gate));
             task.state = TaskQueue.State.PAUSED;
             TaskQueue.update(this, task);
             notifyQueue();

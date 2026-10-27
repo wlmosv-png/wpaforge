@@ -109,8 +109,10 @@ public class RestorePlanTest {
                 !o.restored && !o.noWrongLeft);
 
         o = RestorePlan.judge(noPsk, new RestorePlan.Verify(false, null, null, null), true, RestorePlan.ReaddResult.notIssued());
-        eq("原本无配置 + 目标已不在列表 → OK", RestorePlan.OK, o.code);
-        ok("算恢复成功", o.restored && o.noWrongLeft);
+        eq("原本无配置 + 目标已不在列表 → NOTHING-TO-DO（1.9.28 起的专用码）",
+                RestorePlan.NOTHING_TO_DO, o.code);
+        ok("算恢复成功（无需还原）", o.restored && o.noWrongLeft);
+        ok("但它不是“写回确认”（压根没发生过写回）", !o.writeBackConfirmed);
 
         o = RestorePlan.judge(noPsk, new RestorePlan.Verify(true, null, null, null), true, RestorePlan.ReaddResult.notIssued());
         eq("原本无配置 + 目标仍在列表 → READD-FAILED", RestorePlan.READD_FAILED, o.code);
@@ -119,6 +121,7 @@ public class RestorePlanTest {
         o = RestorePlan.judge(noSecret, new RestorePlan.Verify(false, null, null, null), true, RestorePlan.ReaddResult.notIssued());
         eq("拿不到原口令 + 已清残留 → NO-SECRET", RestorePlan.NO_SECRET, o.code);
         ok("**不伪报成功**", !o.restored);
+        ok("也没有写回确认（不许假装能还原）", !o.writeBackConfirmed);
         ok("但已确保不遗留错误口令", o.noWrongLeft);
 
         o = RestorePlan.judge(armed("v1:a:b"),
@@ -126,13 +129,26 @@ public class RestorePlanTest {
         eq("已重建 + 读回确认 → OK", RestorePlan.OK, o.code);
         ok("恢复成功", o.restored && o.noWrongLeft);
 
+        // 1.9.28 行为变更（这正是那次永久自锁的根因）：
+        // 写回已确认、只是此刻不在覆盖范围内连不上 —— 这就是**恢复成功**。
+        // 连接与 IP 只作为观察值记录，不再反过来把配置恢复判成失败。
         o = RestorePlan.judge(armed("v1:a:b"),
                 new RestorePlan.Verify(true, null, null, null), true, RestorePlan.ReaddResult.written());
-        eq("已重建但没观察到连上 → VERIFY-FAILED", RestorePlan.VERIFY_FAILED, o.code);
-        ok("不算恢复成功（哑命令没有回执，只能看状态）", !o.restored);
-        ok("但系统里的口令已经不是候选口令了", o.noWrongLeft);
+        eq("已写回但没连上（目标不在范围）→ WROTE-BACK", RestorePlan.WROTE_BACK, o.code);
+        ok("算恢复成功（配置层面）", o.restored && o.writeBackConfirmed);
+        ok("连接与 IP 只作观察值：此刻没连上不影响成败",
+                !o.connObserved && !o.ipObserved);
+        ok("系统里的口令已经是原口令 → 无候选残留", o.noWrongLeft && !o.residualRisk);
         ok("这种情况不该再删（删了反而把用户的正确配置删掉）",
                 !RestorePlan.needsCleanupRetry(o));
+
+        o = RestorePlan.judge(armed("v1:a:b"),
+                new RestorePlan.Verify(true, "LAB-TARGET", "COMPLETED", "0.0.0.0"),
+                true, RestorePlan.ReaddResult.written());
+        eq("连上了但 IP 无效 → 仍算写回成功（只是观察值不同）",
+                RestorePlan.WROTE_BACK, o.code);
+        ok("没有有效 IP ⇒ 不记成“已连上”", !o.connObserved && !o.ipObserved);
+        ok("仍然没有候选残留", !o.residualRisk);
 
         o = RestorePlan.judge(armed("v1:a:b"),
                 new RestorePlan.Verify(true, null, null, null), true, RestorePlan.ReaddResult.notIssued());
@@ -140,21 +156,34 @@ public class RestorePlanTest {
         ok("可能还留着候选口令 → 必须补一次清理",
                 RestorePlan.needsCleanupRetry(o));
 
-        System.out.println("== R11-4 不伪报成功（穷举：只有两种情况算恢复） ==");
+        System.out.println("== R11-4 不伪报也不虚报：写回确认才叫成功（穷举） ==");
+        // 判据（1.9.28）：命令发出 **且**（回读当时可见 或 本次列表可见）。
+        // 连接 / IP / 是否连着别的网 一律不参与 —— 它们只决定观察字段。
         boolean everFalsePositive = false;
-        for (boolean listPresent : new boolean[]{false, true}) {
-            for (String ssid : new String[]{null, "LAB-TARGET", "OTHER"}) {
-                for (String st : new String[]{null, "COMPLETED", "DISCONNECTED"}) {
-                    for (String ip : new String[]{null, "", "0.0.0.0", "10.0.0.9"}) {
-                        RestorePlan.Verify vv = new RestorePlan.Verify(listPresent, ssid, st, ip);
-                        RestorePlan.Outcome oo = RestorePlan.judge(armed("v1:a:b"), vv, true, RestorePlan.ReaddResult.written());
-                        boolean shouldBeOk = vv.connectedTo("LAB-TARGET");
-                        if (oo.restored != shouldBeOk) everFalsePositive = true;
+        RestorePlan.ReaddResult[] reads = new RestorePlan.ReaddResult[]{
+                RestorePlan.ReaddResult.written(),
+                RestorePlan.ReaddResult.issuedButMissing(),
+                RestorePlan.ReaddResult.notIssued()};
+        int combos = 0;
+        for (RestorePlan.ReaddResult rr : reads) {
+            for (boolean listPresent : new boolean[]{false, true}) {
+                for (String ssid : new String[]{null, "LAB-TARGET", "OTHER"}) {
+                    for (String st : new String[]{null, "COMPLETED", "DISCONNECTED"}) {
+                        for (String ip : new String[]{null, "", "0.0.0.0", "10.0.0.9"}) {
+                            combos++;
+                            RestorePlan.Verify vv = new RestorePlan.Verify(listPresent, ssid, st, ip);
+                            RestorePlan.Outcome oo = RestorePlan.judge(
+                                    armed("v1:a:b"), vv, true, rr);
+                            boolean writeBackSeen = rr.issued && (rr.configPresent || listPresent);
+                            if (oo.restored != writeBackSeen) everFalsePositive = true;
+                            if (oo.restored && !oo.writeBackConfirmed) everFalsePositive = true;
+                        }
                     }
                 }
             }
         }
-        ok("25×组合里没有任何一个“未连上却报恢复成功”", !everFalsePositive);
+        ok(combos + " 种组合：写回没确认就不许报成功，确认了就必须报成功",
+                !everFalsePositive);
 
         System.out.println("== R11-5 加解密通道不可用时不许假装 ==");
         RestoreJournal.Entry noSeal = new RestoreJournal.Entry();
@@ -210,8 +239,12 @@ public class RestorePlanTest {
                     runner != null && runner.contains("RestoreJournal.STAGE_FAILED"));
             ok("终态（已还原 / 已保留）才清记录；清不掉就写终态留档",
                     runner != null
-                            && runner.contains("if (!RestoreJournal.clear()) "
-                                    + "RestoreJournal.save(e);"));
+                            && runner.contains("if (!removeEntry(e)) RestoreJournal.save(e);"));
+            ok("到重试上限 / 不可重试 → 写 ARCHIVED（不再无限自锁）",
+                    runner != null && runner.contains("RestoreJournal.STAGE_ARCHIVED"));
+            ok("新任务判据 = 同目标 + 未解决风险（不是“盘上有任何别人的记录”）",
+                    runner != null && runner.contains("public static boolean blocksTask(")
+                            && runner.contains("public static Block checkNewTask("));
             ok("引擎提供删除目标配置的唯一入口",
                     eng.contains("public boolean removeTargetConfig("));
             ok("ShellChannel 上的删配置入口已降级为弃用空实现",

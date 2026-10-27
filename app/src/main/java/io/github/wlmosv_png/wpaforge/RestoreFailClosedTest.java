@@ -45,8 +45,8 @@ public class RestoreFailClosedTest {
                 true, true, true, true, true, true, true, true));
         ok("不放行", !d.proceed);
         eq("原因码 = OTHER_PENDING", RestoreGuard.Reason.OTHER_PENDING, d.reason);
-        ok("说明里点明「可能拿旧记录恢复另一个目标」",
-                d.detail.contains("另一个目标"));
+        ok("说明里点明「可能把候选口令当成原配置」",
+                d.detail.contains("候选口令当成原配置"));
 
         d = RestoreGuard.decide(new RestoreGuard.Facts(
                 true, false, false, false, false, false, false, false));
@@ -152,8 +152,9 @@ public class RestoreFailClosedTest {
                             && svc.indexOf("if (!gate.proceed)") < engine);
             ok("不放行时把任务置为可续跑（不丢进度）",
                     svc.contains("task.state = TaskQueue.State.PAUSED;"));
-            ok("落盘前先判「有没有别人的待办」（避免覆盖它）",
-                    svc.contains("journalSaved = !otherPending"));
+            ok("落盘前先问「这一次能不能开」（同目标冲突 / 记录损坏 / 堆积）",
+                    svc.contains("checkNewTask(task.id, task.ssid)")
+                            && svc.contains("if (blk.blocked)"));
             ok("快照在 save 之前（不会先写空记录）",
                     svc.indexOf("ConfigRestorer.snapshot(") < svc.indexOf("RestoreJournal.save("));
             ok("快照早于引擎创建（引擎构造之后就会动 Wi-Fi）",

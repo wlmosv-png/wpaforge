@@ -143,10 +143,14 @@ public class RestoreKeepHitTest {
         RestoreJournal.Entry j2 = armed();
         RestoreJournal.save(j2);
         RestoreRunner.applyStage(j2, k3);
-        eq("保留不成立 → STAGE_FAILED", RestoreJournal.STAGE_FAILED, j2.stage);
-        ok("保留不成立 → 留痕待补做", RestoreJournal.hasPending());
+        // 1.9.28：保留不成立 = 回读不到配置 ⇒ 不可重试（再试也读不到），
+        // 于是直接归档 —— 而不是留一条永远失败的记录、每次启动再试一遍。
+        eq("保留不成立、且不可自动重试 → 归档",
+                RestoreJournal.STAGE_ARCHIVED, j2.stage);
         ok("失败原因写进记录", j2.failDetail.contains(RestorePlan.KEEP_NOT_WRITTEN));
-        ok("失败记录仍需要恢复（下次启动重试）", RestoreRunner.shouldRecover(j2));
+        ok("归档后不再视为待办（不会每次启动重试）", !RestoreRunner.shouldRecover(j2));
+        ok("归档记录不再阻塞新任务", !j2.blocking());
+        ok("归档后盘上没有待办", !RestoreJournal.hasPending());
 
         System.out.println();
         System.out.println("== R11-9 命中保留：接线守卫（判定链不许被碰） ==");
@@ -184,8 +188,12 @@ public class RestoreKeepHitTest {
                     runner.contains("if (o.resolved())"));
             ok("保留写 STAGE_KEPT", runner.contains("RestoreJournal.STAGE_KEPT"));
             ok("清记录失败就写终态落盘（防启动补做误删）",
-                    runner.contains("if (!RestoreJournal.clear()) RestoreJournal.save(e);"));
-            ok("启动补做仍走标准恢复", runner.contains("ConfigRestorer.restore(e)"));
+                    runner.contains("if (!removeEntry(e)) RestoreJournal.save(e);"));
+            ok("启动补做仍走标准恢复（非命中路径）",
+                    runner.contains("ConfigRestorer.restore(target, false)"));
+            ok("启动补做有冷却 + 重试上限（反复启动不会刷成死循环）",
+                    runner.contains("cooldownPassed(now)")
+                            && runner.contains("RestoreJournal.MAX_ATTEMPTS"));
             ok("判定链里没有保留逻辑（keepHit / KEEP_HIT_CONFIG / settle 都不出现）",
                     !eng.contains("keepHit") && !eng.contains("KEEP_HIT_CONFIG")
                             && !eng.contains("settle"));
@@ -248,7 +256,7 @@ public class RestoreKeepHitTest {
         ok("settle(非命中) → 标准恢复，不是保留",
                 s2 != null && !RestorePlan.KEPT.equals(s2.code) && !s2.kept);
         eq("settle(非命中)：列表里没有目标 → 「原本就无需还原」",
-                RestorePlan.OK, s2.code);
+                RestorePlan.NOTHING_TO_DO, s2.code);
         ConfigRestorer.installShell(null);
         ok("假壳已卸下（恢复生产实现）", ConfigRestorer.keepHit(armed()) == null
                 || true);

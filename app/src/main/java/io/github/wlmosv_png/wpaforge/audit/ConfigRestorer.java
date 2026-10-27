@@ -37,8 +37,13 @@ public final class ConfigRestorer {
     public static final String CONFIG_XML =
             "/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml";
 
-    /** 重建后等它连上的最长时间。 */
-    private static final long READD_WAIT_MS = 15000L;
+    /**
+     * 重建后等它连上的最长时间。
+     *
+     * <p>1.9.28：它**只影响「有没有连上」这个观察值**，不再影响恢复成败 ——
+     * 目标不在覆盖范围内时等再久也连不上，而那不该把“配置已写回”判成失败。
+     */
+    private static final long READD_WAIT_MS = 6000L;
     /** 轮询间隔。 */
     private static final long POLL_MS = 500L;
 
@@ -80,9 +85,21 @@ public final class ConfigRestorer {
 
         /** 交给 {@link RestoreGuard} 的事实包。 */
         public RestoreGuard.Facts facts(boolean otherPending, boolean journalSaved) {
+            return facts(otherPending, journalSaved, false, 0);
+        }
+
+        /**
+         * 交给 {@link RestoreGuard} 的事实包（1.9.28：附带「记录不可解析」与「堆积条数」）。
+         *
+         * @param journalUnreadable 盘上有记录但解析不出来（未知 → fail closed）
+         * @param pendingCount      盘上待处理记录条数
+         */
+        public RestoreGuard.Facts facts(boolean otherPending, boolean journalSaved,
+                                        boolean journalUnreadable, int pendingCount) {
             return new RestoreGuard.Facts(otherPending, channelOk, configReadable,
                     entry != null && entry.originalNetId >= 0, pskRequired,
-                    entry != null && entry.hadPsk, sealedOk, journalSaved);
+                    entry != null && entry.hadPsk, sealedOk, journalSaved,
+                    journalUnreadable, pendingCount);
         }
     }
 
@@ -136,13 +153,28 @@ public final class ConfigRestorer {
     // ---------------------------------------------------------------- 恢复
 
     /**
-     * 执行恢复。**任何路径下都会尝试**：命中、未命中、暂停、取消、异常。
+     * 执行恢复（1.9.28：把「配置恢复」与「连接观察」彻底分开）。
      *
+     * <h3>成败判据</h3>
+     * 恢复的目标是「把原配置放回系统」，**不是**「此刻必须连上」：
+     * <ul>
+     *   <li>写回被独立回读确认 → 成功（连接与 IP 只作为观察值落盘）；</li>
+     *   <li>写回没确认（命令没发出 / 列表里看不到目标）→ 失败，且标出残留风险；</li>
+     *   <li>目标不在覆盖范围内、当前连着别的网、观察窗口内没等到 —— 都不判失败。</li>
+     * </ul>
+     * 判定全部交给 {@link RestorePlan#judge}，本方法只负责采集事实。
+     *
+     * @param e       记录；{@code null} → NO_RECORD
+     * @param keepHit 本轮是否命中（命中走「保留」，其余走「删干净 + 写回原配置」）
      * @return 结论；调用方必须把它写进记录与界面，不许吞掉
      */
-    public static RestorePlan.Outcome restore(RestoreJournal.Entry e) {
+    public static RestorePlan.Outcome restore(RestoreJournal.Entry e, boolean keepHit) {
         if (e == null) {
             return RestorePlan.judge(null, null, false, RestorePlan.ReaddResult.notIssued());
+        }
+        if (keepHit && RestorePlan.keepsHitConfig(e, true)) {
+            RestorePlan.Outcome kept = keepHit(e);
+            if (kept != null) return kept;
         }
 
         List<RestorePlan.Step> steps = RestorePlan.steps(e);
@@ -161,6 +193,7 @@ public final class ConfigRestorer {
                 readd = RestorePlan.ReaddResult.notIssued();
             } else {
                 readd = readd(e.ssid, e.security, psk);
+                // 只是给「有没有连上」这个观察值一点时间窗口；等不到也不判失败。
                 if (readd.issued) waitConnected(e.ssid, READD_WAIT_MS);
             }
         }
@@ -168,7 +201,8 @@ public final class ConfigRestorer {
         RestorePlan.Verify v = verify(e.ssid);
         RestorePlan.Outcome out = RestorePlan.judge(e, v, removeOk, readd);
 
-        // 兜底：既没还原、还可能留着候选口令 → 再删一次，把“静默故障”变成“可见故障”。
+        // 兜底：既没写回确认、还可能留着候选口令 → 再删一次，
+        // 把“静默故障”变成“可见故障”。写回确认过的一律不再删（会把正确配置删掉）。
         if (RestorePlan.needsCleanupRetry(out)) {
             boolean again = removeTarget(e.ssid);
             if (again) {
@@ -176,6 +210,59 @@ public final class ConfigRestorer {
             }
         }
         return out;
+    }
+
+    /** 兼容旧签名：非命中路径。 */
+    public static RestorePlan.Outcome restore(RestoreJournal.Entry e) {
+        return restore(e, false);
+    }
+
+    // ---------------------------------------------------------------- 只读安全检查
+
+    /** 只读安全检查的结果（不改动任何系统状态）。 */
+    public static final class Safety {
+        public final String ssid;
+        /** 目标当前是否在已保存网络列表里。 */
+        public final boolean configPresent;
+        /** 此刻是否连着目标。 */
+        public final boolean connected;
+        /** 是否有有效 IP。 */
+        public final boolean ipOk;
+        public final String detail;
+
+        Safety(String ssid, boolean configPresent, boolean connected, boolean ipOk, String detail) {
+            this.ssid = ssid == null ? "" : ssid;
+            this.configPresent = configPresent;
+            this.connected = connected;
+            this.ipOk = ipOk;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        /** 一句话人读结论。 */
+        public String describe() {
+            if (ssid.isEmpty()) return "未指定目标";
+            StringBuilder sb = new StringBuilder();
+            sb.append("目标「").append(ssid).append("」");
+            sb.append(configPresent ? "有已保存配置" : "没有已保存配置");
+            if (connected) sb.append("，此刻已连上");
+            if (ipOk) sb.append("，有有效 IP");
+            sb.append("（").append(detail).append("）");
+            return sb.toString();
+        }
+    }
+
+    /**
+     * **只读**检查某目标当前的配置状态。
+     *
+     * <p>用途：清理记录前的安全检查、界面「查看详情」、以及“同目标是否还有残留”的判断。
+     * 它读 {@code cmd wifi list-networks} 与 {@code cmd wifi status}，**不改任何东西**。
+     */
+    public static Safety inspect(String ssid) {
+        if (ssid == null || ssid.isEmpty()) return new Safety("", false, false, false, "无目标");
+        boolean present = targetPresent(ssid);
+        RestorePlan.Verify v = verify(ssid);
+        return new Safety(ssid, present, v.connectedTo(ssid),
+                RestorePlan.isIpValid(v.ip), v.describe());
     }
 
     // ---------------------------------------------------------------- 命中保留

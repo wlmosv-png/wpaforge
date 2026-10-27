@@ -230,6 +230,14 @@ public class MainActivity extends Activity {
     /** 服务在收尾结束时给的结论（例：已恢复 : OK），显示在结算卡上 */
     private String lastRestoreSummary = "";
 
+    /* ── 恢复状态区（1.9.28）─────────────────────────────────────────
+     * 为什么必须有：以前恢复记录完全不可见 —— 用户唯一的动作是“再点一次开始”，
+     * 而闸门会一直把他挡在外面（真实故障：一条 VERIFY 失败的记录锁了整整一下午）。
+     */
+    private LinearLayout restoreCard;
+    private TextView restoreSummary;
+    private LinearLayout restoreList;
+
     /**
      * 收尾计时。
      *
@@ -2554,6 +2562,186 @@ public class MainActivity extends Activity {
      * 现在统一走 {@link AmberTheme} 的强调色与字号档位（五个页面共用这一个方法，
      * 所以观感天然一致）。
      */
+    /**
+     * 刷新「恢复状态」卡片（1.9.28）。
+     *
+     * <p>每条记录给三件事：它是什么（目标 / 阶段 / 重试次数）、为什么失败、
+     * 以及三个动作（重试恢复 / 清理记录 / 查看详情）。
+     */
+    private void refreshRestoreCard() {
+        if (restoreList == null || restoreSummary == null) return;
+        restoreList.removeAllViews();
+        restoreSummary.setText(io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.summary());
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row> rows =
+                io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.rows();
+        if (rows.isEmpty()) {
+            TextView hint = new TextView(this);
+            hint.setText(L.s("没有待处理的恢复记录。任务收尾会先把原配置加密记下来，"
+                            + "跑完再用它把网络配置放回去并回读确认 —— 目标不在覆盖范围内、"
+                            + "此刻连着别的网，都不算恢复失败。",
+                    "No pending restore records. Each run snapshots the original config first and "
+                            + "puts it back afterwards with a read-back check; being out of range is "
+                            + "not treated as a restore failure."));
+            hint.setTextSize(AmberTheme.FS_BODY);
+            hint.setTextColor(AmberTheme.TEXT_FAINT);
+            hint.setLineSpacing(px(4), 1f);
+            restoreList.addView(hint);
+            return;
+        }
+        for (final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r : rows) {
+            restoreList.addView(restoreRow(r));
+        }
+    }
+
+    /** 单条恢复记录：一行摘要 + 原因 + 三个动作。 */
+    private View restoreRow(final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        box.setPadding(px(14), px(12), px(14), px(12));
+
+        TextView title = new TextView(this);
+        title.setText(r.line());
+        title.setTextSize(AmberTheme.FS_TITLE);
+        title.setTextColor(TEXT);
+        box.addView(title);
+
+        TextView meta = new TextView(this);
+        StringBuilder sb = new StringBuilder();
+        sb.append(L.s("任务 ", "task ")).append(
+                r.entry.taskId == null || r.entry.taskId.isEmpty() ? "?" : r.entry.taskId);
+        if (r.entry.bssid != null && !r.entry.bssid.isEmpty()) {
+            sb.append(" · ").append(r.entry.bssid);
+        }
+        sb.append(" · ").append(L.s("最近尝试 ", "last try ")).append(r.lastAttemptText);
+        sb.append(" · ").append(L.s("剩余重试 ", "retries left ")).append(r.remaining);
+        if (r.entry.residualRisk) {
+            sb.append(" · ").append(L.s("可能有候选残留", "possible residual config"));
+        }
+        meta.setText(sb.toString());
+        meta.setTextSize(AmberTheme.FS_STATE);
+        meta.setTextColor(AmberTheme.TEXT_FAINT);
+        meta.setLineSpacing(px(3), 1f);
+        box.addView(meta, topGap(4));
+
+        String why = r.reason();
+        if (!why.isEmpty()) {
+            TextView rsn = new TextView(this);
+            rsn.setText(why);
+            rsn.setTextSize(AmberTheme.FS_BODY);
+            rsn.setTextColor(r.needsHuman ? DANGER : TEXT_DIM);
+            rsn.setLineSpacing(px(3), 1f);
+            box.addView(rsn, topGap(4));
+        }
+
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        Button retry = AmberTheme.action(this, dp, L.s("重试恢复", "Retry"), AmberTheme.BTN_PRIMARY);
+        retry.setOnClickListener(v -> doRetryRestore(r));
+        acts.addView(retry);
+        Button clear = AmberTheme.action(this, dp, L.s("清理记录", "Discard"), AmberTheme.BTN_NEUTRAL);
+        clear.setOnClickListener(v -> confirmDiscardRestore(r));
+        LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp1.leftMargin = px(8);
+        acts.addView(clear, lp1);
+        Button detail = AmberTheme.action(this, dp, L.s("查看详情", "Details"), AmberTheme.BTN_SECONDARY);
+        detail.setOnClickListener(v -> showRestoreDetail(r));
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp2.leftMargin = px(8);
+        acts.addView(detail, lp2);
+        box.addView(acts, topGap(10));
+        return box;
+    }
+
+    /** 手动重试恢复（后台线程跑 shell，回来后刷新卡片）。 */
+    private void doRetryRestore(final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r) {
+        appendLog(L.s("手动重试恢复：", "manual restore retry: ") + r.line());
+        new Thread(() -> {
+            final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.RetryResult res =
+                    io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.retryNow(r.entry);
+            ui.post(() -> {
+                appendLog((res.ok ? "✓ " : "✗ ") + res.message);
+                Toast.makeText(this, res.message, Toast.LENGTH_LONG).show();
+                refreshRestoreCard();
+            });
+        }, "wpaforge-restore-retry").start();
+    }
+
+    /** 清理记录：先只读安全检查 + 备份，再删；文案必须说清“不等于恢复配置”。 */
+    private void confirmDiscardRestore(final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r) {
+        new Thread(() -> {
+            final io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.Safety safe =
+                    io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.safety(r.entry);
+            ui.post(() -> new android.app.AlertDialog.Builder(this)
+                    .setTitle(L.s("清理恢复记录", "Discard restore record"))
+                    .setMessage(L.s("清理只删除这条恢复记录（会先备份），"
+                                    + "不会改动系统里的网络配置 —— 因此不等于“恢复原 Wi-Fi 配置”。\n\n当前状态：",
+                            "Discarding only removes this record (a backup is written first); it does "
+                                    + "NOT touch the network config, so it is not a restore.\n\nNow: ")
+                            + safe.describe())
+                    .setNegativeButton(L.s("取消", "Cancel"), null)
+                    .setPositiveButton(L.s("清理", "Discard"), (d, w) -> new Thread(() -> {
+                        final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.DiscardResult res =
+                                io.github.wlmosv_png.wpaforge.audit.RestoreAdmin
+                                        .discard(MainActivity.this, r.entry);
+                        ui.post(() -> {
+                            appendLog((res.removed ? "✓ " : "✗ ") + res.message);
+                            Toast.makeText(this, res.message, Toast.LENGTH_LONG).show();
+                            refreshRestoreCard();
+                        });
+                    }, "wpaforge-restore-discard").start())
+                    .show());
+        }, "wpaforge-restore-safety").start();
+    }
+
+    /** 查看详情：把记录的字段摊开（密文只显示长度，不显示内容）。 */
+    private void showRestoreDetail(final io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r) {
+        io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry e = r.entry;
+        StringBuilder sb = new StringBuilder();
+        sb.append(L.s("目标: ", "target: ")).append(e.ssid).append('\n');
+        if (e.bssid != null && !e.bssid.isEmpty()) {
+            sb.append("BSSID: ").append(e.bssid).append('\n');
+        }
+        sb.append(L.s("任务: ", "task: ")).append(e.taskId).append('\n');
+        sb.append(L.s("阶段: ", "stage: ")).append(e.stageLabel())
+                .append(" (").append(e.stage).append(")\n");
+        sb.append(L.s("尝试: ", "attempts: ")).append(e.attempts).append('/')
+                .append(io.github.wlmosv_png.wpaforge.audit.RestoreJournal.MAX_ATTEMPTS)
+                .append(L.s("，最近 ", ", last ")).append(r.lastAttemptText).append('\n');
+        sb.append(L.s("写回确认: ", "write-back confirmed: "))
+                .append(e.writeBackConfirmed ? L.s("是", "yes") : L.s("否", "no")).append('\n');
+        sb.append(L.s("观察到的连接: ", "connection observed: "))
+                .append(e.connObserved ? L.s("已连上", "connected") : L.s("未观察到", "not seen"))
+                .append(L.s("，有效 IP: ", ", valid IP: "))
+                .append(e.ipObserved ? L.s("有", "yes") : L.s("无", "no")).append('\n');
+        sb.append(L.s("候选残留风险: ", "residual risk: "))
+                .append(e.residualRisk ? L.s("可能有", "possible") : L.s("无", "none")).append('\n');
+        sb.append(L.s("原 netId: ", "original netId: ")).append(e.originalNetId)
+                .append(L.s("，原口令: ", ", passphrase: "))
+                .append(e.canReadd()
+                        ? L.s("已加密保存(长度 ", "sealed (len ")
+                            + e.sealedPsk.length() + ")"
+                        : L.s("不可用", "unavailable"))
+                .append('\n');
+        if (e.failDetail != null && !e.failDetail.isEmpty()) {
+            sb.append(L.s("失败详情: ", "failure: ")).append(e.failDetail).append('\n');
+        }
+        if (e.armedAt > 0) {
+            sb.append(L.s("登记时间: ", "armed at: "))
+                    .append(new java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
+                            .format(new java.util.Date(e.armedAt))).append('\n');
+        }
+        sb.append(L.s("记录文件: ", "file: "))
+                .append(io.github.wlmosv_png.wpaforge.audit.RestoreStoreFile.path(this));
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("恢复记录详情", "Restore record details"))
+                .setMessage(sb.toString())
+                .setPositiveButton(L.s("知道了", "OK"), null)
+                .show();
+    }
+
     private TextView sectionLabel(String s) {
         TextView t = new TextView(this);
         t.setText(s);
@@ -3106,6 +3294,21 @@ public class MainActivity extends Activity {
      */
     private void buildAuditTab() {
         if (radar != null) radar.stopSpin();
+
+        // ---------------- 恢复状态（R11 / 1.9.28） ----------------
+        // 这里回答三个问题：有没有待办、为什么没成、我现在能做什么。
+        pageAudit.addView(sectionLabel(L.s("恢复状态", "Restore state")));
+        restoreCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        restoreSummary = new TextView(this);
+        restoreSummary.setTextSize(AmberTheme.FS_BODY);
+        restoreSummary.setTextColor(TEXT_DIM);
+        restoreSummary.setLineSpacing(px(4), 1f);
+        restoreCard.addView(restoreSummary);
+        restoreList = new LinearLayout(this);
+        restoreList.setOrientation(LinearLayout.VERTICAL);
+        restoreCard.addView(restoreList, topGap(8));
+        pageAudit.addView(restoreCard);
+        refreshRestoreCard();
 
         // ---------------- 字典 ----------------
         pageAudit.addView(sectionLabel(L.s("字典", "Dictionary")));
@@ -6787,21 +6990,23 @@ public class MainActivity extends Activity {
                 sb.append(L.s("\n【保护】登记目标原始配置（结束时会自动还原并读回验证）\n",
                         "\n[guard] snapshotting target config (auto-restored afterwards)\n"));
                 try {
-                    io.github.wlmosv_png.wpaforge.audit.RestoreJournal.Entry onDisk =
-                            io.github.wlmosv_png.wpaforge.audit.RestoreJournal.load();
-                    boolean otherPending = io.github.wlmosv_png.wpaforge.audit.RestoreRunner
-                            .otherTaskPending(onDisk, testTaskId)
-                            || io.github.wlmosv_png.wpaforge.audit.RestoreJournal.pendingUnknown();
+                    io.github.wlmosv_png.wpaforge.audit.RestoreRunner.Block blk =
+                            io.github.wlmosv_png.wpaforge.audit.RestoreRunner
+                                    .checkNewTask(testTaskId, ssid);
                     io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.Snapshot snap =
                             io.github.wlmosv_png.wpaforge.audit.ConfigRestorer.snapshot(
                                     testTaskId, ssid, null, "wpa2", testTaskId);
-                    boolean saved = !otherPending
+                    boolean saved = !blk.blocked
                             && io.github.wlmosv_png.wpaforge.audit.RestoreJournal.save(snap.entry);
                     sb.append("  ").append(io.github.wlmosv_png.wpaforge.audit.ConfigRestorer
                             .describe(snap.entry)).append('\n');
                     io.github.wlmosv_png.wpaforge.audit.RestoreGuard.Decision d =
                             io.github.wlmosv_png.wpaforge.audit.RestoreGuard.decide(
-                                    snap.facts(otherPending, saved));
+                                    snap.facts(false, saved,
+                                            io.github.wlmosv_png.wpaforge.audit
+                                                    .RestoreJournal.pendingUnknown(),
+                                            io.github.wlmosv_png.wpaforge.audit
+                                                    .RestoreJournal.pendingCount()));
                     if (d.proceed) {
                         guardEntry = snap.entry;
                         sb.append(L.s("  ✓ 已登记，测试结束后自动还原\n",

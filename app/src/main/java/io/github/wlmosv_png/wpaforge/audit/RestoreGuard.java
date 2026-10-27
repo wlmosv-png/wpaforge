@@ -9,20 +9,35 @@ package io.github.wlmosv_png.wpaforge.audit;
  * 旧实现只在快照/落盘失败时写一行日志就继续跑 —— 这等于在
  * 「恢复能力已经失效」的状态下照样做破坏性操作，而用户看不到。
  *
- * <p>另一个更隐蔽的风险：盘上如果还留着**上一个任务**的未完成恢复记录，
- * 而本任务的记录又落盘失败，收尾时就会拿**旧记录**去恢复**另一个目标**。
- * 所以「盘上还有别人的未完成记录」也必须挡住。
+ * <p>另一个更隐蔽的风险：本任务的记录落盘失败时，收尾可能拿**别的目标**的旧记录
+ * 去执行恢复。这一条由 {@link RestoreGuard.Reason#OTHER_PENDING}（同目标未解决）
+ * 与 {@link RestoreRunner#checkNewTask} 里的 taskId 归属校验共同封堵。
  *
  * <h3>原则：fail closed</h3>
  * 任何一项不成立 → 不进入破坏性操作。宁可这一轮不跑（任务保持可续跑），
  * 也不能在无法还原的前提下动用户的网络配置。
+ *
+ * <h3>1.9.28 的判据收窄</h3>
+ * 1.9.27 把「盘上有**任何**不属于本任务的未完成记录」都算作冲突，
+ * 于是一条“配置已写回、只是当时没连上”的失败记录会永久挡掉所有新任务。
+ * 现在冲突只按**同一目标**判（见 {@link RestoreRunner#blocksTask}），
+ * 并新增两条明确的拦截理由：记录不可解析、待处理记录堆积到上限。
  */
 public final class RestoreGuard {
 
     /** 挡下来的原因（机器可读，进日志与界面）。 */
     public enum Reason {
-        /** 盘上还有**别的任务**未完成的恢复记录 —— 必须先把它处理掉。 */
+        /**
+         * **同一目标**还有未解决的恢复记录 —— 必须先处理它。
+         *
+         * <p>为什么同目标必须挡：新任务的快照会把这个目标当前的配置当作“原配置”，
+         * 而它可能正是上一次留下的候选口令 —— 直接往下跑就会把污染固化成“原配置”。
+         */
         OTHER_PENDING,
+        /** 盘上有记录但解析不出来（损坏 / 更高版本）→ 未知，不当作“没有”。 */
+        JOURNAL_UNREADABLE,
+        /** 待处理记录堆积到上限 —— 要求人工清理，避免无限累积。 */
+        TOO_MANY_PENDING,
         /** 读不到已保存网络列表 —— 连目标当前有没有配置都不知道。 */
         CHANNEL_UNREADABLE,
         /** 目标是已保存网络，但读不到配置文件 —— 拿不到原口令。 */
@@ -37,7 +52,7 @@ public final class RestoreGuard {
 
     /** 闸门需要的事实（由调用方采集，全部是布尔/计数，不含口令）。 */
     public static final class Facts {
-        /** 盘上存在别的任务的未完成恢复记录。 */
+        /** 盘上存在**同一目标**未解决的恢复记录。 */
         public final boolean otherPending;
         /** `cmd wifi list-networks` 是否读到。 */
         public final boolean channelOk;
@@ -54,9 +69,23 @@ public final class RestoreGuard {
         /** 恢复记录是否已成功落盘。 */
         public final boolean journalSaved;
 
+        // ── 1.9.28 ──────────────────────────────────────────────────────
+        /** 盘上有记录但解析不出来。 */
+        public final boolean journalUnreadable;
+        /** 盘上待处理记录条数（用于判断是否堆积）。 */
+        public final int pendingCount;
+
         public Facts(boolean otherPending, boolean channelOk, boolean configReadable,
                      boolean targetWasSaved, boolean pskRequired, boolean hadPsk,
                      boolean sealedOk, boolean journalSaved) {
+            this(otherPending, channelOk, configReadable, targetWasSaved, pskRequired,
+                    hadPsk, sealedOk, journalSaved, false, 0);
+        }
+
+        public Facts(boolean otherPending, boolean channelOk, boolean configReadable,
+                     boolean targetWasSaved, boolean pskRequired, boolean hadPsk,
+                     boolean sealedOk, boolean journalSaved,
+                     boolean journalUnreadable, int pendingCount) {
             this.otherPending = otherPending;
             this.channelOk = channelOk;
             this.configReadable = configReadable;
@@ -65,6 +94,8 @@ public final class RestoreGuard {
             this.hadPsk = hadPsk;
             this.sealedOk = sealedOk;
             this.journalSaved = journalSaved;
+            this.journalUnreadable = journalUnreadable;
+            this.pendingCount = pendingCount;
         }
 
         /** 全绿的构造（测试与「目标本来就没保存」的常见场景用）。 */
@@ -90,6 +121,13 @@ public final class RestoreGuard {
         /** 被挡下时是否**已经**动过系统状态（用于决定要不要收尾恢复）。 */
         public boolean touchedSystem() { return false; }
 
+        /** 被挡下时是否需要人工处理（而不是重试即可）。 */
+        public boolean needsHuman() {
+            return reason == Reason.TOO_MANY_PENDING || reason == Reason.JOURNAL_UNREADABLE
+                    || reason == Reason.SEAL_FAILED || reason == Reason.CONFIG_UNREADABLE
+                    || reason == Reason.PSK_UNREADABLE;
+        }
+
         public String code() { return reason == null ? "OK" : reason.name(); }
     }
 
@@ -98,17 +136,28 @@ public final class RestoreGuard {
     private static final Decision GO = new Decision(true, null, "");
 
     /**
-     * 决策。**顺序即优先级**：先把「别人的未完成恢复」挡住，
+     * 决策。**顺序即优先级**：先处理“未知/冲突/堆积”，
      * 再看通道/配置能否读到，最后看记录是否写得进去。
      */
     public static Decision decide(Facts f) {
         if (f == null) {
             return new Decision(false, Reason.JOURNAL_UNWRITABLE, "缺少闸门事实");
         }
+        if (f.journalUnreadable) {
+            return new Decision(false, Reason.JOURNAL_UNREADABLE,
+                    "盘上的恢复记录无法解析（损坏或来自更高版本）："
+                            + "无法确认是否还有目标未收尾，按未知处理。"
+                            + "可在破解页的恢复状态区备份并清理它");
+        }
         if (f.otherPending) {
             return new Decision(false, Reason.OTHER_PENDING,
-                    "盘上还有另一个任务未完成的配置恢复：必须先处理它，"
-                            + "否则本次收尾可能拿旧记录去恢复另一个目标");
+                    "同一目标的配置恢复还没处理完：必须先处理它，"
+                            + "否则本次可能把上一次留下的候选口令当成原配置");
+        }
+        if (f.pendingCount >= RestoreJournal.MAX_PENDING) {
+            return new Decision(false, Reason.TOO_MANY_PENDING,
+                    "盘上堆积了 " + f.pendingCount + " 条未处理的恢复记录（上限 "
+                            + RestoreJournal.MAX_PENDING + "）");
         }
         if (!f.channelOk) {
             return new Decision(false, Reason.CHANNEL_UNREADABLE,

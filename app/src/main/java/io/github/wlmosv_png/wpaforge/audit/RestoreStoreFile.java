@@ -1,9 +1,13 @@
 package io.github.wlmosv_png.wpaforge.audit;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import android.content.Context;
 
@@ -23,6 +27,11 @@ import android.content.Context;
  * 先写 {@code .tmp} 再改名：掉电/被杀最多丢掉这一次写入，
  * 绝不会留下半截内容 —— 半截内容解析必然失败，那就等于没有记录。
  * 文件权限靠应用私有目录本身的 0700 保证。
+ *
+ * <h3>1.9.28：一个文件里可以有**多条**记录</h3>
+ * 格式由 {@link RestoreJournal#encode} 决定（首行 {@code version=2}，
+ * 每条以 {@code ---} 起头）。旧格式（整份就是一条）仍能读。
+ * 新增 {@link #backup(Context)}：清理记录前先留一份可回溯的备份。
  */
 public final class RestoreStoreFile {
 
@@ -38,10 +47,11 @@ public final class RestoreStoreFile {
                 try {
                     File f = new File(app.getFilesDir(), NAME);
                     if (!f.isFile()) return null;
-                    byte[] buf = new byte[(int) Math.min(f.length(), 64 * 1024)];
-                    try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+                    byte[] buf = new byte[(int) Math.min(f.length(), 256 * 1024)];
+                    try (FileInputStream in = new FileInputStream(f)) {
                         int n = in.read(buf);
-                        return n <= 0 ? null : new String(buf, 0, n, StandardCharsets.UTF_8);
+                        if (n <= 0) return null;
+                        return new String(buf, 0, n, StandardCharsets.UTF_8);
                     }
                 } catch (Throwable t) {
                     return null;
@@ -85,5 +95,38 @@ public final class RestoreStoreFile {
                 }
             }
         };
+    }
+
+    /** 记录文件的绝对路径（界面展示用）。 */
+    public static String path(Context ctx) {
+        return new File(ctx.getApplicationContext().getFilesDir(), NAME).getAbsolutePath();
+    }
+
+    /**
+     * 把当前记录文件另存一份带时间戳的备份。
+     *
+     * <p>为什么必须有：清理记录是**不可逆**的操作（原口令密文只在这份文件里），
+     * 而用户点“清理”时往往并不清楚自己放弃了什么。先备份，再删。
+     *
+     * @return 备份文件绝对路径；没有记录可备份时返回 {@code null}
+     */
+    public static String backup(Context ctx) {
+        try {
+            File dir = ctx.getApplicationContext().getFilesDir();
+            File src = new File(dir, NAME);
+            if (!src.isFile() || src.length() <= 0) return null;
+            String ts = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+            File dst = new File(dir, NAME + ".bak-" + ts);
+            try (FileInputStream in = new FileInputStream(src);
+                 FileOutputStream out = new FileOutputStream(dst)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                out.flush();
+            }
+            return dst.getAbsolutePath();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

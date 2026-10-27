@@ -203,7 +203,7 @@ WPAForge 会在 WPS 页直接说明这一点，不会静默显示成「没问题
 不依赖 Gradle，两段式手工链：
 
 ```sh
-WP_VERSION_CODE=123 WP_VERSION_NAME=1.9.27 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
+WP_VERSION_CODE=124 WP_VERSION_NAME=1.9.28 sh 1-aapt2.sh  # 设备侧：aapt2 编译资源（版本号在这一步写入）
 sh 2-build-dex.sh                                       # 桌面侧：javac + d8 + 签名（需 WP_FORGE_KS* 变量）
 ```
 

@@ -1,0 +1,8 @@
+1.9.28
+
+• Recovery chain root-cause fix: configuration restore and connection observation are fully separated — success now depends only on the original profile being written back and independently read back
+• Permanent blocking removed: restore records are keyed by taskId, so a failure on one target no longer vetoes new tasks
+• Explicit restore lifecycle (ARMED → RESTORED / KEPT / RESOLVED / FAILED / ARCHIVED) with cooldown and a retry limit
+• New "Recovery status" section on the crack page: target / BSSID / task ID / stage / reason / last attempt / retries left, plus retry, clean-up and details
+• Readable reasons and next steps when blocked by a gate; tasks stay resumable and progress is preserved
+• Journal read-modify-write is now guarded by an in-process lock

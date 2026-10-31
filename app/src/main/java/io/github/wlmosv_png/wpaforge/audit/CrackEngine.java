@@ -251,6 +251,51 @@ public final class CrackEngine {
         this.macRotate = Prefs.macRotate(appCtx);
     }
 
+    /**
+     * **仅供测试**：不碰 Android 运行时的构造入口（包级可见）。
+     *
+     * <h3>它不是"另一套初始化逻辑"</h3>
+     * 生产构造里需要初始化的 final 字段一共 6 个（{@code appCtx / wifi / mode /
+     * pinBssid / macRotate} + 两个 AtomicBoolean 在声明处初始化）。
+     * 本构造**逐一赋同样的类型、同样的语义位**，区别仅在于：
+     * 凡是"必须由 Android 系统提供"的，一律给 null/false，
+     * 且这些值在引擎里**都已有 null/false 的合法处理分支**（见每条注释）。
+     * 其余所有字段（{@code clock}、{@code shell}、{@code cancelFlag}、
+     * 各类计时器）都在**字段声明处**初始化，两条路径共用同一份声明，
+     * 没有任何一个字段被"另一套代码"初始化过。
+     *
+     * <h3>逐字段依据</h3>
+     * <ul>
+     *   <li>{@code appCtx = null}：引擎里 appCtx 仅出现在
+     *       {@code snapshotSsid()} 的 AppOps 权限检查分支（:514-525）。
+     *       该分支只在 {@code shell == null} 时才可能走到，且整段包在
+     *       {@code catch (Throwable)} 里；测试必设 shell，故不可达。</li>
+     *   <li>{@code wifi = null}：{@code snapshotSsid()}/{@code currentNetId()}
+     *       都是「有 shell 就优先走 shell，wifi 只是兜底」，且兜底前有
+     *       {@code if (wifi == null) return null / return -1}。</li>
+     *   <li>{@code watcher = null}：只用于诊断输出（:2038-2048）与
+     *       {@code run()} 的 start/stop（:1762/2097），均先判 null。
+     *       **不参与判定**（审计 §二 实证）。</li>
+     *   <li>{@code authWatch = null}：判定段 :1502 有
+     *       {@code if (authWatch != null && authWatch.isRegistered())} 前置，
+     *       null 等价于「本机收不到认证失败广播」——这是生产里同样存在的合法状态
+     *       （{@code registerReceiver} 失败时 {@code registered=false}）。</li>
+     *   <li>{@code pinBssid / macRotate = false}：与 SharedPreferences
+     *       缺省值一致（{@code Prefs} 里 {@code getBoolean(K, false)}）。</li>
+     * </ul>
+     *
+     * @param mode 执行模式，语义与生产构造一致
+     */
+    CrackEngine(int mode) {
+        this.appCtx = null;
+        this.watcher = null;
+        this.authWatch = null;
+        this.wifi = null;
+        this.mode = mode;
+        this.pinBssid = false;
+        this.macRotate = false;
+    }
+
     // ------------------------------------------------------------------ 通道
 
     /** shell 通道抽象 */

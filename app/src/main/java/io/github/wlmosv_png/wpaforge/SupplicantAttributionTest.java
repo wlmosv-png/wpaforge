@@ -90,18 +90,21 @@ public final class SupplicantAttributionTest {
         }
         ok("P0-1 CONNECTED 能被识别", ev.size() == 1);
         ok("P0-2 解析出 BSSID", ev.size() == 1 && BSSID.equalsIgnoreCase(ev.get(0).bssid));
-        ok("P0-3 kind 被归为 negotiated（与 Key negotiation completed 同类）",
-                ev.size() == 1 && "negotiated".equals(ev.get(0).kind));
-        note("★ 关键：CTRL-EVENT-CONNECTED 的 kind 是 \"negotiated\"，"
-                + "与 \"Key negotiation completed\" **混为一类**");
+        // R3（2026-10-31）已把 CONNECTED 独立成 kind。
+        // 本断言随之更新为"独立"，但**归属结论不变** —— 分离 kind 不解决归属。
+        ok("P0-3 CONNECTED 已是独立 kind（R3 已落地，仍不解决归属）",
+                ev.size() == 1 && WpaLogReader.KIND_CONNECTED.equals(ev.get(0).kind));
         ok("P0-4 sawNegotiatedFor(BSSID) 命中", WpaLogReader.sawNegotiatedFor(one, BSSID));
         ok("P0-5 sawNegotiatedFor(别的BSSID) 不命中",
                 !WpaLogReader.sawNegotiatedFor(one, OTHER_BSSID));
 
         // 关键：CONNECTED 行里其实带 [id=N]，但解析器没有提取
         info("原始行: " + one.trim());
-        note("★ 真机 CONNECTED 行**带 [id=N]**（即 netId），但 LogEvent 没有 netId 字段");
-        ok("P0-6 LogEvent 没有 netId 字段（归因证据被丢弃）", !hasField("netId"));
+        note("真机 CONNECTED 行带 [id=N]（即 netId）—— R1 已把它保存进 LogEvent.netId");
+        // R1（2026-10-31）已提取 netId。本断言随之更新。
+        ok("P0-6 LogEvent 已有 netId 字段（R1 已落地，仅存数据）", hasField("netId"));
+        ok("P0-6b 该事件 netId 解析为 7（来自 [id=7]）",
+                ev.size() == 1 && ev.get(0).netId == 7L);
 
         // ============================================ A 本次候选成功 → CONNECTED
         System.out.println();

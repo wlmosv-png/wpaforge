@@ -74,13 +74,29 @@ public final class WpaLogReader {
          * 而此前解析器把它丢掉了。本字段只是**把证据完整保存下来**，用于
          * 日志展示与后续分析。
          *
+         * <p><b>它到底是什么（2026-10-31 真机实测更正）</b>：
+         * 它是 <b>wpa_supplicant 事件自带的 network ID</b>（supplicant 内部的
+         * 网络条目索引），<b>不是</b> Android framework 的
+         * {@code WifiConfigManager} Net ID。
+         *
+         * <p>真机证据（PJX110 / ColorOS 15 / Android 15，B212）：
+         * <pre>
+         *   CTRL-EVENT-CONNECTED ... [id=0 id_str={"configKey":"\"B212\"WPA_PSK",...}]
+         *   cmd wifi status        →  Net ID: 36
+         * </pre>
+         * 同一时刻两者数值完全不同；且三种场景（候选连接 / 系统自动回连 /
+         * 手动连接）中该字段**恒为 0 不变**，而 Android Net ID 恒为 36。
+         * 也就是说它**不反映连接来源，也不随连接变化**。
+         *
          * <p><b>使用边界（写死在这里，防止被误用）</b>：
          * <ul>
-         *   <li>它**不是**归属证明。netId 相同不能说明连接由当前候选建立。</li>
+         *   <li>它**不等同于** {@code cmd wifi status} 里的 {@code Net ID}，
+         *       <b>禁止直接比较两者</b>。</li>
+         *   <li>它**不是**归属证明：相同或不同都不能说明连接由当前候选建立。</li>
          *   <li>它**不得**进入 {@code SuccessRule}、{@code classifyDeadline}
          *       或任何 SUCCESS/UNKNOWN 判定。</li>
-         *   <li>取不到时为 {@link #NETID_UNKNOWN}（{@code -1}），
-         *       **绝不**用 0 冒充「未知」—— 0 在 Android 里是合法的配置编号。</li>
+         *   <li>取不到时为 {@link #NETID_UNKNOWN}（{@code -1}）；0 是**合法值**，
+         *       因此不能用 0 表示「未知」。</li>
          * </ul>
          */
         public final long netId;

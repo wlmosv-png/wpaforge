@@ -262,6 +262,8 @@ public final class ConnectedTargetTest {
         int shown = 0;
         for (String c : r.shell.cmds) {
             if (shown >= 8) break;
+            // 生产代码在某些路径会以 null 调用 exec（防御分支），记录列表里可能有 null。
+            if (c == null) continue;
             boolean key = c.startsWith("cmd wifi forget-network")
                     || c.contains("set-wifi-enabled")
                     || c.startsWith("cmd wifi connect-network")

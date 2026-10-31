@@ -4,6 +4,24 @@
 
 ---
 
+## [1.9.29] - 2026-10-31
+
+### 判定：wrong_key 日志判据补上归属（修复「正确密码被判错」）
+
+- 原判据只比较 SSID 字符串：`sawWrongKeyFor(slice, ssid)`。
+  系统后台用旧配置重试同一网络并失败时，也会打出
+  `CTRL-EVENT-SSID-TEMP-DISABLED ssid="目标" reason=WRONG_KEY`，
+  于是被算到**本条候选**头上，把正确密码判成 AUTH_FAIL。
+- 新增 `sawWrongKeyForAttempt(slice, ssid, bssid)`：要求切片里**同时**出现
+  ① 本 SSID 的 `Trying to associate`（证明本次确实发起过）
+  ② 本次连接的失败前导（`4-Way Handshake failed` 或 `RX message 1`）
+  才采信那条 TEMP-DISABLED。后台重试的 associate/handshake 行落在标记之前、
+  已被切片切掉，因此不再满足条件。
+- 顺带解析 `TEMP-DISABLED` 行自带的 `auth_failures=N`（`LogEvent.authFailures`），
+  供后续归属分析使用。
+- **未改动**：`SuccessRule`、`classifyDeadline`、SUCCESS/UNKNOWN 语义、
+  Attempt 生命周期、候选排序、已试记录（TriedSet）。
+
 ## [1.9.28] - 2026-10-27
 
 ### 恢复链根因修复（真实事故：一条失败记录把整个应用锁死）

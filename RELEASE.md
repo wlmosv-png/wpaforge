@@ -1,5 +1,5 @@
 <!-- GitHub Release 正文。标题填：WPAForge 1.9.28 · 恢复链修复 + WPS 已知可打名单 -->
-<!-- tag: v1.9.28   target: main -->
+<!-- tag: v1.9.29   target: main -->
 
 ## 配置恢复与任务闸门
 

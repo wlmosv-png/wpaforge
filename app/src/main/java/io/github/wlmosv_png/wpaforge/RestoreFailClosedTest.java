@@ -138,7 +138,7 @@ public class RestoreFailClosedTest {
                 RestoreGuard.Reason.JOURNAL_UNWRITABLE, RestoreGuard.decide(fromSnap).reason);
 
         System.out.println("== 接线：闸门必须在引擎之前，且不放行时直接返回 ==");
-        String svc = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String svc = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/CrackService.java");
         if (svc == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");
@@ -162,7 +162,7 @@ public class RestoreFailClosedTest {
         }
 
         System.out.println("== 引擎侧：快照失败会直接判 UNKNOWN，不猜 ==");
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String eng = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/CrackEngine.java");
         if (eng != null) {
             ok("删不掉旧配置 → UNKNOWN（不继续）",

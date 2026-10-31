@@ -164,10 +164,10 @@ public class R1EvidenceTest {
         ok("不会把它记成本次命中", cross.verdict != CrackEngine.Verdict.SUCCESS);
 
         System.out.println("== R1-8 接线守卫 + README 一致性 ==");
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
-        String zh = read("/workspace/promo-wpaforge/README.md");
-        String en = read("/workspace/promo-wpaforge/README_EN.md");
+        String zh = read(TestPaths.under("README.md"));
+        String en = read(TestPaths.under("README_EN.md"));
         if (eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");
         } else {

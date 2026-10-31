@@ -37,7 +37,7 @@ public class CrackPageLayoutTest {
         ok(name, c);
     }
 
-    private static final String ROOT = "/workspace/promo-wpaforge/app/src/main/java/"
+    private static final String ROOT = TestPaths.javaSrcRoot()
             + "io/github/wlmosv_png/wpaforge/";
 
     /** 取某个方法的方法体（从签名到下一个同级方法签名为止）。 */

@@ -282,7 +282,7 @@ public class PlaintextHygieneTest {
     private static String read(String rel) {
         try {
             return new String(Files.readAllBytes(new File(
-                    "/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/wpaforge/"
+                    TestPaths.javaPkgDir()
                             + rel).toPath()), StandardCharsets.UTF_8);
         } catch (Throwable t) {
             return "";

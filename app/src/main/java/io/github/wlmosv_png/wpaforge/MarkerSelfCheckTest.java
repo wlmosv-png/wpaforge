@@ -28,7 +28,7 @@ import java.nio.file.Files;
 public class MarkerSelfCheckTest {
 
     private static int pass = 0, fail = 0;
-    private static final String ROOT = "/workspace/promo-wpaforge";
+    private static final String ROOT = TestPaths.root();
 
     private static void ok(String name, boolean cond) {
         if (cond) { pass++; System.out.println("  OK   " + name); }

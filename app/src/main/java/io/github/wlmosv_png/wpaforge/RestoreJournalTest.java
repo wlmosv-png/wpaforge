@@ -188,7 +188,7 @@ public class RestoreJournalTest {
                         && !RestoreJournal.verifyWritten(RestoreJournal.memory(), null));
 
         System.out.println("== R11J-7 记录里不出现明文口令字段 ==");
-        String src = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String src = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/RestoreJournal.java");
         if (src == null) {
             System.out.println("  N/RUN 结构守卫（源码不可读）");

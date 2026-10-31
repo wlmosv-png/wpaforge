@@ -60,7 +60,7 @@ public class R10InvariantTest {
     private static String mk(String id) { return AttemptMarker.line(id); }
 
     public static void main(String[] args) {
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         String code = eng == null ? null : stripComments(eng);
 
@@ -175,9 +175,9 @@ public class R10InvariantTest {
         eq("五个非失败状态都不是 AUTH_FAIL，且都不计入退避样本", 0, leaked);
         if (code != null) {
             ok("任务只在命中口令非空时记为 DONE_HIT（非成功状态不会变成命中）",
-                    read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                    read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/CrackService.java") != null
-                            && read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                            && read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/CrackService.java").contains("hitPassword != null && !hitPassword.isEmpty()"));
         }
 
@@ -238,7 +238,7 @@ public class R10InvariantTest {
 
         // ─────────── I10（打包范围）───────────
         System.out.println("== I10 生产 dex 不得包含测试类与审计探针 ==");
-        String build = read("/workspace/promo-wpaforge/2-build-dex.sh");
+        String build = read(TestPaths.under("2-build-dex.sh"));
         if (build == null) {
             System.out.println("  N/RUN 打包守卫（脚本不可读）");
         } else {
@@ -249,7 +249,7 @@ public class R10InvariantTest {
             ok("没有用 \"*Probe.java\" 这种会误伤 LanProbe.java 的写法",
                     !build.contains("! -name \"*Probe.java\""));
             // 按同一规则模拟一遍：谁进 dex、谁不进
-            java.io.File dir = new java.io.File("/workspace/promo-wpaforge/app/src/main/java");
+            java.io.File dir = new java.io.File(TestPaths.javaSrcRoot());
             java.util.List<java.io.File> all = new java.util.ArrayList<>();
             collect(dir, all);
             int included = 0, excludedTest = 0, excludedProbe = 0, lanProbeIncluded = 0;
@@ -313,7 +313,7 @@ public class R10InvariantTest {
             if (productionContains(b)) wired++;
         }
         eq("生产代码里没有任何 RootProber 判定入口的调用", 0, wired);
-        String rp = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String rp = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/RootProber.java");
         if (rp != null) {
             // I8 强化（F4 同族清理）：原来这里只断言「没人调用」，但代码还在 ——
@@ -393,7 +393,7 @@ public class R10InvariantTest {
 
     /** 在生产源码里搜一个符号（排除测试类与探针本身）。 */
     private static boolean productionContains(String needle) {
-        java.io.File dir = new java.io.File("/workspace/promo-wpaforge/app/src/main/java");
+        java.io.File dir = new java.io.File(TestPaths.javaSrcRoot());
         java.util.List<java.io.File> all = new java.util.ArrayList<>();
         collect(dir, all);
         for (java.io.File f : all) {

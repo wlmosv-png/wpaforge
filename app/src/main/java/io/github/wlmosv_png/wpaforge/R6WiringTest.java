@@ -193,7 +193,7 @@ public class R6WiringTest {
                         AttemptMarker.line(id1)).find());
 
         System.out.println("== 3.4-k 接线守卫（接线被删即红）==");
-        String eng = readFile("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = readFile(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读：需以项目根为工作目录运行）");

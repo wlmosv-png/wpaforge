@@ -85,7 +85,7 @@ public class R7RecoveryTest {
         TaskQueue.Task fresh = new TaskQueue.Task();
         ok("新字段默认值向后兼容（interrupted=false）", !fresh.interrupted);
         eq("新字段默认值向后兼容（lastRunId 为空）", "", fresh.lastRunId);
-        String tq = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String tq = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/TaskQueue.java");
         if (tq == null) {
             System.out.println("  N/RUN 兼容性守卫（源码不可读）");
@@ -128,9 +128,9 @@ public class R7RecoveryTest {
                         .sliceAfter(oldWindowText, oldAttempt).isEmpty());
 
         System.out.println("== R7-6 接线守卫 ==");
-        String svc = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String svc = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/CrackService.java");
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String eng = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/CrackEngine.java");
         if (svc == null || eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");

@@ -88,7 +88,7 @@ public class R2TimeoutTest {
                 !CrackEngine.m1SilentImpliesWrongKey(true, false, S - 1, S));
         ok("正好到窗口 → 成立（边界）",
                 CrackEngine.m1SilentImpliesWrongKey(true, false, S, S));
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 引擎守卫（源码不可读）");

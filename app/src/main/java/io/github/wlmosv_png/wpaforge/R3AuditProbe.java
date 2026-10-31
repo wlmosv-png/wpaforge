@@ -143,7 +143,7 @@ public final class R3AuditProbe {
     // ================================================================ main
     public static void main(String[] args) throws Exception {
         boolean strict = false;
-        String projectRoot = "/workspace/promo-wpaforge";
+        String projectRoot = TestPaths.root();
         for (String a : args) {
             if ("--strict".equals(a)) strict = true;
             else if (!a.startsWith("--")) projectRoot = a;
@@ -590,7 +590,7 @@ public final class R3AuditProbe {
     }
 
     // ================================================================ 工具
-    private static String root = "/workspace/promo-wpaforge";
+    private static String root = TestPaths.root();
 
     private static String projectRootOfThisRun() { return root; }
 

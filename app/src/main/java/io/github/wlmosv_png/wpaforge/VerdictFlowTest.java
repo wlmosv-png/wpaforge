@@ -53,7 +53,7 @@ public class VerdictFlowTest {
 
         System.out.println("== 无最短耗时门槛（取代旧版的'1.5 秒门槛'举证）==");
         // 判定不接收时间参数 → 结构上不可能存在耗时门槛；再用源码守卫确认
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 门槛守卫（源码不可读）");
@@ -64,7 +64,7 @@ public class VerdictFlowTest {
             check("判定路径里没有任何 '>= MIN_HIT_MS' 之类的耗时比较",
                     !code.contains(">= MIN_HIT_MS") && !code.contains("< MIN_HIT_MS"));
             // 结构证据：assess 的**参数表**里没有任何时间/超时参数（在它的宿主类里查）
-            String sr = read("/workspace/promo-wpaforge/app/src/main/java/"
+            String sr = read(TestPaths.javaSrcRoot()
                     + "io/github/wlmosv_png/wpaforge/audit/SuccessRule.java");
             String sig = "";
             if (sr != null) {

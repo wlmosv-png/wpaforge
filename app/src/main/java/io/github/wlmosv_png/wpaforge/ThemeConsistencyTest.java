@@ -40,7 +40,7 @@ public class ThemeConsistencyTest {
         ok(name, c);
     }
 
-    private static final String ROOT = "/workspace/promo-wpaforge/";
+    private static final String ROOT = TestPaths.root() + "/";
     private static final String SRC = ROOT + "app/src/main/java/io/github/wlmosv_png/wpaforge/";
 
     private static String read(String p) {

@@ -197,11 +197,11 @@ public class RestoreConcurrencyTest {
                 !RestorePlan.READD_NOT_WRITTEN.equals(RestorePlan.VERIFY_FAILED));
 
         System.out.println("== F1/F2 接线守卫 ==");
-        String runner = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String runner = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/RestoreRunner.java");
-        String app = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String app = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/App.java");
-        String svc = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String svc = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/CrackService.java");
         if (runner == null || app == null || svc == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");
@@ -223,7 +223,7 @@ public class RestoreConcurrencyTest {
             ok("收尾恢复走同一把锁（与启动补做互斥）",
                     svc.contains("RestoreRunner.runExclusiveForTask("));
             ok("readd 由回读列表复核后才算写回",
-                    read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                    read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/audit/ConfigRestorer.java")
                             .contains("ListNetworksParser.findNetId(list, ssid) >= 0\n                    ? RestorePlan.ReaddResult.written()"));
         }

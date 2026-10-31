@@ -50,7 +50,7 @@ public class AttributionTest {
         System.out.println("== 生产阈值：没有最短耗时门槛 ==");
         // 注意：MIN_HIT_MS 是引擎私有常量，测试不能直接读 —— 用源码守卫断言它的值
         // 与"无人使用"两件事（旧版本正是因为复制了一份本地常量才失去意义）。
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 门槛守卫（源码不可读）");

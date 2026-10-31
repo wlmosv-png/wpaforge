@@ -201,7 +201,7 @@ public class R3VerdictTest {
                         && WpaLogReader.SHELL_FILTER.contains("reason="));
 
         System.out.println("== R3-7 接线守卫：闸门被删即红 ==");
-        String eng = readFile("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = readFile(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");

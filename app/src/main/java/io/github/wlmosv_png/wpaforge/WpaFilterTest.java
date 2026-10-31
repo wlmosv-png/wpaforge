@@ -159,7 +159,7 @@ public class WpaFilterTest {
     private static String readSource(String rel) {
         try {
             return new String(java.nio.file.Files.readAllBytes(
-                    java.nio.file.Paths.get("/workspace/promo-wpaforge/" + rel)),
+                    java.nio.file.Paths.get(TestPaths.root() + "/" + rel)),
                     java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             return null;

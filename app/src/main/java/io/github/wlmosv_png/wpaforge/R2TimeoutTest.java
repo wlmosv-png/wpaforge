@@ -135,11 +135,13 @@ public class R2TimeoutTest {
         if (eng != null) {
             String code = stripComments(eng);
             int success = code.indexOf("sawNegotiatedFor(wlogSlice, target.bssid)");
-            int failure = code.indexOf("sawWrongKeyFor(wlogSlice, target.ssid)");
+            // 判据 4 归属收紧后调用点改为 sawWrongKeyForAttempt(...)；
+            // 断言意图不变：**成功证据必须先求值**，失败判据不能抢答。
+            int failure = code.indexOf("sawWrongKeyForAttempt(");
             ok("成功证据的求值点排在日志失败判据之前",
                     success > 0 && failure > 0 && success < failure);
             int b = code.indexOf("if (tried && WpaLogReader.sawNegotiatedFor");
-            int f = code.indexOf("if (logWinUsable\n                            && (WpaLogReader.sawWrongKeyFor");
+            int f = code.indexOf("if (logWinUsable\n                            && (WpaLogReader.sawWrongKeyForAttempt(");
             ok("判据 B（成功）在失败判据之前 return",
                     b > 0 && (f < 0 || b < f));
         }

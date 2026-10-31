@@ -218,8 +218,11 @@ public class R3VerdictTest {
                     flat.contains("WpaLogReader.countHandshakeM1For(wlogSlice, target.bssid)"));
             ok("日志判据 4/7：M1 存在性吃切片",
                     flat.contains("WpaLogReader.sawHandshakeM1(wlogSlice)"));
-            ok("日志判据 5/7：wrong_key 吃切片",
-                    flat.contains("WpaLogReader.sawWrongKeyFor(wlogSlice, target.ssid)"));
+            // 判据 4 归属收紧后调用点改为带 BSSID 的 sawWrongKeyForAttempt；
+            // 断言意图不变：**必须吃切片**（不得读整段日志）。
+            ok("日志判据 5/7：wrong_key 吃切片（含 BSSID 归属）",
+                    flat.contains("WpaLogReader.sawWrongKeyForAttempt(")
+                            && flat.contains("wlogSlice, target.ssid, target.bssid)"));
             ok("日志判据 6/7：握手失败吃切片",
                     flat.contains("WpaLogReader.sawHandshakeFailure(wlogSlice)"));
             ok("日志判据 7/7：关联被拒吃切片",

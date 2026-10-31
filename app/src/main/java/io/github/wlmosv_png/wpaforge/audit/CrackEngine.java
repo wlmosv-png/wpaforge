@@ -1622,8 +1622,25 @@ public final class CrackEngine {
                         }
                     }
 
+                    /*
+                     * 归属收紧（2026-10-31，WrongKeyAttributionTest 驱动）：
+                     *
+                     * 原来这里直接调 sawWrongKeyFor(slice, ssid) —— 它**只比 SSID**，
+                     * 于是「系统后台用旧配置重试同一网络并失败」的行会被算到本条候选头上，
+                     * 把正确密码判成 AUTH_FAIL。真机可复现（同 SSID 多配置时尤其明显）。
+                     *
+                     * 现在改用 sawWrongKeyForAttempt()：要求切片里**同时**出现
+                     *   · 本目标 SSID 的 `Trying to associate`
+                     *   · 本次连接的失败前导（4-Way Handshake failed 或 RX message 1）
+                     * 才采信那条 TEMP-DISABLED。后台重试的 associate/handshake 行落在
+                     * 标记之前、已被切片切掉，因此不再满足条件。
+                     *
+                     * 另外 harmless 兜底：tried&&handshake/failed 这条老路径保留原样 ——
+                     * 它本来就要求 `tried`（本次见过目标关联行），不属于本次收紧范围。
+                     */
                     if (logWinUsable
-                            && (WpaLogReader.sawWrongKeyFor(wlogSlice, target.ssid)
+                            && (WpaLogReader.sawWrongKeyForAttempt(
+                                        wlogSlice, target.ssid, target.bssid)
                                     || (tried && (WpaLogReader.sawHandshakeFailure(wlogSlice)
                                             || WpaLogReader.sawAssocReject(wlogSlice))))) {
                         long ms = clock().uptimeMillis() - t0;

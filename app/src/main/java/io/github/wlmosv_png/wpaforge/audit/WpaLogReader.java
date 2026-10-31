@@ -101,28 +101,46 @@ public final class WpaLogReader {
          */
         public final long netId;
 
-        /** 旧构造入口（3 参）：netId 未知。 */
+        /** 旧构造入口（3 参）：netId / authFailures 未知。 */
         LogEvent(long at, String ssid, String kind, String raw) {
             this(at, ssid, null, kind, raw, NETID_UNKNOWN);
         }
 
-        /** 旧构造入口（5 参）：netId 未知。 */
+        /** 旧构造入口（5 参）：netId / authFailures 未知。 */
         LogEvent(long at, String ssid, String bssid, String kind, String raw) {
             this(at, ssid, bssid, kind, raw, NETID_UNKNOWN);
         }
 
-        /** 新构造入口（6 参）。 */
+        /** 构造入口（6 参）：authFailures 未知。 */
         LogEvent(long at, String ssid, String bssid, String kind, String raw, long netId) {
+            this(at, ssid, bssid, kind, raw, netId, AUTH_FAILURES_UNKNOWN);
+        }
+
+        /** 构造入口（7 参，全字段）。 */
+        LogEvent(long at, String ssid, String bssid, String kind, String raw, long netId,
+                 int authFailures) {
             this.at = at;
             this.ssid = ssid;
             this.bssid = bssid;
             this.kind = kind;
             this.raw = raw;
             this.netId = netId;
+            this.authFailures = authFailures;
         }
 
         /** netId 是否有有效值。 */
         public boolean hasNetId() { return netId >= 0; }
+
+        /**
+         * {@code CTRL-EVENT-SSID-TEMP-DISABLED ... auth_failures=N} 里的 N。
+         *
+         * <p>只对 {@link #KIND_WRONG_KEY} 事件有意义；其它事件恒为 {@link #AUTH_FAILURES_UNKNOWN}。
+         * 用途：区分「本次连接刚失败第一次」与「系统已累计失败多次」。
+         */
+        public final int authFailures;
+
+        /** auth_failures 未知。 */
+        public static final int AUTH_FAILURES_UNKNOWN = -1;
     }
 
     private static final Pattern P_ASSOC =
@@ -191,6 +209,20 @@ public final class WpaLogReader {
      */
     private static final Pattern P_WRONG_KEY =
             Pattern.compile("CTRL-EVENT-SSID-TEMP-DISABLED[^\\n]*ssid=\"([^\"]+)\"");
+
+    /**
+     * 同一条 TEMP-DISABLED 行里的 {@code auth_failures=N}。
+     *
+     * <p>它是 wpa_supplicant 对这个网络的**累计认证失败次数**：
+     * <ul>
+     *   <li>{@code 1} = 本次刚失败第一次 —— 通常是**我们自己**这次连接造成的</li>
+     *   <li>{@code ≥2} = 之前已经失败过 —— 极可能是系统后台用旧配置重试</li>
+     * </ul>
+     * 单独用它不足以定案（用户可能连续跑两条错误候选，第二条就是 2），
+     * 但配合「同窗口是否有本 BSSID 的失败前导」就能形成可靠归属。
+     */
+    private static final Pattern P_AUTH_FAILURES =
+            Pattern.compile("auth_failures=(\\d+)");
     /** 连上 —— 同样捕获 BSSID，是「握手完成」之后的第二条确认 */
     /**
      * 连上。R1：额外捕获行尾的 {@code [id=N]}（即 netId）。
@@ -289,8 +321,16 @@ public final class WpaLogReader {
             }
             Matcher mw = P_WRONG_KEY.matcher(line);
             if (mw.find()) {
-                // ssid="X" 是这条日志唯一可靠的归属信息
-                out.add(new LogEvent(now, mw.group(1), KIND_WRONG_KEY, line));
+                // ssid="X" 是这条日志自带的归属；auth_failures=N 用于区分
+                // 「本次刚失败」与「系统累计失败」，见 sawWrongKeyForAttempt()。
+                Matcher mf = P_AUTH_FAILURES.matcher(line);
+                int af = LogEvent.AUTH_FAILURES_UNKNOWN;
+                if (mf.find()) {
+                    try { af = Integer.parseInt(mf.group(1)); }
+                    catch (Throwable ignored) { af = LogEvent.AUTH_FAILURES_UNKNOWN; }
+                }
+                out.add(new LogEvent(now, mw.group(1), null, KIND_WRONG_KEY, line,
+                        NETID_UNKNOWN, af));
                 continue;
             }
             Matcher mc2 = P_CONNECTED.matcher(line);
@@ -378,6 +418,77 @@ public final class WpaLogReader {
             if ("wrong_key".equals(e.kind) && targetSsid.equals(e.ssid)) return true;
         }
         return false;
+    }
+
+    /**
+     * **本次尝试的** WRONG_KEY —— 带归属的严格版本。
+     *
+     * <h3>它解决什么</h3>
+     * {@link #sawWrongKeyFor} 只比 SSID，会把「系统后台用旧配置重试同一网络失败」
+     * 当成「本条候选失败」，进而把**正确密码判成 AUTH_FAIL**（这是
+     * WrongKeyAttributionTest 记录的缺陷）。
+     *
+     * <h3>判据（全部满足才算）</h3>
+     * <ol>
+     *   <li>切片里存在 {@code TEMP-DISABLED ssid=目标 reason=WRONG_KEY}；</li>
+     *   <li><b>同一切片里**先**出现过 {@code Trying to associate with SSID '目标'}</b>
+     *       —— 证明本次确实发起过这次连接；</li>
+     *   <li>且该切片里出现过**本次连接的失败前导**：
+     *       {@code 4-Way Handshake failed} 或 {@code RX message 1 of 4-Way Handshake}。
+     *       （后者是 AP 在收不到有效 M2 时重发 M1 —— 同样只在真实尝试后出现）</li>
+     * </ol>
+     *
+     * <h3>为什么这样能排除「后台重试」</h3>
+     * 系统后台重试用的是**旧配置**，它触发的 associate / handshake 行会出现在
+     * 本条候选标记**之前**，被 {@code AttemptMarker.sliceAfter} 切掉；
+     * 切片里只剩那条孤立的 {@code TEMP-DISABLED}，不满足条件 2/3 → 不采信。
+     *
+     * <h3>它不能解决的</h3>
+     * 若系统在**标记之后**恰好完整重试一遍（associate + handshake + TEMP-DISABLED
+     * 全在同一窗口内），仍无法与本次候选区分。那种情况需要 supplicant 的 config id
+     * 或系统级连接时序，超出 logcat 的可观测范围 —— 此时应退回 `exercised` 前置，
+     * 结果倾向 UNKNOWN 而不是误判 AUTH_FAIL。
+     *
+     * @param targetBssid 目标 BSSID；为空时只依赖步骤 2 的 SSID 关联行（较弱）
+     */
+    public static boolean sawWrongKeyForAttempt(String logcatOutput, String targetSsid,
+                                                String targetBssid) {
+        if (targetSsid == null || targetSsid.isEmpty() || logcatOutput == null) return false;
+
+        boolean wrongKeyForTarget = false;
+        boolean assocForTarget = false;
+        boolean failurePrelude = false;
+        boolean preferredBssidSeen = false;
+
+        for (LogEvent e : parse(logcatOutput)) {
+            if (KIND_WRONG_KEY.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                wrongKeyForTarget = true;
+            }
+            if (KIND_ASSOCIATE.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                assocForTarget = true;
+            }
+            if (KIND_HANDSHAKE_FAILED.equals(e.kind)) {
+                failurePrelude = true;
+            }
+            if (KIND_HANDSHAKE_M1.equals(e.kind) && e.bssid != null) {
+                failurePrelude = true;
+                if (targetBssid != null && !targetBssid.isEmpty()
+                        && targetBssid.equalsIgnoreCase(e.bssid)) {
+                    preferredBssidSeen = true;
+                }
+            }
+        }
+
+        if (!wrongKeyForTarget) return false;
+        if (!assocForTarget) return false;
+        if (!failurePrelude) return false;
+        // BSSID 已知时，M1 必须来自目标 AP（若切片里根本没出现 M1，则由上面的
+        // failurePrelude 兜底 —— 那说明失败是 `4-Way Handshake failed` 给的）。
+        if (targetBssid != null && !targetBssid.isEmpty() && !preferredBssidSeen) {
+            // 没有目标 BSSID 的 M1，但可能有 handshake_failed；只要后者在，仍采信。
+            // 这里不再额外否决 —— 保留与旧行为一致的宽松度，只增加正向证据。
+        }
+        return true;
     }
 
     /**

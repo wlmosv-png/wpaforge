@@ -13,7 +13,6 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiNetworkSpecifier;
 import android.os.Build;
-import android.os.SystemClock;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -167,6 +166,32 @@ public final class CrackEngine {
 
     private final AtomicBoolean cancelFlag = new AtomicBoolean(false);
     private final AtomicBoolean pauseFlag = new AtomicBoolean(false);
+
+    /**
+     * 时间与等待的提供者（B1，2026-10-31）。
+     *
+     * <p>默认 {@link EngineClock#PRODUCTION}，即原样转发 {@code SystemClock.uptimeMillis()}
+     * 与 {@code Thread.sleep}。**生产路径不做任何"是否被注入"的判断**，
+     * 唯一改变行为的方式是包级可见的 {@link #setClockForTest(EngineClock)}，
+     * 而它在生产代码（{@code CrackService} / {@code MainActivity} / {@code App}）里没有调用者 ——
+     * 编译器会直接挡住同包外的调用，因此不可能污染生产环境。
+     */
+    private volatile EngineClock clock = EngineClock.PRODUCTION;
+
+    /** 当前时钟。永远非 null（构造即赋值，注入入口拒收 null）。 */
+    private EngineClock clock() {
+        return clock;
+    }
+
+    /**
+     * **仅供测试**：注入可控时钟。包级可见，生产代码无法调用。
+     *
+     * @param c 替身时钟；{@code null} 视为"恢复生产时钟"，
+     *          避免测试用完忘记复原导致同进程其它实例被污染。
+     */
+    void setClockForTest(EngineClock c) {
+        this.clock = (c == null) ? EngineClock.PRODUCTION : c;
+    }
 
     /**
      * 连接事件监听器 —— **判定层的唯一真值来源**。
@@ -703,9 +728,9 @@ public final class CrackEngine {
             String cur = snapshotSsid();
             boolean off = (cur == null || !cur.equals(targetSsid));
             if (off) {
-                if (stableSince < 0) stableSince = SystemClock.uptimeMillis();
+                if (stableSince < 0) stableSince = clock().uptimeMillis();
                 // 连续 3 秒未连目标 → 认为基线稳定
-                if (SystemClock.uptimeMillis() - stableSince >= 3000) return true;
+                if (clock().uptimeMillis() - stableSince >= 3000) return true;
             } else {
                 stableSince = -1;
             }
@@ -793,13 +818,13 @@ public final class CrackEngine {
 
         // 真跑一条，看能不能执行
         String out = null;
-        long t0 = SystemClock.uptimeMillis();
+        long t0 = clock().uptimeMillis();
         try {
             out = shell.exec("cmd wifi status", 8000);
         } catch (Throwable t) {
             p.step("✗ " + L.s("执行命令抛异常: ", "exec threw: ") + t.getClass().getSimpleName());
         }
-        long cost = SystemClock.uptimeMillis() - t0;
+        long cost = clock().uptimeMillis() - t0;
 
         if (out == null) {
             p.step("✗ " + L.s("命令没有返回（通道断了或未授权）",
@@ -908,7 +933,7 @@ public final class CrackEngine {
      */
     public Attempt tryOne(NetRecord target, String security, String password,
                           long timeoutMs, String attemptId) {
-        long t0 = SystemClock.uptimeMillis();
+        long t0 = clock().uptimeMillis();
 
         if (!isValidLength(password)) {
             // 复核修正（2026-10-24）：这条**不是**认证失败，而是「候选本身不合法、
@@ -918,7 +943,7 @@ public final class CrackEngine {
             //      当成「AP 的响应样本」喂进退避统计。
             // 现在归 ERROR + reason=invalid-candidate（非失败类），且不计入退避样本。
             Attempt a = new Attempt(password, Verdict.ERROR,
-                    SystemClock.uptimeMillis() - t0,
+                    clock().uptimeMillis() - t0,
                     L.s("候选本身不合法（WPA 要求 8-63）—— 未尝试，不是密码错误",
                         "the candidate itself is invalid (WPA needs 8-63) - "
                                 + "not attempted, not a wrong passphrase"),
@@ -965,17 +990,17 @@ public final class CrackEngine {
         lastWindow = null;
         if (shell == null) {
             return new Attempt(password, Verdict.ERROR,
-                    SystemClock.uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
+                    clock().uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
         }
 
-        long statT0 = SystemClock.uptimeMillis();
+        long statT0 = clock().uptimeMillis();
         statPrepMs = 0; statProbeMs = 0; statPollMs = 0; statLogMs = 0; statRounds = 0;
 
         // 每条之前删净旧配置（配置复用会让任何密码都"成功"）。
         // 走引擎自带实现，保证各调用方行为一致。
         if (!forgetTargetByShell(target.ssid)) {
             return new Attempt(password, Verdict.UNKNOWN,
-                    SystemClock.uptimeMillis() - t0,
+                    clock().uptimeMillis() - t0,
                     L.s("无法清除旧配置，本条结果不可信",
                         "could not clear stale config; this attempt is unreliable"),
                     "");
@@ -992,7 +1017,7 @@ public final class CrackEngine {
         long staleNetId = netIdOfTarget(target.ssid);
         if (staleNetId >= 0) {
             return new Attempt(password, Verdict.UNKNOWN,
-                    SystemClock.uptimeMillis() - t0,
+                    clock().uptimeMillis() - t0,
                     L.s("旧配置未清除（netId=" + staleNetId + "），本条结果不可信",
                         "stale config not cleared (netId=" + staleNetId
                                 + "); this attempt is unreliable"),
@@ -1029,7 +1054,7 @@ public final class CrackEngine {
             boolean off = disconnectAndVerify(target.ssid);
             if (!off) {
                 return new Attempt(password, Verdict.UNKNOWN,
-                        SystemClock.uptimeMillis() - t0,
+                        clock().uptimeMillis() - t0,
                         L.s("上一条的连接未能断开，本条判定不可信",
                             "previous link could not be dropped; this attempt is unreliable"),
                         "");
@@ -1064,7 +1089,7 @@ public final class CrackEngine {
 
         // **命令发出时刻**：判定以此为界。
         // 之后出现的「目标 SSID 已连上」才可能是这条候选的功劳。
-        final long commandAt = SystemClock.uptimeMillis();
+        final long commandAt = clock().uptimeMillis();
         statPrepMs = commandAt - statT0;
 
         // 记录命令前的当前 SSID 与 netId。
@@ -1104,9 +1129,9 @@ public final class CrackEngine {
         // 我在提速时压到 200ms —— **压过头**：配置还没出现就返回，
         // netId 永远是 -1。现在改成**把探测挪进主循环的前几轮**
         // （那时本来就在轮询）：白等没了，证据照样能在 ~300ms 拿到。
-        long statProbe0 = SystemClock.uptimeMillis();
+        long statProbe0 = clock().uptimeMillis();
         long targetNetId = -1;
-        statProbeMs = SystemClock.uptimeMillis() - statProbe0;
+        statProbeMs = clock().uptimeMillis() - statProbe0;
 
         android.util.Log.i(TAG, "tryOneShell start: " + target.ssid
                 + " pw=" + password.length() + " timeout=" + timeoutMs
@@ -1188,10 +1213,10 @@ public final class CrackEngine {
         //    ③ IP 是有效地址（排除 0.0.0.0）
         //    ④ Net ID == 本条新建的 netId
         // ══════════════════════════════════════════════════════════════
-        while (SystemClock.uptimeMillis() < deadline) {
+        while (clock().uptimeMillis() < deadline) {
             if (cancelFlag.get() || pauseFlag.get()) {
                 return new Attempt(password, Verdict.ABORTED,
-                        SystemClock.uptimeMillis() - t0, L.s("已中断", "aborted"), "");
+                        clock().uptimeMillis() - t0, L.s("已中断", "aborted"), "");
             }
             statRounds++;
             // 前 4 轮里顺便探掉「本条命令有没有建出配置」：
@@ -1209,7 +1234,7 @@ public final class CrackEngine {
             //   轮询越密，判定越早，早退越有效。
             //   1.2 秒之后 = 80ms 一轮，省 CPU、也不影响早退（那时信号已经来了）。
             // 每轮真实成本：`su -c cmd wifi status` ~17ms + 一次 logcat 读 ~40ms。
-            sleep(SystemClock.uptimeMillis() - t0 < 1200L ? 20L : 80L);
+            sleep(clock().uptimeMillis() - t0 < 1200L ? 20L : 80L);
 
             // 曾把这一轮的两条命令合并成一条（哨兵分隔）想省一次往返，
             // 实测**反而更慢**：合并后 79ms/轮，分开只要 44ms/轮。
@@ -1221,7 +1246,7 @@ public final class CrackEngine {
             // 「日志里目标的握手已完成」可能同时成立（日志是窗口，status 是瞬时）。
             // 原来日志段排在回连出口之后，本轮日志还没读就已经 return AUTH_FAIL ——
             // 成功证据被失败判据抢答（审计 S2-3）。现在证据先读齐、再按优先级判。
-            long statLog0 = SystemClock.uptimeMillis();
+            long statLog0 = clock().uptimeMillis();
             // P0-3：读取返回**结构化状态**，不再只看 stdout 空不空。
             // 「上游 logcat 失败」「窗口里真没日志」「grep 坏了」必须分开：
             // 前两者都不可判、只有第三种才是可信的「空」。
@@ -1234,7 +1259,7 @@ public final class CrackEngine {
                 android.util.Log.i(TAG, "日志不可判: "
                         + (lr == null ? "no-frame" : lr.describe()));
             }
-            statLogMs += SystemClock.uptimeMillis() - statLog0;
+            statLogMs += clock().uptimeMillis() - statLog0;
             // 窗口证据是否可用：**必要条件**，不是任何结论的充分条件。
             // 为假时不得使用日志证据（更不得把「没看到失败行」当成认证失败）。
             // usableForVerdict = 通道可读 **且** 窗口隔离成立 —— 两者缺一都不许判。
@@ -1250,9 +1275,9 @@ public final class CrackEngine {
                     && WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
 
             String st = null;
-            long statStatus0 = SystemClock.uptimeMillis();
+            long statStatus0 = clock().uptimeMillis();
             try { st = shell.exec("cmd wifi status", 5000); } catch (Throwable ignored) {}
-            statPollMs += SystemClock.uptimeMillis() - statStatus0;
+            statPollMs += clock().uptimeMillis() - statStatus0;
             if (st != null && !st.trim().isEmpty()) {
                 channelAlive = true;
                 statusRounds++;
@@ -1269,7 +1294,7 @@ public final class CrackEngine {
                     // 「没结论」—— 那就是漏判。只延一次，且只在看到目标时延，
                     // 错误密码通常不会让目标出现在 status 里，所以不会拖慢整体。
                     if (!extendedForTargetSight) {
-                        deadline = Math.max(deadline, SystemClock.uptimeMillis() + 4000L);
+                        deadline = Math.max(deadline, clock().uptimeMillis() + 4000L);
                         extendedForTargetSight = true;
                         android.util.Log.i(TAG, "目标出现在 status (" + info.state + ")，看门狗延长 4s");
                     }
@@ -1337,7 +1362,7 @@ public final class CrackEngine {
                     // 只可能来自这一条候选。
                     //
                     // netId 只在拿得到时作为**加分确认**记录，不作阻断。
-                    long ms = SystemClock.uptimeMillis() - t0;
+                    long ms = clock().uptimeMillis() - t0;
                     if (sa.verdict == Verdict.UNKNOWN) {
                         // 协议层看到「目标 + 握手完成 + 有 IP」，但 netId 与本次新建配置
                         // 不一致 → 归属存疑：既不当成功（可能是旧配置/同名网络回连），
@@ -1387,12 +1412,12 @@ public final class CrackEngine {
                     if (!onOtherNetwork) {
                         leftBaseline = true;
                     } else if (FailoverRule.looksLikeFailover(target.ssid, info.ssid, info.state,
-                            leftBaseline, SystemClock.uptimeMillis() - commandAt,
+                            leftBaseline, clock().uptimeMillis() - commandAt,
                             // 归属：本条候选确实被尝试过
                             exercised,
                             // 证据冲突：本轮已有目标的成功证据 → 交给成功判据，不抢答失败
                             negotiatedThisRound)) {
-                        long ms = SystemClock.uptimeMillis() - t0;
+                        long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(回连): 系统已连上 " + info.ssid);
                         return new Attempt(password, Verdict.AUTH_FAIL, ms,
                                 L.f("系统已回连到其它网络 %s —— 目标这次没连上",
@@ -1438,12 +1463,12 @@ public final class CrackEngine {
                             wlogSlice, target.ssid);
                     if (tried) {
                         sawAttempt = true;
-                        if (tAssocMs < 0) tAssocMs = SystemClock.uptimeMillis() - t0;
+                        if (tAssocMs < 0) tAssocMs = clock().uptimeMillis() - t0;
                     }
 
                     // 捕获握手第 1 帧 (RX message 1 of 4-Way Handshake) -> 动态延长看门狗，给握手完成留足时间
                     if (tried && !m1Extended && WpaLogReader.sawHandshakeM1(wlogSlice)) {
-                        deadline = Math.max(deadline, SystemClock.uptimeMillis() + 2500L);
+                        deadline = Math.max(deadline, clock().uptimeMillis() + 2500L);
                         m1Extended = true;
                         android.util.Log.i(TAG, "捕获握手第 1 帧，看门狗延长 2.5s");
                     }
@@ -1452,7 +1477,7 @@ public final class CrackEngine {
                     // 系统回连别的网络并握手成功的记录，只判断「出现过协商完成」
                     // 会把别的网络算成命中（2026-10-22 假阳性事故）。
                     if (tried && WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid)) {
-                        long ms = SystemClock.uptimeMillis() - t0;
+                        long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "命中(日志): 关联目标后完成协商");
                         return new Attempt(password, Verdict.SUCCESS, ms,
                                 L.s("日志确认握手完成（Key negotiation completed）",
@@ -1483,11 +1508,11 @@ public final class CrackEngine {
                                     target.ssid)
                                 && WifiAuthFailureWatcher.authErrorImpliesWrongKey(
                                     authWatch.lastErrorAt(), commandAt, succ)) {
-                            if (tAuthMs < 0) tAuthMs = SystemClock.uptimeMillis() - t0;
+                            if (tAuthMs < 0) tAuthMs = clock().uptimeMillis() - t0;
                             if (authArmedAt == 0L) {
-                                authArmedAt = SystemClock.uptimeMillis();
-                            } else if (SystemClock.uptimeMillis() - authArmedAt >= 120L) {
-                                long ms = SystemClock.uptimeMillis() - t0;
+                                authArmedAt = clock().uptimeMillis();
+                            } else if (clock().uptimeMillis() - authArmedAt >= 120L) {
+                                long ms = clock().uptimeMillis() - t0;
                                 android.util.Log.i(TAG, "早期失败(第三级): 系统广播认证失败");
                                 return new Attempt(password, Verdict.AUTH_FAIL, ms,
                                         L.s("系统报告认证失败 → 密码错误",
@@ -1526,7 +1551,7 @@ public final class CrackEngine {
                         // （留给「那条 M1 只是丢包重传、密码其实正确」的余地）。
                         // 谓词 m1SilentImpliesWrongKey / EARLY_FAIL_SILENCE_MS 保留，
                         // 单测用它们表达「为什么不能单独用」。
-                        if (tM1Ms < 0) tM1Ms = SystemClock.uptimeMillis() - t0;
+                        if (tM1Ms < 0) tM1Ms = clock().uptimeMillis() - t0;
                     }
 
                     // ── 早期失败：M1 被重发（2026-10-23 真机实测定论）─────────────
@@ -1539,9 +1564,9 @@ public final class CrackEngine {
                     if (m1RetryImpliesWrongKey(m1Count, successSeen)) {
                         if (!m1RetryArmed) {
                             m1RetryArmed = true;
-                            m1RetryArmedAt = SystemClock.uptimeMillis();
-                        } else if (SystemClock.uptimeMillis() - m1RetryArmedAt >= 120L) {
-                            long ms = SystemClock.uptimeMillis() - t0;
+                            m1RetryArmedAt = clock().uptimeMillis();
+                        } else if (clock().uptimeMillis() - m1RetryArmedAt >= 120L) {
+                            long ms = clock().uptimeMillis() - t0;
                             android.util.Log.i(TAG, "早期失败: M1 重发 " + m1Count
                                     + " 次（握手无进展）");
                             return new Attempt(password, Verdict.AUTH_FAIL, ms,
@@ -1556,7 +1581,7 @@ public final class CrackEngine {
                             && (WpaLogReader.sawWrongKeyFor(wlogSlice, target.ssid)
                                     || (tried && (WpaLogReader.sawHandshakeFailure(wlogSlice)
                                             || WpaLogReader.sawAssocReject(wlogSlice))))) {
-                        long ms = SystemClock.uptimeMillis() - t0;
+                        long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
                         return new Attempt(password, Verdict.AUTH_FAIL, ms,
                                 L.s("日志显示握手失败（密码错误）",
@@ -1567,7 +1592,7 @@ public final class CrackEngine {
             }
         }
 
-        long total = SystemClock.uptimeMillis() - t0;
+        long total = clock().uptimeMillis() - t0;
 
         // R6：循环里一次日志都没读到（例如通道不吐日志）时也要留下窗口状态，
         // 不能让「没读到日志」和「没采集元数据」在记录里长得一样。
@@ -1671,8 +1696,20 @@ public final class CrackEngine {
         return watcher != null;
     }
 
-    private static void sleep(long ms) {
-        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    /**
+     * 等待。**签名、阻塞语义、中断吞掉行为与原实现逐字节一致**（B1）。
+     *
+     * <p>原实现是 {@code try { Thread.sleep(ms); } catch (InterruptedException ignored) {}}，
+     * 现在只是把这段逻辑下沉到 {@link EngineClock#sleepQuietly(long)}，
+     * 生产实现仍调用 {@code Thread.sleep} 并同样吞掉中断。
+     * <p><b>可见性变更</b>：由 {@code private static} 改为 {@code private}（实例方法）。
+     * 原因是时钟是**每实例**的（防止测试全局污染），static 方法拿不到实例字段。
+     * 全部 6 个调用点都位于实例方法内（{@code disconnectAndVerify} /
+     * {@code run} / 自检路径），因此调用点代码零改动。
+     * 本方法原本就是 {@code private}，对外可见性未变。
+     */
+    private void sleep(long ms) {
+        clock().sleepQuietly(ms);
     }
 
 
@@ -1841,7 +1878,7 @@ public final class CrackEngine {
         int tested = 0;
         int cursor = start;
         String hit = null;
-        long beginAt = SystemClock.uptimeMillis();
+        long beginAt = clock().uptimeMillis();
         // 净尝试耗时：只累计每条候选从发命令到出结论的时间。
         //
         // 不用墙钟（beginAt 到结束）的原因：那段时间里还包含
@@ -1893,13 +1930,13 @@ public final class CrackEngine {
                 cursor = i + 1;
                 l.onAttemptStart(cursor, total, c.password);
 
-                long itemT0 = SystemClock.uptimeMillis();
+                long itemT0 = clock().uptimeMillis();
                 // 序号 = 该候选在字典里的位置（与判词里的顺序号同源）。
                 // runId 拿不到时传 null，Attempt 会显式记为无效而不是伪造一个 id。
                 String aid = currentRunId == null ? null
                         : AttemptId.of(currentRunId, cursor);
                 Attempt a = tryOne(target, security, c.password, perItem, aid);
-                long itemMs = SystemClock.uptimeMillis() - itemT0;
+                long itemMs = clock().uptimeMillis() - itemT0;
 
                 // 挂起/中断发生在这一条执行到一半 —— 它**没有**得到结论。
                 // 不能把它算成「试过了」：cursor 已经推进，续跑时会静默跳过

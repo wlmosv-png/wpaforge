@@ -150,7 +150,12 @@ public class R2TimeoutTest {
             int wall = 0, uptime = 0;
             for (String l : code.split("\n")) {
                 if (l.contains("System.currentTimeMillis")) wall++;
+                // B1（2026-10-31）：单调时钟统一走 EngineClock，原写法
+                // `SystemClock.uptimeMillis()` 变成 `clock().uptimeMillis()`。
+                // 断言意图不变：**判定路径必须全部用单调时钟**，
+                // 且读数仍然大量出现在判定路径里。
                 if (l.contains("SystemClock.uptimeMillis")) uptime++;
+                if (l.contains("clock().uptimeMillis()")) uptime++;
             }
             eq("判定路径全部用单调时钟（uptimeMillis 大量使用）", true, uptime > 30);
             // R11 起墙钟多了一处合法用途：**日志窗口起点**（`-t <时间>` 需要墙钟时刻，

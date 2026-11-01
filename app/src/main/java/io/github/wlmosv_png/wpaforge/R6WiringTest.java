@@ -200,7 +200,10 @@ public class R6WiringTest {
             ok("（占位）", true);
         } else {
             ok("run() 生成 runId", eng.contains("AttemptId.newRunId("));
-            ok("每条候选生成 attemptId", eng.contains("AttemptId.of(currentRunId, cursor)"));
+            // D5-3：序号改用候选在字典中的位置（i + 1）。
+            // 不能再用 cursor —— 它已改为「安全续跑边界」，遇到非 DIRECT 会停住，
+            // 若拿它当序号会让后续候选共用同一个 seq（attemptId 非法、日志窗口全失效）。
+            ok("每条候选生成 attemptId", eng.contains("AttemptId.of(currentRunId, i + 1)"));
             ok("Attempt 携带 attemptId", eng.contains("a.attemptId ="));
             // R11：不再清空缓冲；窗口起点由「时间锚点 + 起点标记」确立，
             // 且起点状态必须进入窗口元数据（不再是"清完就当它清了"）。

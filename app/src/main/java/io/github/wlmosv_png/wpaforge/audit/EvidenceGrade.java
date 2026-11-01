@@ -83,9 +83,16 @@ public final class EvidenceGrade {
     }
 
     /**
-     * 该等级是否足以构成「这条候选可以被排除」的结论。
+     * 该等级是否构成「这条候选已有结论」（语义描述用）。
      *
-     * <p>为真时表示「本轮不必再试」；{@link #persistable} 为真时才表示「以后也不必再试」。
+     * <p><b>注意：生产代码已不再用它做任何排除判断。</b>
+     * D5 系列修复后，「能否排除」被拆成两个更精确的问题：
+     * <ul>
+     *   <li>{@link #persistable} —— 能否写永久记录</li>
+     *   <li>{@link #advancesCursor} —— 能否推进续跑游标</li>
+     * </ul>
+     * 本方法保留是因为它准确描述了「DIRECT/INFERRED 都算有结论，NONE 不算」，
+     * 供测试与未来语义使用；**不要**拿它当作排除依据。
      */
     public static boolean conclusive(Level g) {
         return g == Level.DIRECT || g == Level.INFERRED;
@@ -99,9 +106,10 @@ public final class EvidenceGrade {
      * —— 这在语义上等价于「已排除」。而 {@link Level#INFERRED} 的定义恰恰是
      * 「证据不足以排除」，两者矛盾。
      *
-     * <p>INFERRED 的用途被严格限定为：**本轮内存里避免重复劳动**
-     * （{@code inferredThisRun}）。它既不写磁盘，也不推进游标 ——
-     * 中断续跑时会重新尝试，符合「暂时跳过 ≠ 永久失败」。
+     * <p>INFERRED 在当前实现里**不参与任何排除逻辑**：
+     * 不写磁盘、不推进游标、也不进入任何「本轮已排除」集合
+     * （历史上曾有 {@code inferredThisRun}，因与语义冲突已整体删除）。
+     * 它现在只用于日志/界面标注「这是推断，不是已证实」。
      */
     public static boolean advancesCursor(Level g) {
         return g == Level.DIRECT;

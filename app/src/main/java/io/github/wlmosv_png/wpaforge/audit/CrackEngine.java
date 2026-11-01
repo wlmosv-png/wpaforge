@@ -502,6 +502,38 @@ public final class CrackEngine {
         return new DeadlineOutcome(Verdict.TIMEOUT, "no-evidence");
     }
 
+    /**
+     * 计算**新的续跑游标**（纯函数，可离线穷举）。
+     *
+     * <h3>语义</h3>
+     * {@code cursor} 是「安全的续跑边界」：它之前的候选**全部**拿到了 DIRECT 结论。
+     * 一旦某条候选没有拿到 DIRECT，边界就钉死在它身上 ——
+     * 即使后面有候选拿到 DIRECT 也不能越过它。
+     *
+     * <h3>反例（本函数修的 bug）</h3>
+     * <pre>
+     *   A=INFERRED, B=DIRECT, C=NONE
+     *   旧的「无条件覆盖」写法：处理完 B 时 cursor = 2
+     *   -> A（index 0）被永久越过，续跑从 C 开始，A 再没机会。
+     *   本函数：A 非 DIRECT -> cursor 停在 0；B 虽 DIRECT 但 cursor(0) != 1
+     *   -> 不推进；结果 cursor = 0，续跑会从 A 重新验证。
+     * </pre>
+     *
+     * @param cursor 当前边界（本轮起点或上一次推进后的值）
+     * @param i      当前候选下标
+     * @param grade  当前候选的证据等级
+     * @return 新的边界
+     */
+    public static int nextCursor(int cursor, int i, EvidenceGrade.Level grade) {
+        // 两个条件缺一不可：
+        //   ① 本条是 DIRECT（可直接验证的结论）
+        //   ② 边界正好落在本条（说明前面没有留下未定的候选）
+        if (EvidenceGrade.advancesCursor(grade) && cursor == i) {
+            return i + 1;
+        }
+        return cursor;
+    }
+
     // ------------------------------------------------------------------ 前置检查
 
     public static final class CheckResult {
@@ -2089,8 +2121,12 @@ public final class CrackEngine {
                 long itemT0 = clock().uptimeMillis();
                 // 序号 = 该候选在字典里的位置（与判词里的顺序号同源）。
                 // runId 拿不到时传 null，Attempt 会显式记为无效而不是伪造一个 id。
+                // 序号 = 该候选在字典里的位置（1 起）。
+                // **不能再用 cursor**：cursor 已改为「安全续跑边界」，
+                // 在遇到非 DIRECT 后会停在原地，若拿它当序号，
+                // 后续所有候选会共用同一个 seq -> attemptId 非法 -> 日志窗口全失效。
                 String aid = currentRunId == null ? null
-                        : AttemptId.of(currentRunId, cursor);
+                        : AttemptId.of(currentRunId, i + 1);
                 Attempt a = tryOne(target, security, c.password, perItem, aid);
                 long itemMs = clock().uptimeMillis() - itemT0;
 
@@ -2104,13 +2140,18 @@ public final class CrackEngine {
                     l.onAttemptResult(a);
                     break;
                 }
-                // B3 + D5：只有**可直接验证**的结论（DIRECT）才推进游标。
-                // 无结论（NONE）与推断结论（INFERRED）都保留在游标位置：
-                // 中断续跑时会重新尝试，避免「证据不足却造成实际淘汰」。
-                // INFERRED 仍会进本轮内存集合以避免重复劳动，但不影响续跑。
-                if (EvidenceGrade.advancesCursor(a.grade)) {
-                    cursor = i + 1;
-                }
+                // B3 + D5：cursor 是**安全续跑边界**，只在「它之前的候选全部拿到
+                // DIRECT 结论」时才允许越过。因此必须同时满足两个条件：
+                //   ① 本条是 DIRECT（advancesCursor）
+                //   ② cursor 正好等于本条下标（说明前面没有留下未定的候选）
+                //
+                // 反例（本修复针对的就是它）：
+                //   A=INFERRED, B=DIRECT, C=NONE
+                //   旧写法处理完 B 时直接 cursor = 2 -> A（index 0）被永久越过。
+                //   新写法：A 是非 DIRECT -> cursor 停在 0；B 虽 DIRECT 但
+                //   cursor(0) != 1 -> 不推进；C 同理 -> 最终 cursor = 0，
+                //   续跑会从 A 重新验证，不会漏掉任何未确认的候选。
+                cursor = nextCursor(cursor, i, a.grade);
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;
                 rate.add(itemMs);

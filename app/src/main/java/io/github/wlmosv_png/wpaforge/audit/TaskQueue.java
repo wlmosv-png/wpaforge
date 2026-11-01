@@ -318,6 +318,32 @@ public final class TaskQueue {
         return new File(ctx.getFilesDir(), FILE);
     }
 
+    // ------------------------------------------------------------------ 存储接缝（P0-0）
+
+    /**
+     * 测试注入的存储实现；{@code null} = 使用生产实现。
+     *
+     * <p>包级可见，生产代码在包内也没有调用者（只有本类与测试会用）。
+     * 默认 null 时行为与改造前完全一致。
+     */
+    private static volatile StoreIo testStore;
+
+    /**
+     * **仅供测试**：注入存储实现。传 {@code null} 恢复生产实现。
+     *
+     * <p>它只替换「字节怎么进出」，不改变 {@link #load}/{@link #save} 的任何判断逻辑。
+     */
+    static void setStoreForTest(StoreIo io) {
+        testStore = io;
+    }
+
+    /** 当前生效的存储实现（注入优先）。 */
+    private static StoreIo store(Context ctx) {
+        StoreIo injected = testStore;
+        if (injected != null) return injected;
+        return new StoreIo.FileImpl(ctx.getFilesDir());
+    }
+
     // 上一次 load 是不是**读失败**（而不是队列真的空）
     //
     // 2026-10-23 真事：队列里 16 个任务（含 5 条已爆破出的口令）被写成了 `[]`。
@@ -331,6 +357,14 @@ public final class TaskQueue {
 
     /** 上一次 load 是否读失败 */
     public static boolean lastLoadFailed() { return loadFailedFlag; }
+
+    /**
+     * **仅供测试**：复位读取失败标志。
+     *
+     * <p>生产代码没有任何调用者；它只是让测试能在同一进程内构造
+     * 「先失败、再成功」的序列。默认值本来就是 false，因此复位不改变生产语义。
+     */
+    static void resetLoadFailedForTest() { loadFailedFlag = false; }
 
     /**
      * 纯逻辑：这次写盘要不要拒绝。
@@ -365,11 +399,11 @@ public final class TaskQueue {
     /** 读取整个队列 */
     public static List<Task> load(Context ctx) {
         List<Task> out = new ArrayList<>();
-        File f = file(ctx);
+        StoreIo io = store(ctx);
         // 文件不存在 = 真空队列，合法
-        if (!f.isFile()) { loadFailedFlag = false; return out; }
+        if (!io.isFile(FILE)) { loadFailedFlag = false; return out; }
         try (BufferedReader r = new BufferedReader(new InputStreamReader(
-                new FileInputStream(f), StandardCharsets.UTF_8))) {
+                io.openRead(FILE), StandardCharsets.UTF_8))) {
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = r.readLine()) != null) sb.append(line);
@@ -382,7 +416,8 @@ public final class TaskQueue {
             // **绝不能静默返回空**：调用方拿着空列表去 save，
             // 就等于把用户整个队列删了。
             loadFailedFlag = true;
-            android.util.Log.e("WPAForge", "队列读取失败（不当作空队列）: " + f + " → " + e);
+            android.util.Log.e("WPAForge",
+                    "队列读取失败（不当作空队列）: " + io.describe() + "/" + FILE + " → " + e);
         }
         return out;
     }
@@ -392,7 +427,7 @@ public final class TaskQueue {
         try {
             JSONArray arr = new JSONArray();
             for (Task t : tasks) arr.put(t.toJson());
-            File f = file(ctx);
+            StoreIo io = store(ctx);
             // 读失败过还要写空？直接拒绝。
             // 否则一次临时的读失败（SELinux 标签、损坏、写到一半被杀）
             // 就会在用户点一下「删除」时把整个队列永久淹掉。
@@ -401,31 +436,31 @@ public final class TaskQueue {
                 return false;
             }
             // 写空之前先备一份：即便真是用户清空，也还能把口令找回来。
-            if (tasks.isEmpty() && f.isFile() && f.length() > 4) {
+            if (tasks.isEmpty() && io.isFile(FILE) && io.length(FILE) > 4) {
                 try {
-                    File bak = new File(ctx.getFilesDir(), FILE + ".bak");
-                    java.io.InputStream in = new FileInputStream(f);
+                    String bakName = FILE + ".bak";
+                    java.io.InputStream in = io.openRead(FILE);
                     try {
-                        java.io.OutputStream os = new FileOutputStream(bak);
+                        java.io.OutputStream os = io.openWrite(bakName);
                         try {
                             byte[] buf = new byte[8192];
                             int n;
                             while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
                         } finally { os.close(); }
                     } finally { in.close(); }
-                    android.util.Log.w("WPAForge", "队列被清空，已备份为 " + bak);
+                    android.util.Log.w("WPAForge", "队列被清空，已备份为 " + bakName);
                 } catch (Exception ignored) {}
             }
             // 先写临时文件再改名，避免写一半崩溃导致队列损坏
-            File tmp = new File(ctx.getFilesDir(), FILE + ".tmp");
+            String tmpName = FILE + ".tmp";
             try (OutputStreamWriter w = new OutputStreamWriter(
-                    new FileOutputStream(tmp), StandardCharsets.UTF_8)) {
+                    io.openWrite(tmpName), StandardCharsets.UTF_8)) {
                 w.write(arr.toString());
             }
-            if (f.exists() && !f.delete()) {
+            if (io.exists(FILE) && !io.delete(FILE)) {
                 // 删不掉就直接覆盖
             }
-            return tmp.renameTo(f) || f.exists();
+            return io.rename(tmpName, FILE) || io.exists(FILE);
         } catch (Exception e) {
             return false;
         }

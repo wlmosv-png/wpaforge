@@ -284,7 +284,8 @@ public final class P03AtomicTransactionTest {
         System.out.println();
         System.out.println("-- S7 隔离标记存在时写入 --");
         TxStore s = new TxStore();
-        s.put("queue.json", "[{\"id\":\"base1\",\"ssid\":\"S\",\"state\":\"PENDING\"}]");
+        // P0-2e：健康 base + bak 不再隔离，隔离场景必须用损坏 base
+        s.put("queue.json", "NOT-JSON{{{");
         s.put("queue.json.bak", "[{\"id\":\"bak1\",\"ssid\":\"S\",\"state\":\"PENDING\"}]");
         TaskQueue.setStoreForTest(s);
         TaskQueue.load(null);  // 触发隔离

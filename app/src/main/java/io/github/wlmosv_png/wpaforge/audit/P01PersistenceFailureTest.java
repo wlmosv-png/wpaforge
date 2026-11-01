@@ -392,50 +392,107 @@ public final class P01PersistenceFailureTest {
      */
     private static void t_m4a() {
         System.out.println();
-        System.out.println("-- T-M4a base + .bak 同时存在 --");
+        System.out.println("-- T-M4a 健康 base + 历史 .bak（P0-2e 契约升级） --");
 
-        MemStore m = new MemStore();
-        String baseContent = "[" + taskJson("fromBase") + "]";
-        String bakContent = "[" + taskJson("fromBak") + "," + taskJson("fromBak2") + "]";
-        m.put("queue.json", baseContent);
-        m.put("queue.json.bak", bakContent);
-        String shaBase0 = m.sha("queue.json");
-        String shaBak0 = m.sha("queue.json.bak");
-        TaskQueue.setStoreForTest(m);
-        TaskQueue.resetLoadFailedForTest();
+        // ---------- 变体 1：健康 base + 历史 .bak ----------
+        // P0-2e 新契约：.bak 是历史残留（应用层已改用 .snapshot），不得阻塞健康 base。
+        // 行为：不隔离；.bak 自动归档为 .notchosen-<ts>（保留，不删除）；正常读 base。
+        {
+            MemStore m = new MemStore();
+            String baseContent = "[" + taskJson("fromBase") + "]";
+            String bakContent = "[" + taskJson("fromBak") + "," + taskJson("fromBak2") + "]";
+            m.put("queue.json", baseContent);
+            m.put("queue.json.bak", bakContent);
+            String shaBase0 = m.sha("queue.json");
+            String shaBak0 = m.sha("queue.json.bak");
+            TaskQueue.setStoreForTest(m);
+            TaskQueue.resetLoadFailedForTest();
 
-        List<TaskQueue.Task> got = TaskQueue.load(null);
-        info("读取结果: size=" + got.size()
-                + (got.isEmpty() ? "" : " id=" + got.get(0).id));
-        info("base sha=" + shortSha(shaBase0) + " / bak sha=" + shortSha(shaBak0));
+            List<TaskQueue.Task> got = TaskQueue.load(null);
+            info("读取结果: size=" + got.size()
+                    + (got.isEmpty() ? "" : " id=" + got.get(0).id));
 
-        should("base 与 .bak 同时存在时必须判 QUARANTINED", "T-M4a",
-                TaskQueue.lastReadState() == TaskQueue.ReadState.QUARANTINED
-                        && got.isEmpty(),
-                "state=" + TaskQueue.lastReadState() + " size=" + got.size());
+            should("健康 base + 历史 .bak 不判 QUARANTINED（P0-2e）", "T-M4a",
+                    TaskQueue.lastReadState() == TaskQueue.ReadState.COMPLETE
+                            && got.size() == 1 && "fromBase".equals(got.get(0).id),
+                    "state=" + TaskQueue.lastReadState() + " size=" + got.size());
 
-        // 隔离标记必须出现（当前没有这个文件）
-        boolean hasQuarantine = false;
-        for (String n : m.list()) {
-            if (n.contains("quarantine")) hasQuarantine = true;
+            boolean hasQuarantine = false;
+            for (String n : m.list()) {
+                if (n.contains("quarantine")) hasQuarantine = true;
+            }
+            should("不产生隔离标记", "T-M4a",
+                    !hasQuarantine,
+                    "目录里只有: " + java.util.Arrays.toString(m.list()));
+
+            should("base 字节保持不变", "T-M4a",
+                    shaBase0.equals(m.sha("queue.json")),
+                    "base sha=" + shortSha(m.sha("queue.json")));
+
+            boolean bakArchived = !m.exists("queue.json.bak");
+            boolean archivedKept = false;
+            for (String n : m.list()) {
+                if (n.startsWith("queue.json.bak.notchosen-")) archivedKept = true;
+            }
+            should("历史 .bak 归档为 .notchosen-<ts>（保留不删除）", "T-M4a",
+                    bakArchived && archivedKept,
+                    "bak 仍存在=" + bakArchived + " 归档保留=" + archivedKept
+                            + " 归档内容一致=" + (archivedKept
+                                    ? m.sha(archiveName(m)).equals(shaBak0) : false));
+
+            // base 可正常写
+            List<TaskQueue.Task> news = new ArrayList<>();
+            news.add(task("w1"));
+            boolean saved = TaskQueue.save(null, news);
+            should("健康 base 可正常写入", "T-M4a",
+                    saved, "save=" + saved);
         }
-        should("必须产生持久化隔离标记", "T-M4a",
-                hasQuarantine,
-                "目录里只有: " + java.util.Arrays.toString(m.list()));
 
-        should("两份原始文件字节必须保持不变", "T-M4a",
-                shaBase0.equals(m.sha("queue.json"))
-                        && shaBak0.equals(m.sha("queue.json.bak")),
-                "base sha=" + shortSha(m.sha("queue.json"))
-                        + " bak sha=" + shortSha(m.sha("queue.json.bak")));
+        // ---------- 变体 2：损坏 base + .bak → 仍隔离（fail-closed 保留） ----------
+        {
+            MemStore m = new MemStore();
+            m.put("queue.json", "NOT-JSON{{{");
+            String bakContent = "[" + taskJson("fromBak") + "]";
+            m.put("queue.json.bak", bakContent);
+            String shaBase0 = m.sha("queue.json");
+            String shaBak0 = m.sha("queue.json.bak");
+            TaskQueue.setStoreForTest(m);
+            TaskQueue.resetLoadFailedForTest();
 
-        // 写入必须被拒绝（当前会覆盖 base）
-        List<TaskQueue.Task> news = new ArrayList<>();
-        news.add(task("w1"));
-        boolean saved = TaskQueue.save(null, news);
-        should("隔离状态下所有写入必须被拒绝", "T-M4a",
-                !saved && shaBase0.equals(m.sha("queue.json")),
-                "save=" + saved + "，base 已被覆盖: sha=" + shortSha(m.sha("queue.json")));
+            List<TaskQueue.Task> got = TaskQueue.load(null);
+            should("损坏 base + .bak 必须判 QUARANTINED（fail-closed）", "T-M4a",
+                    TaskQueue.lastReadState() == TaskQueue.ReadState.QUARANTINED
+                            && got.isEmpty(),
+                    "state=" + TaskQueue.lastReadState() + " size=" + got.size());
+
+            boolean hasQuarantine = false;
+            for (String n : m.list()) {
+                if (n.contains("quarantine")) hasQuarantine = true;
+            }
+            should("必须产生持久化隔离标记", "T-M4a",
+                    hasQuarantine,
+                    "目录里只有: " + java.util.Arrays.toString(m.list()));
+
+            should("两份原始文件字节必须保持不变", "T-M4a",
+                    shaBase0.equals(m.sha("queue.json"))
+                            && shaBak0.equals(m.sha("queue.json.bak")),
+                    "base sha=" + shortSha(m.sha("queue.json"))
+                            + " bak sha=" + shortSha(m.sha("queue.json.bak")));
+
+            List<TaskQueue.Task> news = new ArrayList<>();
+            news.add(task("w1"));
+            boolean saved = TaskQueue.save(null, news);
+            should("隔离状态下所有写入必须被拒绝", "T-M4a",
+                    !saved && shaBase0.equals(m.sha("queue.json")),
+                    "save=" + saved + "，base 已被覆盖: sha=" + shortSha(m.sha("queue.json")));
+        }
+    }
+
+    private static String archiveName(MemStore m) {
+        for (String n : m.list()) {
+            if (n.startsWith("queue.json.bak.notchosen-")) return n;
+        }
+        return "";
     }
 
     private static String shortSha(String s) {

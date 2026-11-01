@@ -150,7 +150,7 @@ public class CrackPageLayoutTest {
                 && eng.contains("liveRecentAvgMs = rate.avgMs();"));
         ok("进度回调的 rate/eta 用滑窗值", eng != null
                 && eng.contains("long winPerItem = rate.avgMs();")
-                && eng.contains("long eta = winPerItem > 0 ? (total - cursor) * winPerItem : -1L;"));
+                && eng.contains("long eta = winPerItem > 0 ? (total - start - tested) * winPerItem : -1L;"));
         ok("滑窗类存在且可离线测", read(ROOT + "audit/RateWindow.java") != null
                 && read(ROOT + "RateWindowTest.java") != null);
 

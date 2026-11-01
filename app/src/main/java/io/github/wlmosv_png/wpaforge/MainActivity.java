@@ -2568,9 +2568,118 @@ public class MainActivity extends Activity {
      * <p>每条记录给三件事：它是什么（目标 / 阶段 / 重试次数）、为什么失败、
      * 以及三个动作（重试恢复 / 清理记录 / 查看详情）。
      */
+    /**
+     * 队列隔离恢复：二次确认后执行 resolveQuarantine，并刷新界面。
+     * 恢复完成（或失败）都以弹窗明确报告结果 —— 绝不静默。
+     */
+    private void confirmResolveQuarantine(
+            final io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role role) {
+        String what = role == io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role.BASE
+                ? L.s("主文件（较新的一份）", "the base file")
+                : L.s("备份文件", "the backup file");
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("确认恢复队列", "Restore queue"))
+                .setMessage(L.s("确定用 " + what + " 恢复队列吗？\n"
+                                + "另一份会保留为 .notchosen-<时间>，不会删除。",
+                        "Restore the queue from " + what + "?\n"
+                                + "The other copy is kept as .notchosen-<ts>, not deleted."))
+                .setPositiveButton(L.s("恢复", "Restore"),
+                        (d, w) -> new Thread(() -> {
+                            final io.github.wlmosv_png.wpaforge.audit.TaskQueue.ReadResult r =
+                                    io.github.wlmosv_png.wpaforge.audit.TaskQueue
+                                            .resolveQuarantine(this, role);
+                            runOnUiThread(() -> {
+                                if (r.state == io.github.wlmosv_png.wpaforge.audit
+                                        .TaskQueue.ReadState.COMPLETE) {
+                                    android.widget.Toast.makeText(this,
+                                            L.s("队列已恢复，共 " + r.tasks.size() + " 条任务",
+                                                    "Queue restored, " + r.tasks.size() + " tasks"),
+                                            android.widget.Toast.LENGTH_LONG).show();
+                                } else {
+                                    new android.app.AlertDialog.Builder(this)
+                                            .setTitle(L.s("恢复失败", "Restore failed"))
+                                            .setMessage(r.detail)
+                                            .setPositiveButton(L.s("知道了", "OK"), null)
+                                            .show();
+                                }
+                                refreshRestoreCard();
+                            });
+                        }, "wpaforge-resolve-quarantine").start())
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
+    }
+
     private void refreshRestoreCard() {
         if (restoreList == null || restoreSummary == null) return;
         restoreList.removeAllViews();
+
+        // ---- 队列隔离态（P0-2e）：必须先于 WiFi 配置恢复展示 ----
+        // 此前队列被隔离时，这里只显示「没有待处理的恢复记录」，用户完全看不到
+        // 队列已拒绝读写、任务永不消费的真相。隔离信息来自 TaskQueue.quarantineInfo。
+        io.github.wlmosv_png.wpaforge.audit.TaskQueue.QuarantineInfo qi =
+                io.github.wlmosv_png.wpaforge.audit.TaskQueue.quarantineInfo(this);
+        if (qi != null) {
+            TextView qTitle = new TextView(this);
+            qTitle.setText(L.s("⚠ 队列数据待恢复 —— 破解任务已暂停消费",
+                    "⚠ Queue data needs recovery - task consumption paused"));
+            qTitle.setTextSize(AmberTheme.FS_TITLE);
+            qTitle.setTextColor(0xFFFFB300);
+            restoreList.addView(qTitle);
+
+            StringBuilder qs = new StringBuilder();
+            qs.append(L.s("队列文件存在两份数据（主文件与备份），无法自动判断哪份可信。",
+                    "Both queue.json and its backup exist; which one is authoritative cannot be decided automatically."))
+              .append('\n')
+              .append(L.s("主文件 ", "base "))
+              .append(qi.baseSize < 0 ? "?" : String.valueOf(qi.baseSize))
+              .append("B")
+              .append(qi.baseParsable
+                      ? L.s(" · 可解析 " + qi.baseTaskCount + " 条任务",
+                            " · parses " + qi.baseTaskCount + " tasks")
+                      : L.s(" · 无法解析", " · unparsable"))
+              .append('\n')
+              .append(L.s("备份文件 ", "bak "))
+              .append(qi.bakSize < 0 ? "?" : String.valueOf(qi.bakSize))
+              .append("B")
+              .append(qi.bakParsable
+                      ? L.s(" · 可解析 " + qi.bakTaskCount + " 条任务",
+                            " · parses " + qi.bakTaskCount + " tasks")
+                      : L.s(" · 无法解析", " · unparsable"))
+              .append('\n')
+              .append(L.s("请选择要恢复的一份。未被选中的会保留为 .notchosen-<时间>。",
+                    "Pick one to restore; the other is kept as .notchosen-<ts>."));
+
+            TextView qDetail = new TextView(this);
+            qDetail.setText(qs.toString());
+            qDetail.setTextSize(AmberTheme.FS_BODY);
+            qDetail.setTextColor(TEXT_DIM);
+            qDetail.setLineSpacing(px(4), 1f);
+            restoreList.addView(qDetail);
+
+            // 恢复按钮：主文件 / 备份
+            LinearLayout qBtns = new LinearLayout(this);
+            qBtns.setOrientation(LinearLayout.HORIZONTAL);
+            android.widget.Button qBase = new android.widget.Button(this);
+            qBase.setText(L.s("恢复主文件", "Restore base"));
+            qBase.setOnClickListener(v -> confirmResolveQuarantine(
+                    io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role.BASE));
+            android.widget.Button qBak = new android.widget.Button(this);
+            qBak.setText(L.s("恢复备份", "Restore backup"));
+            qBak.setOnClickListener(v -> confirmResolveQuarantine(
+                    io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role.BAK));
+            qBtns.addView(qBase);
+            qBtns.addView(qBak);
+            restoreList.addView(qBtns);
+            // 有隔离态时仍继续渲染 WiFi 配置恢复记录，但不显示「没有待处理」的误导文案
+            restoreSummary.setText(L.s("⚠ 队列数据待恢复（见上方）",
+                    "⚠ Queue data needs recovery (see above)"));
+            for (io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r :
+                    io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.rows()) {
+                restoreList.addView(restoreRow(r));
+            }
+            return;
+        }
+
         restoreSummary.setText(io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.summary());
         java.util.List<io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row> rows =
                 io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.rows();

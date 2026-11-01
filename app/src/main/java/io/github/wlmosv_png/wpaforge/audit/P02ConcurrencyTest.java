@@ -207,8 +207,9 @@ public final class P02ConcurrencyTest {
             ok("IO 故障期间原文件字节不变", same, "字节已变");
 
             // ---------- 3. 隔离状态下并发写入全部被拒
+            // P0-2e：健康 base + bak 不再隔离（bak 会被归档）。隔离场景必须用损坏 base。
             SafeStore st3 = new SafeStore();
-            st3.files.put("queue.json", "[{\"id\":\"a\",\"ssid\":\"S\",\"state\":\"PENDING\"}]"
+            st3.files.put("queue.json", "NOT-JSON{{{"
                     .getBytes(StandardCharsets.UTF_8));
             st3.files.put("queue.json.bak", "[{\"id\":\"b\",\"ssid\":\"S\",\"state\":\"PENDING\"}]"
                     .getBytes(StandardCharsets.UTF_8));

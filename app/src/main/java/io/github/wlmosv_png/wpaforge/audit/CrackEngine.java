@@ -2443,8 +2443,13 @@ public final class CrackEngine {
                     winPerItem = tested > 0 ? pureTryMs / tested : 0;
                 }
                 double ratePerSec = winPerItem > 0 ? 1000.0 / winPerItem : 0d;
-                long eta = winPerItem > 0 ? (total - cursor) * winPerItem : -1L;
-                l.onProgress(cursor, total, ratePerSec, eta);
+                long eta = winPerItem > 0 ? (total - start - tested) * winPerItem : -1L;
+                // P0 修复（进度恒 0）：进度必须传「实际已尝试数」的绝对位置，
+                // 不能传 cursor。cursor 是 D5 的安全续跑边界 —— 只有 DIRECT 推进；
+                // 候选普遍落在 INFERRED（观察窗口结束、无归因证据）时 cursor 钉死
+                // 在起点，界面就会「已完成 0 / 0.0%」，磁盘 offset 也不涨，
+                // 直到任务结束一次性补写。tested 才是「实际试过几条」。
+                l.onProgress(start + tested, total, ratePerSec, eta);
             }
 
             // ══════════════════════════════════════════════════════════════

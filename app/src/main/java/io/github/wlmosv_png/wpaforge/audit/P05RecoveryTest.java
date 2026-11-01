@@ -192,7 +192,8 @@ public final class P05RecoveryTest {
 
         // ---------- 6. 隔离状态下恢复：不得自动解除、不得写
         MemStore s6 = new MemStore();
-        s6.files.put("queue.json", "[{\"id\":\"x\"}]".getBytes(StandardCharsets.UTF_8));
+        // P0-2e：健康 base + bak 不再隔离，隔离场景必须用损坏 base
+        s6.files.put("queue.json", "NOT-JSON{{{".getBytes(StandardCharsets.UTF_8));
         s6.files.put("queue.json.bak", "[{\"id\":\"y\"}]".getBytes(StandardCharsets.UTF_8));
         TaskQueue.setStoreForTest(s6);
         try {

@@ -468,12 +468,37 @@ public final class TaskQueue {
     }
 
     /**
-     * 是否需要进入隔离：base 与 .bak **同时存在**。
+     * 是否需要进入隔离。
      *
-     * <p>不判断哪份更新 —— 无法证明的事不能赌（M4 裁定）。
+     * <p><b>修复（P0-2e）</b>：不再「base + .bak 同时存在就无条件隔离」。
+     * 应用层自 P0-3 起改用 {@code .snapshot-<ts>} 备份，**不会再写 {@code .bak}**；
+     * 因此当前出现的 {@code .bak} 只可能是「旧版代码残留」或「AtomicFile 事务残留」。
+     * 把它无条件当作「两份都可能是权威」会让健康主文件被历史残留永久阻塞。
+     *
+     * <p>新判据：
+     * <ul>
+     *   <li>base 能完整解析 → **不需要隔离**（.bak 是历史残留，归档保留后继续读 base）。</li>
+     *   <li>base 损坏/不可解析 → **需要隔离**（base 坏了，.bak 可能是唯一可救数据）。</li>
+     * </ul>
+     *
+     * <p>不变式保持：base + .bak 同时存在时，仍**不调用 AtomicFile.openRead**
+     * （它会优先读 .bak），读取 base 走的是本类的流式读取，不受 AtomicFile 干扰。
      */
     static boolean needsQuarantine(StoreIo io) {
-        return io.isFile(FILE) && io.isFile(LEGACY_BAK);
+        if (!io.isFile(FILE) || !io.isFile(LEGACY_BAK)) return false;
+        // base 能完整解析 → 健康主文件，历史 .bak 不阻塞它
+        return tryCountTasks(io, FILE) < 0;
+    }
+
+    /**
+     * 把历史遗留的 .bak 归档为 .notchosen-<ts>（保留，不删除），
+     * 让健康的 base 恢复正常读取。归档失败则保持原状（返回 false），
+     * 由调用方决定后续（宁可下次再归档，也不强行覆盖）。
+     */
+    static boolean archiveLegacyBak(StoreIo io) {
+        if (!io.isFile(LEGACY_BAK)) return true; // 已经没有了，幂等成功
+        String dst = LEGACY_BAK + ".notchosen-" + System.currentTimeMillis();
+        return io.rename(LEGACY_BAK, dst);
     }
 
     /** 读全部字节并算 SHA-256；失败返回 null。 */
@@ -545,6 +570,223 @@ public final class TaskQueue {
         return null;
     }
 
+    // ------------------------------------------------------------------ 隔离恢复（P0-2e）
+
+    /**
+     * 用户选择的恢复来源。**没有默认值、没有无参重载** ——
+     * 恢复只能由用户显式指定「恢复哪一份」，杜绝任何自动猜测。
+     */
+    public enum Role { BASE, BAK }
+
+    /**
+     * 隔离标记里记录的、可用于恢复决策的完整信息。
+     *
+     * <p>UI 必须据此展示「两份各是什么状态」，让用户决定恢复哪一份。
+     * 字段只含 size/sha256/mtime，不含任何口令内容。
+     */
+    public static final class QuarantineInfo {
+        public final String reason;
+        public final long since;
+        public final String baseSha256;
+        public final long baseSize;
+        public final long baseMtime;
+        public final boolean baseParsable;
+        public final int baseTaskCount;
+        public final String bakSha256;
+        public final long bakSize;
+        public final long bakMtime;
+        public final boolean bakParsable;
+        public final int bakTaskCount;
+
+        QuarantineInfo(String reason, long since,
+                       String baseSha256, long baseSize, long baseMtime,
+                       boolean baseParsable, int baseTaskCount,
+                       String bakSha256, long bakSize, long bakMtime,
+                       boolean bakParsable, int bakTaskCount) {
+            this.reason = reason;
+            this.since = since;
+            this.baseSha256 = baseSha256;
+            this.baseSize = baseSize;
+            this.baseMtime = baseMtime;
+            this.baseParsable = baseParsable;
+            this.baseTaskCount = baseTaskCount;
+            this.bakSha256 = bakSha256;
+            this.bakSize = bakSize;
+            this.bakMtime = bakMtime;
+            this.bakParsable = bakParsable;
+            this.bakTaskCount = bakTaskCount;
+        }
+    }
+
+    /** 用 StoreIo 直接拿某个文件的 mtime（毫秒）；失败返回 -1。 */
+    private static long mtimeOf(StoreIo io, String name) {
+        try {
+            java.io.File f = new java.io.File(io.describe().substring("file:".length()), name);
+            return f.lastModified();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 只读尝试解析某份文件，返回任务数；解析失败返回 -1。 */
+    private static int tryCountTasks(StoreIo io, String name) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(name), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            JSONArray arr = new JSONArray(sb.toString());
+            for (int i = 0; i < arr.length(); i++) Task.fromJson(arr.getJSONObject(i));
+            return arr.length();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * 读取隔离标记，返回可展示的结构化信息；无标记或标记损坏返回 null。
+     *
+     * <p>只读，不修改任何文件。UI 用它在「恢复状态」里正确展示队列隔离态，
+     * 而不是继续显示「没有待处理的恢复记录」。
+     */
+    public static QuarantineInfo quarantineInfo(Context ctx) {
+        StoreIo io = store(ctx);
+        if (!isQuarantined(io)) return null;
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(QUARANTINE), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            JSONObject o = new JSONObject(sb.toString());
+            String reason = o.optString("reason", "");
+            long since = o.optLong("since", -1);
+            JSONArray arr = o.optJSONArray("entries");
+            String baseSha = "", bakSha = "";
+            long baseSize = -1, bakSize = -1;
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                JSONObject e = arr.optJSONObject(i);
+                if (e == null) continue;
+                String role = e.optString("role", "");
+                if ("base".equals(role)) {
+                    baseSha = e.optString("sha256", "");
+                    baseSize = e.optLong("size", -1);
+                } else if ("bak".equals(role)) {
+                    bakSha = e.optString("sha256", "");
+                    bakSize = e.optLong("size", -1);
+                }
+            }
+            long baseMtime = mtimeOf(io, FILE);
+            long bakMtime = mtimeOf(io, LEGACY_BAK);
+            int baseCount = tryCountTasks(io, FILE);
+            int bakCount = tryCountTasks(io, LEGACY_BAK);
+            return new QuarantineInfo(reason, since,
+                    baseSha, baseSize, baseMtime, baseCount >= 0, baseCount,
+                    bakSha, bakSize, bakMtime, bakCount >= 0, bakCount);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 解除隔离：用户显式选择恢复 base 或 bak。
+     *
+     * <p>流程（对应设计文档 §5.2，不变式 I5/I6/I7）：
+     * <ol>
+     *   <li>校验隔离标记存在（无标记 = 不在隔离态，直接失败）。</li>
+     *   <li>校验所选那份的当前 SHA-256 与隔离标记里记录的一致（防隔离期间被篡改）。</li>
+     *   <li>校验所选那份可完整解析成任务数组（防「恢复一份坏数据」）。</li>
+     *   <li>把未选中的那份改名为 {@code .notchosen-<ts>}（**保留，不删除**）。</li>
+     *   <li>删除隔离标记（原子性：先改名未选份、再删标记）。</li>
+     *   <li>重新读取并验证队列，返回结果。</li>
+     * </ol>
+     *
+     * <p><b>原子性保证</b>：未选份改名失败 → 中止，标记不动，两份都保留；
+     * 标记删除失败 → 下次启动仍识别 QUARANTINED（幂等，可重试），不丢数据。
+     *
+     * @param chosen 用户显式选择的恢复来源（不允许为 null）
+     * @return 恢复后的读取结果；state==COMPLETE 表示恢复成功且队列可读
+     */
+    public static ReadResult resolveQuarantine(Context ctx, Role chosen) {
+        if (chosen == null) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "恢复来源未指定（必须用户显式选择 base 或 bak）");
+        }
+        StoreIo io = store(ctx);
+        if (!isQuarantined(io)) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "当前不在隔离态，无需恢复");
+        }
+
+        // 1. 读隔离标记，取所选份的 sha256
+        String chosenName = (chosen == Role.BASE) ? FILE : LEGACY_BAK;
+        String chosenSha = null;
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(QUARANTINE), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            JSONObject o = new JSONObject(sb.toString());
+            JSONArray arr = o.optJSONArray("entries");
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                JSONObject e = arr.optJSONObject(i);
+                if (e != null && chosenName.equals(e.optString("name", ""))) {
+                    chosenSha = e.optString("sha256", "");
+                }
+            }
+        } catch (Throwable t) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "隔离标记损坏，无法恢复: " + t);
+        }
+        if (chosenSha == null || chosenSha.isEmpty()) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "隔离标记里找不到所选份（" + chosenName + "）的记录");
+        }
+
+        // 2. 校验所选份 SHA-256（I6：防隔离期间被篡改）
+        String nowSha = sha256Of(io, chosenName);
+        if (nowSha == null || !nowSha.equals(chosenSha)) {
+            return new ReadResult(ReadState.QUARANTINED, new ArrayList<Task>(),
+                    "完整性校验失败：所选份 SHA-256 与隔离记录不一致（" + chosenName + "）");
+        }
+
+        // 3. 校验所选份可完整解析（防恢复坏数据）
+        if (tryCountTasks(io, chosenName) < 0) {
+            return new ReadResult(ReadState.QUARANTINED, new ArrayList<Task>(),
+                    "所选份无法完整解析，拒绝恢复（" + chosenName + "）");
+        }
+
+        // 4. 未选中的那份 → .notchosen-<ts>（I7：保留，不删除）
+        String otherName = (chosen == Role.BASE) ? LEGACY_BAK : FILE;
+        if (io.isFile(otherName)) {
+            String notChosen = otherName + ".notchosen-" + System.currentTimeMillis();
+            if (!io.rename(otherName, notChosen)) {
+                return new ReadResult(ReadState.QUARANTINED, new ArrayList<Task>(),
+                        "未选中份改名失败，中止恢复（两份都保留）: " + otherName);
+            }
+        }
+
+        // 5. 删除隔离标记（原子性：未选份已安全改名后才删标记）
+        if (!io.delete(QUARANTINE)) {
+            // 标记删不掉 → 下次仍识别 QUARANTINED，但未选份已被改名。
+            // 此时 base 已就位、.bak 已改名，下次 needsQuarantine 不会再触发，
+            // 只剩 isQuarantined 会命中。为幂等起见，尝试直接返回可读状态。
+            // 实际上标记删除失败应视为恢复未完成，但数据已安全（base 在位）。
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "隔离标记删除失败（数据已安全，可重试恢复）: " + QUARANTINE);
+        }
+
+        // 6. 重新读取验证
+        ReadResult r = read(io);
+        lastReadState = r.state;
+        return r;
+    }
+
     /**
      * 读取队列的**唯一实现**：状态判定 + 全量解析。
      *
@@ -557,11 +799,23 @@ public final class TaskQueue {
             return new ReadResult(ReadState.QUARANTINED,
                     new ArrayList<Task>(), "已隔离，等待用户选择恢复来源");
         }
+        // 健康 base + 历史 .bak：不隔离，归档 .bak 后继续读 base
+        if (io.isFile(FILE) && io.isFile(LEGACY_BAK) && !needsQuarantine(io)) {
+            if (!archiveLegacyBak(io)) {
+                // 归档失败：保持原状，但 base 是健康的，仍可继续读。
+                // 下次启动会再尝试归档；不因此阻塞队列读取。
+                android.util.Log.w("WPAForge",
+                        "历史 .bak 归档失败（base 仍健康，继续读取）: " + LEGACY_BAK);
+            } else {
+                android.util.Log.w("WPAForge",
+                        "历史 .bak 已归档为 .notchosen（base 健康，不隔离）");
+            }
+        }
         if (needsQuarantine(io)) {
             String err = tryQuarantine(io);
             if (err == null) {
                 return new ReadResult(ReadState.QUARANTINED,
-                        new ArrayList<Task>(), "base 与 .bak 同时存在，已隔离（两份原样保留）");
+                        new ArrayList<Task>(), "base 损坏且 .bak 存在，已隔离（两份原样保留）");
             }
             // 隔离失败 = 无法保证原文件安全 → 一律按 IO_ERROR 处理，禁止后续写入
             return ioError("隔离失败，拒绝继续: " + err);

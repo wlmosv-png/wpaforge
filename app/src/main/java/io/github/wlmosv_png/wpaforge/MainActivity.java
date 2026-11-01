@@ -6521,6 +6521,18 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // B 方案：目标被 forget 过（不在系统已保存列表）且本网络有已试记录时，
+        // 先提示是否清空已试记录从头开始；确认（或无需处理）后再走真正入队流程。
+        maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+    }
+
+    /**
+     * startConnect 的入队后半段：守卫全部通过后执行。
+     *
+     * <p>从 startConnect 拆出来，是为了让「检测目标是否被 forget」这个异步步骤
+     * 能在入队前完成——否则检测结果还没回来，任务就已经入队开跑了。
+     */
+    private void startConnectAfterGuards() {
         // 只有 Root 一条通道
         final int mode = Prefs.mode(this);
         RootProber.CheckResult chk = RootProber.check(this);
@@ -6596,6 +6608,79 @@ public class MainActivity extends Activity {
                 }
             }, delay);
         }
+    }
+
+    /**
+     * B 方案：目标被 forget（不在系统已保存列表）且本网络有已试记录时，
+     * 提示是否清空已试记录从头开始。
+     *
+     * <p>背景：已试记录（TriedSet）按目标分开、永久保存，与「系统 forget 网络」
+     * 完全解耦。用户 forget WiFi 后想重测，已试记录还在，续跑会跳过之前跑过的
+     * 密码——若历史版本把正确密码误判成「密码错误」，它已被记进已试集合，
+     * 续跑就永久跳过它。这里在入队前主动检测：目标若已不在系统已保存列表，
+     * 说明用户大概率 forget 过，给一次「从头重跑」的选择。
+     *
+     * <p>只在「目标确实 forget 且已试记录非空」时弹；不静默清，也绝不误清
+     * （目标还在已保存列表 = 正常续跑，不弹）。
+     *
+     * @param proceed 检测完成、无需处理（或用户已处理）后继续入队的回调
+     */
+    private void maybeOfferClearTriedIfForgotten(final Runnable proceed) {
+        if (targetNet == null) { proceed.run(); return; }
+        final io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
+        // 没有已试记录，无所谓清不清，直接继续
+        if (tried == null || tried.size() == 0) { proceed.run(); return; }
+
+        new Thread(() -> {
+            try {
+                // 只读检测：目标是否还在系统「已保存网络」列表里
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel sh =
+                        new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                            @Override public String exec(String cmd, long timeoutMs) {
+                                return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                        .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                            }
+                            @Override public String name() { return "Root"; }
+                        };
+                String out = sh.exec("cmd wifi list-networks", 5000);
+                long id = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser
+                        .findNetId(out, targetNet.ssid);
+                if (id >= 0) {
+                    // 目标还在已保存列表 → 正常续跑，不打扰
+                    ui.post(proceed);
+                    return;
+                }
+                // 目标已被 forget，但本网络仍有已试记录 → 询问是否清空
+                ui.post(() -> {
+                    NetDialog d = new NetDialog(this,
+                            L.s("这个网络似乎已被删除/忘记", "This network looks forgotten"),
+                            L.s("本网络还记着 ", "This network still has ")
+                                    + tried.size()
+                                    + L.s(" 条已试记录。\n\n系统里已经找不到这个网络的配置，"
+                                          + "可能你已经忘记（删除）了它。\n\n"
+                                          + "要继续的话，是否先清空已试记录、从头重新跑？\n"
+                                          + "（不清空：之前跑过的密码会被自动跳过）",
+                                    " tried records.\n\nIts config is no longer in the system "
+                                          + "saved list — you may have forgotten it.\n\n"
+                                          + "Clear the tried record and restart from scratch?\n"
+                                          + "(if not: already-tried passwords stay skipped)"));
+                    d.setDanger(L.s("清空并重新跑", "Clear and restart"), dd -> {
+                        boolean ok = io.github.wlmosv_png.wpaforge.audit.TriedSet
+                                .deleteFor(this, currentTargetKey());
+                        Toast.makeText(this,
+                                ok ? L.s("已清空，从头开始", "Cleared, starting fresh")
+                                   : L.s("清空失败，仍按原记录继续", "Clear failed, continuing as-is"),
+                                Toast.LENGTH_SHORT).show();
+                        proceed.run();
+                    });
+                    d.setNegative(L.s("不清空，继续", "Keep and continue"), dd -> proceed.run());
+                    d.show();
+                });
+            } catch (Throwable t) {
+                // 检测失败（shell 不可用等）→ 不阻塞，按原逻辑继续
+                ui.post(proceed);
+            }
+        }, "wpaforge-forgot-check").start();
     }
 
     /** 秒数转成人话 */

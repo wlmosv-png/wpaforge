@@ -68,6 +68,22 @@ public class TriedSetTest {
         ok("读回后全部可查（跨字典不重复的关键）", backFound, "");
         ok("读回来的是干净状态", !back.isDirty(), "");
 
+        System.out.println("== 删除已试记录（忘记 WiFi 后从头重跑）==");
+        File del = new File(tmp, "b-del-delete-me.tried");
+        //noinspection ResultOfMethodCallIgnored
+        del.delete();
+        ok("删除前：文件不存在 → deleteFile 返回 true（幂等）",
+                TriedSet.deleteFile(del), "");
+        // 造一个真实文件再删
+        TriedSet delSet = new TriedSet();
+        delSet.add("12345678");
+        delSet.save(del);
+        ok("造出记录文件", del.isFile() && del.length() > 0, "");
+        ok("删除存在的文件 → true", TriedSet.deleteFile(del), "");
+        ok("删除后文件确实没了", !del.exists(), "");
+        ok("再次删除（已不存在）→ 仍 true（幂等）", TriedSet.deleteFile(del), "");
+        ok("deleteFile(null) → false", !TriedSet.deleteFile(null), "");
+
         System.out.println("== 损坏只降级、不崩 ==");
         File bad = new File(tmp, "bad.tried");
         try (FileOutputStream o = new FileOutputStream(bad)) {

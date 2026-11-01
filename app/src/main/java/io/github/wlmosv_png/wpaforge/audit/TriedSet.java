@@ -239,6 +239,34 @@ public final class TriedSet {
         return new File(ctx.getFilesDir(), "tried");
     }
 
+    /**
+     * 删除某个目标的已试记录文件（清空「这个网试过哪些密码」）。
+     *
+     * <p>用于「忘记 WiFi 后从头重跑」：用户主动清空本目标的已试集合。
+     * 只删文件，不做别的；文件不存在时返回 true（幂等）。
+     *
+     * @return true = 文件已不存在（删掉或本来就没有）
+     */
+    public static boolean deleteFor(Context ctx, String key) {
+        if (key == null || key.isEmpty()) return false;
+        return deleteFile(fileFor(ctx, key));
+    }
+
+    /**
+     * 删除已试记录文件的纯逻辑核心（可离线单测）。
+     *
+     * <p>语义：文件不存在或删除成功都算「已清空」（幂等）；删除失败返回 false。
+     */
+    public static boolean deleteFile(File f) {
+        if (f == null) return false;
+        try {
+            return !f.exists() || f.delete();
+        } catch (Throwable e) {
+            warn("删除已试记录失败: " + e);
+            return false;
+        }
+    }
+
     /** 指纹：FNV-1a 64。不需要密码学强度 —— 只要"同串同值、不同串基本不同值"。 */
     public static long hash(String pw) {
         long h = 0xcbf29ce484222325L;

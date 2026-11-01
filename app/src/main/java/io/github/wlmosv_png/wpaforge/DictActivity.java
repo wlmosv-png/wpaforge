@@ -1010,6 +1010,16 @@ public class DictActivity extends Activity {
                 "▸ Limit\n1,000,000 entries per network (8 MB); you get a notice when reached."));
 
         NetDialog d = new NetDialog(this, L.s("过滤基准", "How filtering works"), sb.toString());
+        // 手动清空本网络的已试记录：忘记 WiFi / 换密码后想从头重跑时用。
+        // 不静默清 —— 只在用户主动点这里时删，删完立刻刷新列表（条数归零）。
+        d.setDanger(L.s("清空本网络已试记录", "Clear this network's tried record"), dd -> {
+            boolean ok = io.github.wlmosv_png.wpaforge.audit.TriedSet.deleteFor(this, key);
+            Toast.makeText(this,
+                    ok ? L.s("已清空，下次破解会从头跑", "Cleared; the next run starts fresh")
+                       : L.s("清空失败，请重试", "Failed to clear, try again"),
+                    Toast.LENGTH_SHORT).show();
+            refresh();
+        });
         d.setPositive(L.s("知道了", "Got it"), null);
         d.show();
     }

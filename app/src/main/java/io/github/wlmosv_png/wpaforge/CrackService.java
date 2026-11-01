@@ -383,16 +383,6 @@ public class CrackService extends Service {
     /** 本目标的"已试候选"集合（跑的时候往里记，下次不重复） */
     private volatile TriedSet triedSet;
     /**
-     * 本轮「间接推断失败」的候选（只在内存里，**永不落盘**）。
-     *
-     * <p>证据模型（2026-11-01）：{@code AUTH_FAIL} 分两类 ——
-     * {@code DIRECT}（AP 直接否认，可永久排除）与 {@code INFERRED}（M1 重发 / 回连等推断）。
-     * 推断类只用来避免本轮重复试同一条，绝不允许写进 {@code TriedSet}：
-     * 一次误判就会让正确密码被永久跳过。
-     */
-    private final java.util.Set<String> inferredThisRun =
-            java.util.Collections.newSetFromMap(new java.util.HashMap<>());
-    /**
      * 载入 triedSet 时用的目标键。
      *
      * <p>落盘必须用它，**不能用"界面上当前的目标"** —— 用户可以排了 B209 的队、
@@ -922,14 +912,15 @@ public class CrackService extends Service {
             {
                 triedKey = TriedSet.targetKey(task.bssid, task.ssid);
                 triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
-                inferredThisRun.clear();
                 triedSinceFlush = 0;
                 if (triedSet.size() > 0) {
                     List<Candidate> keep = new ArrayList<>(work.size());
                     int skipped = 0;
                     for (Candidate c : work) {
-                        if (triedSet.contains(c.password)
-                                || inferredThisRun.contains(c.password)) {
+                        // 只按**永久已试记录**过滤。
+                        // 「本轮推断失败」（INFERRED）不参与排除：
+                        // 证据不足以排除的候选，必须在续跑/重跑时还有机会。
+                        if (triedSet.contains(c.password)) {
                             skipped++;
                             continue;
                         }
@@ -1085,9 +1076,9 @@ public class CrackService extends Service {
                             triedSinceFlush = 0;
                             flushTried();
                         }
-                    } else if (EvidenceGrade.conclusive(a.grade)) {
-                        inferredThisRun.add(a.password);
                     }
+                    // 非 DIRECT（含 INFERRED / NONE）只记录日志，不进任何排除集合：
+                    // 它们既不能写永久记录，也不能代表「这条候选已经被排除」。
                 }
                 // 不要再覆盖引擎给出的 detail。
                 //

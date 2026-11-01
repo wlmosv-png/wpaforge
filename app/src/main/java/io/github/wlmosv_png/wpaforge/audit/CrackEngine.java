@@ -124,6 +124,12 @@ public final class CrackEngine {
          */
         public EvidenceGrade.Level grade;
         /**
+         * 本次结论出自第几轮验证（1 = 主循环；2 = 对 INFERRED 候选的补充验证）。
+         *
+         * <p>只作记录与追溯，不参与任何判定。
+         */
+        public int round = 1;
+        /**
          * 日志窗口元数据（R6）。{@code null} = 本阶段未采集。
          *
          * <p><b>只作证据质量标注</b>：它不参与任何成功/失败判定。
@@ -2224,6 +2230,9 @@ public final class CrackEngine {
                 + L.s("（本次任务内每条候选的判词都会带上它）",
                       " (every verdict in this run carries it)"));
 
+        /** 主循环里结论为 INFERRED（证据不足）的候选下标，供补充验证使用。 */
+        final java.util.List<Integer> infRetryIdx = new java.util.ArrayList<>();
+
         try {
             for (int i = start; i < total; i++) {
                 if (cancelFlag.get() || pauseFlag.get()) break;
@@ -2287,6 +2296,11 @@ public final class CrackEngine {
                 //   新写法：A 是非 DIRECT -> cursor 停在 0；B 虽 DIRECT 但
                 //   cursor(0) != 1 -> 不推进；C 同理 -> 最终 cursor = 0，
                 //   续跑会从 A 重新验证，不会漏掉任何未确认的候选。
+                // 记录「证据不足」的候选，供主循环结束后的补充验证使用。
+                // 它们既不是确定成功，也不是确定失败 —— 给它们第二次机会。
+                if (a.grade == EvidenceGrade.Level.INFERRED) {
+                    infRetryIdx.add(i);
+                }
                 cursor = nextCursor(cursor, i, a.grade);
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;
@@ -2431,6 +2445,61 @@ public final class CrackEngine {
                 double ratePerSec = winPerItem > 0 ? 1000.0 / winPerItem : 0d;
                 long eta = winPerItem > 0 ? (total - cursor) * winPerItem : -1L;
                 l.onProgress(cursor, total, ratePerSec, eta);
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            //  补充验证（第二轮）：只对**证据不足**（INFERRED）的候选重试一次。
+            //
+            //  为什么需要它：正确密码排在字典靠后时，前面的错误候选已让 AP
+            //  进入关联退避，握手变慢，可能在成功证据到达前被 m1retry 结案。
+            //  这类结论是「证据不足」而不是「确定失败」，应当有第二次机会。
+            //
+            //  边界：
+            //    · 最多一轮，不形成无限重试；
+            //    · 只取 INFERRED，DIRECT / NONE 一律不重试；
+            //    · 走完全相同的生产验证链（tryOne 或注入的 provider）；
+            //    · 不降低 SUCCESS 判定标准；
+            //    · **不推进 cursor、不写永久 triedSet**（沿用 D5 语义）；
+            //    · 仍为 INFERRED / NONE 的保持不确定，绝不强制判失败；
+            //    · 中断则直接停止，未完成的重试交给下一次运行（cursor 未推进）。
+            // ══════════════════════════════════════════════════════════════
+            if (hit == null && !cancelFlag.get() && !pauseFlag.get() && !infRetryIdx.isEmpty()) {
+                l.onLog(L.f("补充验证：对 %d 条证据不足的候选再试一轮",
+                        "Follow-up pass: retrying %d inconclusive candidates",
+                        infRetryIdx.size()));
+                int retried = 0;
+                for (int idx : infRetryIdx) {
+                    if (cancelFlag.get() || pauseFlag.get()) break;
+                    Candidate c = candidates.get(idx);
+                    tested++;
+                    testedCount = tested;
+                    l.onAttemptStart(idx + 1, total, c.password);
+                    String aid2 = currentRunId == null ? null
+                            : AttemptId.of(currentRunId, idx + 1);
+                    VerdictProvider vp2 = verdictProvider;
+                    Attempt a2 = vp2 != null
+                            ? vp2.attemptFor(c.password, idx + 1)
+                            : tryOne(target, security, c.password, perItem, aid2);
+                    if (a2 == null) {
+                        a2 = new Attempt(c.password, Verdict.ERROR,
+                                0L, "provider returned null", "");
+                    }
+                    a2.round = 2;   // 标记轮次，便于追溯
+                    if (a2.attemptId == null || a2.attemptId.isEmpty()) {
+                        a2.attemptId = AttemptId.wellFormed(aid2) ? aid2 : "";
+                    }
+                    retried++;
+                    // 不计入 tally：避免把补充验证混进「已证实失败」的口径统计。
+                    // 结果照常通过 onAttemptResult 输出，保留独立记录。
+                    l.onAttemptResult(a2);
+                    if (a2.isSuccess()) {
+                        hit = c.password;
+                        break;
+                    }
+                }
+                l.onLog(L.f("补充验证完成：重试 %d 条；未产生新结论的仍保持不确定",
+                        "Follow-up pass done: %d retried; inconclusive ones remain inconclusive",
+                        retried));
             }
         } finally {
             lastPureTryMs = pureTryMs;

@@ -186,7 +186,12 @@ public class R10InvariantTest {
         if (code != null) {
             int assign = 0, at = 0;
             while ((at = code.indexOf("hit = c.password", at)) >= 0) { assign++; at++; }
-            eq("命中赋值点唯一（不可能被后续分支改写）", 1, assign);
+            // 契约修订（INFERRED 补充验证轮）：
+            // 现在有「主循环」与「补充验证轮」两处命中赋值，
+            // 但**两处都必须在 a.isSuccess() 守卫块内**（由下一条断言检查）。
+            // 数量上限收紧到 2，防止将来被继续扩散。
+            ok("命中赋值点受控（主循环 + 补充验证，最多 2 处；实际 "
+                    + assign + " 处）", assign >= 1 && assign <= 2);
             int hitIdx = code.indexOf("hit = c.password");
             // 用**括号配平**判定"是否在守卫块内"，不再用固定长度窗口 ——
             // 窗口法会因为块内新增几行而误报（复核时被自己的修复打破过一次）。

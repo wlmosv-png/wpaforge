@@ -505,8 +505,26 @@ public final class CrackEngine {
         }
     }
 
+    /**
+     * **仅供测试**：跳过 {@code check()} 里的 WifiManager 可用性判断（包级可见）。
+     *
+     * <p>纯 JVM 单测没有 Android 的 WifiManager（android.jar 是桩），
+     * 而 {@code run()} 的第一行就是 {@code check()}。测试要执行真实的 run 主循环，
+     * 就必须过这一关。生产代码在包外，编译期即无法调用，
+     * 且本字段默认 false —— 生产行为与重构前逐字节一致。
+     */
+    private volatile boolean wifiCheckBypassForTest = false;
+
+    /** **仅供测试**：置位后 {@link #check()} 直接返回可用。 */
+    void bypassWifiCheckForTest() {
+        this.wifiCheckBypassForTest = true;
+    }
+
     /** 引擎在当前模式下能不能跑 */
     public CheckResult check() {
+        if (wifiCheckBypassForTest) {
+            return new CheckResult(true, "", "");
+        }
         if (wifi == null) {
             return new CheckResult(false,
                     L.s("无法访问 WiFi 服务", "Cannot access the Wi-Fi service"),
@@ -841,7 +859,8 @@ public final class CrackEngine {
 
         // --- 1. WiFi 开关 ---
         boolean wifiOn = false;
-        try { wifiOn = wifi != null && wifi.isWifiEnabled(); } catch (Throwable ignored) {}
+        try { wifiOn = wifiCheckBypassForTest || (wifi != null && wifi.isWifiEnabled()); }
+        catch (Throwable ignored) { wifiOn = wifiCheckBypassForTest; }
         p.step((wifiOn ? "✓ " : "✗ ") + L.s("WiFi 开关: ", "Wi-Fi enabled: ")
                 + (wifiOn ? L.s("开", "on") : L.s("关", "off")));
         if (!wifiOn) {

@@ -1195,6 +1195,22 @@ public class CrackService extends Service {
         lastSavedOffset = offset;
     }
 
+    /**
+     * 把「本轮结论分布」写到任务上（包级可见，便于纯逻辑单测）。
+     *
+     * <p>从 {@code finishTask} 里原样抽出，**行为完全一致**：
+     * {@code eng == null} 一律记 0。抽出的唯一目的是让这段赋值
+     * 能在没有 Android Context 的环境下被真实执行与断言。
+     *
+     * @param ft  目标任务（直接写字段）
+     * @param eng 本轮引擎；{@code null} 表示拿不到
+     */
+    static void applyMissCounts(TaskQueue.Task ft,
+                                io.github.wlmosv_png.wpaforge.audit.CrackEngine eng) {
+        ft.missConfirmedFail = eng == null ? 0 : eng.confirmedFailCount();
+        ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();
+    }
+
     private void finishTask(TaskQueue.Task ft, String outcomeName,
                             int tested, int offset, String hitPassword) {
         flushTried();
@@ -1237,9 +1253,7 @@ public class CrackService extends Service {
             ft.state = TaskQueue.State.DONE_MISS;
             // 把本轮结论分布记到任务上：**「未命中」只有在其余条目都有失败证据时才成立**。
             // 无结论（TIMEOUT/UNKNOWN）条目并不证明密码错 —— 它们只是没拿到证据。
-            io.github.wlmosv_png.wpaforge.audit.CrackEngine eng = engineRef;
-            ft.missConfirmedFail = eng == null ? 0 : eng.confirmedFailCount();
-            ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();
+            applyMissCounts(ft, engineRef);
             if (ft.missInconclusive > 0) {
                 log(L.f("任务完成：未命中，但其中 %d 条无结论（未能证实密码错；建议核对环境后重跑）",
                         "Task complete: no match, but %d attempts were inconclusive "

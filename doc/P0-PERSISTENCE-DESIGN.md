@@ -35,7 +35,8 @@
 检测到 `base` + `.bak` 同时存在时：
 
 ```
-① 禁止调用 AtomicFile.openRead()          ← 它会把 .bak 覆盖到 base 上
+① 禁止调用 AtomicFile.openRead()          ← 实测：写事务会**删除**同名 .bak
+                                            （见 doc/ATOMICFILE-EVIDENCE.md 场景 A）
 ② 禁止自动删除 / 覆盖 / 合并 / 选择任一份
 ③ 先持久化该 Store 的 QUARANTINED 标记    ← 必须最先完成
 ④ 标记成功后，分别保留并隔离 base 与 .bak
@@ -318,3 +319,16 @@ boolean resolveQuarantine(Context ctx, Role chosen);   // Role.BASE / Role.BAK
 | 完整性记录 | 无 | 记录 size/sha256/mtime |
 | 标记失败处理 | 未定义 | 中止，原文件不动 |
 | 禁止性测试 | 无 | T-M4-X1..X3 |
+
+---
+
+## 附：P0-3 实测修正（2026-11-01）
+
+早期探针记录「openRead 会用 .bak 覆盖 base」。P0-3 用 `StoreIo.FileImpl`
+直接验证后修正为：
+
+- **读路径不覆盖**：base 与 .bak 同时存在时，读到的是 base 内容，两份都保留。
+- **写路径确有破坏**：事务写会**删除同名 `<base>.bak`**。
+
+因此「应用层必须避开 `.bak`」的结论成立，但依据是**写事务会删它**，
+而不是「读时覆盖」。完整实测见 `doc/ATOMICFILE-EVIDENCE.md`。

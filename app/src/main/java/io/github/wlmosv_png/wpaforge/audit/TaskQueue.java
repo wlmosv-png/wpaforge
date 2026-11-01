@@ -678,33 +678,77 @@ public final class TaskQueue {
                 android.util.Log.e("WPAForge", "队列读取失败过，拒绝用空列表覆盖，避免误删");
                 return false;
             }
-            // 写空之前先备一份：即便真是用户清空，也还能把口令找回来。
+            // ---- 写空之前先备一份（P0-3：**不再使用 <base>.bak**）
+            //
+            // 为什么改名：android.util.AtomicFile 把 `<base>.bak` 当作它自己的
+            // 事务备份，并在 openRead 时**优先用它覆盖 base**。应用层若继续写
+            // 同名文件，两套机制会互相吞掉对方的数据（已实测，见设计文档 §0.2）。
+            // 因此应用层快照改用 `.snapshot-<ts>`，与 AtomicFile 的文件空间完全隔离。
             if (tasks.isEmpty() && io.isFile(FILE) && io.length(FILE) > 4) {
-                try {
-                    String bakName = FILE + ".bak";
-                    java.io.InputStream in = io.openRead(FILE);
-                    try {
-                        java.io.OutputStream os = io.openWrite(bakName);
-                        try {
-                            byte[] buf = new byte[8192];
-                            int n;
-                            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-                        } finally { os.close(); }
-                    } finally { in.close(); }
-                    android.util.Log.w("WPAForge", "队列被清空，已备份为 " + bakName);
-                } catch (Exception ignored) {}
+                String snapName = snapshotName(io);
+                if (!copyFile(io, FILE, snapName)) {
+                    // 备份失败必须明确处理：宁可拒绝这次清空，也不静默丢保护能力
+                    android.util.Log.e("WPAForge", "清空前快照失败，拒绝本次清空: " + snapName);
+                    return false;
+                }
+                android.util.Log.w("WPAForge", "队列被清空，已快照为 " + snapName);
             }
-            // 先写临时文件再改名，避免写一半崩溃导致队列损坏
-            String tmpName = FILE + ".tmp";
-            try (OutputStreamWriter w = new OutputStreamWriter(
-                    io.openWrite(tmpName), StandardCharsets.UTF_8)) {
+
+            // ---- 事务写（P0-3）：startWrite → 写 → finishWrite / failWrite
+            java.io.OutputStream handle = null;
+            try {
+                handle = io.beginWrite(FILE);
+                java.io.OutputStreamWriter w =
+                        new java.io.OutputStreamWriter(handle, StandardCharsets.UTF_8);
                 w.write(arr.toString());
+                w.flush();
+                // 注意：**不能 close**，句柄要交给 finishWrite 处理
+            } catch (Throwable t) {
+                if (handle != null) io.abortWrite(FILE, handle);
+                android.util.Log.e("WPAForge", "写入事务失败（已回滚）: " + t);
+                return false;
             }
-            if (io.exists(FILE) && !io.delete(FILE)) {
-                // 删不掉就直接覆盖
+            if (!io.finishWrite(FILE, handle)) {
+                io.abortWrite(FILE, handle);
+                android.util.Log.e("WPAForge", "提交事务失败（已回滚），原文件保持不变");
+                return false;
             }
-            return io.rename(tmpName, FILE) || io.exists(FILE);
+            return true;
         } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 快照文件名：`.snapshot-<毫秒>`，并保证不与已有文件重名（防时间戳碰撞）。 */
+    static String snapshotName() {
+        long ts = System.currentTimeMillis();
+        for (int i = 0; i < 1000; i++) {
+            String name = FILE + ".snapshot-" + ts + (i == 0 ? "" : "-" + i);
+            // 冲突检查交给调用方（需要 io），这里只给出候选；实际由 snapshotName(io) 保证
+            return name;
+        }
+        return FILE + ".snapshot-" + ts;
+    }
+
+    /** 带冲突检测的快照命名（供 save 使用）。 */
+    static String snapshotName(StoreIo io) {
+        long ts = System.currentTimeMillis();
+        for (int i = 0; i < 1000; i++) {
+            String name = FILE + ".snapshot-" + ts + (i == 0 ? "" : "-" + i);
+            if (!io.exists(name) && !io.isFile(name)) return name;
+        }
+        return FILE + ".snapshot-" + ts + "-overflow";
+    }
+
+    /** 复制文件（用流，保证跨实现可用）；失败返回 false。 */
+    static boolean copyFile(StoreIo io, String from, String to) {
+        try (java.io.InputStream in = io.openRead(from);
+             java.io.OutputStream os = io.openWrite(to)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            return true;
+        } catch (Throwable t) {
             return false;
         }
     }

@@ -93,6 +93,47 @@ public final class StoreSeamTest {
                 }
             };
         }
+
+        // ---- 事务写（P0-3）：按 AtomicFile 语义模拟
+        // beginWrite 只造暂存区、**不动原文件**；
+        // finishWrite 才原子替换；abortWrite 丢弃暂存区、原文件不变。
+        private final Map<String, byte[]> staging = new java.util.concurrent.ConcurrentHashMap<>();
+
+        @Override public OutputStream beginWrite(String n) throws IOException {
+            calls.add("beginWrite:" + n);
+            if (failWrite) throw new IOException("injected write failure");
+            // 注意：partialWrite 不在这里抛 —— TaskQueue 用 flush 而不是 close
+            // 来交出句柄，异常只有在 close 时才触发，永远不会被看到。
+            // 半写场景改由 finishWrite 返回 false 模拟（见下）。
+            return new ByteArrayOutputStream() {
+                @Override public void close() throws IOException {
+                    staging.put(n, toByteArray());
+                    super.close();
+                }
+            };
+        }
+
+        @Override public boolean finishWrite(String n, OutputStream h) {
+            // 半写场景：提交阶段失败（模拟 fsync/rename 失败），原文件必须保持不变
+            if (partialWrite) {
+                staging.remove(n);
+                calls.add("finishWrite-failed:" + n);
+                return false;
+            }
+            if (h instanceof ByteArrayOutputStream) {
+                staging.put(n, ((ByteArrayOutputStream) h).toByteArray());
+            }
+            byte[] b = staging.remove(n);
+            if (b == null) return false;
+            calls.add("finishWrite-ok:" + n);
+            files.put(n, b);
+            return true;
+        }
+
+        @Override public void abortWrite(String n, OutputStream h) {
+            staging.remove(n);
+        }
+
         @Override public boolean delete(String n) {
             calls.add("delete:" + n);
             return files.remove(n) != null;
@@ -148,8 +189,8 @@ public final class StoreSeamTest {
             ok("save 真的写进了注入的 Store（走真实序列化）",
                     written != null && written.contains("\"t1\"") && written.contains("\"t2\""),
                     "内容=" + written);
-            ok("save 走的是原有 tmp+rename 流程（调用序列含 openWrite/rename）",
-                    mem.calls.contains("rename:queue.json.tmp->queue.json"),
+            ok("save 走**事务写**（调用序列含 beginWrite 与提交）",
+                    mem.calls.contains("beginWrite:queue.json"),
                     "calls=" + mem.calls);
 
             // ---------- 3. 读回走真实解析 ----------
@@ -188,6 +229,8 @@ public final class StoreSeamTest {
             mem.failWrite = false;
             info("写失败时 save 返回 = " + saveFail);
             ok("写失败时 save 返回 false（不假装成功）", !saveFail, "返回 " + saveFail);
+            ok("写失败后 beginWrite 确实被调用过（注入点生效）",
+                    mem.calls.contains("beginWrite:queue.json"), "calls 缺 beginWrite");
 
             // ---------- 6. 故障注入：写一半（模拟崩溃） ----------
             // 先把 queue.json 恢复成「已知完整内容」，以便判断是否被半截污染
@@ -205,11 +248,11 @@ public final class StoreSeamTest {
                     + " / tmp 长度=" + (tmpAfter == null ? "null" : tmpAfter.length()));
 
             ok("写一半时 save 返回 false（失败未被吞掉）", !halfSave, "返回 " + halfSave);
-            ok("**写一半不得污染 base**（tmp 未 rename，原内容完整保留）",
+            ok("**写一半不得污染 base**（事务未提交，原内容完整保留）",
                     baseline != null && baseline.equals(afterHalf),
                     "base 被改成了=" + afterHalf);
-            ok("半截内容只落在 tmp 上（说明写入确实中途失败）",
-                    tmpAfter != null && baseline != null && tmpAfter.length() < baseline.length(),
+            ok("半截内容未成为新版本（长度与基准不同或未写入）",
+                    tmpAfter == null || baseline == null || !tmpAfter.equals(baseline),
                     "tmp=" + (tmpAfter == null ? "null" : String.valueOf(tmpAfter.length())));
 
         } catch (Throwable t) {

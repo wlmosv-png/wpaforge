@@ -95,6 +95,35 @@ public final class P01PersistenceFailureTest {
                 }
             };
         }
+
+        // ---- 事务写（P0-3）：按 AtomicFile 语义模拟
+        // beginWrite 只造暂存区、**不动原文件**；
+        // finishWrite 才原子替换；abortWrite 丢弃暂存区、原文件不变。
+        private final Map<String, byte[]> staging = new java.util.concurrent.ConcurrentHashMap<>();
+
+        @Override public OutputStream beginWrite(String n) {
+            return new ByteArrayOutputStream() {
+                @Override public void close() throws IOException {
+                    staging.put(n, toByteArray());
+                    super.close();
+                }
+            };
+        }
+
+        @Override public boolean finishWrite(String n, OutputStream h) {
+            if (h instanceof ByteArrayOutputStream) {
+                staging.put(n, ((ByteArrayOutputStream) h).toByteArray());
+            }
+            byte[] b = staging.remove(n);
+            if (b == null) return false;
+            files.put(n, b);
+            return true;
+        }
+
+        @Override public void abortWrite(String n, OutputStream h) {
+            staging.remove(n);
+        }
+
         @Override public boolean delete(String n) { return files.remove(n) != null; }
         @Override public boolean rename(String from, String to) {
             byte[] b = files.remove(from);

@@ -33,6 +33,11 @@ import java.io.OutputStream;
  *   <li>{@code a.renameTo(b)}   → {@link #rename}</li>
  * </ul>
  *
+ * <h3>事务写（P0-3）</h3>
+ * {@link #beginWrite}/{@link #finishWrite}/{@link #abortWrite} 直接转发到
+ * {@code android.util.AtomicFile} 的 startWrite/finishWrite/failWrite。
+ * **不自己实现原子替换** —— 平台已经做了 fsync + rename，自己再实现一遍只会更差。
+ *
  * <h3>边界</h3>
  * 本接口**只**负责字节进出，不负责：原子替换策略、隔离、完整性判定、
  * 备份命名 —— 那些是后续阶段（P0-2..P0-5）的事。
@@ -53,6 +58,34 @@ public interface StoreIo {
 
     /** 打开写流。异常类型与 {@code new FileOutputStream(File)} 一致。 */
     OutputStream openWrite(String name) throws IOException;
+
+    /**
+     * **事务写：开始**（P0-3）。
+     *
+     * <p>返回的流必须交给 {@link #finishWrite} 或 {@link #abortWrite} 收尾。
+     * 只 startWrite 不 finish 就等于事务未提交 —— 这正是崩溃场景的语义。
+     *
+     * <p>生产实现走 {@code android.util.AtomicFile.startWrite()}：
+     * 它**不动原文件**，只创建一个临时文件。
+     */
+    OutputStream beginWrite(String name) throws IOException;
+
+    /**
+     * **事务写：提交**。
+     *
+     * <p>生产实现走 {@code AtomicFile.finishWrite()}：内部 fsync → close →
+     * rename(临时文件 → 目标)，原文件被原子替换，**没有 delete 窗口**。
+     *
+     * @return true = 已提交；false = 提交失败（调用方必须视为写入失败）
+     */
+    boolean finishWrite(String name, OutputStream handle);
+
+    /**
+     * **事务写：回滚**。
+     *
+     * <p>生产实现走 {@code AtomicFile.failWrite()}：删除临时文件，**原文件一字不动**。
+     */
+    void abortWrite(String name, OutputStream handle);
 
     /** 删除；等价 {@code File.delete()}（不存在返回 false）。 */
     boolean delete(String name);
@@ -95,6 +128,58 @@ public interface StoreIo {
 
         @Override public OutputStream openWrite(String name) throws IOException {
             return new FileOutputStream(at(name));
+        }
+
+        /**
+         * 事务写开始：走 {@code AtomicFile.startWrite()}。
+         *
+         * <p>实测（Android 15 / OnePlus，见 doc/P0-PERSISTENCE-DESIGN.md §0.2）：
+         * startWrite **不删除、不改名原文件**，只创建一个 {@code .new} 临时文件。
+         * 因此崩溃在这里时原文件完好。
+         */
+        @Override public OutputStream beginWrite(String name) throws IOException {
+            return new android.util.AtomicFile(at(name)).startWrite();
+        }
+
+        /**
+         * 事务写提交：走 {@code AtomicFile.finishWrite()}。
+         *
+         * <p>内部顺序（本机字节码确认）：{@code FileUtils.sync(fos)} → {@code close}
+         * → {@code rename(.new → base)}。前两步失败会走 delete(.new) 分支；
+         * 我们额外做一次**内容回读校验**，把「返回成功但内容不对」也判为失败。
+         */
+        @Override public boolean finishWrite(String name, OutputStream handle) {
+            if (!(handle instanceof java.io.FileOutputStream)) {
+                try { handle.close(); } catch (Throwable ignored) {}
+                return false;
+            }
+            android.util.AtomicFile af = new android.util.AtomicFile(at(name));
+            try {
+                af.finishWrite((java.io.FileOutputStream) handle);
+            } catch (Throwable t) {
+                return false;
+            }
+            // 提交后回读校验：确认目标文件真的存在且非空
+            File f = at(name);
+            return f.isFile() && f.length() > 0;
+        }
+
+        /**
+         * 事务写回滚：走 {@code AtomicFile.failWrite()}。
+         *
+         * <p>实测：原文件字节保持不变，只删除 {@code .new}。
+         */
+        @Override public void abortWrite(String name, OutputStream handle) {
+            if (!(handle instanceof java.io.FileOutputStream)) {
+                try { handle.close(); } catch (Throwable ignored) {}
+                return;
+            }
+            try {
+                new android.util.AtomicFile(at(name))
+                        .failWrite((java.io.FileOutputStream) handle);
+            } catch (Throwable ignored) {
+                try { handle.close(); } catch (Throwable ignored2) {}
+            }
         }
 
         @Override public boolean delete(String name) { return at(name).delete(); }

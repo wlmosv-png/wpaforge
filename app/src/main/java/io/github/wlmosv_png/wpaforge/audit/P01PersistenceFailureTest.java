@@ -381,8 +381,9 @@ public final class P01PersistenceFailureTest {
         info("base sha=" + shortSha(shaBase0) + " / bak sha=" + shortSha(shaBak0));
 
         should("base 与 .bak 同时存在时必须判 QUARANTINED", "T-M4a",
-                false,
-                "当前直接读取 base 并返回 " + got.size() + " 条，无任何隔离迹象");
+                TaskQueue.lastReadState() == TaskQueue.ReadState.QUARANTINED
+                        && got.isEmpty(),
+                "state=" + TaskQueue.lastReadState() + " size=" + got.size());
 
         // 隔离标记必须出现（当前没有这个文件）
         boolean hasQuarantine = false;

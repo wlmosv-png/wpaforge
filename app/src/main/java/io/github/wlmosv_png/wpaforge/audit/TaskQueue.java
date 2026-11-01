@@ -413,7 +413,16 @@ public final class TaskQueue {
      *   <li>{@link #IO_ERROR} —— 读的过程中发生真实 IO 异常。**禁止覆盖。**</li>
      * </ul>
      */
-    public enum ReadState { COMPLETE, ABSENT, CORRUPT, IO_ERROR }
+    public enum ReadState {
+        COMPLETE, ABSENT, CORRUPT, IO_ERROR,
+        /**
+         * 已隔离（P0-2d）：base 与 .bak 同时存在，无法判断哪份可信。
+         *
+         * <p>两份原始文件**原样保留**，禁止任何写入，直到用户显式选择恢复来源。
+         * 该状态由磁盘上的隔离标记持久化，**进程重启后仍然有效**。
+         */
+        QUARANTINED
+    }
 
     /** 一次读取的结果（状态 + 数据 + 诊断）。 */
     public static final class ReadResult {
@@ -446,6 +455,96 @@ public final class TaskQueue {
         return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(), detail);
     }
 
+    // ------------------------------------------------------------------ 隔离（P0-2d）
+
+    /** 隔离标记文件名。 */
+    static final String QUARANTINE = FILE + ".quarantine";
+    /** AtomicFile 会优先使用的事务备份名；与应用层冲突，正是隔离的触发条件。 */
+    static final String LEGACY_BAK = FILE + ".bak";
+
+    /** 是否已被隔离（只看标记，不碰数据文件）。 */
+    static boolean isQuarantined(StoreIo io) {
+        return io.isFile(QUARANTINE);
+    }
+
+    /**
+     * 是否需要进入隔离：base 与 .bak **同时存在**。
+     *
+     * <p>不判断哪份更新 —— 无法证明的事不能赌（M4 裁定）。
+     */
+    static boolean needsQuarantine(StoreIo io) {
+        return io.isFile(FILE) && io.isFile(LEGACY_BAK);
+    }
+
+    /** 读全部字节并算 SHA-256；失败返回 null。 */
+    static String sha256Of(StoreIo io, String name) {
+        try (java.io.InputStream in = io.openRead(name)) {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : md.digest()) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 建立隔离标记。**必须先于任何文件移动/隔离动作**。
+     *
+     * @return null = 成功；否则为失败原因
+     */
+    static String tryQuarantine(StoreIo io) {
+        String baseSha = sha256Of(io, FILE);
+        String bakSha = sha256Of(io, LEGACY_BAK);
+        if (baseSha == null || bakSha == null) {
+            return "无法读取原始文件以计算校验值（base=" + baseSha + " bak=" + bakSha + "）";
+        }
+        org.json.JSONObject o = new org.json.JSONObject();
+        try {
+            o.put("store", FILE);
+            o.put("reason", "BASE_AND_BAK");
+            o.put("since", System.currentTimeMillis());
+            org.json.JSONArray arr = new org.json.JSONArray();
+            org.json.JSONObject b1 = new org.json.JSONObject();
+            b1.put("role", "base");
+            b1.put("name", FILE);
+            b1.put("size", io.length(FILE));
+            b1.put("sha256", baseSha);
+            arr.put(b1);
+            org.json.JSONObject b2 = new org.json.JSONObject();
+            b2.put("role", "bak");
+            b2.put("name", LEGACY_BAK);
+            b2.put("size", io.length(LEGACY_BAK));
+            b2.put("sha256", bakSha);
+            arr.put(b2);
+            o.put("entries", arr);
+        } catch (Throwable t) {
+            return "构造标记失败: " + t;
+        }
+        String payload = o.toString();
+        try (java.io.OutputStream os = io.openWrite(QUARANTINE)) {
+            os.write(payload.getBytes(StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            return "写标记失败: " + t;
+        }
+        // 回读校验：写不进去等于没隔离，绝不能当作成功
+        String back = null;
+        try (java.io.InputStream in = io.openRead(QUARANTINE)) {
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            back = new String(bo.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return "回读标记失败: " + t;
+        }
+        if (!payload.equals(back)) return "标记回读不一致（写入不完整）";
+        return null;
+    }
+
     /**
      * 读取队列的**唯一实现**：状态判定 + 全量解析。
      *
@@ -453,6 +552,21 @@ public final class TaskQueue {
      * 不返回「前缀」。因为调用方拿到前缀后会原样写回，等于把尾部任务永久删除。
      */
     static ReadResult read(StoreIo io) {
+        // ---- 0. 隔离检查（先于一切读取）
+        if (isQuarantined(io)) {
+            return new ReadResult(ReadState.QUARANTINED,
+                    new ArrayList<Task>(), "已隔离，等待用户选择恢复来源");
+        }
+        if (needsQuarantine(io)) {
+            String err = tryQuarantine(io);
+            if (err == null) {
+                return new ReadResult(ReadState.QUARANTINED,
+                        new ArrayList<Task>(), "base 与 .bak 同时存在，已隔离（两份原样保留）");
+            }
+            // 隔离失败 = 无法保证原文件安全 → 一律按 IO_ERROR 处理，禁止后续写入
+            return ioError("隔离失败，拒绝继续: " + err);
+        }
+
         // ---- 1. 存在性
         if (!io.isFile(FILE)) {
             // 存在但不是普通文件（目录/特殊文件）→ 内容不可信
@@ -512,8 +626,8 @@ public final class TaskQueue {
         ReadResult r = read(store(ctx));
         lastReadState = r.state;
         // 兼容旧语义：只有 COMPLETE/ABSENT 不算「读失败」
-        loadFailedFlag = (r.state == ReadState.CORRUPT || r.state == ReadState.IO_ERROR);
-        if (r.state == ReadState.CORRUPT || r.state == ReadState.IO_ERROR) {
+        loadFailedFlag = (r.state != ReadState.COMPLETE && r.state != ReadState.ABSENT);
+        if (r.state != ReadState.COMPLETE && r.state != ReadState.ABSENT) {
             android.util.Log.e("WPAForge",
                     "队列读取失败（不当作空队列）: state=" + r.state
                             + " " + ctx(store(ctx)) + "/" + FILE + " → " + r.detail);
@@ -548,7 +662,10 @@ public final class TaskQueue {
             lastReadState = gate.state;
             loadFailedFlag = (gate.state == ReadState.CORRUPT
                     || gate.state == ReadState.IO_ERROR);
-            if (gate.state == ReadState.CORRUPT || gate.state == ReadState.IO_ERROR) {
+            // 白名单：只有 COMPLETE / ABSENT 允许写。
+            // 新增状态（QUARANTINED 等）默认拒绝 —— 宁可拒绝一次合法写入，
+            // 也不能在无法证明原始数据安全的情况下覆盖用户数据。
+            if (gate.state != ReadState.COMPLETE && gate.state != ReadState.ABSENT) {
                 android.util.Log.e("WPAForge",
                         "拒绝写回：队列状态 " + gate.state + "（" + gate.detail + "）");
                 return false;

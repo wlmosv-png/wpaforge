@@ -455,33 +455,41 @@ public final class WpaLogReader {
                                                 String targetBssid) {
         if (targetSsid == null || targetSsid.isEmpty() || logcatOutput == null) return false;
 
-        boolean wrongKeyForTarget = false;
-        boolean assocForTarget = false;
-        boolean failurePrelude = false;
+        // 记录**首次出现下标**，用于校验先后顺序。
+        // 只要求「三样都出现过」是不够的：上一条候选残留的失败行若落在
+        // 本条的 associate 之前，三者同样齐备，却与本条毫无关系。
+        int assocAt = -1;
+        int preludeAt = -1;
+        int wrongKeyAt = -1;
         boolean preferredBssidSeen = false;
 
-        for (LogEvent e : parse(logcatOutput)) {
-            if (KIND_WRONG_KEY.equals(e.kind) && targetSsid.equals(e.ssid)) {
-                wrongKeyForTarget = true;
+        java.util.List<LogEvent> evs = parse(logcatOutput);
+        for (int i = 0; i < evs.size(); i++) {
+            LogEvent e = evs.get(i);
+            if (assocAt < 0 && KIND_ASSOCIATE.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                assocAt = i;
             }
-            if (KIND_ASSOCIATE.equals(e.kind) && targetSsid.equals(e.ssid)) {
-                assocForTarget = true;
+            if (preludeAt < 0 && KIND_HANDSHAKE_FAILED.equals(e.kind)) {
+                preludeAt = i;
             }
-            if (KIND_HANDSHAKE_FAILED.equals(e.kind)) {
-                failurePrelude = true;
-            }
-            if (KIND_HANDSHAKE_M1.equals(e.kind) && e.bssid != null) {
-                failurePrelude = true;
+            if (preludeAt < 0 && KIND_HANDSHAKE_M1.equals(e.kind) && e.bssid != null) {
+                preludeAt = i;
                 if (targetBssid != null && !targetBssid.isEmpty()
                         && targetBssid.equalsIgnoreCase(e.bssid)) {
                     preferredBssidSeen = true;
                 }
             }
+            if (wrongKeyAt < 0 && KIND_WRONG_KEY.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                wrongKeyAt = i;
+            }
         }
 
-        if (!wrongKeyForTarget) return false;
-        if (!assocForTarget) return false;
-        if (!failurePrelude) return false;
+        if (wrongKeyAt < 0) return false;
+        if (assocAt < 0) return false;
+        if (preludeAt < 0) return false;
+        // **顺序约束**：本次关联必须发生在失败之前。
+        // 排除「上一条候选的失败行落在本条 associate 之前」这种残留污染。
+        if (preludeAt <= assocAt || wrongKeyAt <= assocAt) return false;
         // BSSID 已知时，M1 必须来自目标 AP（若切片里根本没出现 M1，则由上面的
         // failurePrelude 兜底 —— 那说明失败是 `4-Way Handshake failed` 给的）。
         if (targetBssid != null && !targetBssid.isEmpty() && !preferredBssidSeen) {

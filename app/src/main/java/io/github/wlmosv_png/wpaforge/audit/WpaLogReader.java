@@ -508,6 +508,40 @@ public final class WpaLogReader {
         return false;
     }
 
+    /**
+     * 目标 BSSID 有没有完成握手 —— **带 netId 归属校验**（D2）。
+     *
+     * <h3>为什么需要它</h3>
+     * {@link #sawNegotiatedFor} 只比较 BSSID。但系统用**旧配置 / PMKSA 缓存**
+     * 回连同一 AP 时，BSSID 完全相同 —— 那一次成功会被算到本条候选头上，
+     * 把错误口令判成命中。
+     *
+     * <p>{@code CTRL-EVENT-CONNECTED} 行本身带 {@code [id=N]}，正是「这次连的是
+     * 哪个 network 配置」的归属信息，解析时已经取到（{@link LogEvent#hasNetId()}），
+     * 原判定却没用。
+     *
+     * <h3>规则</h3>
+     * <ul>
+     *   <li>事件带 netId 且本次已知目标 netId（{@code > 0}）→ 必须相等；</li>
+     *   <li>任一侧缺 netId 信息 → 退回纯 BSSID 匹配（保持原有行为）；</li>
+     * </ul>
+     *
+     * @param targetNetId 本候选新建配置的 netId；{@code <= 0} 表示未知
+     */
+    public static boolean sawNegotiatedForAttempt(String logcatOutput, String targetBssid,
+                                                  long targetNetId) {
+        if (targetBssid == null || targetBssid.isEmpty()) return false;
+        for (LogEvent e : parse(logcatOutput)) {
+            if (!isSuccessEvidenceKind(e.kind)) continue;
+            if (e.bssid == null || !targetBssid.equalsIgnoreCase(e.bssid)) continue;
+            // 只在**两侧都拿得到** netId 时才用它做归属判定；
+            // 缺任一侧就退回纯 BSSID 匹配（不额外收紧，避免把真实命中挡掉）。
+            if (e.hasNetId() && targetNetId > 0 && e.netId != targetNetId) continue;
+            return true;
+        }
+        return false;
+    }
+
     /** 有没有出现过关联被拒（密码错/AP 拒绝时的典型信号） */
     public static boolean sawAssocReject(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {

@@ -837,6 +837,10 @@ public class CrackService extends Service {
                             + "has no traceable id)") + ": " + t);
         }
 
+        // 本次是否因「本目标试过」过滤而缩短了候选列表。
+        // 必须在下面那个候选准备块**之外**声明：块内赋值、块外决定续跑位置。
+        boolean filteredBeforeRun = false;
+
         // 准备候选。按任务入队时记录的开关决定，不再无条件叠加。
         // 续跑时必须用完全相同的规则重建列表，否则 offset 会对不上。
         {
@@ -914,24 +918,14 @@ public class CrackService extends Service {
                 triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
                 triedSinceFlush = 0;
                 if (triedSet.size() > 0) {
-                    List<Candidate> keep = new ArrayList<>(work.size());
-                    int skipped = 0;
-                    for (Candidate c : work) {
-                        // 只按**永久已试记录**过滤。
-                        // 「本轮推断失败」（INFERRED）不参与排除：
-                        // 证据不足以排除的候选，必须在续跑/重跑时还有机会。
-                        if (triedSet.contains(c.password)) {
-                            skipped++;
-                            continue;
-                        }
-                        keep.add(c);
-                    }
-                    if (skipped > 0) {
+                    TriedFilter f = filterTried(work, triedSet);
+                    if (f.skipped > 0) {
                         log(L.f("已跳过 %d 条本目标试过的候选（本目标累计 %d 条）",
                                 "Skipped %d already-tried candidates on this target (%d total)",
-                                skipped, triedSet.size()));
+                                f.skipped, triedSet.size()));
                     }
-                    work = keep;
+                    work = f.kept;
+                    filteredBeforeRun = (f.skipped > 0);
                 }
                 if (triedSet.isOverflow()) {
                     log(L.s("提示: 本目标的已试记录已达上限，更早的记录不再计入。",
@@ -963,8 +957,13 @@ public class CrackService extends Service {
         taskStartAt = System.currentTimeMillis();
         lastOffsetSaveAt = 0L;
         lastSavedOffset = -1;
-        final int startOffset = task.offset;
-        if (startOffset > 0) {
+        final int startOffset = effectiveStartOffset(task.offset, filteredBeforeRun);
+        if (startOffset != task.offset) {
+            log(L.s("候选列表已因「本目标试过」过滤而变短，续跑位置从第 "
+                            + task.offset + " 条重置为列表开头（避免跳过未试候选）",
+                    "candidate list shrank due to already-tried filtering; resume offset "
+                            + task.offset + " reset to the beginning (avoid skipping untried)"));
+        } else if (startOffset > 0) {
             log(L.s("从第 ", "Resuming from ") + startOffset + L.s(" 条继续", " entries"));
         }
 
@@ -1220,6 +1219,58 @@ public class CrackService extends Service {
      * @param ft  目标任务（直接写字段）
      * @param eng 本轮引擎；{@code null} 表示拿不到
      */
+    /**
+     * 候选过滤结果。
+     */
+    public static final class TriedFilter {
+        public final List<Candidate> kept;
+        public final int skipped;
+        public TriedFilter(List<Candidate> kept, int skipped) {
+            this.kept = kept;
+            this.skipped = skipped;
+        }
+    }
+
+    /**
+     * 按**永久已试记录**过滤候选（纯函数）。
+     *
+     * <p>只认 {@code triedSet}（其中只有 DIRECT 结论）。
+     * 「本轮推断失败」（INFERRED）不参与排除 ——
+     * 证据不足以排除的候选，必须在续跑/重跑时还有机会。
+     */
+    public static TriedFilter filterTried(List<Candidate> work, TriedSet triedSet) {
+        java.util.List<Candidate> keep = new java.util.ArrayList<>(work.size());
+        int skipped = 0;
+        for (Candidate c : work) {
+            if (triedSet.contains(c.password)) { skipped++; continue; }
+            keep.add(c);
+        }
+        return new TriedFilter(keep, skipped);
+    }
+
+    /**
+     * 过滤之后**实际可用的续跑位置**（纯函数）。
+     *
+     * <h3>要修的缺陷</h3>
+     * {@code task.offset} 是「上一轮在同一份列表里跑到第几条」。
+     * 但本轮候选列表**已被本目标试过的记录过滤掉一部分**，长度与内容都变了：
+     * <pre>
+     *   字典 [A,B,C,D,E]，试过 {A,C}，上轮 offset=3
+     *   -> 过滤后列表 = [B,D,E]（长度 3）
+     *   -> 若仍从 offset=3 开始，等于**一条都不跑**（越界），
+     *      而 B、D、E 从未在该目标上验证过 —— 直接被漏掉。
+     * </pre>
+     * 过滤后的列表里已经不含已试候选，从头跑不会产生重复劳动，
+     * 因此正确的语义是：**一旦发生过滤，续跑位置回到列表开头**。
+     *
+     * @param savedOffset   任务里保存的 offset
+     * @param filtered      本次是否发生过过滤
+     */
+    public static int effectiveStartOffset(int savedOffset, boolean filtered) {
+        if (filtered) return 0;
+        return savedOffset < 0 ? 0 : savedOffset;
+    }
+
     static void applyMissCounts(TaskQueue.Task ft,
                                 io.github.wlmosv_png.wpaforge.audit.CrackEngine eng) {
         ft.missConfirmedFail = eng == null ? 0 : eng.confirmedFailCount();

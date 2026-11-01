@@ -295,6 +295,15 @@ public final class CrackEngine {
     private volatile AttemptMarker.Window lastWindow;
     private static final int TIMEOUT_ALERT = 5;
 
+    /**
+     * 自适应窗口（P0 提速）：连续 {@link #TRIM_AFTER_NO_EVIDENCE} 条「观察窗口
+     * 结束、无证据」超时后，单发时限从 {@code 10s} 缩到本值。
+     * 只针对「目标网络不给任何证据」的场景（典型：手机热点），判定结果不变。
+     */
+    private static final long WINDOW_TRIMMED_MS = 6_000L;
+    /** 连续多少条无证据超时后触发缩窗。 */
+    private static final int TRIM_AFTER_NO_EVIDENCE = 4;
+
     public CrackEngine(Context ctx, int mode) {
         this.appCtx = ctx.getApplicationContext();
         this.watcher = new NetworkWatcher(appCtx);
@@ -593,6 +602,31 @@ public final class CrackEngine {
             return i + 1;
         }
         return cursor;
+    }
+
+    /**
+     * 自适应窗口（P0 提速，纯函数可离线测）。
+     *
+     * <p>连续 {@code noEvidence} 条候选都是「观察窗口结束、无证据」超时
+     * （{@link Verdict#TIMEOUT}）时，说明目标网络不给任何失败/成功证据
+     * （典型：手机热点），等满 10 秒纯属浪费 —— 缩短到 {@link #WINDOW_TRIMMED_MS}。
+     *
+     * <p>判定语义不变：TIMEOUT 映射 NONE，不写盘、不推进游标、不排除候选；
+     * 窗口缩短只是「少等 4 秒」。
+     *
+     * <p>安全网：正确密码命中会让目标出现在 status，触发看门狗延长 4 秒
+     * （见 tryOneShell），不受缩窗影响；任何非 TIMEOUT 结论都会重置计数、
+     * 恢复全窗。
+     *
+     * @param noEvidence 当前连续无证据超时的条数
+     * @param basePerItem 基准单发时限（毫秒）
+     * @return 本条候选应使用的单发时限
+     */
+    public static long adaptiveWindow(int noEvidence, long basePerItem) {
+        if (noEvidence >= TRIM_AFTER_NO_EVIDENCE) {
+            return Math.min(basePerItem, WINDOW_TRIMMED_MS);
+        }
+        return basePerItem;
     }
 
     // ------------------------------------------------------------------ 前置检查
@@ -2179,14 +2213,21 @@ public final class CrackEngine {
                     baseline == null ? L.s("无", "none") : baseline));
         }
 
-        final long perItem = timeoutMsPerItem > 0 ? timeoutMsPerItem
+        final long basePerItem = timeoutMsPerItem > 0 ? timeoutMsPerItem
                 : 10_000L;
+        // 自适应窗口（P0 提速）：连续多条「观察窗口结束、无证据」超时后，
+        // 说明目标网络不给任何失败/成功证据（典型：手机热点），等满 10 秒
+        // 纯属浪费。缩到 6 秒，判定结果不变（都是 TIMEOUT→NONE，不写盘、
+        // 不推进游标、不排除候选）。一旦出现任何有证据的结论立即恢复全窗。
+        // 正确密码命中不受影响：目标出现在 status 会触发看门狗延长 4 秒。
+        long perItem = basePerItem;
         final String security = securityArg(target);
         final int total = candidates.size();
         final int start = Math.max(0, Math.min(startOffset, total));
 
         int tested = 0;
         int cursor = start;
+        int consecutiveNoEvidence = 0;
         String hit = null;
         long beginAt = clock().uptimeMillis();
         // 净尝试耗时：只累计每条候选从发命令到出结论的时间。
@@ -2260,6 +2301,8 @@ public final class CrackEngine {
                 // 生产：verdictProvider == null，走真实判定链路（规则一字不改）。
                 // 测试：由注入的 provider 给出确定性结论，其余逻辑（cursor /
                 // 调度 / 记账 / 落盘）仍走同一份生产代码。
+                // 自适应窗口：连续多条无证据超时后缩短单发时限（见 adaptiveWindow 注释）。
+                perItem = adaptiveWindow(consecutiveNoEvidence, basePerItem);
                 VerdictProvider vp = verdictProvider;
                 Attempt a = vp != null
                         ? vp.attemptFor(c.password, i + 1)
@@ -2269,6 +2312,13 @@ public final class CrackEngine {
                             0L, "provider returned null", "");
                 }
                 long itemMs = clock().uptimeMillis() - itemT0;
+                // 更新「连续无证据」计数：TIMEOUT（观察窗口结束、无证据）累加，
+                // 其余任何有结论的 verdict 都清零（说明目标开始给证据，恢复全窗）。
+                if (a.verdict == Verdict.TIMEOUT) {
+                    consecutiveNoEvidence++;
+                } else {
+                    consecutiveNoEvidence = 0;
+                }
 
                 // 挂起/中断发生在这一条执行到一半 —— 它**没有**得到结论。
                 // 不能把它算成「试过了」：cursor 已经推进，续跑时会静默跳过

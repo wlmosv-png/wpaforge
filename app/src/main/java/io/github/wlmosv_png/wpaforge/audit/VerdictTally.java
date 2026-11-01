@@ -23,25 +23,53 @@ package io.github.wlmosv_png.wpaforge.audit;
 public final class VerdictTally {
 
     private int confirmedFail;
+    /**
+     * **推断失败**条数（grade == INFERRED 的 AUTH_FAIL）。
+     *
+     * <p>必须与「已证实失败」分开统计：INFERRED 是推断（M1 重发 / 回连等），
+     * 证据不足以确认密码错。真实现场：14:55 那次显示「已证实失败 284 条」，
+     * 而判词里大量是 {@code ✗m1retry}（推断）。
+     */
+    private int inferred;
     private int inconclusive;
     private int executed;
 
     public void reset() {
         confirmedFail = 0;
+        inferred = 0;
         inconclusive = 0;
         executed = 0;
     }
 
-    /** 记一条结论。SUCCESS 与 ABORTED 不计入任何一类（前者由命中路径单独处理，后者未结案）。 */
-    public void add(CrackEngine.Verdict v) {
+    /**
+     * 记一条结论（**带证据等级**，统计口径的唯一入口）。
+     *
+     * <p>占位实现（修复前）：与旧版一致 —— 忽略等级，AUTH_FAIL 一律计入已证实失败。
+     */
+    public void add(CrackEngine.Verdict v, EvidenceGrade.Level g) {
         if (v == null) return;
         if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) return;
         executed++;
         if (v == CrackEngine.Verdict.AUTH_FAIL) {
-            confirmedFail++;
+            // 只有**可直接验证**的失败（DIRECT）才算已证实；
+            // 推断失败单列，不得伪装成确定结论。
+            if (EvidenceGrade.persistable(g)) confirmedFail++;
+            else inferred++;
         } else if (v == CrackEngine.Verdict.TIMEOUT || v == CrackEngine.Verdict.UNKNOWN) {
             inconclusive++;
         }
+    }
+
+    /** 推断失败的条数（证据不足以确认密码错）。 */
+    public int inferred() {
+        return inferred;
+    }
+
+    /** 记一条结论。SUCCESS 与 ABORTED 不计入任何一类（前者由命中路径单独处理，后者未结案）。 */
+    public void add(CrackEngine.Verdict v) {
+        // 只拿到 verdict 时按**保守默认**处理：AUTH_FAIL -> INFERRED，
+        // 即「没有等级信息就不算已证实失败」。
+        add(v, EvidenceGrade.defaultOf(v));
     }
 
     /** 已证实失败（有失败证据）的条数。 */
@@ -64,6 +92,8 @@ public final class VerdictTally {
      * <p>为空（一条都没执行）时返回 true —— 那种情况由调用方的"未执行"路径处理，不在这里下结论。
      */
     public boolean missProven() {
-        return inconclusive == 0;
+        // 推断失败同样**不是**确证：只要存在推断失败或无结论，
+        // 「未命中」就没有被充分证明。
+        return inconclusive == 0 && inferred == 0;
     }
 }

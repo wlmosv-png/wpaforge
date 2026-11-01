@@ -2,6 +2,7 @@ package io.github.wlmosv_png.wpaforge;
 
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
+import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
 import io.github.wlmosv_png.wpaforge.audit.VerdictTally;
 
 import java.lang.reflect.Constructor;
@@ -51,7 +52,7 @@ public final class C1MissCountsTest {
         tf.setAccessible(true);
         VerdictTally tally = (VerdictTally) tf.get(e);
 
-        for (int i = 0; i < confirmedFail; i++) tally.add(CrackEngine.Verdict.AUTH_FAIL);
+        for (int i = 0; i < confirmedFail; i++) tally.add(CrackEngine.Verdict.AUTH_FAIL, EvidenceGrade.Level.DIRECT);
         for (int i = 0; i < inconclusive; i++) tally.add(CrackEngine.Verdict.TIMEOUT);
         return e;
     }

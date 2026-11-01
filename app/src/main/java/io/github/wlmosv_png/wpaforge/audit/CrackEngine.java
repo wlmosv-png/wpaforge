@@ -2307,7 +2307,7 @@ public final class CrackEngine {
                 rate.add(itemMs);
                 liveRecentAvgMs = rate.avgMs();
                 // 结论分布（只统计、不参与判定）
-                tally.add(a.verdict);
+                tally.add(a.verdict, a.grade);
 
                 // 攒够 20 条写一行汇总。四段分解 + 判定归类，
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。

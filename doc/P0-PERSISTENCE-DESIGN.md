@@ -1,343 +1,440 @@
-# P0 持久化可靠性工程设计
+# P0 持久化可靠性工程设计 · v2
 
-**状态**：设计稿，待审。**尚未修改任何生产代码。**
-**基线**：`344981f`（1.9.32/128）
+**状态**：设计稿 v2，待验收。**零生产代码改动。**
+**基线**：`344981f`（1.9.32/128）· 设计稿 v1 = `2da269c`
 **范围**：B5（原子性）、B6（完整性防线）、B4（并发）
 
----
-
-## 0. 已核实的前提事实
-
-这些是设计的基础，全部经实际核查，不是假设。
-
-| 事实 | 证据 | 影响 |
-|---|---|---|
-| **单进程**：`CrackService` 未声明 `android:process` | `AndroidManifest.xml:63` | 进程内锁足够 |
-| **无跨进程**：全仓无 `ContentProvider` / AIDL / `Messenger` | grep 零命中 | 不需要文件锁 / 不需要 Binder 序列化 |
-| `android.util.AtomicFile` 可用 | `android.jar` 含 `android/util/AtomicFile.class`，`javap` 列出 `startWrite/finishWrite/failWrite/openRead` | 可作为替换机制候选 |
-| 当前 4 处 `delete()+renameTo()` | `TaskQueue:425`、`TriedSet:207`、`HistStore:311`、`RestoreStoreFile:72` | 全部要改 |
-| 18 处 `save`/`update` 调用点，只有 2 处检查返回值 | 见附录 A | 需要全部改造 |
-| 全仓零 `fsync` / `FileChannel` / `AtomicFile` 使用 | grep 零命中 | 当前无任何掉电保证 |
-
-### 真机实测结论（2026-11-01，本机 OnePlus PJX110 / Android 15）
-
-**AtomicFile 功能行为**：用 dex + `app_process` 在本机实跑 5 个场景，全部符合预期：
-
-```
-== 1. 首次写入 ==      base exists=true len=5   new exists=false   readFully=HELLO
-== 2. 覆盖写入 ==      base len=6 content=WORLD2  new exists=false
-== 3. failWrite 回滚 == base len=6 content=WORLD2  new exists=false   ← 原文件完好
-== 4. 未 finish 崩溃 == new exists=true（残留）    base content=WORLD2  ← 原文件完好
-== 5. 读不存在文件 ==  抛 FileNotFoundException
-```
-
-关键：**覆盖写入没有任何 delete 窗口**；`failWrite` 后原文件字节未变；写到一半崩溃只留 `.new`、base 完好。
-
-**finishWrite 是否 fsync**：从本机 `/system/framework/framework.jar` 的 `classes4.dex` 反编译 `Landroid/util/AtomicFile;`，得到实际字节码：
-
-```
-1d9b66: invoke-static {v4}, Landroid/os/FileUtils;.sync:(Ljava/io/FileOutputStream;)Z
-1d9b80: invoke-virtual {v4}, Ljava/io/FileOutputStream;.close:()V
-```
-
-即 **`finishWrite` 确实调用 `FileUtils.sync(FileOutputStream)`（= fsync）**，`failWrite` 同构（1d9bfe 处也是 sync）。
-这是本机 framework 的实际字节码，不是文档推测。
-
-### 仍然未验证（必须标记，不得当成结论）
-
-- **目录项持久化**：`fsync` 只保证文件内容落盘，**不保证 rename 后的目录项**。Android 无 Java API 对目录做 fsync。→ **不能宣称"掉电后一定看到新文件"**。
-- **`File.renameTo()` 在 `/data` 的原子性语义**：POSIX `rename(2)` 同文件系统原子，但 Android `File.renameTo` 的具体实现路径与 SELinux 介入**未实测**。
-- **真机掉电安全**：无实测条件，**本轮不提供任何掉电安全保证**。
+> v2 相对 v1 的改动：补齐 6 项修正，并**修正 v1 的一个事实错误**
+> （v1 声称"AtomicFile 不产生 .bak"，实测证明**它会产生并优先使用 .bak 覆盖 base**）。
 
 ---
 
-## 1. 新旧架构对比
+## §0 已核实的事实（全部来自本机实测，非文档推测）
 
-### 1.1 现状（问题结构）
+### 0.1 进程模型
 
-```
-调用方                      TaskQueue
-  │                            │
-  ├─ update(ctx, task) ───────>│ load(ctx) ──┐   ← 读（可能失败，返回前缀/空）
-  │                            │              │
-  │                            │ 改内存       │
-  │                            │              │
-  │                            └─ save(ctx, list)  ← 无锁整份覆盖
-  │                                   │
-  │                                   ├─ refuseSave: 只拦「读失败 + 写空」
-  │                                   ├─ delete(f)      ← 窗口开始
-  │                                   ├─ write(tmp)
-  │                                   └─ rename(tmp,f) ← 窗口结束；失败被 || exists 掩盖
-  │
-  └─ 返回值：18 处调用点，16 处丢弃
-```
+| 事实 | 证据 |
+|---|---|
+| `CrackService` 无 `android:process` | `AndroidManifest.xml:63` |
+| 全仓无 `ContentProvider` / AIDL / `Messenger` | grep 零命中 |
+| **→ 纯单进程** | `synchronized` 足够 |
 
-三个结构性缺陷：
-1. **读取状态不可表达**：`load()` 只返回 `List`，`loadFailedFlag` 是进程级静态量，与"这一次读取"无关。
-2. **写回无完整性比较**：`save()` 不知道旧文件有多少条。
-3. **写入原子性靠两步**：`delete` 制造窗口，`rename` 失败被 `|| f.exists()` 掩盖。
+### 0.2 AtomicFile 完整文件生命周期（本机 Android 15 实测）
 
-### 1.2 目标架构
+**探针 A：写入流程**
 
 ```
-调用方                      TaskQueue
-  │                            │
-  ├─ update(ctx, task) ───────>│ synchronized (LOCK) {          ← 进程内互斥
-  │                            │   LoadResult r = read();       ← 三态结果
-  │                            │   if (!r.isComplete()) 拒绝写回 ← 新增闸门
-  │                            │   改内存
-  │                            │   boolean ok = write(list);    ← 原子替换
-  │                            │   return ok;                   ← 必须被消费
-  │                            │ }
-  │
-  └─ 检查返回值 → 失败要反馈 UI
+初始          : q.json(11)
+startWrite 后 : q.json(11) + q.json.new(0)     ← base 原地不动，不产生 .bak
+finishWrite 后: q.json(NEW_CONTENT)            ← .new 直接 rename 覆盖 base
+崩溃(未finish) : q.json(THIRD) + q.json.new(7) ← base 完好
+openRead 后   : q.json(THIRD)                  ← 自动删除残留 .new
 ```
 
-四处改变：
-1. **`LoadResult` 三态**：`COMPLETE` / `ABSENT`（文件不存在，合法空）/ `BROKEN`（读失败或解析失败）。
-2. **写回前闸门**：只有 `COMPLETE` 或 `ABSENT` 才允许写回；`BROKEN` 一律拒绝并保留原文件。
-3. **`synchronized` 包住整个「读-改-写」**（单进程已验证）。
-4. **原子替换用 `AtomicFile`**，并显式 `finishWrite` / `failWrite`。
+**探针 B：`.bak` 的语义（关键）**
+
+```
+场景1  只有 .bak、无 base   → openRead 自动恢复: .bak → base，读到 FROM_BAK
+场景2  base 与 .bak 都存在  → openRead 用 .bak 覆盖 base！读到 BAK_VALUE
+```
+
+**字节码佐证**（`/system/framework/framework.jar` 的 `classes4.dex`）：
+
+```
+openRead:
+  iget-object mLegacyBackupName ; exists() ; rename(.bak → base)
+  iget-object mNewName ; exists() && base.exists() ; delete(.new)
+  new FileInputStream(base)
+
+finishWrite:
+  FileUtils.sync(fos)  ← fsync，已确认
+  close
+  AtomicFile.rename(.new → base)
+```
+
+### 0.3 **由此发现的严重冲突（v1 遗漏）**
+
+当前 `TaskQueue.save()` 在清空队列时**手动写 `queue.json.bak`** 作为备份。
+而 `AtomicFile.openRead()` 把 `<base>.bak` **当作崩溃遗留备份，优先覆盖 base**。
+
+→ **引入 AtomicFile 后，一次"清空队列"写出的 `.bak`，会在下次读取时把清空前的数据"恢复"回来，或直接回滚最新写入。**
+
+**因此：应用层自己的一切备份文件，必须改为不复用 `<base>.bak` 的命名。**
+
+### 0.4 仍然未验证
+
+| 项 | 原因 |
+|---|---|
+| 目录项持久化 | Android 无 Java API 可 fsync 目录 |
+| 真机掉电安全 | 无测试条件 |
+| 其他 ROM/版本 AtomicFile 行为 | 本机实测仅代表 Android 15 / OnePlus |
 
 ---
 
-## 2. 文件读写事务流程
+## §1 读取状态模型（修正 1 + 2）
 
-### 2.1 读取：三态模型
+v1 用三态（COMPLETE/ABSENT/BROKEN），v2 拆成**四态 + 一个隔离态**。
 
 ```java
-public enum ReadState { COMPLETE, ABSENT, BROKEN }
-
-public static final class LoadResult {
-    public final ReadState state;
-    public final List<Task> tasks;   // COMPLETE/ABSENT 时有效；BROKEN 时为空
-    public final String brokenReason; // BROKEN 时的诊断
+public enum ReadState {
+    COMPLETE,     // 文件存在、结构完整、全部元素解析成功
+    ABSENT,       // 文件不存在（合法空状态）
+    CORRUPT,      // 文件存在，但内容结构损坏（JSON 非法 / 元素类型错 / 截断）
+    IO_ERROR      // 文件存在性未知或读取过程发生 IO 异常（权限、SELinux、IO 故障）
 }
 ```
 
-判定规则：
+**CORRUPT 与 IO_ERROR 的判定规则（互斥）**：
 
-| 情形 | state | tasks |
+| 情形 | 判定 | 依据 |
 |---|---|---|
-| 文件不存在 | `ABSENT` | 空（合法） |
-| 文件存在、整体 JSON 解析成功、每个元素都能转成 Task | `COMPLETE` | 全部 |
-| 整体 JSON 解析失败 / 任一元素转换失败 / IO 异常 | `BROKEN` | **空**（必须 `clear()`，不再返回前缀） |
+| `FileNotFoundException` 且 `!file.exists()` | `ABSENT` | 文件确实不在 |
+| `FileNotFoundException` 但 `file.exists()` | `IO_ERROR` | 存在性矛盾 = 访问受限 |
+| `IOException`（权限/IO 故障） | `IO_ERROR` | 不是内容问题 |
+| 读到字节，但 `new JSONArray` 抛 | `CORRUPT` | **内容结构**确实坏 |
+| JSON 合法，但某元素 `getJSONObject` 抛 | `CORRUPT` | 元素结构坏 |
+| 读到 0 字节 / 空白 | `CORRUPT` | 有文件无内容 |
 
-**关键纠正（对应你的第 1 条）**：`BROKEN` 时返回**确定性空**，且**禁止作为完整数据写回**。不再依赖"前缀"这种半状态。
+**核心区别（你的第 2 点）**：
 
-### 2.2 写入：事务顺序
-
-```
-1. 检查闸门：源读取状态必须是 COMPLETE 或 ABSENT
-   └─ 若是 BROKEN → 立即返回 Failure(BROKEN_READ)，原文件一字不动
-
-2. 完整性比较（新增）：
-   └─ 若 新条数 < 旧文件条数 且 本次不是显式删除 → 返回 Failure(SHRINK_REFUSED)
-
-3. 原子写入（AtomicFile）：
-   FileOutputStream s = af.startWrite();
-   try {
-       s.write(bytes);
-       af.finishWrite(s);     // 内部 close + sync + rename
-       return Success;
-   } catch (IOException e) {
-       af.failWrite(s);       // 删除临时文件，保留原文件
-       return Failure(WRITE_FAILED);
-   }
-```
-
-**关键纠正（对应你的第 2 条）**：不再用裸 `File.renameTo`。改用 `AtomicFile`，并**明确标注**它的保证边界（§6）。
-
-### 2.3 「显式删除」如何表达
-
-`save(ctx, list)` 无法区分"用户删了两条"和"读到残缺数据"。新增重载：
-
-```java
-public static boolean save(Context ctx, List<Task> tasks, WriteIntent intent);
-public enum WriteIntent { NORMAL, EXPLICIT_SHRINK }
-```
-
-只有 `remove()` / `clearFinished()` / 用户清空这几处传 `EXPLICIT_SHRINK`。其余一律 `NORMAL`（受完整性闸门约束）。
+- **CORRUPT** → 允许隔离（把文件改名保护起来）
+- **IO_ERROR** → **禁止任何写操作、禁止隔离**（文件可能完好，只是读不到）
+  - 返回失败，上层重试；
+  - **原文件一字不动**。
 
 ---
 
-## 3. 并发控制模型
+## §2 状态转换图（修正 1）
 
-### 3.1 进程模型（已核实）
-
-- `CrackService` 无 `android:process` → **与 UI 同进程**
-- 无 ContentProvider / AIDL → **无跨进程访问**
-- 结论：**进程内 `synchronized` 足以覆盖全部读写**
-
-### 3.2 锁的设计
-
-```java
-private static final Object LOCK = new Object();   // 类级，跨实例共享
+```
+                    ┌──────────────┐
+                    │   启动 / 读取 │
+                    └──────┬───────┘
+                           │
+         ┌─────────────────┼─────────────────┬──────────────┐
+         │                 │                 │              │
+      file 不存在      读取成功           内容损坏        IO 异常
+         │                 │                 │              │
+         ▼                 ▼                 ▼              ▼
+    ┌────────┐       ┌──────────┐      ┌─────────┐    ┌──────────┐
+    │ ABSENT │       │ COMPLETE │      │ CORRUPT │    │ IO_ERROR │
+    └────┬───┘       └────┬─────┘      └────┬────┘    └────┬─────┘
+         │                │                 │              │
+         │ 允许写          │ 允许写           │ 隔离后进隔离态 │ 禁写、可重试
+         │                │                 │              │
+         │                │                 ▼              │
+         │                │          ┌──────────────┐      │
+         │                │          │ QUARANTINED  │      │
+         │                │          │（持久化保存） │      │
+         │                │          └──────┬───────┘      │
+         │                │                 │              │
+         │                │      用户显式"确认解除"          │
+         │                │                 │              │
+         │                │                 ▼              │
+         │                │          回到 ABSENT ──────────┘
+         │                │        （需用户明确操作）
+         ▼                ▼
+      ┌────────────────────────┐
+      │   允许写入（受闸门约束）  │
+      └────────────────────────┘
 ```
 
-**必须包住的范围**（这是关键——只包 `save` 不够）：
+### 2.1 关键不变式
 
-| 方法 | 是否入锁 | 理由 |
-|---|---|---|
-| `load(ctx)` | ✅ | 读也被写打断 → 读到半写状态 |
-| `save(ctx, list, intent)` | ✅ | 写入本身 |
-| `update` / `updateProgress` / `remove` / `clearFinished` / `enqueue` | ✅ | 整个「读-改-写」必须是一个临界区 |
-| `nextPending` / `hasWork` / `hasPending` | ⚠️ 只读，入锁保证一致性快照 |
+1. **`IO_ERROR` 永不触发隔离，永不写盘。**
+2. **`CORRUPT` 隔离后 → `QUARANTINED`，此后所有写入一律拒绝**，直到用户显式解除。
+3. **`QUARANTINED` 状态持久化在磁盘**（不是内存标志），**进程重启后仍有效**。
+4. **解除隔离必须由用户显式确认**（UI 上明确提示"这会丢失原队列数据"），代码不得自动解除。
 
-**记录**：`TriedSet.save`、`HistStore.append/rewrite` 各自独立锁（不同文件，无嵌套）。
+### 2.2 这堵住了 v1 的漏洞
 
-**禁止**：临界区内做 IO 之外的调用（不允许在锁内回调 UI）。
+v1：`BROKEN` → 重命名 corrupt → 下次读到"文件不存在" → `ABSENT` → **放行写入**。
 
-### 3.3 与 UI 线程的交互
-
-`MainActivity:5490` 目前对 N 个任务**循环 N 次 `update()`**。改造后：
-- 仍可在 UI 线程调用（`synchronized` 是轻量锁，非阻塞 IO 需评估）
-- **更好**：新增 `updateAll(ctx, List<Task>)` 单次事务，把 N 次 `load+save` 降为 1 次
+v2：重命名 corrupt 的**同时**写入隔离标记 → 下次读：`ABSENT` + **`QUARANTINED` 标记存在** → **拒绝写入**，直到用户解除。
 
 ---
 
-## 4. 崩溃恢复流程
+## §3 隔离状态持久化方案（修正 1）
 
-### 4.1 文件状态矩阵
+### 3.1 存放位置与格式
 
-| 磁盘状态 | 含义 | 恢复动作 |
+```
+files/quarantine/<storeId>.quarantine
+```
+
+内容（JSON，单行）：
+
+```json
+{"store":"queue.json","since":1793517600000,"reason":"CORRUPT","evidence":"queue.json.corrupt-1793517600000","detail":"JSONArray parse failed at offset 0"}
+```
+
+字段：
+
+| 字段 | 含义 |
+|---|---|
+| `store` | 哪个存储（`queue.json` / `history.csv` / `tried/*`） |
+| `since` | 隔离开始的毫秒时间戳 |
+| `reason` | `CORRUPT`（当前只会是它；`IO_ERROR` 不隔离） |
+| `evidence` | 被隔离文件的实际路径（corrupt 文件名） |
+| `detail` | 诊断信息（异常摘要，不含敏感数据） |
+
+### 3.2 写入时机与原子性
+
+- 隔离文件本身用 **`AtomicFile`** 写（它不会有 `.bak` 冲突，因为隔离文件我们从不手动写 `.bak`）。
+- **顺序**：先写隔离标记 → **再**重命名 corrupt 文件。
+  - 若在两步之间崩溃：标记存在但 corrupt 文件还在 → 下次读仍是 `CORRUPT` → 重新执行隔离（幂等）。
+  - 反过来则会出现"文件被移走但没标记"的窗口 → 所以顺序不能颠倒。
+
+### 3.3 解除流程（必须用户显式确认）
+
+```
+用户点「解除隔离并重新开始」
+  → UI 弹确认框，明确写出：
+      · 被隔离的文件路径
+      · 隔离时间
+      · 后果：当前队列将从空开始，旧数据保留在 corrupt 文件中
+  → 用户确认
+  → 删除隔离标记（AtomicFile.delete）
+  → 返回 ABSENT
+```
+
+**代码中不得存在任何自动解除路径**（重启、清缓存、重装都不能解除）。
+
+---
+
+## §4 AtomicFile 完整文件状态矩阵（修正 3）
+
+**这是 v1 最欠缺的部分。以下全部基于实测。**
+
+### 4.1 文件种类
+
+| 文件 | 归属 | 说明 |
 |---|---|---|
-| `queue.json` 正常 | 正常 | 无 |
-| `queue.json` + `queue.json.new` 残留 | AtomicFile 写中途崩溃 | `AtomicFile.openRead()` 自身忽略 `.new`（**需真机确认**）；启动时删除 `.new` |
-| 仅 `.new` 残留，`queue.json` 不存在 | 极端：rename 前崩溃 | **保留 `.new`**，人工可恢复；不自动重命名（避免把半截当完整） |
-| `queue.json` 损坏（JSON 非法） | 数据损坏 | **不覆盖**；重命名为 `queue.json.corrupt-<ts>` 保留证据；以空队列启动并向用户明确报告 |
-| `queue.json.bak` 存在 | 上次是清空操作 | 保留，不自动恢复 |
+| `queue.json` | 应用（base） | 唯一真相 |
+| `queue.json.new` | **AtomicFile** | 写事务中的临时文件 |
+| `queue.json.bak` | **AtomicFile（注意！）** | `openRead` 会优先用它覆盖 base |
+| `queue.json.tmp` | 旧版本遗留 | v1 之前的写入残留 |
+| `queue.json.snapshot-<ts>` | **应用（新）** | 替代原 `.bak` 的备份，命名避开 AtomicFile |
+| `queue.json.corrupt-<ts>` | 应用 | 隔离证据 |
 
-### 4.2 关键纠正（对应你的要求）
+### 4.2 状态矩阵（每种组合 + 处理 + 测试）
 
-- **文件损坏时保留原始文件和可恢复证据**：`BROKEN` 时把原文件**重命名**为 `queue.json.corrupt-<timestamp>`，而不是原地不动（否则下次还会读失败）。同时写入一条 `queue.json.corrupt-<ts>.reason` 说明失败原因。
-- **临时文件/备份文件有明确策略**：启动时执行一次 `recoverFiles()`：
-  - 删除 `.new`（AtomicFile 的临时文件，若 base 存在）
-  - 若 base 不存在但有 `.new`，保留并上报
-  - `.corrupt-*` 文件保留 N 份（如 3 份），超出删除最旧
-- **`loadFailedFlag` 生命周期重构**：从"进程级静态量"改为"每次读取的返回值的一部分"（`LoadResult.state`）。彻底删除全局标志。→ 从根本上消除"卡死无重置入口"的问题。
+| # | base | .new | .bak | .tmp | 处理 | 测试 |
+|---|---|---|---|---|---|---|
+| M1 | ✅ | — | — | — | 正常读 | T-M1 |
+| M2 | ✅ | ✅ | — | — | **让 AtomicFile 自己处理**（openRead 会删 .new）；应用层不动 | T-M2 |
+| M3 | ❌ | ✅ | — | — | **不自动改名**！保留 .new，标记 `QUARANTINED`（原因 `ORPHAN_NEW`），等人工 | T-M3 |
+| M4 | ✅ | — | ✅ | — | **AtomicFile 会用 .bak 覆盖 base** → 应用层**必须在启动时先自己检测并移走 .bak**，否则数据回滚 | T-M4 |
+| M5 | ❌ | — | ✅ | — | AtomicFile 会自动恢复 .bak→base。**允许**（这是它的设计），但恢复后需校验内容；校验失败 → QUARANTINED | T-M5 |
+| M6 | ✅ | — | — | ✅ | 验证 base 完整性 → 通过则把 .tmp 归档为 `.tmp.archived-<ts>`；**不直接删除** | T-M6 |
+| M7 | ❌ | — | — | ✅ | **保留 .tmp**，检查其完整性；完整则提示用户可恢复（不自动改名） | T-M7 |
+| M8 | ✅(坏) | — | — | ✅ | **两份都保留**，都进 corrupt 存档，标记 `QUARANTINED`（原因 `AMBIGUOUS`） | T-M8 |
+| M9 | ❌ | ✅ | ✅ | — | 无法确认哪份完整 → `QUARANTINED`（`AMBIGUOUS`），两份都保留 | T-M9 |
+| M10 | ✅ | ✅ | ✅ | ✅ | 同上，全部保留 + `QUARANTINED` | T-M10 |
 
-### 4.3 TriedSet 的 dirty 语义（对应你的要求）
+### 4.3 关键规则
+
+1. **"AtomicFile 优先执行自身恢复逻辑"**：M2/M5 由 AtomicFile 处理，**应用层 recovery 不得提前删 `.new` 或 `.bak`**。
+2. **例外**：M4（base + .bak 同时存在且 base 完好）—— 因为实测证明 AtomicFile 会**用 .bak 覆盖完好的 base**，这是数据回滚风险。应用层必须在 `openRead` 之前把 `.bak` 移走（改名 `.bak.stale-<ts>`）。
+3. **旧 `.tmp` 一律不无条件删除**（见 §5）。
+
+### 4.4 应用层备份改名（解决 §0.3 冲突）
+
+`TaskQueue.save()` 原逻辑（清空时写 `queue.json.bak`）改为：
 
 ```java
-// 错误（现状）：save 里 rename 之前就 dirty=false
-// 正确：
-public boolean save(File f) {
-    ... 写入 ...
-    boolean ok = <原子替换结果>;
-    if (ok) dirty = false;      // 只有成功才清
-    return ok;
+File snap = new File(dir, FILE + ".snapshot-" + ts);   // 不用 .bak
+```
+
+并保留最近 3 份，超出删最旧。
+
+---
+
+## §5 旧 `.tmp` 恢复决策表（修正 5）
+
+**禁止启动时无条件删除。**
+
+| # | base 状态 | .tmp 状态 | 决策 |
+|---|---|---|---|
+| D1 | 完整可读 | 存在 | 归档为 `.tmp.archived-<ts>`（保留 3 份），**不删**；日志记录 |
+| D2 | 不存在 | 存在且完整 | **保留**，提示"发现一份可能可恢复的数据"，由用户决定是否恢复 |
+| D3 | 不存在 | 存在但损坏 | **保留**并改名 `.tmp.corrupt-<ts>`，进 QUARANTINED(`AMBIGUOUS`) |
+| D4 | 损坏 | 存在 | **两份都保留**，都进 corrupt 存档，QUARANTINED(`AMBIGUOUS`) |
+| D5 | 不存在 | 不存在 | 正常，ABSENT |
+
+**"完整性"判定**：能完整解析成 `List<Task>` 且每个元素合法。
+
+**决策表的核心原则（你的要求）**：旧文件可能是唯一幸存副本，**清理目录不能牺牲历史数据**。
+
+---
+
+## §6 Task 对象并发安全设计（修正 4）
+
+### 6.1 现状核查
+
+| 方法 | 返回 | 问题 |
+|---|---|---|
+| `load(ctx)` | `List<Task>`，元素是**同一个可变对象** | 调用方拿到后可直接改字段，绕过锁 |
+| `nextPending(ctx)` | `Task`（来自 `load`） | 同上 |
+| `update(ctx, task)` | 直接用传入对象覆盖列表元素 | 传进来的对象若是外部持有引用 → 锁外修改 |
+
+**结论**：确实是"返回内部可变对象"。
+
+### 6.2 设计
+
+```java
+// Task 增加快照
+public Task copy() { ... }        // 深拷贝（所有字段含 String / List）
+
+// load 返回快照
+public static List<Task> load(Context ctx) {
+    synchronized (LOCK) {
+        LoadResult r = read();
+        if (r.state != COMPLETE && r.state != ABSENT) return Collections.emptyList();
+        List<Task> out = new ArrayList<>(r.tasks.size());
+        for (Task t : r.tasks) out.add(t.copy());   // 快照
+        return out;
+    }
 }
 ```
 
-调用方 `flushTried()` 必须检查返回值；失败时保留 dirty，下次重试。
+### 6.3 统一修改入口
+
+**禁止外部直接改 `Task` 字段后调 `update()`。** 改为：
+
+```java
+public static boolean mutate(Context ctx, String taskId, Consumer<Task> f);
+```
+
+- 在锁内：读 → 找到 task → 应用 `f` → 写回。
+- `update(ctx, task)` 保留但**内部改为按 id 合并**（不用整对象替换）。
+
+### 6.4 不变式
+
+> **任何 `Task` 实例一旦离开 `TaskQueue` 的锁范围，就是只读快照。**
+> 所有状态修改必须经 `mutate()`。
 
 ---
 
-## 5. 失败注入测试方案
+## §7 事务流程（v1 基础上按四态细化）
 
-### 5.1 接缝设计（必须，否则测不到真实代码）
+```
+写入入口（update / mutate / remove / enqueue / save）
+  │
+  ├── synchronized (LOCK)
+  │
+  ├── 1. 检查隔离标记
+  │      if (quarantineExists()) → return Failure(QUARANTINED)
+  │
+  ├── 2. 读取
+  │      LoadResult r = read()
+  │      switch (r.state) {
+  │        case IO_ERROR → return Failure(IO_ERROR)      // 不写、不隔离
+  │        case CORRUPT  → quarantine(r) ; return Failure(CORRUPT)
+  │        case ABSENT   → 基准 = 空列表
+  │        case COMPLETE → 基准 = r.tasks
+  │      }
+  │
+  ├── 3. 完整性比较（NORMAL 意图下）
+  │      if (intent == NORMAL && 新条数 < 旧条数) → return Failure(SHRINK_REFUSED)
+  │
+  ├── 4. 原子写入（AtomicFile）
+  │      startWrite → write → finishWrite（内部 fsync + rename）
+  │      失败 → failWrite → return Failure(WRITE_FAILED)
+  │
+  └── 5. 备份（仅在 EXPLICIT_SHRINK 时）
+         写 .snapshot-<ts>（不使用 .bak）
+```
 
-`TaskQueue` 目前唯一耦合是 `ctx.getFilesDir()`。引入**包级可见**的存储抽象：
+---
+
+## §8 失败注入测试方案（修正 6）
+
+### 8.1 接缝
 
 ```java
-// 生产：直接包装 File
 interface Store {
     boolean exists();
     long length();
     byte[] read() throws IOException;
-    void write(byte[] data) throws IOException;   // 内部用 AtomicFile
+    WriteHandle beginWrite() throws IOException;   // 对应 startWrite
+    boolean finish(WriteHandle h);                 // 对应 finishWrite
+    void abort(WriteHandle h);                     // 对应 failWrite
     boolean delete();
     boolean renameTo(String name);
+    String[] list();                               // 用于矩阵测试
 }
-
-static void setStoreForTest(Store s);   // 包级，生产无调用者
+static void setStoreForTest(Store s);              // 包级
 ```
 
-**这不算改生产逻辑**——所有路径仍走同一个 `write()` 实现，只是底层 `File` 可被替换。
+生产实现包装 `AtomicFile`，行为不变。
 
-### 5.2 失败注入点
+### 8.2 用例
 
-| 测试 | 注入 | 断言 |
+| ID | 注入 | 断言 |
 |---|---|---|
-| **F1 读失败+写少**（B6 核心） | `read()` 抛 IOException | `update()` 返回 false；原文件字节未变 |
-| **F2 部分解析** | 文件内容 `[合法,合法,非法]` | `state=BROKEN`；不写回；原文件保留为 `.corrupt-*` |
-| **F3 写中途失败** | `write()` 写一半后抛 | 原文件完好；返回 false |
-| **F4 rename 失败** | `write()` 内 rename 抛 | 原文件完好；返回 false（不是 true） |
-| **F5 并发丢更新**（B4） | 两线程各 remove 一条 | 终态必须 2 条（当前真实类实测 95.7% 失败） |
-| **F6 TriedSet dirty** | save 失败 | `isDirty()` 仍为 true；下次 flush 会重试 |
-| **F7 空覆盖仍允许** | 显式 EXPLICIT_SHRINK + 空列表 | 允许，且写 `.bak` |
-| **F8 崩溃残留** | 预置 `.new` 文件 | 启动 recovery 清理，base 不受影响 |
+| T-M1..M10 | 预置不同文件组合 | 见 §4.2 表 |
+| T-R1 | `read()` 抛 `FileNotFoundException` 且 `exists()==false` | `ABSENT`，允许写 |
+| T-R2 | `read()` 抛 `IOException` | `IO_ERROR`；**原文件字节未变**；返回失败 |
+| T-R3 | 内容为非法 JSON | `CORRUPT`；隔离标记被创建；corrupt 文件存在 |
+| T-R4 | `[合法,合法,非法]` | `CORRUPT`（不是"部分成功"）；不写回 |
+| T-Q1 | 隔离标记存在 | 任何写操作返回 `QUARANTINED`；盘上无变化 |
+| T-Q2 | 隔离后重开（模拟重启） | 仍 `QUARANTINED` |
+| T-Q3 | 用户解除后 | 变 `ABSENT`，可写 |
+| T-W1 | `finish()` 返回 false | 返回失败；原文件完好；**`dirty`/状态未清** |
+| T-W2 | 新条数 < 旧条数（NORMAL） | 拒绝；盘上不变 |
+| T-W3 | 新条数 < 旧条数（EXPLICIT_SHRINK） | 允许；生成 `.snapshot-<ts>` |
+| T-C1 | 两线程各 `mutate` 一次 | 两条修改都生效（B4） |
+| T-C2 | `load()` 后改返回对象 | 不影响盘上（快照隔离） |
+| T-T1 | base 完好 + .tmp 存在（D1） | .tmp 被归档不删除 |
+| T-T2 | base 缺失 + .tmp 完好（D2） | .tmp 保留，报可恢复 |
+| T-T3 | base 损坏 + .tmp 存在（D4） | 两份都保留；QUARANTINED |
+| T-B1 | base 与 .bak 同时存在（M4） | .bak 被移走，base 未被覆盖 |
 
-### 5.3 真实类 vs 桩
+### 8.3 真实类 vs 桩
 
-- **F1/F5/F6/F7**：可直接用真实 `TaskQueue` + `setStoreForTest`（无需 Android Context）
-- **F2/F3/F4/F8**：`org.json` 在桌面 android.jar 是桩 → **必须在真机/dex 上跑**（标记为未验证直到真机通过）
-
----
-
-## 6. Android 真机验证边界
-
-| 保证 | 桌面可验 | 真机可验 | 无法验证 |
-|---|---|---|---|
-| `AtomicFile` 可用且行为如预期 | ❌（桩） | ✅ **已实测通过（5/5）** | — |
-| `AtomicFile.finishWrite` 是否 fsync | ❌ | ✅ **已反编译确认调用 FileUtils.sync** | — |
-| 目录项持久化 | ❌ | ❌ | **无 Java API，无法验证** |
-| `rename(2)` 原子性 | ⚠️ 桌面 JVM 可验 | ⚠️ 需 root 注入故障 | **目录项持久化无 API** |
-| JSON 元素级异常行为 | ❌（桩） | ✅ | — |
-| 并发丢更新 | ✅（已实测 1913/2000） | — | — |
-| 掉电安全 | ❌ | ❌ | **本轮无法提供** |
-
-**明确声明**（依据上述实测）：
-- 可以宣称：**文件内容 fsync 成立**（finishWrite 内部调 `FileUtils.sync`，本机字节码已确认）。
-- 可以宣称："移除了自身制造的 delete 窗口"（实测覆盖写入无 delete、failWrite 原文件完好）。
-- 可以宣称："写入失败不再被报告为成功"（`failWrite` + 显式返回值）。
-- **不宣称**"掉电绝对安全"——目录项持久化无 API 可保证，这是平台限制，不是实现缺陷。
-- 复现命令见 §7。
+- **可在桌面 JVM 跑**：`TaskQueue` 全部（有了 `setStoreForTest`）
+- **必须在真机跑**：涉及 `org.json` 元素级异常（android.jar 是桩）
+- **已实测通过**：AtomicFile 的 5 个场景 + .bak 语义（见 §0.2）
 
 ---
 
-## 附录 A：18 处 save/update 调用点（需全部检查返回值）
+## §9 边界声明（不得含糊）
 
-见 `TaskQueue.java` / `CrackService.java` / `MainActivity.java` 中的调用点清单（审计报告 §B4-a 已列出 15 处 + `enqueue` 内 1 处 + `RestoreJournal` 相关 2 处）。
-
-具体改造：每处改为 `if (!TaskQueue.update(...)) { 记录并反馈 }`。
+| 保证 | 状态 |
+|---|---|
+| 文件内容 fsync | ✅ 本机字节码确认 + 实测。**可宣称** |
+| 无 delete 窗口 | ✅ 实测：startWrite 不删 base。**可宣称** |
+| 写入失败不改动原文件 | ✅ 实测：failWrite 后 base 完好。**可宣称** |
+| 隔离状态跨重启有效 | ✅ 设计为磁盘文件（待实现验证） |
+| 目录项持久化 | ❌ **无 API**，不宣称 |
+| 真机掉电安全 | ❌ **未测**，不宣称 |
+| 其他 ROM 行为一致 | ❌ 本机实测仅代表 Android 15 / OnePlus |
 
 ---
 
-## 附录 B：分阶段实施顺序（每阶段先写失败测试）
+## §10 分阶段（每阶段先写失败测试）
 
 | 阶段 | 内容 | 前置 |
 |---|---|---|
-| P0-0 | 引入 `Store` 接缝 + `setStoreForTest`（不改变行为） | — |
-| P0-1 | 写 F1/F5 失败测试 → 当前必红 | P0-0 |
-| P0-2 | `LoadResult` 三态 + 闸门 | P0-1 |
-| P0-3 | `AtomicFile` 替换 + 返回值语义 | P0-2 |
-| P0-4 | `synchronized` + `updateAll` | P0-3 |
-| P0-5 | `TriedSet` dirty 修复 + `recoverFiles()` | P0-4 |
+| P0-0 | `Store` 接缝 + `setStoreForTest`（不改行为） | — |
+| P0-1 | 写 T-R1..R4 失败测试 → 必红 | P0-0 |
+| P0-2 | 四态 `ReadResult` + 隔离标记 | P0-1 |
+| P0-3 | AtomicFile 接入 + `.bak` 冲突处理（M4）+ 备份改名 | P0-2 |
+| P0-4 | `synchronized` + `mutate()` + 快照 | P0-3 |
+| P0-5 | `.tmp` 决策表 D1..D5 + 启动 recovery | P0-4 |
 | P0-6 | 18 处调用点返回值检查 | P0-5 |
-| P0-7 | 真机 dex 跑 F2/F3/F4/F8 | P0-6 |
-
-**每阶段结束必须**：完整回归 + `git diff` 检查 + 真实测试输出。
+| P0-7 | 真机跑 T-M*/T-R4/T-C1 | P0-6 |
 
 ---
 
-## 7. 实测复现步骤（可重跑）
+## 附录：v1 → v2 修正对照
 
-```bash
-# 1. 编译探针（linux 环境）
-javac --release 17 -cp android.jar -d cls src/AtomicFileProbe.java
-java -cp d8.jar com.android.tools.r8.D8 --min-api 26 --lib android.jar \
-     --output dex cls/AtomicFileProbe.class
-cp dex/classes.dex /data/local/tmp/afx/
-
-# 2. 设备上跑（android 环境）
-cd /data/local/tmp/afx
-CLASSPATH=/data/local/tmp/afx/classes.dex app_process /system/bin AtomicFileProbe
-
-# 3. 反编译 framework 确认 fsync（android 环境）
-cd /data/local/tmp/afx && unzip -o -q /system/framework/framework.jar 'classes*.dex'
-/apex/com.android.art/bin/dexdump -d classes4.dex > dd.txt
-grep -n "Landroid/util/AtomicFile;" dd.txt   # 定位类
-# 该类内可见: invoke-static {v4}, Landroid/os/FileUtils;.sync:...
-```
+| 你的要求 | v1 的做法 | v2 的做法 |
+|---|---|---|
+| 1. BROKEN→ABSENT 漏洞 | 未覆盖 | 四态 + 持久化隔离标记 `QUARANTINED` |
+| 2. CORRUPT vs IO_ERROR | 混为 BROKEN | 明确拆分，IO_ERROR 禁写禁隔离 |
+| 3. AtomicFile 完整生命周期 | 只考虑 .new | 实测 .bak 会被优先使用；给出 10 组矩阵 + M4 冲突处理 |
+| 4. Task 并发安全 | 未涉及 | `copy()` 快照 + `mutate()` 统一入口 |
+| 5. 旧 .tmp 处理 | 无条件清理 | D1..D5 决策表，一律不删 |
+| 6. 失败注入测试 | 部分 | 补齐 T-M*/T-R*/T-Q*/T-W*/T-C*/T-T*/T-B* |

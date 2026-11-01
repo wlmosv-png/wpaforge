@@ -51,6 +51,26 @@ public class AuthCastTest {
         check("SSID 不一致（别的网络失败）→ 不放行",
                 !WifiAuthFailureWatcher.ssidMatches("211", "B214"));
 
+        // clear()：发命令前清零跨轮残留（2026-11-01 漏判审计新增）
+        WifiAuthFailureWatcher w = new WifiAuthFailureWatcher(null);
+        // 模拟上一条候选（错误密码）留下一次失败广播（反射写入私有字段）
+        try {
+            java.lang.reflect.Field fAt = WifiAuthFailureWatcher.class.getDeclaredField("lastErrorAt");
+            fAt.setAccessible(true);
+            fAt.setLong(w, start + 999_000L);
+            java.lang.reflect.Field fSsid = WifiAuthFailureWatcher.class.getDeclaredField("lastErrorSsid");
+            fSsid.setAccessible(true);
+            fSsid.set(w, "B214");
+        } catch (Throwable t) {
+            throw new RuntimeException("反射置位失败: " + t, t);
+        }
+        check("残留广播已记录 → lastErrorAt 非零", w.lastErrorAt() > 0L);
+        w.clear();
+        check("clear 后 lastErrorAt 归零", w.lastErrorAt() == 0L);
+        check("clear 后 SSID 残留清空", w.lastErrorSsid() == null);
+        check("clear 后旧失败不再触发早退",
+                !WifiAuthFailureWatcher.authErrorImpliesWrongKey(w.lastErrorAt(), start + 1_000_000L, false));
+
         System.out.println("广播判据: pass=" + pass + " fail=" + fail);
         if (fail > 0) throw new RuntimeException("广播判据有用例失败");
     }

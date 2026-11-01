@@ -48,7 +48,8 @@ public final class WifiAuthFailureWatcher {
     private volatile int errorCount = 0;
 
     public WifiAuthFailureWatcher(Context ctx) {
-        this.appCtx = ctx.getApplicationContext();
+        // 容忍 null：纯逻辑自测时不需要真实 Context（start() 之外的方法都不碰 appCtx）。
+        this.appCtx = ctx == null ? null : ctx.getApplicationContext();
     }
 
     /** 注册监听。可重复调用。 */
@@ -106,6 +107,21 @@ public final class WifiAuthFailureWatcher {
 
     /** 认证失败广播累计次数（排查用） */
     public int errorCount() { return errorCount; }
+
+    /**
+     * 清空「最近一次认证失败」的跨轮残留（每条候选发命令前调用）。
+     *
+     * <p>为什么必须有它（2026-11-01 漏判审计）：{@code lastErrorAt}/{@code lastErrorSsid}
+     * 是实例级、跨轮不清零。虽然判定条件 {@code errorAt > attemptStartAt} 用时间戳
+     * 挡「上一条的失败」，但广播是异步投递的 —— 第 N 条（错误密码）的认证失败广播
+     * 若延迟到第 N+1 条（正确密码）发命令之后才到达，且 120ms 复核窗口内成功证据
+     * 尚未出现，第 N+1 条就会被抢答成 AUTH_FAIL（漏判）。发命令前清零，让每条候选
+     * 只认「自己窗口内新到的失败广播」。
+     */
+    public void clear() {
+        lastErrorAt = 0L;
+        lastErrorSsid = null;
+    }
 
     private static String clean(String s) {
         if (s == null) return null;

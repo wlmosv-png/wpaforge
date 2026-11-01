@@ -1137,6 +1137,14 @@ public final class CrackEngine {
         final long commandAt = clock().uptimeMillis();
         statPrepMs = commandAt - statT0;
 
+        // Clear the previous round's auth-failure broadcast residue before sending.
+        // Broadcast delivery is async: round N's failure, arriving after round N+1's
+        // command, would be misread as N+1's failure (false negative). After clear(),
+        // authWatch only accepts failures arriving after this command.
+        if (authWatch != null) {
+            authWatch.clear();
+        }
+
         // 记录命令前的当前 SSID 与 netId。
         // 若命令后系统回连到别的已保存网络，我们不能把那个连接算到这条候选头上。
         // netId 是更强的判据：即使 SSID 相同，只要 netId 变了就是新建立的联系。
@@ -1182,7 +1190,13 @@ public final class CrackEngine {
                 + " pw=" + password.length() + " timeout=" + timeoutMs
                 + " ssidBefore=" + ssidBefore);
 
-        long deadline = t0 + timeoutMs;
+        // 看门狗从「命令真正发出」起算，前置清理（forget / 净检 / 断开）不侵占握手窗口。
+        // 历史缺陷：deadline = t0 + timeoutMs，t0 是 tryOne 入口时刻，而 commandAt 之前
+        // 还有 forgetTargetByShell（最多 2 轮）+ netIdOfTarget 回读 + disconnectAndVerify
+        // （最长 12s）。连续多次错误尝试让目标 AP 进入关联退避后，前置清理越变越慢，
+        // 真正留给握手的窗口被压到临界值以下 —— 正确密码在第 N 条（而非前几条）时
+        // 握手来不及完成就被判超时（漏判）。改为从 commandAt 起算，握手永远有完整时限。
+        long deadline = commandAt + timeoutMs;
         // 捕获握手第 1 帧后可动态延长看门狗，只延长一次
         boolean m1Extended = false;
         // M1 重发 = 密码错误的早期信号（实测：第 2 次 M1 稳定出现在第 1 次之后约 0.96 秒）。

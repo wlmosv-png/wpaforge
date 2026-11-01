@@ -205,8 +205,8 @@ public final class P01PersistenceFailureTest {
         info("1b FNFE+文件存在: size=" + ioErr.size() + " flag=" + flagIo);
         must("1b 前提：注入生效且返回空列表", ioErr.isEmpty(), "size=" + ioErr.size());
         should("1b 「存在但读不到」必须判 IO_ERROR 而非 ABSENT", "T-R1b",
-                false,
-                "当前无四态：仅 flag=" + flagIo + "，无法区分 IO_ERROR 与 CORRUPT");
+                TaskQueue.lastReadState() == TaskQueue.ReadState.IO_ERROR,
+                "lastReadState=" + TaskQueue.lastReadState() + " flag=" + flagIo);
 
         // 1c. IO_ERROR 状态下，非空写入必须被拒绝（当前会覆盖）
         String before = b.sha("queue.json");
@@ -252,13 +252,20 @@ public final class P01PersistenceFailureTest {
                 m.list().length == 1,
                 "目录里出现 " + m.list().length + " 个文件: " + java.util.Arrays.toString(m.list()));
 
-        m.throwIO = false;
+        // 关键：**保持 IO 故障状态**下调用 save。
+        // 若先关掉故障再写，save 内部的读取会成功，闸门自然放行 ——
+        // 那测的就不是「IO_ERROR 时能否被拦住」了。
         List<TaskQueue.Task> news = new ArrayList<>();
         news.add(task("y1"));
         boolean saved = TaskQueue.save(null, news);
+        info("IO_ERROR 状态下 save = " + saved + " / state=" + TaskQueue.lastReadState());
+        must("前提：写入时读取状态确实是 IO_ERROR",
+                TaskQueue.lastReadState() == TaskQueue.ReadState.IO_ERROR,
+                "state=" + TaskQueue.lastReadState());
         should("IO_ERROR 后不得用非空列表覆盖原文件", "T-R2c",
-                sha0.equals(m.sha("queue.json")),
-                "save=" + saved + "，原文件 sha 已变: " + shortSha(m.sha("queue.json")));
+                !saved && sha0.equals(m.sha("queue.json")),
+                "save=" + saved + "，原文件 sha=" + shortSha(m.sha("queue.json")));
+        m.throwIO = false;
     }
 
     // ============================================================ T-R3
@@ -291,9 +298,8 @@ public final class P01PersistenceFailureTest {
 
             must(name + " 前提：当前确实返回空列表", got.isEmpty(), "size=" + got.size());
             should(name + " 必须判 CORRUPT（而非静默空队列）", "T-R3",
-                    false,
-                    "当前无 CORRUPT 状态，仅 flag=" + flag
-                            + "；且原文件未被隔离保护 sha=" + shortSha(m.sha("queue.json")));
+                    TaskQueue.lastReadState() == TaskQueue.ReadState.CORRUPT,
+                    "lastReadState=" + TaskQueue.lastReadState() + " flag=" + flag);
 
             should(name + " 原文件字节必须完整保留", "T-R3",
                     sha0.equals(m.sha("queue.json")),
@@ -324,14 +330,16 @@ public final class P01PersistenceFailureTest {
         info("部分解析结果: size=" + got.size() + " ids=[" + ids.toString().trim()
                 + "] flag=" + flag);
 
-        must("前提：第三条非法元素确实让整体解析失败",
-                flag && got.size() == 2,
-                "size=" + got.size() + " flag=" + flag);
+        // 前提只断言「读取状态确实异常」，不再依赖旧实现返回前缀的行为
+        must("前提：第三条非法元素确实让读取失败",
+                flag && TaskQueue.lastReadState() != TaskQueue.ReadState.COMPLETE,
+                "size=" + got.size() + " flag=" + flag
+                        + " state=" + TaskQueue.lastReadState());
 
         should("部分解析必须整体判 CORRUPT（不得返回 A、B）", "T-R4a",
-                got.isEmpty(),
-                "当前返回了 " + got.size() + " 条（" + ids.toString().trim()
-                        + "），这是「部分成功」而非「整体损坏」");
+                got.isEmpty() && TaskQueue.lastReadState() == TaskQueue.ReadState.CORRUPT,
+                "size=" + got.size() + " ids=[" + ids.toString().trim()
+                        + "] state=" + TaskQueue.lastReadState());
 
         // 用返回的部分列表回写 = 覆盖原始文件
         List<TaskQueue.Task> news = new ArrayList<>();

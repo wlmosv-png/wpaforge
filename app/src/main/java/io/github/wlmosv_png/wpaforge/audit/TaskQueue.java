@@ -396,41 +396,167 @@ public final class TaskQueue {
         return false;
     }
 
-    /** 读取整个队列 */
-    public static List<Task> load(Context ctx) {
-        List<Task> out = new ArrayList<>();
-        StoreIo io = store(ctx);
-        // 文件不存在 = 真空队列，合法
-        if (!io.isFile(FILE)) { loadFailedFlag = false; return out; }
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(
-                io.openRead(FILE), StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line);
-            JSONArray arr = new JSONArray(sb.toString());
-            for (int i = 0; i < arr.length(); i++) {
-                out.add(Task.fromJson(arr.getJSONObject(i)));
-            }
-            loadFailedFlag = false;
-        } catch (Exception e) {
-            // **绝不能静默返回空**：调用方拿着空列表去 save，
-            // 就等于把用户整个队列删了。
-            loadFailedFlag = true;
-            android.util.Log.e("WPAForge",
-                    "队列读取失败（不当作空队列）: " + io.describe() + "/" + FILE + " → " + e);
+    // ------------------------------------------------------------------ 四态读取（P0-2a）
+
+    /**
+     * 一次读取的**完整状态**。
+     *
+     * <h3>为什么必须区分这四种</h3>
+     * 旧实现只有「读到 / 没读到」两种表现，且都返回空列表 ——
+     * 于是「文件本来就不存在」「文件坏了」「读不到（权限/IO）」在调用方眼里
+     * **完全一样**，任何一次读失败后紧跟的写入都会把原文件覆盖掉。
+     *
+     * <ul>
+     *   <li>{@link #COMPLETE} —— 存在、读全、解析全成功。**唯一允许据此写回的「有数据」状态。**</li>
+     *   <li>{@link #ABSENT}   —— 确认文件不存在。写空是合法的（初始化新队列）。</li>
+     *   <li>{@link #CORRUPT}  —— 存在但内容为空/非法/截断/部分元素损坏。**禁止覆盖。**</li>
+     *   <li>{@link #IO_ERROR} —— 读的过程中发生真实 IO 异常。**禁止覆盖。**</li>
+     * </ul>
+     */
+    public enum ReadState { COMPLETE, ABSENT, CORRUPT, IO_ERROR }
+
+    /** 一次读取的结果（状态 + 数据 + 诊断）。 */
+    public static final class ReadResult {
+        public final ReadState state;
+        /** COMPLETE 时是全部任务；其余状态一律为空列表（绝不给「部分结果」）。 */
+        public final List<Task> tasks;
+        /** 诊断串（不含敏感数据，不进任何判定）。 */
+        public final String detail;
+
+        ReadResult(ReadState state, List<Task> tasks, String detail) {
+            this.state = state;
+            this.tasks = tasks;
+            this.detail = detail == null ? "" : detail;
         }
-        return out;
+
+        public boolean usable() { return state == ReadState.COMPLETE; }
     }
 
-    /** 写回整个队列 */
-    public static boolean save(Context ctx, List<Task> tasks) {
+    /** 最近一次读取的状态。**生产判定用它，不再依赖裸 boolean。** */
+    private static volatile ReadState lastReadState = ReadState.ABSENT;
+
+    /** 最近一次读取的状态（排查与测试用）。 */
+    public static ReadState lastReadState() { return lastReadState; }
+
+    private static ReadResult corrupt(String detail) {
+        return new ReadResult(ReadState.CORRUPT, new ArrayList<Task>(), detail);
+    }
+
+    private static ReadResult ioError(String detail) {
+        return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(), detail);
+    }
+
+    /**
+     * 读取队列的**唯一实现**：状态判定 + 全量解析。
+     *
+     * <p><b>部分解析必须整体失败</b>：任何一个元素坏掉，整个文件判 CORRUPT，
+     * 不返回「前缀」。因为调用方拿到前缀后会原样写回，等于把尾部任务永久删除。
+     */
+    static ReadResult read(StoreIo io) {
+        // ---- 1. 存在性
+        if (!io.isFile(FILE)) {
+            // 存在但不是普通文件（目录/特殊文件）→ 内容不可信
+            if (io.exists(FILE)) {
+                return corrupt(FILE + " 存在但不是普通文件");
+            }
+            return new ReadResult(ReadState.ABSENT, new ArrayList<Task>(), "文件不存在");
+        }
+
+        // ---- 2. 读字节
+        String text;
         try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(FILE), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            text = sb.toString();
+        } catch (java.io.FileNotFoundException e) {
+            // FNFE **不能无条件当 ABSENT**：文件明明在，却报找不到 = 访问受限
+            if (io.exists(FILE)) {
+                return ioError("存在但打开时报 FileNotFound: " + e.getMessage());
+            }
+            return new ReadResult(ReadState.ABSENT, new ArrayList<Task>(), "读取时文件已不存在");
+        } catch (java.io.IOException e) {
+            return ioError("IO 异常: " + e);
+        } catch (Throwable t) {
+            return ioError("读取异常: " + t);
+        }
+
+        // ---- 3. 内容判定
+        if (text.trim().isEmpty()) {
+            // 空文件 / 纯空白：与「合法的空数组 []」必须区分
+            return corrupt("内容为空（区别于合法的空数组）");
+        }
+        JSONArray arr;
+        try {
+            arr = new JSONArray(text);
+        } catch (Throwable t) {
+            return corrupt("JSON 非法: " + t);
+        }
+        List<Task> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            try {
+                out.add(Task.fromJson(arr.getJSONObject(i)));
+            } catch (Throwable t) {
+                // 任一元素坏 → 整体 CORRUPT，**不返回前缀**
+                return corrupt("第 " + i + " 个元素非法: " + t);
+            }
+        }
+        return new ReadResult(ReadState.COMPLETE, out, "ok");
+    }
+
+    /** 读取整个队列（对外兼容入口：返回列表，状态经 {@link #lastReadState()} 查询）。 */
+    public static List<Task> load(Context ctx) {
+        ReadResult r = read(store(ctx));
+        lastReadState = r.state;
+        // 兼容旧语义：只有 COMPLETE/ABSENT 不算「读失败」
+        loadFailedFlag = (r.state == ReadState.CORRUPT || r.state == ReadState.IO_ERROR);
+        if (r.state == ReadState.CORRUPT || r.state == ReadState.IO_ERROR) {
+            android.util.Log.e("WPAForge",
+                    "队列读取失败（不当作空队列）: state=" + r.state
+                            + " " + ctx(store(ctx)) + "/" + FILE + " → " + r.detail);
+        }
+        return r.tasks;
+    }
+
+    private static String ctx(StoreIo io) { return io == null ? "?" : io.describe(); }
+
+    /**
+     * 写回整个队列。
+     *
+     * <h3>写回前安全闸门（P0-2b）</h3>
+     * <b>闸门判断依据是「本次写入前自己读到的状态」，不是调用方先前的 load 结果。</b>
+     * 这样才能挡住「读失败 → 调用方拿空列表 → 写回」这条覆盖链，
+     * 也不会被调用方之间的时序差异绕过。
+     *
+     * <pre>
+     *   COMPLETE  → 允许写
+     *   ABSENT    → 允许写（初始化新队列）
+     *   CORRUPT   → 拒绝（原文件可能还有救，绝不覆盖）
+     *   IO_ERROR  → 拒绝（读都读不到，写入等于赌命）
+     * </pre>
+     */
+    public static boolean save(Context ctx, List<Task> tasks) {
+        if (tasks == null) return false;
+        try {
+            StoreIo io = store(ctx);
+
+            // ---- 闸门：以本次读取的真实状态为准
+            ReadResult gate = read(io);
+            lastReadState = gate.state;
+            loadFailedFlag = (gate.state == ReadState.CORRUPT
+                    || gate.state == ReadState.IO_ERROR);
+            if (gate.state == ReadState.CORRUPT || gate.state == ReadState.IO_ERROR) {
+                android.util.Log.e("WPAForge",
+                        "拒绝写回：队列状态 " + gate.state + "（" + gate.detail + "）");
+                return false;
+            }
+
             JSONArray arr = new JSONArray();
             for (Task t : tasks) arr.put(t.toJson());
-            StoreIo io = store(ctx);
-            // 读失败过还要写空？直接拒绝。
-            // 否则一次临时的读失败（SELinux 标签、损坏、写到一半被杀）
-            // 就会在用户点一下「删除」时把整个队列永久淹掉。
+            // 二次防线（保留旧语义，QueueGuardTest 覆盖）
             if (refuseSave(tasks, loadFailedFlag)) {
                 android.util.Log.e("WPAForge", "队列读取失败过，拒绝用空列表覆盖，避免误删");
                 return false;

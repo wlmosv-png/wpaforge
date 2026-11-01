@@ -393,6 +393,23 @@ public final class CrackEngine {
     public static final long EARLY_FAIL_SILENCE_MS = 1200L;
 
     /**
+     * M1 重发判据的**复核窗口**（D4）。
+     *
+     * <h3>为什么从 120ms 提到 1000ms</h3>
+     * 原实现：「看到第 2 次 M1」后仅等 120ms 就结案判密码错。
+     * 但本机实测（代码既有注释）：**正确密码从命令到四条件成立需要 670~950ms**，
+     * 慢 AP 甚至 5~9 秒。120ms 内成功证据根本来不及到达 ——
+     * 一条实际正确的候选会被 m1retry 判死。
+     *
+     * <p>取值 1000ms：覆盖实测上限（950ms）。代价是错误密码每条多等约 0.9 秒，
+     * 换来的是「正确密码不再被这条推断判死」。
+     *
+     * <p>注意：这只影响**判定时机**，不改变判定条件本身
+     * （{@code m1RetryImpliesWrongKey} 仍是「M1≥2 且无成功证据」）。
+     */
+    public static final long M1_RETRY_CONFIRM_MS = 1000L;
+
+    /**
      * 第二级早退判据（纯函数，便于离线单测）。
      *
      * @param m1Seen       本次尝试已见到 M1（RX message 1 of 4-Way Handshake）
@@ -1701,7 +1718,9 @@ public final class CrackEngine {
                     // 必须校验**这个握手是目标的**：日志里同一时刻常常还有
                     // 系统回连别的网络并握手成功的记录，只判断「出现过协商完成」
                     // 会把别的网络算成命中（2026-10-22 假阳性事故）。
-                    if (tried && WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid)) {
+                    // D2：成功判定要求**带 netId 归属**（拿不到 netId 时行为不变）。
+                    if (tried && WpaLogReader.sawNegotiatedForAttempt(
+                            wlogSlice, target.bssid, targetNetId)) {
                         long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "命中(日志): 关联目标后完成协商");
                         return new Attempt(password, Verdict.SUCCESS, ms,
@@ -1804,7 +1823,8 @@ public final class CrackEngine {
                         if (!m1RetryArmed) {
                             m1RetryArmed = true;
                             m1RetryArmedAt = clock().uptimeMillis();
-                        } else if (clock().uptimeMillis() - m1RetryArmedAt >= 120L) {
+                        } else if (clock().uptimeMillis() - m1RetryArmedAt
+                                >= M1_RETRY_CONFIRM_MS) {
                             long ms = clock().uptimeMillis() - t0;
                             android.util.Log.i(TAG, "早期失败: M1 重发 " + m1Count
                                     + " 次（握手无进展）");

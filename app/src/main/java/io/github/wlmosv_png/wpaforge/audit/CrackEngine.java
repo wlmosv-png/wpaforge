@@ -1700,24 +1700,43 @@ public final class CrackEngine {
                      * 才采信那条 TEMP-DISABLED。后台重试的 associate/handshake 行落在
                      * 标记之前、已被切片切掉，因此不再满足条件。
                      *
-                     * 另外 harmless 兜底：tried&&handshake/failed 这条老路径保留原样 ——
-                     * 它本来就要求 `tried`（本次见过目标关联行），不属于本次收紧范围。
+                     * <h3>D5 修复（2026-11-01）：两支必须有不同等级</h3>
+                     *
+                     * 原来两支共用同一个 {@code DIRECT}，但它们的证据强度差一整级：
+                     * <ul>
+                     *   <li><b>支 A</b> {@code sawWrongKeyForAttempt}：要求切片里同时有
+                     *       本目标 SSID 的 associate 行 + 带 SSID 归属的 TEMP-DISABLED
+                     *       （+ 失败前导）。这是 wpa_supplicant 对**这次**的直接否认
+                     *       → 保持 {@code DIRECT}。</li>
+                     *   <li><b>支 B</b> {@code tried && (sawHandshakeFailure || sawAssocReject)}：
+                     *       {@code 4-Way Handshake failed} / {@code CTRL-EVENT-ASSOC-REJECT}
+                     *       **不带 SSID 也不带 BSSID**，无法证明它属于本目标；
+                     *       {@code tried} 又只证明「切片里出现过目标的 associate 行」，
+                     *       两者之间没有时序绑定。别的网络握手失败完全可能被算到本条头上
+                     *       → 降为 {@code INFERRED}：本轮不重复试，但
+                     *       **不写 permanent triedSet、不推进续跑游标**。</li>
+                     * </ul>
                      */
-                    if (logWinUsable
-                            && (WpaLogReader.sawWrongKeyForAttempt(
-                                        wlogSlice, target.ssid, target.bssid)
-                                    || (tried && (WpaLogReader.sawHandshakeFailure(wlogSlice)
-                                            || WpaLogReader.sawAssocReject(wlogSlice))))) {
+                    boolean logDirectFail = logWinUsable
+                            && WpaLogReader.sawWrongKeyForAttempt(
+                                    wlogSlice, target.ssid, target.bssid);
+                    boolean logInferredFail = logWinUsable && !logDirectFail
+                            && tried
+                            && (WpaLogReader.sawHandshakeFailure(wlogSlice)
+                                    || WpaLogReader.sawAssocReject(wlogSlice));
+                    if (logDirectFail || logInferredFail) {
                         long ms = clock().uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
-                        // 证据等级：DIRECT —— 这条路径要求「本目标 associate 行」
-                        // 与「带归属的失败前导」同时出现在本候选窗口内，
-                        // 是 wpa_supplicant 对这次的直接否认。
+                        android.util.Log.i(TAG, "快速失败(日志): "
+                                + (logDirectFail ? "带归属的直接否认" : "无归属的握手失败(推断)"));
                         Attempt wl = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                 L.s("日志显示握手失败（密码错误）",
-                                    "log shows handshake failure (wrong passphrase)"),
+                                    "log shows handshake failure (wrong passphrase)")
+                                        + (logDirectFail ? "" : L.s("（归属不明，仅推断）",
+                                            " (attribution unknown, inferred only)")),
                                 "wpalog");
-                        wl.grade = EvidenceGrade.Level.DIRECT;
+                        // 只有「带 SSID 归属的直接否认」才允许永久化
+                        wl.grade = logDirectFail
+                                ? EvidenceGrade.Level.DIRECT : EvidenceGrade.Level.INFERRED;
                         return wl;
                     }
                 }
@@ -2085,9 +2104,11 @@ public final class CrackEngine {
                     l.onAttemptResult(a);
                     break;
                 }
-                // B3：只有拿到可靠结论才越过这条候选。
-                // 无结论的候选保留在游标位置，续跑时会重新尝试它。
-                if (EvidenceGrade.conclusive(a.grade)) {
+                // B3 + D5：只有**可直接验证**的结论（DIRECT）才推进游标。
+                // 无结论（NONE）与推断结论（INFERRED）都保留在游标位置：
+                // 中断续跑时会重新尝试，避免「证据不足却造成实际淘汰」。
+                // INFERRED 仍会进本轮内存集合以避免重复劳动，但不影响续跑。
+                if (EvidenceGrade.advancesCursor(a.grade)) {
                     cursor = i + 1;
                 }
                 pureTryMs += itemMs;

@@ -90,4 +90,20 @@ public final class EvidenceGrade {
     public static boolean conclusive(Level g) {
         return g == Level.DIRECT || g == Level.INFERRED;
     }
+
+    /**
+     * 该等级是否允许**推进续跑游标**（即：这条候选在本轮任务内被永久越过）。
+     *
+     * <h3>D5 修复：只有 DIRECT 推进</h3>
+     * 游标一旦推进，本条候选在本次任务内不再被尝试；进程中断后续跑也从该位置开始
+     * —— 这在语义上等价于「已排除」。而 {@link Level#INFERRED} 的定义恰恰是
+     * 「证据不足以排除」，两者矛盾。
+     *
+     * <p>INFERRED 的用途被严格限定为：**本轮内存里避免重复劳动**
+     * （{@code inferredThisRun}）。它既不写磁盘，也不推进游标 ——
+     * 中断续跑时会重新尝试，符合「暂时跳过 ≠ 永久失败」。
+     */
+    public static boolean advancesCursor(Level g) {
+        return g == Level.DIRECT;
+    }
 }

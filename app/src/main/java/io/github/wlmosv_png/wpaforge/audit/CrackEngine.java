@@ -600,6 +600,39 @@ public final class CrackEngine {
         this.wifiCheckBypassForTest = true;
     }
 
+    /** 基线（命令前）状态判定结果。 */
+    public enum Baseline { DECIDE_LINKED, DECIDE_CLEAR, DECIDE_UNREADABLE }
+
+    /**
+     * 命令前的基线判定（纯函数，可离线穷举）。
+     *
+     * <h3>D1：为什么需要三态</h3>
+     * 旧代码只用「SSID 命中 或 netId 命中」决定是否断开：
+     * <pre>
+     *   if (linkedBySsid || linkedByNetId) { 断开并确认 }
+     * </pre>
+     * 两者都不成立时**直接放行**。问题是「两者都不成立」既可能是
+     * 「确实没连着目标」，也可能是「status 读超时 + list-networks 读失败」
+     * —— 后者意味着我们**根本不知道**系统是否还挂着目标配置。
+     * 若此时系统其实仍连着目标，命令后四条件立刻成立 → 误判 SUCCESS。
+     *
+     * <p>修正后的语义：
+     * <ol>
+     *   <li>任一来源命中目标 → {@code DECIDE_LINKED}（必须断开）</li>
+     *   <li>至少一侧**读到过**且都不是目标 → {@code DECIDE_CLEAR}（可确认干净）</li>
+     *   <li>两侧都读不到 → {@code DECIDE_UNREADABLE}（不可判定，本条判 UNKNOWN）</li>
+     * </ol>
+     *
+     * <p>第 3 条是关键：宁可不判一条候选，也不能在「不知道系统连着谁」的情况下
+     * 让后续四条件去归因。
+     */
+    public static Baseline baselineDecision(boolean ssidReadOk, boolean linkedBySsid,
+                                            boolean netIdReadOk, boolean linkedByNetId) {
+        if (linkedBySsid || linkedByNetId) return Baseline.DECIDE_LINKED;
+        if (ssidReadOk || netIdReadOk) return Baseline.DECIDE_CLEAR;
+        return Baseline.DECIDE_UNREADABLE;
+    }
+
     /** 引擎在当前模式下能不能跑 */
     public CheckResult check() {
         if (wifiCheckBypassForTest) {
@@ -1187,11 +1220,41 @@ public final class CrackEngine {
          * 兜底：SSID 读不到时看 netId。list-networks 里还有目标的条目，
          * 同样说明配置没清干净，必须先断开。
          */
-        String preSsid = snapshotSsid();
-        boolean linkedBySsid = target.ssid.equals(preSsid);
-        long preNetId = linkedBySsid ? -2L : netIdOfTarget(target.ssid);
+        // 一次读 status 拿原始文本，**同时**得到「读没读到」与「连着谁」两个信息。
+        // 旧实现只看 snapshotSsid() 的返回值，无法区分
+        // 「status 明确说未连接」与「status 读超时」—— 两者都是 null。
+        String preStatusText = null;
+        boolean preStatusOk = false;
+        try {
+            preStatusText = shell.exec("cmd wifi status", 5000);
+            preStatusOk = preStatusText != null && !preStatusText.trim().isEmpty();
+        } catch (Throwable ignored) { }
+        String preSsid = preStatusOk ? StatusParser.currentSsid(preStatusText) : null;
+        boolean linkedBySsid = preSsid != null && target.ssid.equals(preSsid);
+
+        // list-networks 同理：null = 读失败，读到但没有目标 = -1。
+        String preListText = null;
+        boolean preListOk = false;
+        try {
+            preListText = shell.exec("cmd wifi list-networks", 5000);
+            preListOk = preListText != null;
+        } catch (Throwable ignored) { }
+        long preNetId = linkedBySsid ? -2L : (preListOk ? netIdIn(preListText, target.ssid) : -1L);
         boolean linkedByNetId = preNetId >= 0;
-        if (linkedBySsid || linkedByNetId) {
+
+        Baseline bl = baselineDecision(preStatusOk, linkedBySsid, preListOk, linkedByNetId);
+        if (bl == Baseline.DECIDE_UNREADABLE) {
+            // 两侧都读不到 -> 无法确认系统是否还挂着目标配置。
+            // 绝不能按「干净」放行：若此刻系统仍连着目标，命令后四条件会立刻成立，
+            // 把任意候选误判成命中。
+            return new Attempt(password, Verdict.UNKNOWN,
+                    clock().uptimeMillis() - t0,
+                    L.s("无法确认命令前的连接状态（status 与 list-networks 都读不到），本条结果不可信",
+                        "pre-command link state unknown (status and list-networks both unreadable); "
+                                + "this attempt is unreliable"),
+                    "");
+        }
+        if (bl == Baseline.DECIDE_LINKED) {
             if (linkedByNetId && !linkedBySsid) {
                 android.util.Log.i(TAG,"SSID read failed but netId=" + preNetId + " still present; disconnecting");
             }

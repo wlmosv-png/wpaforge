@@ -144,6 +144,44 @@ public final class CrackEngine {
         public boolean isSuccess() { return verdict == Verdict.SUCCESS; }
     }
 
+    /**
+     * **单条候选结论的提供者**（P0/D5 测试接缝）。
+     *
+     * <h3>它替换的是什么</h3>
+     * 只替换「一条候选跑完得到什么结论」这一步，即 {@link #tryOne} 的返回值。
+     * **不碰** cursor 推进、triedSet 记账、候选调度、状态落盘 ——
+     * 那些逻辑仍在 {@code run()} 里原样执行。
+     *
+     * <h3>为什么要这个接缝</h3>
+     * 桌面环境无法稳定复现底层无线事件（status 文本、wpa_supplicant 日志、
+     * 窗口隔离与时间锚点的组合），因此「真实 run() 消费混合等级」这条调度路径
+     * 一直无法验证。有了它，可以用**确定的等级输入**驱动**同一份调度代码**。
+     *
+     * <h3>边界（明确写死）</h3>
+     * <ul>
+     *   <li>生产环境为 {@code null} —— 走真实 {@code tryOne}，判定规则一字不改。</li>
+     *   <li>实现方**不得**修改 cursor / triedSet / 候选列表（它拿不到这些）。</li>
+     *   <li>包级可见，包外与用户界面都无法注入。</li>
+     *   <li>它**不能**证明生产判定逻辑正确，只能证明调度器消费等级正确。</li>
+     * </ul>
+     */
+    interface VerdictProvider {
+        /**
+         * @param password 待测口令
+         * @param index    该候选在字典中的位置（1 起）
+         * @return 本条候选的结论；返回 {@code null} 视为「未尝试」
+         */
+        Attempt attemptFor(String password, int index);
+    }
+
+    /** 测试注入的结论提供者；{@code null} = 生产路径（真实 tryOne）。 */
+    private volatile VerdictProvider verdictProvider;
+
+    /** **仅供测试**：注入结论提供者。传 {@code null} 恢复生产路径。 */
+    void setVerdictProviderForTest(VerdictProvider p) {
+        this.verdictProvider = p;
+    }
+
     /** 进度回调 */
     public interface Listener {
         void onAttemptStart(int index, int total, String candidate);
@@ -2127,12 +2165,27 @@ public final class CrackEngine {
                 // 后续所有候选会共用同一个 seq -> attemptId 非法 -> 日志窗口全失效。
                 String aid = currentRunId == null ? null
                         : AttemptId.of(currentRunId, i + 1);
-                Attempt a = tryOne(target, security, c.password, perItem, aid);
+                // 生产：verdictProvider == null，走真实判定链路（规则一字不改）。
+                // 测试：由注入的 provider 给出确定性结论，其余逻辑（cursor /
+                // 调度 / 记账 / 落盘）仍走同一份生产代码。
+                VerdictProvider vp = verdictProvider;
+                Attempt a = vp != null
+                        ? vp.attemptFor(c.password, i + 1)
+                        : tryOne(target, security, c.password, perItem, aid);
+                if (a == null) {
+                    a = new Attempt(c.password, Verdict.ERROR,
+                            0L, "provider returned null", "");
+                }
                 long itemMs = clock().uptimeMillis() - itemT0;
 
                 // 挂起/中断发生在这一条执行到一半 —— 它**没有**得到结论。
                 // 不能把它算成「试过了」：cursor 已经推进，续跑时会静默跳过
                 // 一条从未真正验证过的候选（漏判）。回退游标，下次重试它。
+                // provider 造出的 Attempt 没有 attemptId，这里统一回填，
+                // 保证判词与窗口元数据的追溯口径一致。
+                if (a.attemptId == null || a.attemptId.isEmpty()) {
+                    a.attemptId = AttemptId.wellFormed(aid) ? aid : "";
+                }
                 if (a.verdict == Verdict.ABORTED) {
                     tested--;
                     testedCount = tested;

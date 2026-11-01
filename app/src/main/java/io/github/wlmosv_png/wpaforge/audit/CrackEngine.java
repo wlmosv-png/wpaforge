@@ -115,6 +115,15 @@ public final class CrackEngine {
          */
         public String reason = "";
         /**
+         * 证据强度等级（2026-11-01 证据模型）。
+         *
+         * <p>与 {@link #verdict} 正交：verdict 说「结论是什么」，它说「这个结论有多可信」。
+         * 构造时按 {@link EvidenceGrade#defaultOf} 取保守默认值，
+         * 由 {@link #tryOneShell} 在**已知归属证据**的出口显式标注。
+         * 下游只有 {@link EvidenceGrade#persistable} 为真时才允许写入永久记录。
+         */
+        public EvidenceGrade.Level grade;
+        /**
          * 日志窗口元数据（R6）。{@code null} = 本阶段未采集。
          *
          * <p><b>只作证据质量标注</b>：它不参与任何成功/失败判定。
@@ -129,6 +138,7 @@ public final class CrackEngine {
             this.elapsedMs = ms;
             this.detail = detail == null ? "" : detail;
             this.confirmedBy = confirmedBy == null ? "" : confirmedBy;
+            this.grade = EvidenceGrade.defaultOf(v);
         }
 
         public boolean isSuccess() { return verdict == Verdict.SUCCESS; }
@@ -1497,11 +1507,15 @@ public final class CrackEngine {
                             negotiatedThisRound)) {
                         long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(回连): 系统已连上 " + info.ssid);
-                        return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                        // 证据等级：INFERRED —— 「系统去连别的网」只证明本次尝试结束，
+                        // 不能证明目标拒绝了这条口令（目标可能只是慢了一步）。
+                        Attempt fa = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                 L.f("系统已回连到其它网络 %s —— 目标这次没连上",
                                     "system fell back to %s - the target did not connect",
                                     info.ssid),
                                 "failover");
+                        fa.grade = EvidenceGrade.Level.INFERRED;
+                        return fa;
                     }
                 }
             }
@@ -1582,21 +1596,31 @@ public final class CrackEngine {
                         // R3：同样要求「本条确实被尝试过」——上一条候选留下的认证失败
                         // 广播可能恰好落进本条的窗口，若本条根本没被执行过，就不能采信。
                         if (exercised
-                                && WifiAuthFailureWatcher.ssidMatches(authWatch.lastErrorSsid(),
-                                    target.ssid)
-                                && WifiAuthFailureWatcher.authErrorImpliesWrongKey(
-                                    authWatch.lastErrorAt(), commandAt, succ)) {
+                                && WifiAuthFailureWatcher.ssidOwnedByTarget(
+                                        authWatch.lastErrorSsid(), target.ssid)
+                                // 代际校验（A3）：clear() 之前产生的迟到广播一律丢弃
+                                && WifiAuthFailureWatcher.authErrorImpliesWrongKeyGen(
+                                        authWatch.lastErrorAt(), commandAt, succ,
+                                        authWatch.lastErrorGeneration(),
+                                        authWatch.currentGeneration())) {
                             if (tAuthMs < 0) tAuthMs = clock().uptimeMillis() - t0;
                             if (authArmedAt == 0L) {
                                 authArmedAt = clock().uptimeMillis();
                             } else if (clock().uptimeMillis() - authArmedAt >= 120L) {
                                 long ms = clock().uptimeMillis() - t0;
                                 android.util.Log.i(TAG, "早期失败(第三级): 系统广播认证失败");
-                                return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                // 证据等级：广播里带出了**与本目标相同的 SSID** 才算 DIRECT；
+                                // 读不到 SSID 时（<unknown ssid>）归属不可靠 -> INFERRED。
+                                boolean ssidOwned = WifiAuthFailureWatcher.ssidOwnedByTarget(
+                                        authWatch.lastErrorSsid(), target.ssid);
+                                Attempt ac = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                         L.s("系统报告认证失败 → 密码错误",
                                             "system reported auth failure -> wrong passphrase")
                                                 + timing(tAssocMs, tM1Ms, tAuthMs),
                                         "authcast");
+                                ac.grade = ssidOwned
+                                        ? EvidenceGrade.Level.DIRECT : EvidenceGrade.Level.INFERRED;
+                                return ac;
                             }
                         }
                     }
@@ -1639,7 +1663,11 @@ public final class CrackEngine {
                     // 系统回连**别的**网络时产生的 M1 算到这条候选头上。
                     int m1Count = m1CountForTarget;
                     boolean successSeen = WpaLogReader.sawNegotiatedFor(wlogSlice, target.bssid);
-                    if (m1RetryImpliesWrongKey(m1Count, successSeen)) {
+                    // A1：补 exercised 前置，与 authcast / failover / wpalog 三条对齐。
+                    // M1 行不带 SSID，切不掉历史行；若不要求「本条确实被执行过」，
+                    // 系统后台用旧配置重试同一 BSSID 产生的 M1 会被算进本条，
+                    // 两条 M1 就把一条从未真正跑过的候选判成密码错。
+                    if (exercised && m1RetryImpliesWrongKey(m1Count, successSeen)) {
                         if (!m1RetryArmed) {
                             m1RetryArmed = true;
                             m1RetryArmedAt = clock().uptimeMillis();
@@ -1647,11 +1675,15 @@ public final class CrackEngine {
                             long ms = clock().uptimeMillis() - t0;
                             android.util.Log.i(TAG, "早期失败: M1 重发 " + m1Count
                                     + " 次（握手无进展）");
-                            return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                            // 证据等级：INFERRED —— M1 重发只说明「握手没进展」，
+                            // 丢包 / AP 慢 / 上一条残留都能造成，不能据此永久排除候选。
+                            Attempt m1 = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                     L.s("M1 被重发（握手无进展）→ 密码错误",
                                         "M1 retransmitted (no handshake progress) -> wrong passphrase")
                                             + timing(tAssocMs, tM1Ms, tAuthMs),
                                     "m1retry");
+                            m1.grade = EvidenceGrade.Level.INFERRED;
+                            return m1;
                         }
                     }
 
@@ -1678,10 +1710,15 @@ public final class CrackEngine {
                                             || WpaLogReader.sawAssocReject(wlogSlice))))) {
                         long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(日志): 握手失败/关联被拒");
-                        return new Attempt(password, Verdict.AUTH_FAIL, ms,
+                        // 证据等级：DIRECT —— 这条路径要求「本目标 associate 行」
+                        // 与「带归属的失败前导」同时出现在本候选窗口内，
+                        // 是 wpa_supplicant 对这次的直接否认。
+                        Attempt wl = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                 L.s("日志显示握手失败（密码错误）",
                                     "log shows handshake failure (wrong passphrase)"),
                                 "wpalog");
+                        wl.grade = EvidenceGrade.Level.DIRECT;
+                        return wl;
                     }
                 }
             }
@@ -2022,8 +2059,13 @@ public final class CrackEngine {
                 Candidate c = candidates.get(i);
                 tested++;
                 testedCount = tested;
-                cursor = i + 1;
-                l.onAttemptStart(cursor, total, c.password);
+                // B3 修复：**游标不在这里推进**。
+                // cursor 的语义是「续跑应该从这里开始」，因此只有当这一条真正得到了
+                // 可靠结论（DIRECT / INFERRED）时才允许越过它；无结论（TIMEOUT /
+                // UNKNOWN / ERROR）必须让 cursor 停在它自己身上，否则进程中断后
+                // 续跑会从下一条开始，这条从未被排除的候选被永久漏掉。
+                // 进度显示用 cursor 的旧语义由 onAttemptStart 的 index 参数承担。
+                l.onAttemptStart(i + 1, total, c.password);
 
                 long itemT0 = clock().uptimeMillis();
                 // 序号 = 该候选在字典里的位置（与判词里的顺序号同源）。
@@ -2042,6 +2084,11 @@ public final class CrackEngine {
                     cursor = i;
                     l.onAttemptResult(a);
                     break;
+                }
+                // B3：只有拿到可靠结论才越过这条候选。
+                // 无结论的候选保留在游标位置，续跑时会重新尝试它。
+                if (EvidenceGrade.conclusive(a.grade)) {
+                    cursor = i + 1;
                 }
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;

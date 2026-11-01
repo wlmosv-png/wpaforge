@@ -71,6 +71,33 @@ public class AuthCastTest {
         check("clear 后旧失败不再触发早退",
                 !WifiAuthFailureWatcher.authErrorImpliesWrongKey(w.lastErrorAt(), start + 1_000_000L, false));
 
+        // ---- 代际校验（A3）：迟到广播必须被丢弃
+        long gen = 7L;
+        check("代际一致 + 命令后失败 -> 采信",
+                WifiAuthFailureWatcher.authErrorImpliesWrongKeyGen(
+                        start + 350, start, false, gen, gen));
+        check("**代际落后（迟到广播）-> 不采信**",
+                !WifiAuthFailureWatcher.authErrorImpliesWrongKeyGen(
+                        start + 350, start, false, gen - 1, gen));
+        check("代际超前（不可能的输入）-> 不采信",
+                !WifiAuthFailureWatcher.authErrorImpliesWrongKeyGen(
+                        start + 350, start, false, gen + 1, gen));
+        check("代际一致但已有成功证据 -> 不采信",
+                !WifiAuthFailureWatcher.authErrorImpliesWrongKeyGen(
+                        start + 350, start, true, gen, gen));
+
+        // ---- 严格归属（A4）：读不到 SSID 时不得放行
+        check("严格归属：SSID 逐字一致 -> true",
+                WifiAuthFailureWatcher.ssidOwnedByTarget("B214", "B214"));
+        check("**严格归属：读不到 SSID（null）-> false（不放行）**",
+                !WifiAuthFailureWatcher.ssidOwnedByTarget(null, "B214"));
+        check("**严格归属：空 SSID -> false（不放行）**",
+                !WifiAuthFailureWatcher.ssidOwnedByTarget("", "B214"));
+        check("严格归属：别的网络 -> false",
+                !WifiAuthFailureWatcher.ssidOwnedByTarget("211", "B214"));
+        check("严格归属：目标是空 -> false",
+                !WifiAuthFailureWatcher.ssidOwnedByTarget("B214", ""));
+
         System.out.println("广播判据: pass=" + pass + " fail=" + fail);
         if (fail > 0) throw new RuntimeException("广播判据有用例失败");
     }

@@ -20,6 +20,7 @@ import io.github.wlmosv_png.wpaforge.audit.CnHot;
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
+import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
 import io.github.wlmosv_png.wpaforge.audit.SeedModel;
 import io.github.wlmosv_png.wpaforge.audit.ShellSession;
@@ -381,6 +382,16 @@ public class CrackService extends Service {
 
     /** 本目标的"已试候选"集合（跑的时候往里记，下次不重复） */
     private volatile TriedSet triedSet;
+    /**
+     * 本轮「间接推断失败」的候选（只在内存里，**永不落盘**）。
+     *
+     * <p>证据模型（2026-11-01）：{@code AUTH_FAIL} 分两类 ——
+     * {@code DIRECT}（AP 直接否认，可永久排除）与 {@code INFERRED}（M1 重发 / 回连等推断）。
+     * 推断类只用来避免本轮重复试同一条，绝不允许写进 {@code TriedSet}：
+     * 一次误判就会让正确密码被永久跳过。
+     */
+    private final java.util.Set<String> inferredThisRun =
+            java.util.Collections.newSetFromMap(new java.util.HashMap<>());
     /**
      * 载入 triedSet 时用的目标键。
      *
@@ -911,12 +922,17 @@ public class CrackService extends Service {
             {
                 triedKey = TriedSet.targetKey(task.bssid, task.ssid);
                 triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
+                inferredThisRun.clear();
                 triedSinceFlush = 0;
                 if (triedSet.size() > 0) {
                     List<Candidate> keep = new ArrayList<>(work.size());
                     int skipped = 0;
                     for (Candidate c : work) {
-                        if (triedSet.contains(c.password)) { skipped++; continue; }
+                        if (triedSet.contains(c.password)
+                                || inferredThisRun.contains(c.password)) {
+                            skipped++;
+                            continue;
+                        }
                         keep.add(c);
                     }
                     if (skipped > 0) {
@@ -1063,11 +1079,14 @@ public class CrackService extends Service {
                  * 超时、无结论、通道出错都不记：那些下次还应该再试一次，
                  * 记进去等于把没真正验证过的候选当成"已排除"。 */
                 if (triedSet != null && a.password != null && !a.password.isEmpty()) {
-                    boolean definite = a.isSuccess()
-                            || a.verdict == CrackEngine.Verdict.AUTH_FAIL;
-                    if (definite && triedSet.add(a.password) && ++triedSinceFlush >= 32) {
-                        triedSinceFlush = 0;
-                        flushTried();
+                    // 证据模型分流：只有 DIRECT 进永久集合；INFERRED 只进本轮内存。
+                    if (EvidenceGrade.persistable(a.grade)) {
+                        if (triedSet.add(a.password) && ++triedSinceFlush >= 32) {
+                            triedSinceFlush = 0;
+                            flushTried();
+                        }
+                    } else if (EvidenceGrade.conclusive(a.grade)) {
+                        inferredThisRun.add(a.password);
                     }
                 }
                 // 不要再覆盖引擎给出的 detail。
@@ -1098,8 +1117,13 @@ public class CrackService extends Service {
 
             @Override
             public void onFinished(int tested, int offset, String hitPassword, String outcome) {
+                // C1 修复：先把本轮结论分布取出来，再清 engineRef。
+                // 旧顺序（先 null 再读）让 missConfirmedFail/missInconclusive 恒为 0。
+                // C1 修复：**先取快照，再清 engineRef**。
+                // 旧顺序（先 null 再读）让 missConfirmedFail/missInconclusive 恒为 0。
+                int[] miss = snapshotMissCounts(engineRef);
                 engineRef = null;
-                finishTask(ft, outcome, tested, offset, hitPassword);
+                finishTask(ft, outcome, tested, offset, hitPassword, miss);
             }
 
             @Override
@@ -1211,8 +1235,25 @@ public class CrackService extends Service {
         ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();
     }
 
+    /**
+     * 取「本轮结论分布」的快照：{@code [已证实失败数, 无结论数]}。
+     *
+     * <p><b>必须在清 {@code engineRef} 之前调用</b>。这条不变式就是 C1 的修复本体：
+     * 旧代码在 {@code onFinished} 第一行把 {@code engineRef} 置空，之后才去读它，
+     * 于是两个计数恒为 0，「未命中」与「无结论」在持久化层永远无法区分。
+     *
+     * @param eng 本轮引擎；{@code null} 表示拿不到（记 0/0）
+     */
+    static int[] snapshotMissCounts(io.github.wlmosv_png.wpaforge.audit.CrackEngine eng) {
+        return new int[]{
+                eng == null ? 0 : eng.confirmedFailCount(),
+                eng == null ? 0 : eng.inconclusiveCount()
+        };
+    }
+
     private void finishTask(TaskQueue.Task ft, String outcomeName,
-                            int tested, int offset, String hitPassword) {
+                            int tested, int offset, String hitPassword,
+                            int[] missCounts) {
         flushTried();
         ft.offset = offset;
         ft.testedThisRun += tested;
@@ -1253,7 +1294,8 @@ public class CrackService extends Service {
             ft.state = TaskQueue.State.DONE_MISS;
             // 把本轮结论分布记到任务上：**「未命中」只有在其余条目都有失败证据时才成立**。
             // 无结论（TIMEOUT/UNKNOWN）条目并不证明密码错 —— 它们只是没拿到证据。
-            applyMissCounts(ft, engineRef);
+            ft.missConfirmedFail = missCounts == null ? 0 : missCounts[0];
+            ft.missInconclusive = missCounts == null ? 0 : missCounts[1];
             if (ft.missInconclusive > 0) {
                 log(L.f("任务完成：未命中，但其中 %d 条无结论（未能证实密码错；建议核对环境后重跑）",
                         "Task complete: no match, but %d attempts were inconclusive "

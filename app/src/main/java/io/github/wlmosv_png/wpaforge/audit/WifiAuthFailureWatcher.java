@@ -41,6 +41,19 @@ public final class WifiAuthFailureWatcher {
     private BroadcastReceiver receiver;
     private volatile boolean registered = false;
 
+    /**
+     * 代际号：每次 {@link #clear()} 自增。
+     *
+     * <p>广播是**异步投递**的：第 N 条（错误密码）的失败广播可能在
+     * 第 N+1 条发命令之后才到达。只靠「时间戳晚于命令时刻」拦不住它，
+     * 因为它确实晚于 N+1 的 commandAt。代际号把「这条广播产生于哪一代」钉死：
+     * 只有与当前代际一致的广播才被采信。
+     */
+    private volatile long generation = 0L;
+
+    /** 最近一次「认证失败」广播产生时的代际 */
+    private volatile long lastErrorGeneration = -1L;
+
     /** 最近一次「认证失败」广播的时刻（uptimeMillis，0 = 从未） */
     private volatile long lastErrorAt = 0L;
     /** 该广播时刻读到的 SSID（可能为空，仅作参考归属） */
@@ -71,6 +84,7 @@ public final class WifiAuthFailureWatcher {
                     } catch (Throwable ignored) {}
                     lastErrorSsid = ssid;
                     lastErrorAt = SystemClock.uptimeMillis();
+                    lastErrorGeneration = generation;
                     errorCount++;
                 } catch (Throwable ignored) {}
             }
@@ -119,9 +133,17 @@ public final class WifiAuthFailureWatcher {
      * 只认「自己窗口内新到的失败广播」。
      */
     public void clear() {
+        generation++;
         lastErrorAt = 0L;
         lastErrorSsid = null;
+        lastErrorGeneration = -1L;
     }
+
+    /** 当前代际（排查用）。 */
+    public long currentGeneration() { return generation; }
+
+    /** 最近一次失败广播所属的代际（-1 = 从未收到）。 */
+    public long lastErrorGeneration() { return lastErrorGeneration; }
 
     private static String clean(String s) {
         if (s == null) return null;
@@ -143,6 +165,37 @@ public final class WifiAuthFailureWatcher {
     public static boolean authErrorImpliesWrongKey(long errorAt, long attemptStartAt,
                                                    boolean successSeen) {
         return !successSeen && errorAt > attemptStartAt && attemptStartAt > 0;
+    }
+
+    /**
+     * 带**代际校验**的版本（审计 A3）：迟到广播必须被丢弃。
+     *
+     * <p>判定条件在时间戳之外再加一条：`广播产生的代际 == 当前代际`。
+     * 上一轮 clear() 之前产生的广播，代际必然落后，即使它的时间戳晚于本条命令时刻，
+     * 也不会再把下一条候选误判成失败。
+     *
+     * @param errorGeneration 该广播产生时的代际
+     * @param currentGeneration 当前代际（clear() 时自增）
+     */
+    public static boolean authErrorImpliesWrongKeyGen(long errorAt, long attemptStartAt,
+                                                      boolean successSeen,
+                                                      long errorGeneration,
+                                                      long currentGeneration) {
+        if (errorGeneration != currentGeneration) return false;   // 迟到广播，丢弃
+        return authErrorImpliesWrongKey(errorAt, attemptStartAt, successSeen);
+    }
+
+    /**
+     * **严格归属**：广播里的 SSID 必须与目标逐字相等才算属于本目标。
+     *
+     * <p>与 {@link #ssidMatches} 的区别：读不到 SSID 时返回 **false**（不采信），
+     * 而不是放行。放行会让「别的网络的认证失败」被算到目标头上 —— 审计 A4。
+     * 采信一条归属不明的广播去永久排除一个候选，代价远大于少排除一条。
+     */
+    public static boolean ssidOwnedByTarget(String errorSsid, String targetSsid) {
+        if (errorSsid == null || errorSsid.isEmpty()) return false;
+        if (targetSsid == null || targetSsid.isEmpty()) return false;
+        return targetSsid.equals(errorSsid);
     }
 
     /** SSID 归属：广播里读到 SSID 才校验；读不到（<unknown ssid>）时不做过滤。 */

@@ -5913,16 +5913,49 @@ public class MainActivity extends Activity {
 
         @Override
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail) {
+            // 兼容入口：没有 Verdict 时按「不确定」展示，绝不冒充「密码错误」。
+            onAttemptResult(candidate, hit, ms, detail, null);
+        }
+
+        /**
+         * 带 Verdict 的展示入口（U1）。
+         *
+         * <p><b>关键改动</b>：非成功不再一律打 ✗。旧代码的 {@code else} 分支
+         * 把 AUTH_FAIL / NETWORK_AUTH_FAIL / TIMEOUT / INCOMPLETE /
+         * TERMINATED_UNKNOWN / ERROR 全部显示成同一个 ✗ —— 用户会认为
+         * 「这批密码都错了」，而其中三种其实「可能马上就成功」或「与密码无关」。
+         *
+         * <p>现在符号、标签、说明、颜色全部来自
+         * {@link io.github.wlmosv_png.wpaforge.ui.VerdictView} 这一处定义，
+         * 页面不再自行解释 Verdict。
+         */
+        @Override
+        public void onAttemptResult(String candidate, boolean hit, long ms, String detail,
+                                    io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v) {
             ui.post(() -> {
+                String pw = io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate);
                 if (hit) {
-                    appendStreamColored("✓ 成功  "
-                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate)
-                            + "  (" + ms + "ms " + detail + ")", OK_GREEN);
+                    appendStreamColored(io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v)
+                            + " 成功  " + pw + "  (" + ms + "ms " + detail + ")", OK_GREEN);
                     showHitCard(candidate, ms, detail);
+                } else if (v != null) {
+                    String sym = io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v);
+                    String lbl = io.github.wlmosv_png.wpaforge.ui.VerdictView.label(v);
+                    // 网络级/通道级用告警色；候选级失败用危险色；其余用暗色
+                    int color = io.github.wlmosv_png.wpaforge.ui.VerdictView
+                            .countsAsProvenWrong(v) ? DANGER
+                            : io.github.wlmosv_png.wpaforge.ui.VerdictView
+                                    .needsAttention(v) ? ACCENT : TEXT_DIM;
+                    appendStreamColored(sym + " " + lbl + "  " + pw
+                            + "  (" + ms + "ms)", color);
+                    String why = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
+                    if (why != null && !why.isEmpty()) {
+                        appendStreamDetail("     " + why, TEXT_DIM);
+                    }
                 } else {
-                    appendStreamDetail("✗  "
-                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate)
-                            + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
+                    // 没有 Verdict（旧路径）：保持中性，不冒充失败
+                    appendStreamDetail("·  "
+                            + pw + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
                 }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
                 updateConnectMode();

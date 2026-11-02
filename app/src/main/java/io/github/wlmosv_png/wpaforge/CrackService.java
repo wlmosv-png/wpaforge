@@ -65,6 +65,21 @@ public class CrackService extends Service {
         void onQueueChanged(List<TaskQueue.Task> queue);
         void onAttempt(int index, int total, String candidate);
         void onAttemptResult(String candidate, boolean hit, long ms, String detail);
+
+        /**
+         * 带 **Verdict** 的版本（U1）。
+         *
+         * <p>为什么必须加：旧签名只给一个 {@code boolean hit}，界面无从区分
+         * AUTH_FAIL / NETWORK_AUTH_FAIL / TIMEOUT / INCOMPLETE /
+         * TERMINATED_UNKNOWN / ERROR —— 六种情况在列表里长得一模一样（都是 ✗）。
+         * 用户会据此认为「这批密码都错了」，那是错的结论。
+         *
+         * <p>用 default 实现：老实现类不必改，服务侧已保证新方法总被调用。
+         */
+        default void onAttemptResult(String candidate, boolean hit, long ms, String detail,
+                                     CrackEngine.Verdict verdict) {
+            onAttemptResult(candidate, hit, ms, detail);
+        }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
@@ -1090,7 +1105,8 @@ public class CrackService extends Service {
                     detail = L.s(detail + "（依据: ", detail + " (via: ") + a.confirmedBy + "）";
                 }
                 for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail);
+                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail,
+                            a.verdict);
                 }
             }
 

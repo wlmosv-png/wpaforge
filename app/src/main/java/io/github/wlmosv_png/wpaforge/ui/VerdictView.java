@@ -49,7 +49,10 @@ public final class VerdictView {
             case NETWORK_AUTH_FAIL: return "网✗";
             case TIMEOUT: return "⏱";
             case INCOMPLETE: return "…";
-            case TERMINATED_UNKNOWN: return "?";
+            // U3 修复：TERMINATED_UNKNOWN 与 UNKNOWN 曾共用 "?" ——
+            // 这两种事实完全不同（连接确实终止 vs 状态读不到），
+            // 共用符号会让用户无法分辨，也让「符号唯一」这条契约失效。
+            case TERMINATED_UNKNOWN: return "⊘";
             case UNKNOWN: return "?";
             case ERROR: return "!";
             case ABORTED: return "⏹";

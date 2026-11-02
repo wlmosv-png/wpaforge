@@ -3297,9 +3297,23 @@ public final class CrackEngine {
         return tally.confirmedFail();
     }
 
-    /** 本轮无结论的条数（TIMEOUT/UNKNOWN）—— 这些条目**不代表密码错**。 */
+    /**
+     * 本轮**无结论**的条数 —— 这些条目**不代表密码错**，续跑会重试。
+     *
+     * <h3>R-12/UI 修复：必须包含全部三类「非证伪」结论</h3>
+     * 修复前只返回 {@code tally.inconclusive()}（TIMEOUT/UNKNOWN/INCOMPLETE/
+     * TERMINATED_UNKNOWN/ERROR），而下面两类被漏掉：
+     * <ul>
+     *   <li>{@code NETWORK_AUTH_FAIL}（D1 新增）—— 独立计数，不在 inconclusive 里；</li>
+     *   <li>{@code inferred}（AUTH_FAIL 但 grade != DIRECT）—— 独立计数。</li>
+     * </ul>
+     * 后果正是「界面与真实判定不一致」：一轮里跑出 5 条网络级失败 + 3 条推断失败、
+     * 其余全部 DIRECT 时，结果卡会说「这本字典里没有」（implies 已证伪），
+     * 而实际上有 8 条根本没被证伪、下次还会重试。
+     * 现在统一由本方法给出「未证伪总数」，UI 与 {@code missProven()} 同口径。
+     */
     public int inconclusiveCount() {
-        return tally.inconclusive();
+        return tally.inconclusive() + tally.networkAuthFail() + tally.inferred();
     }
 
     /** 「未命中」是否站得住（没有任何无结论条目）。 */

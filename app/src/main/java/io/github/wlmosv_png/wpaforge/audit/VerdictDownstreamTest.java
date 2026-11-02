@@ -111,8 +111,13 @@ public final class VerdictDownstreamTest {
             t.add(v, EvidenceGrade.defaultOf(v));
             int sum = t.confirmedFail() + t.inferred() + t.inconclusive()
                     + t.networkAuthFail();
+            // U3：ERROR（通道出错/命令没生效）与 TARGET_GONE（目标不在范围）
+            // 也**不算试过** —— 它们衡量环境，不是「这条候选被验证过」。
+            // 这条口径必须与 VerdictView.countsAsTested 完全一致。
             boolean excluded = (v == CrackEngine.Verdict.SUCCESS
-                    || v == CrackEngine.Verdict.ABORTED);
+                    || v == CrackEngine.Verdict.ABORTED
+                    || v == CrackEngine.Verdict.ERROR
+                    || v == CrackEngine.Verdict.TARGET_GONE);
             int expectExecuted = excluded ? 0 : 1;
             ok(String.format("%-20s executed=%d 三类和=%d（应闭合）",
                             v, t.executed(), sum),

@@ -62,6 +62,12 @@ public final class VerdictTally {
     public void add(CrackEngine.Verdict v, EvidenceGrade.Level g) {
         if (v == null) return;
         if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) return;
+        // U3 修复：「算不算试过」必须与 {@code VerdictView.countsAsTested} **同一口径**。
+        // ERROR（通道出错 / 命令没生效）与 TARGET_GONE（目标不在范围）都不算试过 ——
+        // 它们衡量的是环境，不是「这条候选被验证过」。
+        // 修复前这里无条件 executed++，于是界面说「没试过」、统计说「试过了一条」，
+        // 两套数字对不上（用户看到「试了 N 条」里混着根本没跑的条目）。
+        if (v == CrackEngine.Verdict.ERROR || v == CrackEngine.Verdict.TARGET_GONE) return;
         executed++;
         if (v == CrackEngine.Verdict.AUTH_FAIL) {
             // 只有**可直接验证**的失败（DIRECT）才算已证实；

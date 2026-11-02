@@ -878,6 +878,17 @@ public class CrackService extends Service {
     /** 多字典计划的一行摘要；空串 = 本次没启用计划。 */
     public static String planSummary() { return LAST_PLAN_SUMMARY; }
 
+    /** 上次运行的过滤档位（0=保守 / 1=省时）；界面显示用。 */
+    private static volatile int LAST_SKIP_POLICY_ID = 0;
+    /** 上次运行的可执行候选总数（过滤后）；界面显示用。 */
+    private static volatile int LAST_WORK_TOTAL = 0;
+    /** 上次运行是否为计划模式。 */
+    private static volatile boolean LAST_PLAN_MODE = false;
+
+    public static int lastSkipPolicyId() { return LAST_SKIP_POLICY_ID; }
+    public static int lastWorkTotal() { return LAST_WORK_TOTAL; }
+    public static boolean lastPlanMode() { return LAST_PLAN_MODE; }
+
     /**
      * 跑完一个任务之后，**整条队列**是否应当就此停下来。
      *
@@ -1157,6 +1168,9 @@ public class CrackService extends Service {
                 filteredBeforeRun = (f.totalSkipped() > 0);
                 LAST_SKIPPED_CONFIRMED = f.skippedConfirmed;
                 LAST_SKIPPED_UNDETERMINED = f.skippedUndetermined;
+                LAST_SKIP_POLICY_ID = skipPolicy == null ? 0 : skipPolicy.id;
+                LAST_WORK_TOTAL = work.size();
+                LAST_PLAN_MODE = planMode;
                 if (triedSet.isOverflow()) {
                     log(L.s("提示: 本目标的已试记录已达上限，更早的记录不再计入。",
                             "Note: tried-record limit reached for this target."));
@@ -1180,6 +1194,11 @@ public class CrackService extends Service {
             }
             // 这一本确实没有可跑的候选 —— 属于「正常跑完但未命中」，
             // 必须走统一收尾，否则计划收不到结论（真机复现的缺陷）。
+            // P0（多字典接力）：候选为空时本任务**从未真正改动过配置**，
+            // 但 armRestore 已经登记了一条恢复记录。必须把它**收尾**，
+            // 否则同一目标上的下一本字典会被 RestoreGuard 的 OTHER_PENDING
+            // 闸门挡住（真机实测：A 全被过滤 → B 直接被 BLOCKED，接力中断）。
+            restoreAfterRun(task.id, TaskQueue.State.DONE_MISS.name(), false);
             finishTaskEarly(task, TaskQueue.State.DONE_MISS,
                     L.s("候选为空", "no candidates"));
             return;
@@ -1504,6 +1523,7 @@ public class CrackService extends Service {
         AttemptLedger l = ledger;
         String key = ledgerKey;
         if (l == null || key == null || key.isEmpty()) return;
+        if (!l.isDirty()) return;          // 无新记录 → 不做整表落盘
         if (!l.save(AttemptLedger.fileFor(this, key))) {
             log(L.s("账本落盘失败（不影响判定，下次可能多跑几条）",
                     "failed to persist the attempt ledger (verdicts unaffected)"));
@@ -1680,6 +1700,13 @@ public class CrackService extends Service {
             if (nx != null) {
                 TaskQueue.Task nt = TaskQueue.deriveForPlan(this, ft, nx.path, nx.name,
                         p.skipPolicyId, p.forceRerun, nx.offset);
+                // 把这一本的**内容身份**一起写到派生任务上：续命/去重靠它，
+                // 不是靠路径（路径会变）。缺失会导致下一本无法按内容识别历史。
+                if (nt != null && nx.sha256 != null && !nx.sha256.isEmpty()
+                        && !nx.sha256.equals(nt.dictSha)) {
+                    nt.dictSha = nx.sha256;
+                    TaskQueue.update(this, nt);
+                }
                 log(L.f("自动继续下一本「%s」（第 %d/%d 本）",
                         "auto-advancing to \"%s\" (#%d of %d)",
                         nx.name, p.displayIndex(), p.items.size()));
@@ -1840,6 +1867,13 @@ public class CrackService extends Service {
             stopSelfSafe();
             return true;
         }
+        // 恢复补建时同样补内容身份（与派生路径一致）
+        DictPlan.Item cur = p.current();
+        if (cur != null && cur.sha256 != null && !cur.sha256.isEmpty()
+                && !cur.sha256.equals(nt.dictSha)) {
+            nt.dictSha = cur.sha256;
+            TaskQueue.update(this, nt);
+        }
         log(L.f("计划恢复：已就绪第 %d/%d 本「%s」（自第 %d 条）",
                 "plan recovery: ready #%d of %d \"%s\" (from #%d)",
                 p.displayIndex(), p.items.size(), dictName, offset));
@@ -1898,6 +1932,15 @@ public class CrackService extends Service {
         boolean due = (now - lastOffsetSaveAt >= 2000L)
                 || (offset - lastSavedOffset >= 20);
         if (!force && (!changed || !due)) return;
+        // 写前日志（write-ahead）：先把「已试集合 + 账本」落盘，再推 offset。
+        //
+        // 为什么顺序不能反：offset 是**跳过依据**的一部分（续跑时按它定位），
+        // 若 offset 先落盘而账本没记，崩溃后 offset 之前的候选既没记录也不会重跑
+        // —— 同一个口令换到别的字典里就不会被过滤（漏过滤 / 重复尝试）。
+        // 反过来（账本先落、offset 后落）最坏只是「多几条可从账本识别」，
+        // 有账本兜底，不会重复执行、也不会漏判。
+        flushTried();
+        flushLedger();
         ft.offset = offset;
         ft.elapsedMs = now - taskStartAt;
         // 只写进度字段：盘上的 state 才是用户最新的操作。
@@ -1980,12 +2023,57 @@ public class CrackService extends Service {
     public static boolean isSkipped(String pw, TriedSet tried,
                                     AttemptLedger ledger, AttemptLedger.SkipPolicy policy,
                                     boolean forceRerun) {
+        return isSkipped(pw, tried, ledger, policy, forceRerun, null);
+    }
+
+    /**
+     * 这条候选是否应被跳过（含**身份冲突保护**）。
+     *
+     * <p>需求（第三节第 9 条）：**使用完整密码文本作为最终去重依据，不能只依赖短哈希**。
+     * 账本/已试集合只存 64 位身份（见 {@link io.github.wlmosv_png.wpaforge.audit.CandidateId}）。
+     * 当**本轮候选列表内**出现两个不同口令映射到同一身份（哈希碰撞，概率极低但非零）
+     * 时，无法安全地把「已记录」归因到具体某一条 —— 这时**一律不跳过**（保守保留），
+     * 宁可多跑一条，也不赌碰撞。
+     *
+     * @param ambiguous 本轮内身份冲突的 id 集合；{@code null}/空 = 无冲突
+     */
+    public static boolean isSkipped(String pw, TriedSet tried,
+                                    AttemptLedger ledger, AttemptLedger.SkipPolicy policy,
+                                    boolean forceRerun, java.util.Set<Long> ambiguous) {
         if (forceRerun || pw == null) return false;
+        if (ambiguous != null && !ambiguous.isEmpty()
+                && ambiguous.contains(io.github.wlmosv_png.wpaforge.audit.CandidateId.of(pw))) {
+            return false;      // 身份在本轮内冲突 → 不凭短哈希排除
+        }
         if (tried != null && tried.contains(pw)) return true;      // 已确定错误（永久）
         if (ledger == null) return false;
         // 账本口径只此一处：档位规则全部在 SkipPolicy.skips()（纯函数，可穷举）。
         // NOT_EXECUTED（没跑过）与 UNKNOWN_ON_TARGET（当时还连着目标）任何档都不跳。
         return policy != null && policy.skips(ledger.level(pw));
+    }
+
+    /**
+     * 本轮候选里**身份冲突**的 id（≥2 个不同口令映射到同一 CandidateId）。
+     *
+     * <p>纯函数；{@link #filterCandidates} 与 {@link #resumeIndexAfterFilter}
+     * 都基于**同一份原列表**调用它，保证「过滤」与「位置换算」口径一致。
+     */
+    public static java.util.Set<Long> ambiguousIds(java.util.List<Candidate> work) {
+        if (work == null || work.size() < 2) return java.util.Collections.emptySet();
+        java.util.HashMap<Long, String> firstSeen = new java.util.HashMap<>();
+        java.util.HashSet<Long> amb = null;
+        for (Candidate c : work) {
+            if (c == null || c.password == null) continue;
+            long id = io.github.wlmosv_png.wpaforge.audit.CandidateId.of(c.password);
+            String prev = firstSeen.get(id);
+            if (prev == null) {
+                firstSeen.put(id, c.password);
+            } else if (!prev.equals(c.password)) {
+                if (amb == null) amb = new java.util.HashSet<>();
+                amb.add(id);
+            }
+        }
+        return amb == null ? java.util.Collections.emptySet() : amb;
     }
 
     /** 过滤候选（默认档，不强制重跑）。 */
@@ -2002,10 +2090,11 @@ public class CrackService extends Service {
                                                  boolean forceRerun) {
         java.util.List<Candidate> keep = new java.util.ArrayList<>(
                 work == null ? 0 : work.size());
+        java.util.Set<Long> ambiguous = ambiguousIds(work);   // 身份冲突保护
         int sc = 0, su = 0;
         if (work != null) {
             for (Candidate c : work) {
-                if (isSkipped(c.password, tried, ledger, policy, forceRerun)) {
+                if (isSkipped(c.password, tried, ledger, policy, forceRerun, ambiguous)) {
                     boolean byTried = tried != null && tried.contains(c.password);
                     AttemptLedger.Level lv = ledger == null
                             ? AttemptLedger.Level.NOT_EXECUTED : ledger.level(c.password);
@@ -2101,8 +2190,10 @@ public class CrackService extends Service {
                                              AttemptLedger ledger,
                                              AttemptLedger.SkipPolicy policy,
                                              int offset, boolean forceRerun) {
+        // 与 filterCandidates 用**同一份原列表**算身份冲突，保证口径完全一致。
+        final java.util.Set<Long> ambiguous = ambiguousIds(original);
         return resumeIndexAfterFilterInternal(original,
-                (String pw) -> isSkipped(pw, tried, ledger, policy, forceRerun), offset);
+                (String pw) -> isSkipped(pw, tried, ledger, policy, forceRerun, ambiguous), offset);
     }
 
     /** 重载：直接吃 {@link TriedSet}（生产路径用这个，避免构造中间 Set）。 */

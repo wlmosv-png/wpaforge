@@ -204,9 +204,13 @@ public final class TriedSet {
                 if (rest > 0) out.write(chunk, 0, rest * 8);
                 out.flush();
             }
-            if (f.exists() && !f.delete()) return false;
+            // 原子替换：**绝不先删目标**。失败时原记录必须完好（AtomicFileOp 统一实现）。
+            if (!AtomicFileOp.moveAtomic(tmp, f)) {
+                tmp.delete();
+                return false;
+            }
             dirty = false;
-            return tmp.renameTo(f) || f.exists();
+            return true;
         } catch (Exception e) {
             warn("已试集合写入失败: " + e);
             return false;

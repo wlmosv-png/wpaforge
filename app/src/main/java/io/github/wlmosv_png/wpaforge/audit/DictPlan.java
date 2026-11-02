@@ -600,12 +600,11 @@ public final class DictPlan {
                 w.write(toJsonString());
                 w.flush();
             }
-            if (!tmp.renameTo(f)) {
-                f.delete();
-                if (!tmp.renameTo(f)) {
-                    rev = rev - 1;      // 没写成功就不装作写成功了
-                    return false;
-                }
+            // 原子替换：**绝不先删目标**（旧写法失败即丢整个计划）。
+            if (!AtomicFileOp.moveAtomic(tmp, f)) {
+                tmp.delete();
+                rev = rev - 1;          // 没写成功就不装作写成功了
+                return false;
             }
             return true;
         } catch (Throwable t) {

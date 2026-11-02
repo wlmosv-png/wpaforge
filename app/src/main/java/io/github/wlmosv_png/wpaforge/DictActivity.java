@@ -42,6 +42,8 @@ import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.DictPlan;
 import io.github.wlmosv_png.wpaforge.audit.DictTrash;
 import io.github.wlmosv_png.wpaforge.audit.AttemptLedger;
+import io.github.wlmosv_png.wpaforge.audit.TriedSet;
+import io.github.wlmosv_png.wpaforge.audit.PlanFilterStats;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.SourceRank;
 import io.github.wlmosv_png.wpaforge.ui.NetDialog;
@@ -500,13 +502,41 @@ public class DictActivity extends Activity {
             refresh();
             return;
         }
-        String key = planKey();
-        AttemptLedger lg = AttemptLedger.load(AttemptLedger.fileFor(this, key));
-        int undetermined = lg.countUndetermined();
-        int proven = lg.count(AttemptLedger.Level.CONFIRMED_WRONG);
+        final String key = planKey();
+        final DictPlan plan = DictPlan.load(DictPlan.fileFor(this, key));
+        final java.util.List<File> files = planDictFiles(plan);
+        // 真实候选交集（第七节）：后台流式统计，避免大字典卡界面。
+        new Thread(() -> {
+            PlanFilterStats st;
+            int ledgerUndetermined;
+            try {
+                TriedSet tried = TriedSet.load(TriedSet.fileFor(this, key));
+                AttemptLedger lg = AttemptLedger.load(AttemptLedger.fileFor(this, key));
+                ledgerUndetermined = lg.countUndetermined();
+                st = PlanFilterStats.compute(files, tried, lg,
+                        AttemptLedger.SkipPolicy.SAVE_TIME, PlanFilterStats.DEFAULT_CAP);
+            } catch (Throwable t) {
+                st = PlanFilterStats.empty("读取失败");
+                ledgerUndetermined = 0;
+            }
+            final PlanFilterStats fs = st;
+            final int lu = ledgerUndetermined;
+            ui.post(() -> showSkipPolicyRisk(key, fs, lu));
+        }, "wpaforge-skip-risk").start();
+    }
+
+    /** 「省时」档的风险确认（数字全部来自**真实候选交集**）。 */
+    private void showSkipPolicyRisk(final String key, final PlanFilterStats st, int ledgerUndetermined) {
+        int proven = st.reliable ? st.confirmedWrong : 0;
+        int undetermined = st.reliable ? st.undetermined : ledgerUndetermined;
+        String scope = st.reliable
+                ? L.s("（按计划内 " + st.totalCandidates + " 条候选算出的真实交集）",
+                      " (real intersection over " + st.totalCandidates + " plan candidates)")
+                : L.s("（账本总量；候选统计暂不可用：" + st.note + "）",
+                      " (ledger totals; candidate stats unavailable: " + st.note + ")");
 
         String msg = L.s("这个开关会跳过「上次跑过、但没跑出结果」的候选。\n\n"
-                        + "本目标已记录：\n"
+                        + "本目标已记录" + scope + "：\n"
                         + "· 已证实错误（一定会跳过）：" + proven + " 条\n"
                         + "· 没跑出结果（开了才跳过）：" + undetermined + " 条\n\n"
                         + "风险：如果上次是因为信号差、路由器退避，或者你中途中断，"
@@ -514,7 +544,7 @@ public class DictActivity extends Activity {
                         + "开了这次就不会再试它们。\n\n"
                         + "建议只在网络稳定、上一轮完整跑完时使用。",
                 "This skips candidates that ran last time but produced no result.\n\n"
-                        + "Recorded for this network:\n"
+                        + "Recorded for this network" + scope + ":\n"
                         + "· proven wrong (always skipped): " + proven + "\n"
                         + "· undetermined (skipped only if on): " + undetermined + "\n\n"
                         + "Risk: if last run hit weak signal, router back-off or a manual "
@@ -553,35 +583,87 @@ public class DictActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(0, px(8), 0, 0);
 
-        String key = p.targetKey.isEmpty() ? Prefs.targetKey(this) : p.targetKey;
-        AttemptLedger lg = AttemptLedger.load(AttemptLedger.fileFor(this, key));
-        AttemptLedger.SkipPolicy pol = AttemptLedger.SkipPolicy.of(p.skipPolicyId);
-        int proven = lg.count(AttemptLedger.Level.CONFIRMED_WRONG);
-        int undetermined = lg.countUndetermined();
-        int willSkip = lg.countSkippable(pol);
+        final String key = p.targetKey.isEmpty() ? Prefs.targetKey(this) : p.targetKey;
 
-        TextView a = new TextView(this);
-        a.setText(key == null || key.isEmpty()
-                ? L.s("尚未绑定目标网络：先在上面选一个 Wi-Fi",
-                "No target network bound yet")
-                : L.s("本目标记录：已证实错误 " + proven + " 条 · 没跑出结果 "
-                        + undetermined + " 条",
-                "This network: " + proven + " proven wrong · " + undetermined
-                        + " undetermined"));
+        final TextView a = new TextView(this);
         a.setTextSize(AmberTheme.FS_SMALL);
         a.setTextColor(TEXT_DIM);
         box.addView(a);
 
-        TextView b = new TextView(this);
-        b.setText(L.s("本次将跳过 " + willSkip + " 条"
-                        + (p.skipPolicyId == 1 ? "（含 " + undetermined + " 条没跑出结果的）" : ""),
-                "Will skip " + willSkip + " this run"
-                        + (p.skipPolicyId == 1 ? " (incl. " + undetermined + " undetermined)" : "")));
+        final TextView b = new TextView(this);
         b.setTextSize(AmberTheme.FS_SMALL);
-        b.setTextColor(p.skipPolicyId == 1 && undetermined > 0 ? DANGER : OK_GREEN);
+        b.setTextColor(OK_GREEN);
         box.addView(b);
 
+        if (key == null || key.isEmpty()) {
+            a.setText(L.s("尚未绑定目标网络：先在上面选一个 Wi-Fi",
+                    "No target network bound yet"));
+            b.setText("");
+            return box;
+        }
+        a.setText(L.s("正在按计划候选统计…", "Computing plan candidate stats…"));
+        b.setText("");
+
+        // 真实交集统计（第七节）：必须按**计划内真实候选**算，不能用账本总量。
+        // 字典可能很大，所以放后台线程流式统计，算完再回主线程填字。
+        final java.util.List<File> files = planDictFiles(p);
+        final int policyId = p.skipPolicyId;
+        new Thread(() -> {
+            final PlanFilterStats st;
+            try {
+                TriedSet tried = TriedSet.load(TriedSet.fileFor(this, key));
+                AttemptLedger lg = AttemptLedger.load(AttemptLedger.fileFor(this, key));
+                int ledgerTotal = lg.count(AttemptLedger.Level.CONFIRMED_WRONG)
+                        + lg.countUndetermined();
+                st = PlanFilterStats.compute(files, tried, lg,
+                        AttemptLedger.SkipPolicy.of(policyId), PlanFilterStats.DEFAULT_CAP);
+                final int lt = ledgerTotal;
+                ui.post(() -> applyPlanStats(a, b, st, policyId, lt));
+            } catch (Throwable t) {
+                ui.post(() -> {
+                    a.setText(L.s("暂不可统计（读取失败）", "Stats unavailable (read failed)"));
+                    b.setText("");
+                });
+            }
+        }, "wpaforge-plan-stats").start();
+
         return box;
+    }
+
+    /** 计划内字典文件列表。 */
+    private java.util.List<File> planDictFiles(DictPlan p) {
+        java.util.List<File> out = new java.util.ArrayList<>();
+        if (p == null) return out;
+        for (DictPlan.Item it : p.items) {
+            if (it == null || it.path == null || it.path.isEmpty()) continue;
+            out.add(new File(it.path));
+        }
+        return out;
+    }
+
+    /** 把真实交集统计写进两行文字。 */
+    private void applyPlanStats(TextView a, TextView b, PlanFilterStats st,
+                                int policyId, int ledgerTotal) {
+        if (!st.reliable) {
+            a.setText(L.s("本目标记录 " + ledgerTotal + " 条（账本总量）",
+                    "This network: " + ledgerTotal + " ledger records"));
+            b.setText(L.s("暂不可统计：" + (st.note.isEmpty() ? "数据不足" : st.note),
+                    "Stats unavailable: " + (st.note.isEmpty() ? "not enough data" : st.note)));
+            b.setTextColor(AmberTheme.TEXT_DIM);
+            return;
+        }
+        a.setText(L.s("计划内候选 " + st.totalCandidates + " 条 · 真实交集：已证实错误 "
+                        + st.confirmedWrong + " · 没跑出结果 " + st.undetermined,
+                "Plan candidates " + st.totalCandidates + " · real intersection: "
+                        + st.confirmedWrong + " proven · " + st.undetermined + " undetermined"));
+        a.setTextColor(TEXT_DIM);
+        b.setText(L.s("本次将跳过 " + st.willSkip + " 条 · 实际待执行 " + st.willRun + " 条"
+                        + (policyId == 1 && st.undetermined > 0
+                            ? "（含 " + st.undetermined + " 条没跑出结果的）" : ""),
+                "Will skip " + st.willSkip + " · will run " + st.willRun
+                        + (policyId == 1 && st.undetermined > 0
+                            ? " (incl. " + st.undetermined + " undetermined)" : "")));
+        b.setTextColor(policyId == 1 && st.undetermined > 0 ? DANGER : OK_GREEN);
     }
 
     /** 一行标题 + 副标题 + 开关。 */

@@ -195,6 +195,10 @@ public class MainActivity extends Activity {
     private boolean usePlanMode = false;
     /** 当前选中的计划快照（仅用于界面显示与启动对齐，不参与判定）。 */
     private io.github.wlmosv_png.wpaforge.audit.DictPlan selectedPlan = null;
+    /** 字典续命：本次要继承的起始 offset（0 = 从头跑）。 */
+    private int pendingResumeOffset = 0;
+    /** 本次字典的内容 SHA-256（入队时写进任务，供下次续命识别）。 */
+    private String pendingDictSha = "";
 
     // 试连页组件
 /** 明文备份清理行（只在备份存在时创建）。 */
@@ -7183,6 +7187,23 @@ public class MainActivity extends Activity {
         int su = CrackService.lastSkippedUndetermined();
         StringBuilder sb = new StringBuilder();
         if (plan != null && !plan.isEmpty()) sb.append(plan);
+        // 透明化（第七节）：当前目标 / 模式 / 过滤档位 / 待执行条数。
+        {
+            String mode = usePlanMode ? L.s("计划", "Plan") : L.s("单字典", "Single");
+            String pol = CrackService.lastSkipPolicyId() == 1
+                    ? L.s("省时", "save-time") : L.s("保守", "conservative");
+            int work = CrackService.lastWorkTotal();
+            if (work > 0 || sc + su > 0) {
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(L.s("目标 ", "Target ")).append(currentTargetKey().isEmpty()
+                                ? L.s("(未选)", "(none)") : Prefs.targetLabel(this))
+                        .append(L.s(" · 模式 ", " · mode ")).append(mode)
+                        .append(L.s(" · 过滤 ", " · filter ")).append(pol);
+                if (work > 0) {
+                    sb.append(L.s(" · 本次待执行 ", " · to run ")).append(work);
+                }
+            }
+        }
         // 计划模式下补一行「第几本 / 当前 / 下一本 / 整体进度」，数据来自服务端活计划。
         // 计划终态（命中/全部跑完/停止）时**不显示**「当前/下一本」——那会让人以为还在跑。
         if (usePlanMode) {
@@ -7502,8 +7523,79 @@ public class MainActivity extends Activity {
         if (usePlanMode) {
             startConnectAfterGuards();
         } else {
-            maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+            // 字典续命：先按内容 SHA 找历史进度（异步算 SHA，避免大字典卡主线程）。
+            maybeOfferResumeThenStart();
         }
+    }
+
+    /**
+     * 字典续命检查：按**内容身份**（SHA-256）找同一目标上的历史进度。
+     *
+     * <ul>
+     *   <li>内容相同（无论路径是否变）→ 提示「可续命继续」，用户可选续命或从头；</li>
+     *   <li>同路径但内容变了 → 明确提示「不继承旧进度」，从第 1 条重跑；</li>
+     *   <li>没有历史 → 直接开始。</li>
+     * </ul>
+     * 续命只影响**本次任务的起始 offset**；过滤账本按目标自动沿用（同一套语义）。
+     */
+    private void maybeOfferResumeThenStart() {
+        pendingResumeOffset = 0;
+        pendingDictSha = "";
+        final String path = currentDictPath == null ? "" : currentDictPath;
+        final String targetKey = currentTargetKey();
+        if (path.isEmpty()) {
+            maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+            return;
+        }
+        new Thread(() -> {
+            String sha = "";
+            try {
+                sha = io.github.wlmosv_png.wpaforge.audit.DictPlan.sha256Of(new java.io.File(path));
+            } catch (Throwable ignored) {}
+            final String fsha = sha;
+            final int curSize = currentDict == null ? 0 : currentDict.size();
+            io.github.wlmosv_png.wpaforge.audit.DictResume.Info info =
+                    io.github.wlmosv_png.wpaforge.audit.DictResume.find(
+                            TaskQueue.load(this), filePlan(), targetKey, fsha, path);
+            final int off = io.github.wlmosv_png.wpaforge.audit.DictResume.offsetFor(info, curSize);
+            ui.post(() -> {
+                pendingDictSha = fsha;
+                if (info.contentChanged) {
+                    // 内容变了 —— 不继承，且必须明确告诉用户
+                    NetDialog d = new NetDialog(this,
+                            L.s("字典内容已变化", "Dictionary content changed"),
+                            L.s("这本字典的内容和上次不同（路径相同）。\n"
+                                    + "为避免把旧进度套到新内容上，这次从第 1 条重新开始。",
+                                    "This dictionary's content differs from last time (same path).\n"
+                                            + "To avoid applying old progress to new content, "
+                                            + "it restarts from entry 1."));
+                    d.setNegative(L.s("知道了", "Got it"), null);
+                    d.setPositive(L.s("开始", "Start"),
+                            dd -> maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards));
+                    d.show();
+                    return;
+                }
+                if (off > 0) {
+                    NetDialog d = new NetDialog(this,
+                            L.s("可以续命继续", "Resume available"),
+                            io.github.wlmosv_png.wpaforge.audit.DictResume.describe(info, curSize)
+                                    + L.s("。\n\n续命会沿用原目标的过滤记录（不会重复跑已验证过的候选）。",
+                                    ".\n\nResuming reuses this target's filter history "
+                                            + "(verified candidates are not retried)."));
+                    d.setNegative(L.s("从头开始", "Start over"), dd -> {
+                        pendingResumeOffset = 0;
+                        maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+                    });
+                    d.setPositive(L.s("续命继续", "Resume"), dd -> {
+                        pendingResumeOffset = off;
+                        maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+                    });
+                    d.show();
+                    return;
+                }
+                maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+            });
+        }, "wpaforge-resume-probe").start();
     }
 
     /**
@@ -7585,6 +7677,11 @@ public class MainActivity extends Activity {
             // 而不是把这条当成用户单字典任务。
             final TaskQueue.Task t = TaskQueue.enqueuePlan(this, planTarget,
                     planDictPath, planDictName, Prefs.mode(this));
+            if (t != null && cur != null && cur.sha256 != null && !cur.sha256.isEmpty()
+                    && !cur.sha256.equals(t.dictSha)) {
+                t.dictSha = cur.sha256;
+                TaskQueue.update(this, t);
+            }
             queueCache.clear();
             queueCache.addAll(TaskQueue.load(this));
             renderQueue();
@@ -7598,6 +7695,22 @@ public class MainActivity extends Activity {
                     currentDictPath, currentDictName,
                     targetDictEnabled, smartSortEnabled, Prefs.mode(this),
                     profileForCurrentTarget().seeds.encode());
+            // 续命：继承内容身份与历史 offset（若用户选择续命）
+            boolean touched = false;
+            if (pendingDictSha != null && !pendingDictSha.isEmpty()
+                    && !pendingDictSha.equals(t.dictSha)) {
+                t.dictSha = pendingDictSha; touched = true;
+            }
+            if (pendingResumeOffset > 0 && t.offset < pendingResumeOffset) {
+                t.offset = pendingResumeOffset; touched = true;
+            }
+            if (touched) TaskQueue.update(this, t);
+            if (pendingResumeOffset > 0) {
+                appendStream(L.s("续命：从第 ", "Resume: from entry ") + pendingResumeOffset
+                        + L.s(" 条继续（沿用原目标过滤记录）",
+                              " (reusing this target's filter history)"));
+            }
+            pendingResumeOffset = 0;
             queueCache.clear();
             queueCache.addAll(TaskQueue.load(this));
             renderQueue();

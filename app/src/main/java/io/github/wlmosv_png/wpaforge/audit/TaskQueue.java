@@ -80,6 +80,13 @@ public final class TaskQueue {
          * 用户普通任务永远按单字典语义执行，不被计划终态阻塞（P0 修复）。
          */
         public boolean fromPlan = false;
+        /**
+         * 字典文件**内容身份**（SHA-256，小写十六进制；拿不到为空串）。
+         *
+         * <p>用途：字典续命。路径会变、内容不会 —— 靠它判断「这本字典上次跑到哪」
+         * 能不能继承，而不是靠路径字符串。空串表示入队时没算（旧数据/内置生成器）。
+         */
+        public String dictSha = "";
         public long createdAt;
         public long elapsedMs;
         /** 本次实际试过多少条（不算续跑前的） */
@@ -252,6 +259,7 @@ public final class TaskQueue {
                 o.put("skipPolicyId", skipPolicyId);
                 o.put("forceRerun", forceRerun);
                 o.put("fromPlan", fromPlan);
+                o.put("dictSha", dictSha == null ? "" : dictSha);
             } catch (Exception ignored) {}
             return o;
         }
@@ -302,6 +310,7 @@ public final class TaskQueue {
             t.skipPolicyId = o.optInt("skipPolicyId", 0);
             t.forceRerun = o.optBoolean("forceRerun", false);
             t.fromPlan = o.optBoolean("fromPlan", false);
+            t.dictSha = o.optString("dictSha", "");
             return t;
         }
     }

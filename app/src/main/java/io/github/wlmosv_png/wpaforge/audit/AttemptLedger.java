@@ -255,6 +255,12 @@ public final class AttemptLedger {
      *
      * @return true 表示确实写入了（新记录，或升级了等级）；false 表示无变化
      */
+    /** 自上次成功 save 以来是否有新记录（避免无变化时重复整表落盘）。 */
+    private boolean dirty = false;
+
+    /** 是否需要落盘（与 TriedSet.isDirty() 同语义）。 */
+    public boolean isDirty() { return dirty; }
+
     public boolean record(String pw, Level lv) {
         if (pw == null || lv == null || !lv.executed) return false;   // 没执行完的不落盘
         long id = idOf(pw);
@@ -264,6 +270,7 @@ public final class AttemptLedger {
             if (old == null || lv.rank < old.rank) {     // 更强才覆盖
                 buf[2 * idx] = id;
                 buf[2 * idx + 1] = lv.rank;
+                dirty = true;
                 return true;
             }
             return false;                                 // 同等或更弱 → 保持不变
@@ -277,6 +284,7 @@ public final class AttemptLedger {
         buf[2 * n] = id;
         buf[2 * n + 1] = lv.rank;
         n++;
+        dirty = true;
         if (n - sortedN > SORT_CHUNK) ensureSorted();
         return true;
     }
@@ -473,10 +481,12 @@ public final class AttemptLedger {
                 }
                 if (off > 0) out.write(chunk, 0, off);
             }
-            if (!tmp.renameTo(f)) {
-                f.delete();
-                return tmp.renameTo(f);
+            // 原子替换：**绝不先删目标**（旧写法先删后改名，失败即丢账本）。
+            if (!AtomicFileOp.moveAtomic(tmp, f)) {
+                tmp.delete();
+                return false;
             }
+            dirty = false;          // 只有真的落盘成功才清
             return true;
         } catch (Exception e) {
             return false;

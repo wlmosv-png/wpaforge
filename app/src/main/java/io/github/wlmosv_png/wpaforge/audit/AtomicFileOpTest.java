@@ -215,11 +215,23 @@ public final class AtomicFileOpTest {
         {
             String tried = readPkg("audit/TriedSet.java");
             String hist = readPkg("audit/HistStore.java");
-            ok("TriedSet 用 renameTo(f) || f.exists() 模式（既有正确写法，不删原文件）",
-                    tried.contains("tmp.renameTo(f) || f.exists()"), "写法已变");
+            // 2026-11-03：TriedSet / AttemptLedger / DictPlan 的 save 已统一接到
+            // AtomicFileOp.moveAtomic（绝不先删目标）。这里钉住「不删目标」这条约定。
+            String tq2 = readPkg("audit/TriedSet.java");
+            String lg2 = readPkg("audit/AttemptLedger.java");
+            String dp2 = readPkg("audit/DictPlan.java");
+            ok("TriedSet.save 走 AtomicFileOp.moveAtomic",
+                    tq2.contains("AtomicFileOp.moveAtomic"), "未接原子层");
+            ok("AttemptLedger.save 走 AtomicFileOp.moveAtomic",
+                    lg2.contains("AtomicFileOp.moveAtomic"), "未接原子层");
+            ok("DictPlan.save 走 AtomicFileOp.moveAtomic",
+                    dp2.contains("AtomicFileOp.moveAtomic"), "未接原子层");
+            ok("三处 save 均无「先删目标再改名」",
+                    !tq2.contains("f.exists() && !f.delete()")
+                            && !lg2.contains("f.delete();\n                if (!tmp.renameTo"),
+                    "仍有先删");
             ok("HistStore 用 renameTo(f) || f.isFile() 模式（既有正确写法）",
                     hist.contains("tmp.renameTo(f) || f.isFile()"), "写法已变");
-            info("DictPlan.save / AttemptLedger.save 的缺陷修复见本批 L1 修复提交");
         }
 
         deleteRec(tmpDir);

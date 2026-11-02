@@ -1967,7 +1967,16 @@ public final class CrackEngine {
             //   · 4 轮还没建出来（>400ms）→ 这条命令很可能被框架悄悄丢了。
             //     `cmd wifi connect-network` 成功失败都**不打印任何东西**，
             //     只有「配置存不存在」能证明它生效。
-            if (targetNetId < 0 && statRounds <= 4) {
+            //
+            // D3 修正：探测窗口从「前 4 轮」放宽到「拿到之前每轮都补探」。
+            // 原因（真机实测 + SuccessRule 契约）：netId 在 connect 之后
+            // 242~324ms 才出现，而前 4 轮 ×20ms ≈ 80ms —— 那个时刻**永远**是 -1。
+            // 后果不只是少一条诊断：SuccessRule 只在「两侧都 >0 且不等」时才判
+            // 归属冲突，targetNetId 恒 -1 就等于**关掉了冲突检查**，
+            // 于是「系统回连旧的同名配置」会被判成 SUCCESS（假阳性通道）。
+            // 现在只要还没拿到，每轮都补探一次（命令本身 ~17ms，代价可接受）；
+            // 一旦拿到就永久记住（不做「重新发现」，避免拿到重建后的新号）。
+            if (targetNetId < 0) {
                 long id = netIdOfTarget(target.ssid);
                 if (id >= 0) targetNetId = id;
             }
@@ -2089,6 +2098,23 @@ public final class CrackEngine {
                 // 候选留下的失败广播」这类与本次无关的事件，会把一条**从未被执行**的
                 // 候选判成认证失败（审计 S2-2 / S6-1）。
                 exercised = sawAttempt || targetNetId >= 0;
+
+                // ---- D3：成功帧到达时，若本条的 netId 还未知，**先补探一次** ----
+                //
+                // 真机/脚本都会出现这个时序：命令刚发出、框架还没把配置落进
+                // list-networks，而 status 已经报出 COMPLETED —— 此时 targetNetId
+                // 仍是 -1。SuccessRule 只在「两侧都 >0 且不等」时才判归属冲突，
+                // 于是 netId 未知就等于**关掉了冲突检查**：
+                // 系统回连旧的同名配置会被判成 SUCCESS（假阳性通道）。
+                //
+                // 这里补探一次（~17ms，只在**即将判定成功**时发生，不在每条每轮），
+                // 拿到就参与冲突判定；仍然拿不到则维持原有宽松语义
+                // （历史事故：硬要求 netId 相等会让正确密码永远判不出来）。
+                if (targetNetId < 0 && SuccessRule.isSuccess(
+                        target.ssid, info.ssid, info.state, info.ip)) {
+                    long id = netIdOfTarget(target.ssid);
+                    if (id >= 0) targetNetId = id;
+                }
 
                 // 成功判定走唯一的纯逻辑入口（SuccessRule）—— netId 不参与，
                 // 避免它因时序问题否决一次真实的命中（漏判）。
@@ -2556,6 +2582,15 @@ public final class CrackEngine {
                 // 还是命令前那条连接 —— 不能算本次命中
                 currentOnTarget = false;
             }
+        }
+        // D3：「连着目标」有两种完全不同的含义 ——
+        //   ① 残留/回连（连接已经稳定在目标上）→ 归属不明，UNKNOWN；
+        //   ② **本条候选正在连目标**（握手进行中）→ 连接仍在推进，INCOMPLETE。
+        // 旧实现把两者都归到 ①，于是「慢 AP 正在握手」被报成「归属不明」，
+        // 白丢一层语义（INCOMPLETE 明确表示「可重新裁决」）。
+        // 判据用生命周期三态：ACTIVE 说明连接仍在进行，不属于「残留」。
+        if (currentOnTarget && lastLifecycle == Lifecycle.ACTIVE) {
+            currentOnTarget = false;
         }
         // R3：归类走纯函数（可离线逐格穷举），失败/未知/无结论三类严格分开。
         //   · not-attempted  → ERROR（命令没生效，**不是**密码错）

@@ -494,6 +494,9 @@ public class CrackService extends Service {
      * 不动 running 标志 —— 那会和线程状态打架。
      */
     public void stopAll() {
+        // P3：这个标志只表示「本轮的停止意图」。
+        // 它不再永久否决之后的「继续」—— 收尾逻辑改看队列里是否真有 PENDING
+        // （见 runQueue 的 finally）。否则「停止 → 立刻继续」会卡死在 PENDING。
         stopRequested = true;
 
         CrackEngine eng = engineRef;
@@ -789,9 +792,21 @@ public class CrackService extends Service {
             // 任务会永远停在 PENDING（用户看到「点了继续没反应」）。
             boolean wantRestart = restartWanted;
             restartWanted = false;   // 一次性：判定过就清，免得日后误触发
-            if (!stopRequested && wantRestart && TaskQueue.hasPending(this)) {
+            // P3 修复：判据从「!stopRequested」改成「队列里真的有 PENDING」。
+            //
+            // 旧实现要求 !stopRequested —— 但 stopAll() 把 stopRequested 置 true 后
+            // **没有任何地方会清它**（除了下次 startQueue）。于是：
+            //   停止 → 收尾窗口内点「继续」→ startQueue 被「worker 还活着」挡回，
+            //   只记 restartWanted；收尾时 stopRequested 仍为 true → 不重启。
+            //   任务停在 PENDING，没有线程会跑它 = 用户看到「点继续没反应」，
+            //   必须再点一次才生效（第二次 worker 已退出，走正常 startQueue）。
+            //
+            // 「有没有待办」是队列自己说了算的事实；stopRequested 只是上一轮的
+            // 遗留意图，不该否决用户新下的「继续」。
+            if (wantRestart && TaskQueue.hasPending(this)) {
                 log(L.s("接上「继续」请求，重新开始队列",
                         "Picking up the resume request, restarting the queue"));
+                stopRequested = false;   // 用户已明确要继续，清掉上一轮的停止意图
                 worker = new Thread(this::runQueue, "wpaforge-crack");
                 worker.start();
                 return;

@@ -6100,6 +6100,20 @@ public class MainActivity extends Activity {
                 lastOutcomeColor = "DONE_HIT".equals(outcome) ? OK_GREEN
                         : "STOPPED".equals(outcome) ? DANGER : io.github.wlmosv_png
                                 .wpaforge.ui.AmberTheme.TEXT_DIM;
+                // P3 修复：**任务结束时必须把「正在尝试」标签改掉**。
+                //
+                // 旧实现只在 startConnect() 里把标签设成「正在尝试」，结束后
+                // 再没有任何地方改它 —— 于是命中后界面仍显示「正在尝试 <密码>」，
+                // 与同一屏的「已命中」并存（真机 2026-11-02 亲眼所见）。
+                // 这里按 outcome 换成陈述语态，并且**不冒充成功**：
+                // 命中就说「已命中」，其余一律「最后尝试」（试过，不代表成功）。
+                if (candLabel != null) {
+                    candLabel.setText("DONE_HIT".equals(outcome)
+                            ? L.s("已命中 · 该候选", "MATCHED · this candidate")
+                            : L.s("最后尝试", "LAST TRIED"));
+                    candLabel.setTextColor("DONE_HIT".equals(outcome)
+                            ? OK_GREEN : io.github.wlmosv_png.wpaforge.ui.AmberTheme.TEXT_DIM);
+                }
                 histSummary = null;      // 有新记录，让统计缓存失效
                 if ("DONE_HIT".equals(outcome)) {
                     appendStreamColored(L.s("⚡ 密钥命中 ", "★ HIT!") + task.ssid + " = "

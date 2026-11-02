@@ -437,7 +437,7 @@ public class MainActivity extends Activity {
         android.widget.TextView t = new android.widget.TextView(this);
         t.setText(L.s("WPAForge 已锁定\n输入 PIN 解锁",
                 "WPAForge locked\nEnter PIN to unlock"));
-        t.setTextSize(16);
+        t.setTextSize(AmberTheme.FS_TITLE);
         t.setTextColor(0xFFFFFFFF);
         t.setGravity(android.view.Gravity.CENTER);
         t.setPadding(0, 0, 0, px(20));
@@ -447,7 +447,7 @@ public class MainActivity extends Activity {
         pin.setHint(L.s("PIN", "PIN"));
         pin.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
                 | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        pin.setTextSize(18);
+        pin.setTextSize(AmberTheme.FS_STAT);
         pin.setGravity(android.view.Gravity.CENTER);
         box.addView(pin);
 
@@ -598,14 +598,14 @@ public class MainActivity extends Activity {
         header.setPadding(px(22), px(34), px(22), px(2));
         TextView title = new TextView(this);
         title.setText("WPAForge");
-        title.setTextSize(20);
+        title.setTextSize(AmberTheme.FS_DISPLAY);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         title.setLetterSpacing(0.04f);
         header.addView(title);
         TextView sub = new TextView(this);
         sub.setText(L.s("WPA 密码破解工具 · 仅限自有网络", "WPA password cracker · authorised networks only"));
-        sub.setTextSize(10.5f);
+        sub.setTextSize(AmberTheme.FS_LABEL);
         sub.setTextColor(TEXT_DIM);
         header.addView(sub);
         root.addView(header);
@@ -762,7 +762,7 @@ public class MainActivity extends Activity {
     private TextView makeTab(String label, int index) {
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextSize(13.5f);
+        t.setTextSize(AmberTheme.FS_ACTION);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, px(9), 0, px(9));
         t.setTextColor(AmberTheme.TEXT_FAINT);
@@ -934,7 +934,7 @@ public class MainActivity extends Activity {
         wpsTargetCard.addView(wpsVulnBtn, topGap(8));
 
         wpsVulnDiag = new TextView(this);
-        wpsVulnDiag.setTextSize(11f);
+        wpsVulnDiag.setTextSize(AmberTheme.FS_SMALL);
         wpsVulnDiag.setTextColor(AmberTheme.TEXT_DIM);
         wpsVulnDiag.setPadding(px(4), px(2), px(4), px(2));
         wpsTargetCard.addView(wpsVulnDiag, topGap(4));
@@ -963,7 +963,7 @@ public class MainActivity extends Activity {
         wpsTargetCard.addView(wpsTargetList);
 
         wpsPickedLine = new TextView(this);
-        wpsPickedLine.setTextSize(12f);
+        wpsPickedLine.setTextSize(AmberTheme.FS_BODY);
         wpsPickedLine.setTextColor(TEXT_DIM);
         wpsPickedLine.setPadding(px(4), px(8), px(4), px(8));
         wpsPickedLine.setText(L.s("未选择目标", "No target selected"));
@@ -1006,7 +1006,7 @@ public class MainActivity extends Activity {
         wpsModeCard.addView(wpsImportRow);
 
         wpsImportLine = new TextView(this);
-        wpsImportLine.setTextSize(11.5f);
+        wpsImportLine.setTextSize(AmberTheme.FS_SMALL);
         wpsImportLine.setTextColor(TEXT_DIM);
         wpsImportLine.setPadding(px(4), px(6), px(4), px(2));
         wpsModeCard.addView(wpsImportLine);
@@ -1026,7 +1026,7 @@ public class MainActivity extends Activity {
         wpsProgressCard.addView(wpsStatusLine);
 
         wpsProgressLine = new TextView(this);
-        wpsProgressLine.setTextSize(12f);
+        wpsProgressLine.setTextSize(AmberTheme.FS_BODY);
         wpsProgressLine.setTextColor(TEXT_DIM);
         wpsProgressLine.setPadding(px(2), px(2), px(2), px(8));
         wpsProgressCard.addView(wpsProgressLine);
@@ -1056,7 +1056,7 @@ public class MainActivity extends Activity {
         pageWps.addView(sectionLabel(L.s("日志", "Log")));
 
         wpsLogView = new TextView(this);
-        wpsLogView.setTextSize(11f);
+        wpsLogView.setTextSize(AmberTheme.FS_SMALL);
         wpsLogView.setTextColor(TEXT_DIM);
         wpsLogView.setTypeface(android.graphics.Typeface.MONOSPACE);
         wpsLogView.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
@@ -1371,7 +1371,7 @@ public class MainActivity extends Activity {
             TextView run = new TextView(this);
             run.setText(L.s("任务运行中 —— 按「暂停」后可更换目标",
                     "Task running - press Pause to change target"));
-            run.setTextSize(11.5f);
+            run.setTextSize(AmberTheme.FS_SMALL);
             run.setTextColor(ACCENT);
             run.setPadding(px(4), 0, px(4), px(8));
             wpsTargetList.addView(run);
@@ -1379,7 +1379,7 @@ public class MainActivity extends Activity {
         if (wpsTargets.isEmpty()) {
             TextView t = new TextView(this);
             t.setText(L.s("没有扫到支持 WPS 的 AP", "No WPS-capable AP found"));
-            t.setTextSize(12f);
+            t.setTextSize(AmberTheme.FS_BODY);
             t.setTextColor(TEXT_DIM);
             t.setPadding(px(4), px(10), px(4), px(10));
             wpsTargetList.addView(t);
@@ -1460,7 +1460,7 @@ public class MainActivity extends Activity {
 
             TextView dbm = new TextView(this);
             dbm.setText(tg.rssi + " dBm");
-            dbm.setTextSize(12f);
+            dbm.setTextSize(AmberTheme.FS_BODY);
             dbm.setTextColor(AmberTheme.signalColor(levelOfRssi(tg.rssi)));
             dbm.setTypeface(Typeface.MONOSPACE);
             dbm.setGravity(Gravity.END);
@@ -2242,7 +2242,7 @@ public class MainActivity extends Activity {
         int[] colors = RadarSweep.ringColors();
         TextView cap = new TextView(this);
         cap.setText(L.s("由内到外：", "Inner to outer: "));
-        cap.setTextSize(10.5f);
+        cap.setTextSize(AmberTheme.FS_LABEL);
         cap.setTextColor(AmberTheme.TEXT_FAINT);
         row.addView(cap);
         // ringLabels() 是按「由外到内」排的（下标 0 = 最外环 = 最弱），
@@ -2255,7 +2255,7 @@ public class MainActivity extends Activity {
         TextView band = new TextView(this);
         band.setText(L.s("● 实心 = 2.4G    ○ 空心 = 5G    圆心 = 信号最强",
                 "● filled = 2.4G    ○ hollow = 5G    centre = strongest"));
-        band.setTextSize(10.5f);
+        band.setTextSize(AmberTheme.FS_LABEL);
         band.setTextColor(AmberTheme.TEXT_FAINT);
         band.setPadding(0, px(5), 0, 0);
         box.addView(band);
@@ -2281,7 +2281,7 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextSize(10.5f);
+        t.setTextSize(AmberTheme.FS_LABEL);
         t.setTextColor(AmberTheme.TEXT_DIM);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -2343,11 +2343,11 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView l = new TextView(this);
         l.setText(label);
-        l.setTextSize(10f);
+        l.setTextSize(AmberTheme.FS_MICRO);
         l.setTextColor(AmberTheme.TEXT_FAINT);
         TextView v = new TextView(this);
         v.setText(value);
-        v.setTextSize(13f);
+        v.setTextSize(AmberTheme.FS_MONO);
         v.setTextColor(AmberTheme.TEXT);
         v.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         v.setSingleLine(true);
@@ -2365,7 +2365,7 @@ public class MainActivity extends Activity {
         // 系统对 startScan 有约 30 秒的频率限制，按钮必须**如实反映**能不能按，
         // 否则用户点了没反应，只会以为软件坏了。
         radarStatus = new TextView(this);
-        radarStatus.setTextSize(11.5f);
+        radarStatus.setTextSize(AmberTheme.FS_SMALL);
         radarStatus.setTextColor(AmberTheme.TEXT_DIM);
         radarStatus.setSingleLine(true);
         radarStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -3492,7 +3492,7 @@ public class MainActivity extends Activity {
 
         TextView dbm = new TextView(this);
         dbm.setText(r.rssi + " dBm");
-        dbm.setTextSize(12.5f);
+        dbm.setTextSize(AmberTheme.FS_BODY);
         dbm.setTextColor(AmberTheme.signalColor(r.signalLevel()));
         dbm.setTypeface(Typeface.MONOSPACE);
         dbm.setGravity(Gravity.END);
@@ -3746,7 +3746,7 @@ public class MainActivity extends Activity {
         LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
         auditLog = new TextView(this);
-        auditLog.setTextSize(11f);
+        auditLog.setTextSize(AmberTheme.FS_SMALL);
         auditLog.setTextColor(AmberTheme.TERM_FG);
         auditLog.setTypeface(Typeface.MONOSPACE);
         auditLog.setLineSpacing(px(4), 1f);
@@ -4802,7 +4802,7 @@ public class MainActivity extends Activity {
         // 破解页提示条：**只由破解页自己的状态驱动**（当前只有「WiFi 未开启」）。
         // 不再与观测页共用控件 —— 见 connectNotice 字段注释里的事故。
         connectNotice = new TextView(this);
-        connectNotice.setTextSize(12);
+        connectNotice.setTextSize(AmberTheme.FS_BODY);
         connectNotice.setTextColor(DANGER);
         connectNotice.setPadding(px(4), px(10), px(4), 0);
         connectNotice.setVisibility(View.GONE);
@@ -4820,14 +4820,14 @@ public class MainActivity extends Activity {
         hitTop.setOrientation(LinearLayout.HORIZONTAL);
         hitTop.setGravity(Gravity.CENTER_VERTICAL);
         TextView hitTitle = new TextView(this);
-        hitTitle.setTextSize(13);
+        hitTitle.setTextSize(AmberTheme.FS_MONO);
         hitTitle.setTextColor(OK_GREEN);
         hitTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         hitTop.addView(hitTitle, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView hitCopy = new TextView(this);
         hitCopy.setText(L.s("复制", "Copy"));
-        hitCopy.setTextSize(11.5f);
+        hitCopy.setTextSize(AmberTheme.FS_SMALL);
         hitCopy.setTextColor(ACCENT);
         hitCopy.setPadding(px(10), px(4), px(10), px(4));
         hitCopy.setBackground(roundBg(AmberTheme.ACCENT_BG, AmberTheme.RADIUS_CHIP));
@@ -4849,7 +4849,7 @@ public class MainActivity extends Activity {
         hitCard.setTag(hitTitle);      // 标题文字在命中时才填（带 SSID）
 
         hitPw = new TextView(this);
-        hitPw.setTextSize(26);
+        hitPw.setTextSize(AmberTheme.FS_DISPLAY);
         hitPw.setTextColor(TEXT);
         hitPw.setTypeface(Typeface.MONOSPACE);
         hitPw.setPadding(0, px(6), 0, px(2));
@@ -4857,7 +4857,7 @@ public class MainActivity extends Activity {
         hitCard.addView(hitPw);
 
         hitMeta = new TextView(this);
-        hitMeta.setTextSize(11.5f);
+        hitMeta.setTextSize(AmberTheme.FS_SMALL);
         hitMeta.setTextColor(TEXT_DIM);
         hitCard.addView(hitMeta);
 
@@ -4882,7 +4882,7 @@ public class MainActivity extends Activity {
         resultCard.addView(resultSub, rslp);
 
         resultWhy = new TextView(this);
-        resultWhy.setTextSize(12.5f);
+        resultWhy.setTextSize(AmberTheme.FS_BODY);
         resultWhy.setTextColor(AmberTheme.TEXT_DIM);
         resultWhy.setLineSpacing(px(4), 1f);
         LinearLayout.LayoutParams rwlp = new LinearLayout.LayoutParams(
@@ -4907,8 +4907,17 @@ public class MainActivity extends Activity {
         stateBig.setTextSize(AmberTheme.FS_STATE);
         stateBig.setTextColor(AmberTheme.TEXT_DIM);
         stateBig.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        stateBig.setSingleLine(true);
-        stateBig.setEllipsize(TextUtils.TruncateAt.END);
+        /*
+         * 状态行**允许折两行**（2026-11-02 收口）。
+         *
+         * 原来 setSingleLine(true) + ellipsize=END：字体放大到 1.3× 时，
+         * 「‖ 已暂停 · 进度已保留」这种长状态会被截成「‖ 已暂停 · 进度…」——
+         * 偏巧截掉的正是「进度已保留」这句用户最需要看到的。
+         * 现在最多两行，宁可占一行高度也不丢信息。
+         */
+        stateBig.setSingleLine(false);
+        stateBig.setMaxLines(2);
+        stateBig.setEllipsize(null);
         progTop.addView(stateBig, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -4987,7 +4996,7 @@ public class MainActivity extends Activity {
         progressCard.addView(footRow, frlp);
 
         finishNote = new TextView(this);
-        finishNote.setTextSize(11.5f);
+        finishNote.setTextSize(AmberTheme.FS_SMALL);
         finishNote.setTextColor(ACCENT);
         finishNote.setLineSpacing(px(3), 1f);
         finishNote.setVisibility(View.GONE);
@@ -5013,7 +5022,7 @@ public class MainActivity extends Activity {
         candLp.topMargin = px(5);
         candRoll.setLayoutParams(candLp);
         candPrev = new TextView(this);
-        candPrev.setTextSize(11.5f);
+        candPrev.setTextSize(AmberTheme.FS_SMALL);
         candPrev.setTextColor(AmberTheme.TEXT_FAINT);
         candPrev.setTypeface(Typeface.MONOSPACE);
         candPrev.setLineSpacing(px(3), 1f);
@@ -5046,7 +5055,7 @@ public class MainActivity extends Activity {
          *   · 整行标题依旧可点，双保险。
          */
         flowChevron = new TextView(this);
-        flowChevron.setTextSize(15f);
+        flowChevron.setTextSize(AmberTheme.FS_STATE);
         flowChevron.setTextColor(ACCENT);
         flowChevron.setGravity(Gravity.CENTER);
         // 视觉是三角，触控靠 padding 撑开（不用固定 LayoutParams，避免又变回大块）
@@ -5068,7 +5077,7 @@ public class MainActivity extends Activity {
         flowHeader.addView(flowLabel, flp);
 
         flowCount = new TextView(this);
-        flowCount.setTextSize(11);
+        flowCount.setTextSize(AmberTheme.FS_SMALL);
         flowCount.setTextColor(AmberTheme.TEXT_FAINT);
         LinearLayout.LayoutParams fcp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -5077,7 +5086,7 @@ public class MainActivity extends Activity {
 
         chipKey = new TextView(this);
         chipKey.setText(L.s("关键", "Key"));
-        chipKey.setTextSize(11);
+        chipKey.setTextSize(AmberTheme.FS_SMALL);
         chipKey.setPadding(px(9), px(4), px(9), px(4));
         chipKey.setClickable(true);
         chipKey.setFocusable(true);
@@ -5093,7 +5102,7 @@ public class MainActivity extends Activity {
 
         chipAll = new TextView(this);
         chipAll.setText(L.s("全部", "All"));
-        chipAll.setTextSize(11);
+        chipAll.setTextSize(AmberTheme.FS_SMALL);
         chipAll.setPadding(px(9), px(4), px(9), px(4));
         chipAll.setClickable(true);
         chipAll.setFocusable(true);
@@ -5110,7 +5119,7 @@ public class MainActivity extends Activity {
 
         flowClear = new TextView(this);
         flowClear.setText(L.s("清空", "Clear"));
-        flowClear.setTextSize(11);
+        flowClear.setTextSize(AmberTheme.FS_SMALL);
         flowClear.setTextColor(DANGER);
         flowClear.setPadding(px(10), px(4), px(10), px(4));
         flowClear.setBackground(roundBg(AmberTheme.DANGER_BG, AmberTheme.RADIUS_CHIP));
@@ -5134,7 +5143,7 @@ public class MainActivity extends Activity {
         eventCard.addView(flowHeader);
 
         connectStreamView = new TextView(this);
-        connectStreamView.setTextSize(12);
+        connectStreamView.setTextSize(AmberTheme.FS_LOG);
         connectStreamView.setTextColor(TEXT_DIM);
         connectStreamView.setTypeface(Typeface.MONOSPACE);
         connectStreamView.setPadding(px(14), px(12), px(14), px(12));
@@ -5186,7 +5195,7 @@ public class MainActivity extends Activity {
 
         jumpLatestBtn = new TextView(this);
         jumpLatestBtn.setText(L.s("↓ 最新", "↓ Latest"));
-        jumpLatestBtn.setTextSize(11f);
+        jumpLatestBtn.setTextSize(AmberTheme.FS_SMALL);
         jumpLatestBtn.setTextColor(ON_ACCENT);
         jumpLatestBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         jumpLatestBtn.setPadding(px(12), px(6), px(12), px(6));
@@ -5328,18 +5337,28 @@ public class MainActivity extends Activity {
          * 用户在等一个永远不会来的结果。**跑完了是什么就该显示什么。** */
         boolean serviceRunning = CrackService.isRunning();
         TaskQueue.State st = currentQueueState();   // U2：唯一来源
+        /*
+         * 状态视觉统一（2026-11-02 收口）。
+         *
+         * 收口前 RUNNING / PAUSED / PENDING **共用同一个 ACCENT 色** ——
+         * 扫一眼分不出「在跑」「停了」「还没开始」。现在按语义分三色 + 前缀符号：
+         *   ▶ 运行中   ACCENT（主色，活跃）
+         *   ‖ 已暂停   WARN  （琥珀偏暗，停住了但不是错）
+         *   … 准备中   TEXT_DIM（过渡态，刻意弱化）
+         * 结束态沿用 outcome 的颜色（命中绿 / 停止红 / 未命中灰）。
+         */
         if (st == TaskQueue.State.PAUSED) {
-            text = L.s("已暂停 · 进度已保留", "Paused · progress kept");
-            color = ACCENT;
+            text = L.s("‖ 已暂停 · 进度已保留", "‖ Paused · progress kept");
+            color = AmberTheme.WARN;
         } else if (st == TaskQueue.State.RUNNING) {
             // 只有"队列里真有任务在跑"才叫运行中/收尾中
             text = finishingNow
-                    ? L.s("收尾中", "Finishing up")
-                    : L.s("运行中", "Running");
+                    ? L.s("▶ 收尾中", "▶ Finishing up")
+                    : L.s("▶ 运行中", "▶ Running");
             color = ACCENT;
         } else if (st == TaskQueue.State.PENDING) {
-            text = L.s("准备中", "Preparing");
-            color = ACCENT;
+            text = L.s("… 准备中", "… Preparing");
+            color = AmberTheme.TEXT_DIM;
         } else if (!lastOutcomeLabel.isEmpty()) {
             text = lastOutcomeLabel;
             color = lastOutcomeColor;
@@ -5746,7 +5765,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(14.5f);
+        b.setTextSize(AmberTheme.FS_ACTION);
         b.setTextColor(fg);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinWidth(0); b.setMinimumWidth(0);
@@ -6242,8 +6261,24 @@ public class MainActivity extends Activity {
                     // 与 UI 同源（不在这里二次推断）。具体判据来源在 detail 里
                     // 逐条保留，文件日志也逐条落盘 —— 合并只影响视觉密度。
                     String key = v.name();
-                    appendStreamDedup(sym + " " + lbl + "  " + pw
-                            + "  (" + ms + "ms)", color, key);
+                    /*
+                     * 两层文本（2026-11-02 收口）。
+                     *
+                     * 普通视图给人看：结论 + **第几条** + 秒数。
+                     *   · 不再出现 `#130548(len=9)` 这种哈希串 —— 那是技术标识，
+                     *     普通用户既读不懂也记不住，只觉得软件很乱。
+                     *   · 耗时用秒（0.1s）而不是毫秒（123ms），人脑对秒更有直觉。
+                     *
+                     * 技术视图给排查用：保留 attemptId、候选哈希与归属来源，
+                     * 切到「全部」就能看到，**原始证据一条没少**。
+                     */
+                    String plainLine = sym + "  " + lbl
+                            + "  ·  " + L.s("第 " + curCandIndex + " 条", "#" + curCandIndex)
+                            + "  ·  " + fmtSeconds(ms);
+                    String techLine = sym + "  " + lbl + "  " + pw
+                            + "  (" + ms + "ms" + (detail == null || detail.isEmpty()
+                                    ? "" : " " + detail) + ")";
+                    appendStreamDedup(plainLine, color, key, techLine);
                     String why = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
                     if (why != null && !why.isEmpty() && !key.equals(lastWhyKey)) {
                         lastWhyKey = key;
@@ -6571,7 +6606,7 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(sb.toString().trim());
-        t.setTextSize(12);
+        t.setTextSize(AmberTheme.FS_BODY);
         t.setTextColor(running > 0 ? OK_GREEN : (paused > 0 ? AMBER : TEXT_DIM));
         t.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CHIP, 0.8f));
         t.setPadding(px(14), px(10), px(14), px(10));
@@ -6610,7 +6645,7 @@ public class MainActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText(task.ssid);
-        title.setTextSize(15);
+        title.setTextSize(AmberTheme.FS_STATE);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setSingleLine(true);
@@ -6620,7 +6655,7 @@ public class MainActivity extends Activity {
 
         TextView badge = new TextView(this);
         badge.setText(badgeText(task.state));
-        badge.setTextSize(11);
+        badge.setTextSize(AmberTheme.FS_SMALL);
         badge.setTextColor(badgeFgFor(task));
         badge.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         badge.setBackground(roundBg(badgeBgFor(task), AmberTheme.RADIUS_CHIP));
@@ -6632,7 +6667,7 @@ public class MainActivity extends Activity {
         // 第二行：BSSID 与信号
         TextView sub = new TextView(this);
         sub.setText(task.bssid + "   " + task.rssi + "dBm");
-        sub.setTextSize(10.5f);
+        sub.setTextSize(AmberTheme.FS_LABEL);
         sub.setTextColor(TEXT_DIM);
         sub.setPadding(0, px(5), 0, 0);
         item.addView(sub);
@@ -6652,7 +6687,7 @@ public class MainActivity extends Activity {
                     ? L.f("   本轮试了 %d 条", "   %d tried this run", task.testedThisRun) : "",
                 hit,
                 missCaveat(task)));
-        meta.setTextSize(11.5f);
+        meta.setTextSize(AmberTheme.FS_SMALL);
         meta.setTextColor(TaskQueue.State.DONE_HIT == task.state ? OK_GREEN : TEXT_DIM);
         meta.setLineSpacing(px(4), 1f);
         meta.setPadding(0, px(8), 0, 0);
@@ -6681,7 +6716,7 @@ public class MainActivity extends Activity {
             tip.setText(L.f("已暂停在 %d / %d，点「继续」从这里接着跑",
                     "Paused at %d / %d — tap Resume to continue from here",
                     task.offset, task.dictSize));
-            tip.setTextSize(11);
+            tip.setTextSize(AmberTheme.FS_SMALL);
             tip.setTextColor(AMBER);
             tip.setPadding(0, px(10), 0, 0);
             item.addView(tip);
@@ -6810,7 +6845,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(11.5f);
+        b.setTextSize(AmberTheme.FS_SMALL);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
@@ -7327,19 +7362,45 @@ public class MainActivity extends Activity {
         final String dedupeKey;
         /** 已合并的条数（1 = 只有本行）。 */
         final int repeat;
+        /**
+         * **技术详情版文本**（2026-11-02 收口：日志分两层）。
+         *
+         * <p>普通视图（「关键」）显示人能读的：结论 + 第几条 + 耗时；
+         * 技术视图（「全部」）显示可追溯的：attemptId、候选哈希、归属来源。
+         * 两个版本同时存在，切换筛选时只是换一段文本，**原始证据不丢**。
+         */
+        final CharSequence textTech;
+        /** 合并行的时间跨度（毫秒，墙钟）；0 表示未记录。 */
+        final long firstAtMs;
+        final long lastAtMs;
 
         LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind) {
-            this(text, color, kind, null, 1);
+            this(text, color, kind, null, 1, null, 0L, 0L);
         }
 
         LogLine(CharSequence text, int color,
                 io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
                 String dedupeKey, int repeat) {
+            this(text, color, kind, dedupeKey, repeat, null, 0L, 0L);
+        }
+
+        LogLine(CharSequence text, int color,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+                String dedupeKey, int repeat,
+                CharSequence textTech, long firstAtMs, long lastAtMs) {
             this.text = text;
             this.color = color;
             this.kind = kind;
             this.dedupeKey = dedupeKey;
             this.repeat = repeat;
+            this.textTech = textTech;
+            this.firstAtMs = firstAtMs;
+            this.lastAtMs = lastAtMs;
+        }
+
+        /** 按当前视图取文本。 */
+        CharSequence shown(boolean tech) {
+            return (tech && textTech != null) ? textTech : text;
         }
     }
 
@@ -7368,22 +7429,52 @@ public class MainActivity extends Activity {
      * @param dedupeKey 合并键（null = 不合并）
      */
     private void appendStreamDedup(String line, int color, String dedupeKey) {
+        appendStreamDedup(line, color, dedupeKey, null);
+    }
+
+    /**
+     * 逐条候选结果的**降噪入口**（含两层文本）。
+     *
+     * @param line     普通视图文本（人能读的）
+     * @param textTech 技术详情版文本（含 attemptId / 哈希 / 归属来源），可为 null
+     * @param dedupeKey 合并键（null = 不合并）；同键相邻行合并并累计 ×N 与时间跨度
+     */
+    private void appendStreamDedup(String line, int color, String dedupeKey,
+                                   CharSequence textTech) {
         if (line == null) return;
         int c = (color == 0) ? TEXT_DIM : color;
+        long now = System.currentTimeMillis();
         if (dedupeKey != null && !streamLines.isEmpty()) {
             LogLine last = streamLines.get(streamLines.size() - 1);
             if (dedupeKey.equals(last.dedupeKey)) {
-                streamLines.set(streamLines.size() - 1,
-                        new LogLine(last.text, last.color, last.kind, dedupeKey,
-                                last.repeat + 1));
+                streamLines.set(streamLines.size() - 1, new LogLine(
+                        last.text, last.color, last.kind, dedupeKey, last.repeat + 1,
+                        last.textTech != null ? last.textTech : textTech,
+                        last.firstAtMs > 0 ? last.firstAtMs : now, now));
                 renderStream();
                 return;
             }
         }
         streamLines.add(new LogLine(line, c,
-                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON, dedupeKey, 1));
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON, dedupeKey, 1,
+                textTech, now, now));
         while (streamLines.size() > MAX_LOG_LINES) streamLines.remove(0);
         renderStream();
+    }
+
+    /** 秒数格式化：<1s 用 0.1s 精度，>=1s 保留一位小数，>=10s 取整。 */
+    private static String fmtSeconds(long ms) {
+        if (ms < 0) return "—";
+        if (ms < 950) return "0." + Math.max(1, ms / 100) + "s";
+        double sec = ms / 1000.0;
+        if (sec < 10) return String.format(java.util.Locale.US, "%.1fs", sec);
+        return Math.round(sec) + "s";
+    }
+
+    /** 墙钟 HH:mm（合并行的时间跨度用）。 */
+    private static String clockHm(long ms) {
+        return new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                .format(new java.util.Date(ms));
     }
 
     private void appendStreamColored(String line, int color,
@@ -7439,12 +7530,20 @@ public class MainActivity extends Activity {
         streamBuffer.clearSpans();
         for (LogLine l : streamLines) {
             if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly)) continue;
+            CharSequence body = l.shown(streamKeyOnly);
             if (l.repeat > 1) {
-                // 合并显示：原文本 + ×N。原始逐条记录仍在 streamLines 的语义里
-                // （文件日志逐条落盘），这里只压缩**视觉噪声**。
-                appendBuffer(l.text + "   ×" + l.repeat, l.color);
+                // 合并显示：文本 + ×N + 时间跨度。
+                // 「最近什么时候发生的」比「第几条」更常被问到 —— 用户想知道的是
+                // 「这是刚才那批，还是十分钟前的」。
+                StringBuilder sb = new StringBuilder(body);
+                sb.append("   ×").append(l.repeat);
+                if (l.firstAtMs > 0) {
+                    sb.append("  ").append(clockHm(l.firstAtMs));
+                    if (l.lastAtMs > l.firstAtMs) sb.append("–").append(clockHm(l.lastAtMs));
+                }
+                appendBuffer(sb, l.color);
             } else {
-                appendBuffer(l.text, l.color);
+                appendBuffer(body, l.color);
             }
         }
         if (connectStreamView != null) {
@@ -8314,7 +8413,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(15);
+        b.setTextSize(AmberTheme.FS_STATE);
         b.setTextColor(isLight(color) ? AmberTheme.ON_ACCENT : Color.WHITE);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setPadding(px(20), px(14), px(20), px(14));
@@ -8379,13 +8478,13 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(13);
+        t.setTextSize(AmberTheme.FS_MONO);
         t.setTextColor(ACCENT);
         box.addView(t);
 
         TextView b = new TextView(this);
         b.setText(body);
-        b.setTextSize(12);
+        b.setTextSize(AmberTheme.FS_BODY);
         b.setTextColor(TEXT_DIM);
         b.setLineSpacing(px(4), 1f);
         b.setPadding(0, px(6), 0, 0);
@@ -8398,7 +8497,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(14);
+        b.setTextSize(AmberTheme.FS_ACTION);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
@@ -8770,7 +8869,7 @@ public class MainActivity extends Activity {
             pw.setTextColor(AmberTheme.TEXT_FAINT);
         } else {
             pw.setText(sw.password);
-            pw.setTextSize(13.5f);
+            pw.setTextSize(AmberTheme.FS_ACTION);
             pw.setTextColor(TEXT);
             pw.setTypeface(Typeface.MONOSPACE);
         }

@@ -67,9 +67,9 @@ public final class VerdictView {
         switch (v) {
             case SUCCESS: return "命中";
             case AUTH_FAIL: return "密码错误";
-            case NETWORK_AUTH_FAIL: return "网络认证失败";
+            case NETWORK_AUTH_FAIL: return "网络报错";
             case TIMEOUT: return "超时";
-            case INCOMPLETE: return "未收敛";
+            case INCOMPLETE: return "连接中";
             // P1b：原为「连接终止」—— 用户读成「网络断了 / 软件连不上」。
             // 真实含义是「本次尝试已结束，但没拿到能证明密码对错的证据」。
             case TERMINATED_UNKNOWN: return "未证实";
@@ -91,32 +91,29 @@ public final class VerdictView {
         if (v == null) return "";
         switch (v) {
             case SUCCESS:
-                return "已确认连上目标并取得 IP";
+                return "已连上并取得 IP";
             case AUTH_FAIL:
-                return "这条密码被目标拒绝（证据绑定到本次新建的配置）";
+                return "这条密码被目标拒绝";
             case NETWORK_AUTH_FAIL:
-                return "目标网络报告认证失败，但证明不了是这条密码造成的"
-                        + "（可能是同名的旧配置在失败）—— 不代表这条密码错了";
+                // 收口精简（2026-11-02）：原文案 49 字，在手机上要折三行，
+                // 用户读不完就滑过去了。核心只有一句「不是这条密码的错」。
+                return "网络报错，但不是这条密码的错";
             case TIMEOUT:
-                return "观察窗口内没有拿到任何可归属的证据";
+                return "没等到可归因的证据";
             case INCOMPLETE:
-                return "连接还在进行，只是等不下去了 —— 稍后可能成功";
+                return "连接还在进行，稍后可能成功";
             case TERMINATED_UNKNOWN:
-                // P1b：原文案「连接已终止，但原因无法归因（不等于密码错误）」——
-                // 「连接已终止」是**底层生命周期**的措辞，用户会读成「网络出故障」，
-                // 甚至「密码错了」。这里改成用户真正需要知道的三件事：
-                //   ① 这条候选没连上目标（事实）
-                //   ② 但没拿到证据证明密码错（不误伤）
-                //   ③ 下次会重试（可行动）
-                return "本次没连上目标，但没有证据证明这条密码错了 —— 下次会重试";
+                // P1b 定调（改掉「连接已终止」这种底层措辞），
+                // 收口再压缩到 15 字：① 没连上（事实）② 未证明密码错 ③ 会重试。
+                return "没连上目标，未证明密码错，将重试";
             case UNKNOWN:
-                return "无法确认结论（状态读不到或归属不明）";
+                return "状态读不到或归属不明";
             case ERROR:
-                return "通道或命令出错，与环境有关，与密码无关";
+                return "通道出错，与密码无关";
             case ABORTED:
                 return "被用户中断";
             case TARGET_GONE:
-                return "目标已不在扫描范围";
+                return "目标已不在范围";
             default:
                 return "";
         }

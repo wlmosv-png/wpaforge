@@ -59,7 +59,7 @@ public class AboutActivity extends Activity {
 
         TextView back = new TextView(this);
         back.setText("‹");
-        back.setTextSize(28);
+        back.setTextSize(AmberTheme.FS_HERO);
         back.setTextColor(ACCENT);
         back.setPadding(0, 0, px(14), 0);
         back.setOnClickListener(v -> finish());
@@ -67,7 +67,7 @@ public class AboutActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText(L.s("关于", "About"));
-        title.setTextSize(20);
+        title.setTextSize(AmberTheme.FS_DISPLAY);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         head.addView(title);
@@ -139,7 +139,7 @@ public class AboutActivity extends Activity {
         content.addView(section(L.s("版本", "Version")));
         TextView ver = new TextView(this);
         ver.setText(Ver.labeled(this));
-        ver.setTextSize(12);
+        ver.setTextSize(AmberTheme.FS_BODY);
         ver.setTextColor(TEXT_DIM);
         content.addView(ver);
 
@@ -154,7 +154,7 @@ public class AboutActivity extends Activity {
     private TextView section(String s) {
         TextView t = new TextView(this);
         t.setText(s);
-        t.setTextSize(11.5f);
+        t.setTextSize(AmberTheme.FS_SMALL);
         t.setTextColor(TEXT_DIM);
         t.setLetterSpacing(0.12f);
         t.setPadding(px(4), px(20), 0, px(10));
@@ -164,7 +164,7 @@ public class AboutActivity extends Activity {
     private TextView block(String s) {
         TextView t = new TextView(this);
         t.setText(s);
-        t.setTextSize(12.5f);
+        t.setTextSize(AmberTheme.FS_BODY);
         t.setTextColor(TEXT_DIM);
         t.setLineSpacing(px(5), 1f);
         t.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
@@ -176,7 +176,7 @@ public class AboutActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(12);
+        b.setTextSize(AmberTheme.FS_BODY);
         b.setTextColor(ACCENT);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
@@ -205,21 +205,21 @@ public class AboutActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(15.5f);
+        t.setTextSize(AmberTheme.FS_STATE);
         t.setTextColor(TEXT);
         t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         box.addView(t);
 
         TextView tag = new TextView(this);
         tag.setText(tagline);
-        tag.setTextSize(11.5f);
+        tag.setTextSize(AmberTheme.FS_SMALL);
         tag.setTextColor(ACCENT);
         tag.setPadding(0, px(4), 0, 0);
         box.addView(tag);
 
         TextView d = new TextView(this);
         d.setText(desc);
-        d.setTextSize(12);
+        d.setTextSize(AmberTheme.FS_BODY);
         d.setTextColor(TEXT_DIM);
         d.setLineSpacing(px(4), 1f);
         d.setPadding(0, px(8), 0, 0);
@@ -232,7 +232,7 @@ public class AboutActivity extends Activity {
             for (String s2 : tags) {
                 TextView chip = new TextView(this);
                 chip.setText(s2);
-                chip.setTextSize(10);
+                chip.setTextSize(AmberTheme.FS_MICRO);
                 chip.setTextColor(TEXT_DIM);
                 chip.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
                 chip.setPadding(px(9), px(3), px(9), px(3));

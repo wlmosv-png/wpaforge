@@ -116,6 +116,16 @@ public final class AmberTheme {
     /** 成功的暗底。 */
     public static final int OK_BG = 0xFF12251A;
     /** 错误：克制一档的红，不用纯红。 */
+    /**
+     * 警告 / 挂起（琥珀偏暗）。
+     *
+     * <p>用途：**「已暂停」这类"停住了但不是出错"的状态**。
+     * 收口前 PAUSED 与 RUNNING 共用 ACCENT，用户扫一眼分不出
+     * 「在跑」还是「停了」——两种状态必须有色差。
+     */
+    public static final int WARN = 0xFFE39A28;
+
+    /** 危险（失败） */
     public static final int DANGER = 0xFFFF5A5F;
     /** 错误的暗底。 */
     public static final int DANGER_BG = 0xFF2A2020;
@@ -163,17 +173,45 @@ public final class AmberTheme {
 
     // ---------------------------------------------------------------- 字号（sp）
 
-    /** 页面上最大的数字（完成度百分比）。 */
+    /*
+     * **字号规范：全应用只有这 12 档，任何地方不得再写裸数字。**
+     *
+     * 背景（2026-11-02 收口审查）：MainActivity 里有 115 处 setTextSize，
+     * 其中 51 处是硬编码数值，散落成 15 种不同字号（10 / 10.5 / 11 / 11.5 /
+     * 12 / 12.5 / 13 / 13.5 / 14 / 14.5 / 15 / 16 / 18 / 20 / 26）。
+     * 相邻两档差 0.5sp，肉眼分不出，但整页看上去就是「大小不协调」——
+     * 因为差异不来自层级，而来自各人随手挑的数字。
+     *
+     * 现在按「视觉层级」而不是「数值方便」收敛成 12 档；
+     * 每档只表达**一个**语义，跨页面复用同一档。新增文字先归入已有档，
+     * 确实表达不了才加档（加档要同时更新本注释与 ThemeConsistencyTest）。
+     *
+     * 排序＝层级顺序：越靠上越大、越靠下越细。
+     */
+    /** ① 页面级巨数：唯一的完成度百分比。整页只允许出现一个。 */
     public static final float FS_HERO = 30f;
-    /** 统计数字（已完成 / 总数）。 */
+    /** ② 卡片级巨数：命中密码、雷达中心数字。每张卡最多一个。 */
+    public static final float FS_DISPLAY = 22f;
+    /** ③ 统计数字：已执行 / 已证实错误 / 未确定 / 总数。 */
     public static final float FS_STAT = 19f;
-    /** 当前状态。 */
-    public static final float FS_STATE = 15f;
-    /** 卡片标题 / 名称。 */
+    /** ④ 卡片标题：目标名、区块标题。 */
     public static final float FS_TITLE = 16f;
+    /** ⑤ 状态行：运行中 / 已暂停 / 已命中。 */
+    public static final float FS_STATE = 15f;
+    /** ⑥ 按钮文字、当前候选大字。 */
+    public static final float FS_ACTION = 14f;
+    /** ⑦ 等宽数据：密码、Attempt ID、索引、时间戳。**必须配 MONO 字体**。 */
+    public static final float FS_MONO = 13f;
+    /** ⑧ 正文：说明性文字、条目正文。 */
     public static final float FS_BODY = 12.5f;
-    /** 小标签（全大写那种）。 */
+    /** ⑨ 日志行（等宽）。比正文略小，换取一屏更多行。 */
+    public static final float FS_LOG = 12f;
+    /** ⑩ 辅助说明：次要提示、脚注式说明。 */
+    public static final float FS_SMALL = 11f;
+    /** ⑪ 小标签（全大写那种）：统计列名、筛选胶囊。 */
     public static final float FS_LABEL = 10.5f;
+    /** ⑫ 脚注 / 时间戳 / 计数尾巴。整页最小，不再往下加。 */
+    public static final float FS_MICRO = 10f;
 
     // ---------------------------------------------------------------- 建视图小工具
 

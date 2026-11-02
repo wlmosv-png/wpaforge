@@ -162,14 +162,14 @@ public class DictActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(L.s("字典管理", "Dictionary management"));
-        t.setTextSize(21);
+        t.setTextSize(AmberTheme.FS_STAT);
         t.setTextColor(TEXT);
         t.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         head.addView(t);
 
         // 目录路径：很长，所以中间省略 + 点一下复制（不占视觉重心）
         pathLabel = new TextView(this);
-        pathLabel.setTextSize(9.5f);
+        pathLabel.setTextSize(AmberTheme.FS_MICRO);
         pathLabel.setTextColor(AmberTheme.TEXT_FAINT);
         pathLabel.setSingleLine(true);
         pathLabel.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
@@ -178,7 +178,7 @@ public class DictActivity extends Activity {
         head.addView(pathLabel);
 
         statLabel = new TextView(this);
-        statLabel.setTextSize(11.5f);
+        statLabel.setTextSize(AmberTheme.FS_SMALL);
         statLabel.setTextColor(ACCENT);
         head.addView(statLabel);
 
@@ -225,7 +225,7 @@ public class DictActivity extends Activity {
                 AmberTheme.ACCENT_EDGE, AmberTheme.RADIUS_CARD, 1f));
 
         selectCount = new TextView(this);
-        selectCount.setTextSize(13f);
+        selectCount.setTextSize(AmberTheme.FS_MONO);
         selectCount.setTextColor(TEXT);
         selectBar.addView(selectCount, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -252,7 +252,7 @@ public class DictActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(12f);
+        b.setTextSize(AmberTheme.FS_BODY);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinWidth(0);
@@ -469,7 +469,7 @@ public class DictActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(13.5f);
+        t.setTextSize(AmberTheme.FS_ACTION);
         t.setTextColor(ACCENT);
         t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         t.setGravity(Gravity.CENTER);
@@ -477,7 +477,7 @@ public class DictActivity extends Activity {
 
         TextView h = new TextView(this);
         h.setText(hint);
-        h.setTextSize(10);
+        h.setTextSize(AmberTheme.FS_MICRO);
         h.setTextColor(TEXT_DIM);
         h.setGravity(Gravity.CENTER);
         h.setPadding(0, px(3), 0, 0);
@@ -609,7 +609,7 @@ public class DictActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(12.5f);
+        b.setTextSize(AmberTheme.FS_BODY);
         b.setTextColor(AmberTheme.ON_ACCENT);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinHeight(0);
@@ -670,7 +670,7 @@ public class DictActivity extends Activity {
                             + "· 用在线来源下载",
                     "No dictionaries yet.\n\nTap \"+ Add dictionary\" above to create, "
                             + "import or download one."));
-            empty.setTextSize(13);
+            empty.setTextSize(AmberTheme.FS_MONO);
             empty.setTextColor(AmberTheme.TEXT_DIM);
             empty.setLineSpacing(px(5), 1f);
             empty.setBackground(roundBgStroked(AmberTheme.CARD, AmberTheme.EDGE,
@@ -686,7 +686,7 @@ public class DictActivity extends Activity {
                 none.setText(filter == Filter.TRIED
                         ? L.s("这本网络还没有跑过任何字典。", "Nothing has been tried on this network yet.")
                         : L.s("没有未跑过的字典 —— 都被跑过了。", "No untried dictionaries left."));
-                none.setTextSize(12.5f);
+                none.setTextSize(AmberTheme.FS_BODY);
                 none.setTextColor(AmberTheme.TEXT_DIM);
                 none.setPadding(px(4), px(16), px(4), px(16));
                 listBox.addView(none);
@@ -776,7 +776,7 @@ public class DictActivity extends Activity {
                         + "（派生 / 生成，用完可清）",
                 "Temporary " + derived.size() + " \u00b7 " + DerivedDicts.sizeLabel(bytes)
                         + " (derived / generated)"));
-        t.setTextSize(12.5f);
+        t.setTextSize(AmberTheme.FS_BODY);
         t.setTextColor(AmberTheme.TEXT_DIM);
         top.addView(t, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -884,7 +884,7 @@ public class DictActivity extends Activity {
 
         TextView sp = new TextView(this);
         sp.setText(L.s("排序", "Sort"));
-        sp.setTextSize(11f);
+        sp.setTextSize(AmberTheme.FS_SMALL);
         sp.setTextColor(AmberTheme.TEXT_FAINT);
         sp.setPadding(px(6), 0, px(6), 0);
         row.addView(sp, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -922,7 +922,7 @@ public class DictActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(11f);
+        b.setTextSize(AmberTheme.FS_SMALL);
         b.setTextColor(textColor);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinWidth(0);
@@ -951,7 +951,7 @@ public class DictActivity extends Activity {
         tv.setText(L.s("本网络已试过 " + tried.size() + " 条 · 跑字典时自动跳过 · 点这里看判定基准",
                 tried.size() + " tried on this network \u00b7 skipped automatically "
                         + "\u00b7 tap for how it works"));
-        tv.setTextSize(11f);
+        tv.setTextSize(AmberTheme.FS_SMALL);
         tv.setTextColor(AmberTheme.OK);
         tv.setPadding(px(2), px(4), px(2), px(12));
         // 可点：把"过滤基准"讲清楚。
@@ -1149,7 +1149,7 @@ public class DictActivity extends Activity {
     private TextView statusBadge(DictStore.Entry e) {
         int[] p = progress.get(e.file.getAbsolutePath());
         TextView tv = new TextView(this);
-        tv.setTextSize(10.5f);
+        tv.setTextSize(AmberTheme.FS_LABEL);
         tv.setPadding(px(2), 0, px(2), 0);
         if (p == null) {
             tv.setText(L.s("没跑过", "new"));
@@ -1198,13 +1198,13 @@ public class DictActivity extends Activity {
         col.setOrientation(LinearLayout.VERTICAL);
         TextView name = new TextView(this);
         name.setText(e.name);
-        name.setTextSize(14.5f);
+        name.setTextSize(AmberTheme.FS_ACTION);
         name.setTextColor(TEXT);
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         TextView meta = new TextView(this);
         meta.setText(metaLine(e));
-        meta.setTextSize(10.5f);
+        meta.setTextSize(AmberTheme.FS_LABEL);
         meta.setTextColor(AmberTheme.TEXT_FAINT);
         meta.setSingleLine(true);
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
@@ -1385,7 +1385,7 @@ public class DictActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(11.5f);
+        b.setTextSize(AmberTheme.FS_SMALL);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
@@ -1462,7 +1462,7 @@ public class DictActivity extends Activity {
 
         TextView tv = new TextView(this);
         tv.setText(sb.toString());
-        tv.setTextSize(11.5f);
+        tv.setTextSize(AmberTheme.FS_SMALL);
         tv.setTextColor(TEXT);
         tv.setTypeface(Typeface.MONOSPACE);
         tv.setLineSpacing(px(3), 1f);
@@ -1520,7 +1520,7 @@ public class DictActivity extends Activity {
         final NetDialog dlg = new NetDialog(this, L.s("编辑 ", "Edit ") + e.name, null);
 
         final TextView countTv = new TextView(this);
-        countTv.setTextSize(11.5f);
+        countTv.setTextSize(AmberTheme.FS_SMALL);
         countTv.setTextColor(TEXT_DIM);
         countTv.setText(L.s("原有 " + lines.size() + " 条",
                 lines.size() + " existing entries"));
@@ -1694,7 +1694,7 @@ public class DictActivity extends Activity {
         EditText stepEt   = dlg.addField(L.s("步长（默认 1）", "Step (default 1)"), "1");
 
         TextView est = new TextView(this);
-        est.setTextSize(11.5f);
+        est.setTextSize(AmberTheme.FS_SMALL);
         est.setTextColor(ACCENT);
         est.setPadding(px(4), px(8), px(4), px(4));
         dlg.addView(est);
@@ -1996,7 +1996,7 @@ public class DictActivity extends Activity {
                 lastCat = src.category;
                 TextView h = new TextView(this);
                 h.setText(src.category);
-                h.setTextSize(12);
+                h.setTextSize(AmberTheme.FS_BODY);
                 h.setTextColor(ACCENT);
                 h.setPadding(px(4), px(12), px(4), px(4));
                 dlg.addView(h);
@@ -2012,20 +2012,20 @@ public class DictActivity extends Activity {
                     + (src.entries > 0 ? " · " + DictSources.estimateText(src.entries) : "")
                     + (src.entries > DictSources.HUGE_ENTRIES
                     ? L.s("  ⚠ 太大，在线跑不完", "  ! too large to finish online") : ""));
-            n.setTextSize(13.5f);
+            n.setTextSize(AmberTheme.FS_ACTION);
             n.setTextColor(TEXT);
             item.addView(n);
 
             TextView d = new TextView(this);
             d.setText(src.desc);
-            d.setTextSize(11);
+            d.setTextSize(AmberTheme.FS_SMALL);
             d.setTextColor(TEXT_DIM);
             d.setPadding(0, px(4), 0, 0);
             item.addView(d);
 
             TextView lic = new TextView(this);
             lic.setText(L.s("许可: ", "License: ") + src.license + L.s("   点击下载", "   tap to download"));
-            lic.setTextSize(10);
+            lic.setTextSize(AmberTheme.FS_MICRO);
             lic.setTextColor(ACCENT);
             lic.setPadding(0, px(5), 0, 0);
             item.addView(lic);
@@ -2041,14 +2041,14 @@ public class DictActivity extends Activity {
     private void downloadSource(DictSources.Source src) {
         android.widget.TextView tv = new android.widget.TextView(this);
         tv.setText(L.s("准备下载…", "Preparing download…"));
-        tv.setTextSize(12.5f);
+        tv.setTextSize(AmberTheme.FS_BODY);
         tv.setTextColor(TEXT);
         tv.setPadding(px(4), px(6), px(4), px(6));
 
         final NetDialog prog = new NetDialog(this, L.s("正在下载 ", "Downloading ") + src.name, null);
         prog.addView(tv);
         android.widget.TextView noteTv = new android.widget.TextView(this);
-        noteTv.setTextSize(11f);
+        noteTv.setTextSize(AmberTheme.FS_SMALL);
         noteTv.setTextColor(TEXT_DIM);
         noteTv.setPadding(px(4), px(2), px(4), px(6));
         prog.addView(noteTv);

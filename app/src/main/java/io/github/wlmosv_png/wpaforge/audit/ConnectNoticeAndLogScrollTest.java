@@ -89,15 +89,39 @@ public final class ConnectNoticeAndLogScrollTest {
                 ma.contains("streamCollapsed = !streamCollapsed;"), "缺失");
 
         // ---- ④ 展开按钮重绘 ----
-        ok("④ 按钮尺寸 32dp（原为裸文字三角）",
-                ma.contains("int chev = px(32);"), "尺寸未改");
-        ok("④ 按钮有圆形底色", ma.contains("flowChevron.setBackground(roundBg(ACCENT, chev / 2f))"),
-                "无背景");
-        ok("④ 按钮字号加大到 14sp", ma.contains("flowChevron.setTextSize(14f)"), "字号未改");
+        // 第二次重绘：用户否掉了「黄色大圆钮」——要一个三角形。
+        // 设计取舍：视觉上只有一枚小三角，可点性靠 padding 撑开触摸区。
+        ok("④ 视觉是三角形（▼/▲），不是圆形按钮",
+                ma.contains("flowChevron.setText(streamCollapsed ? \"▼\" : \"▲\")"),
+                "不是三角形");
+        ok("④ 不再有大圆底", !ma.contains("roundBg(ACCENT, chev / 2f)"), "圆底仍在");
+        ok("④ 无背景（flowChevron.setBackground(null)）",
+                ma.contains("flowChevron.setBackground(null)"), "仍有背景");
+        ok("④ 触控靠 padding 撑开（不是靠放大视觉）",
+                ma.contains("flowChevron.setPadding(px(10), px(10), px(12), px(10))"), "缺 padding");
+        ok("④ 字号 15sp（比初版 11.5 清楚，又不像按钮）",
+                ma.contains("flowChevron.setTextSize(15f)"), "字号未改");
         ok("④ 按钮自带点击（不依赖整行）",
                 ma.contains("flowChevron.setOnClickListener(v -> toggleStream())"), "缺失");
         ok("④ 有无障碍描述",
                 ma.contains("展开日志") && ma.contains("收起日志"), "缺失");
+
+        // ---- ⑤ 观测页提示条：唯一决策点 + 按真实状态重算 ----
+        ok("⑤ 存在唯一决策点 refreshObserveNotice",
+                ma.contains("private void refreshObserveNotice("), "缺失");
+        ok("⑤ 有按真实状态判断的 observeBlocker",
+                ma.contains("private String observeBlocker()"), "缺失");
+        ok("⑤ 破解运行中不报「扫不到」（那是切网，不是故障）",
+                ma.contains("CrackService.isRunning()") && ma.contains("引擎正在反复断开"),
+                "缺失");
+        ok("⑤ 有结果即隐藏提示", ma.contains("observeNotice.setVisibility(View.GONE)"),
+                "缺失");
+        ok("⑤ onNotice 只记录、不当场写屏（避免闪烁）",
+                ma.contains("lastScanNotice = message;") && ma.contains("refreshObserveNotice(lastRecords)"),
+                "仍在当场写屏");
+        ok("⑤ 旧的「三个写入点」已收敛（renderRecords 里不再直接写文案）",
+                !ma.contains("暂时扫不到网络 · \", \"No networks yet · \")\n                    + scanner.scanGateLabel()"),
+                "旧写入点仍在");
 
         System.out.println();
         System.out.println("=== 提示条/滚动/按钮: " + pass + " 通过, " + fail + " 失败 ===");

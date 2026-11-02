@@ -279,9 +279,15 @@ public class ThemeConsistencyTest {
         ok("状态行不可点（用户：不用点击更新了）", !set.contains("radarStatus.setOnClickListener")
                 && !set.contains("radarRefreshBtn")
                 && !set.contains("DictIcons.Kind.REFRESH"));
+        // 2026-11-02：观测页提示条收敛到唯一决策点 refreshObserveNotice。
+        // 「有结果时不提系统限流」这条语义没变，只是实现从内联 if 变成统一决策：
+        //   blocker 非空 -> 红字；破解中 -> 隐藏；有结果 -> 隐藏；否则弱提示。
         ok("有结果时不提系统限流（那是噪音）",
                 !set.contains("radarStatus.setText(text + ")
-                        && set.contains("if (records.isEmpty() && scanner != null"));
+                        && set.contains("private void refreshObserveNotice(")
+                        && set.contains("if (hasRecords) {"));
+        ok("破解运行中不报「扫不到网络」（切网是预期行为）",
+                set.contains("CrackService.isRunning()"));
         ok("刷新带「新增 / 消失」差异（刷新才有信息量）", set.contains("ScanDiff.of(lastBssids, now)")
                 && set.contains("lastDiff.label("));
         ok("系统频率限制只在「扫不到」时告知", set.contains("scanner.scanGateLabel()")

@@ -125,6 +125,9 @@ public class MainActivity extends Activity {
     private int savedWifiTotal = -1;
     private int savedWifiWeak = -1;
     private TextView observeNotice;
+    /** 扫描器最近一次报上来的原因（只作参考，显示与否由真实状态决定）。 */
+    private String lastScanNotice = null;
+    private boolean lastScanNoticeIsError = false;
     /**
      * 破解页自己的提示条（WiFi 未开等）。
      *
@@ -2932,16 +2935,129 @@ public class MainActivity extends Activity {
             }
         }
 
+        /**
+         * 扫描器报上来的**原因**（只记录，不直接画到屏幕上）。
+         *
+         * <h3>为什么改成只记录（2026-11-02 用户截图）</h3>
+         * 原来这里直接写文案 + 显示。而破解过程中引擎会不停断开／重连 WiFi，
+         * 扫描结果时有时无 —— 于是这条提示**一闪一闪**地出现，
+         * 用户看到的就是「破解时一下下显示 WiFi 未连接」。
+         *
+         * <p>更糟的是没人清它：WiFi 恢复、38 个热点就在雷达上转，
+         * 红字还挂在下面（观测页那条「WiFi 未开启」就是上一轮留下的）。
+         *
+         * <p>现在统一由 {@link #refreshObserveNotice} 在每次渲染时**按真实状态**
+         * 重新决定显示什么 —— 状态好了就消失，不需要谁来"记得清"。
+         */
         @Override
         public void onNotice(String message, boolean isError) {
-            ui.post(() -> {
-                if (observeNotice == null) return;
-                observeNotice.setText(message);
-                observeNotice.setTextColor(isError ? DANGER : TEXT_DIM);
-                observeNotice.setVisibility(View.VISIBLE);
-            });
+            lastScanNotice = message;
+            lastScanNoticeIsError = isError;
+            ui.post(() -> refreshObserveNotice(lastRecords));
         }
     };
+
+    /**
+     * 观测页提示条的**唯一决策点**。
+     *
+     * <h3>它替掉了三个各写各的写入点</h3>
+     * 旧实现有三处直接写 observeNotice（Scanner 的 onNotice、renderRecords 里
+     * 「暂时扫不到网络」、切页时清），互相不知道对方写过什么 —— 于是出现
+     * 「WiFi 明明开着、38 个热点在雷达上，下面还挂着『WiFi 未开启』」，
+     * 以及「破解时提示一闪一闪」。现在只有一个地方决定显示什么，
+     * 而且**每次都按真实状态重算**，不需要谁来记得清除。
+     *
+     * <h3>优先级（自高到低）</h3>
+     * <ol>
+     *   <li><b>需要用户行动</b>（权限缺失 / 定位关闭 / WiFi 开关关闭）→ 红字。
+     *       这三条都是「不处理就永远扫不到」，必须显眼。</li>
+     *   <li><b>破解运行中</b> → 直接隐藏。引擎正在反复断开／重连 WiFi，
+     *       这段时间扫不到网是**预期行为**，报警只会制造假故障。</li>
+     *   <li><b>已有结果</b> → 隐藏（能扫到就说明前面的问题都过去了）。</li>
+     *   <li><b>暂无结果</b> → 弱色一行说明原因（灰字，不用红）。</li>
+     * </ol>
+     */
+    private void refreshObserveNotice(List<io.github.wlmosv_png.wpaforge.core.NetRecord> records) {
+        if (observeNotice == null) return;
+
+        String blocker = observeBlocker();
+        if (blocker != null) {
+            if (!blocker.contentEquals(observeNotice.getText())) observeNotice.setText(blocker);
+            observeNotice.setTextColor(DANGER);
+            if (observeNotice.getVisibility() != View.VISIBLE) {
+                observeNotice.setVisibility(View.VISIBLE);
+            }
+            return;
+        }
+
+        // 破解中：不报「扫不到」——那是引擎在切网，不是故障
+        if (io.github.wlmosv_png.wpaforge.CrackService.isRunning()) {
+            observeNotice.setVisibility(View.GONE);
+            return;
+        }
+
+        boolean hasRecords = records != null && !records.isEmpty();
+        if (hasRecords) {
+            observeNotice.setVisibility(View.GONE);
+            return;
+        }
+
+        // 暂无结果：给一行弱提示，说清是「还在扫」还是「系统限流」
+        String soft = (scanner != null && !scanner.lastScanAccepted())
+                ? L.s("暂时扫不到网络 · ", "No networks yet · ") + scanner.scanGateLabel()
+                : L.s("正在扫描…", "Scanning…");
+        if (!soft.contentEquals(observeNotice.getText())) observeNotice.setText(soft);
+        observeNotice.setTextColor(TEXT_DIM);
+        if (observeNotice.getVisibility() != View.VISIBLE) {
+            observeNotice.setVisibility(View.VISIBLE);
+        }
+    }
+
+    /**
+     * 当前**需要用户行动**的阻塞项；没有则返回 {@code null}。
+     *
+     * <p>关键是「按真实状态判断」而不是「信上一次的报错」—— 用户开了 WiFi，
+     * 这里立刻就不再返回它，提示自然消失。
+     */
+    private String observeBlocker() {
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wm == null) {
+                return L.s("此设备无法访问 WiFi 服务", "This device cannot access the Wi-Fi service");
+            }
+            if (!wm.isWifiEnabled()) {
+                return L.s("WiFi 未开启，请先打开 WiFi 开关",
+                        "Wi-Fi is off — turn it on first");
+            }
+        } catch (Throwable ignored) { }
+
+        // 定位开关：Android 10 起关着时系统不返回任何扫描结果
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                android.location.LocationManager lm = (android.location.LocationManager)
+                        getSystemService(LOCATION_SERVICE);
+                if (lm != null && !lm.isLocationEnabled()) {
+                    return L.s("系统定位开关没打开：Android 10 起定位关着时系统不返回任何扫描结果。"
+                                    + "请下拉通知栏打开「定位」再试。",
+                            "Location is off: since Android 10 the system returns no scan "
+                                    + "results while location is off. Turn Location on and retry.");
+                }
+            }
+        } catch (Throwable ignored) { }
+
+        // 定位权限（Android 12+ 需要 NEARBY_WIFI_DEVICES，运行时权限已由设置页申请）
+        try {
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return L.s("缺少定位权限：没有它系统不会返回扫描结果。",
+                        "Missing location permission: without it the system returns "
+                                + "no scan results.");
+            }
+        } catch (Throwable ignored) { }
+
+        return null;
+    }
 
     private void renderRecords(List<NetRecord> records) {
         if (radar == null || signalBoard == null || netList == null) return;
@@ -2956,12 +3072,7 @@ public class MainActivity extends Activity {
         // 横向铺得太宽，会和内环的点/汇聚标撞在一起（截图里正压着）
         // 一个网络都扫不到时，把「为什么没有」说清楚：权限/Wi-Fi 关/系统限流
         // （有结果时不提限流 —— 那是噪音，用户也不该操心系统那 30 秒）
-        if (records.isEmpty() && scanner != null && !scanner.lastScanAccepted()) {
-            observeNotice.setText(L.s("暂时扫不到网络 · ", "No networks yet · ")
-                    + scanner.scanGateLabel());
-            observeNotice.setTextColor(DANGER);
-            observeNotice.setVisibility(View.VISIBLE);
-        }
+        refreshObserveNotice(records);
 
         radar.setCenterText(String.valueOf(visible.size()), L.s("个网络", "networks"));
 
@@ -4912,24 +5023,24 @@ public class MainActivity extends Activity {
         flowHeader.setPadding(0, px(12), 0, px(6));
 
         /*
-         * 展开/收起按钮（2026-11-02 重绘）。
+         * 展开/收起指示（2026-11-02 第二次重绘）。
          *
-         * 用户原话：「那个小窗旁边的展开按钮太小了」。原实现是一个 11.5sp 的
-         * 裸三角 ▸/▾，既没有背景也没有触摸扩张，在高 DPI 屏上只有几毫米，
-         * 看不出它是可点的。
+         * 演变：11.5sp 裸三角（太小、看不出可点）-> 32dp 黄色圆钮（太大、太抢眼）
+         * -> 现在这样：三角形保留，但用**触摸区**而不是**视觉块**来保证可点。
          *
-         * 现在做成 32dp 的圆形按钮：有底色、有箭头、有按下反馈，
-         * 尺寸达到可直接拇指点中的量级（整行也仍可点，双保险）。
+         * 用户要的是「一个三角形」，不是一颗按钮。所以：
+         *   · 视觉：只有一个 15sp 的实心三角，无背景、无描边；
+         *   · 触控：左右 10dp 内边距撑到 ~46dp 宽 —— 拇指能点中，
+         *     但屏幕上看到的仍然只是一枚小三角；
+         *   · 整行标题依旧可点，双保险。
          */
         flowChevron = new TextView(this);
-        flowChevron.setTextSize(14f);
-        flowChevron.setTextColor(AmberTheme.ON_ACCENT);
+        flowChevron.setTextSize(15f);
+        flowChevron.setTextColor(ACCENT);
         flowChevron.setGravity(Gravity.CENTER);
-        int chev = px(32);
-        LinearLayout.LayoutParams cvp = new LinearLayout.LayoutParams(chev, chev);
-        cvp.rightMargin = px(4);
-        flowChevron.setLayoutParams(cvp);
-        flowChevron.setBackground(roundBg(ACCENT, chev / 2f));
+        // 视觉是三角，触控靠 padding 撑开（不用固定 LayoutParams，避免又变回大块）
+        flowChevron.setPadding(px(10), px(10), px(12), px(10));
+        flowChevron.setBackground(null);
         flowChevron.setClickable(true);
         flowChevron.setFocusable(true);
         flowChevron.setOnClickListener(v -> toggleStream());
@@ -7116,8 +7227,9 @@ public class MainActivity extends Activity {
     /** 刷新头部箭头与行数 */
     private void updateFlowHeader() {
         if (flowChevron != null) {
-            // 折叠时箭头朝下（点了往下展开），展开时朝上（点了收起）。
-            flowChevron.setText(streamCollapsed ? "▾" : "▴");
+            // 实心三角（比 ▾/▴ 这种小三角更清楚，又不至于像按钮）。
+            // 折叠时朝下（点了往下展开），展开时朝上（点了收起）。
+            flowChevron.setText(streamCollapsed ? "▼" : "▲");
             // 无障碍：读屏用户也要知道这个按钮干什么
             flowChevron.setContentDescription(streamCollapsed
                     ? L.s("展开日志", "Expand log") : L.s("收起日志", "Collapse log"));

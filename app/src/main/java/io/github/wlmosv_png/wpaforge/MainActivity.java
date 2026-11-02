@@ -181,6 +181,21 @@ public class MainActivity extends Activity {
     private int currentDictSkipped = -1;
     private AuditEngine engine;
 
+    /**
+     * 破解页的执行模式（第一批补齐：单本 vs 多字典计划）。
+     *
+     * <p>{@code usePlanMode == false} 是既有单字典模式：从字典来源里挑一本，
+     * 跑完即停。{@code usePlanMode == true} 是多字典计划模式：不逐本选字典，
+     * 而是直接用字典管理页建好的计划，启动后按顺序自动接力。
+     *
+     * <p>这是**纯界面状态**，不进判定链、不改任何账本/游标语义。真正执行时，
+     * 服务端仍由既有的 {@code CrackService.loadPlanForRun} 按计划文件接管 ——
+     * 这里只负责「让用户能明确选到计划、并把目标对齐到计划」。
+     */
+    private boolean usePlanMode = false;
+    /** 当前选中的计划快照（仅用于界面显示与启动对齐，不参与判定）。 */
+    private io.github.wlmosv_png.wpaforge.audit.DictPlan selectedPlan = null;
+
     // 试连页组件
 /** 明文备份清理行（只在备份存在时创建）。 */
     private Button plainBakBtn;
@@ -3960,6 +3975,12 @@ public class MainActivity extends Activity {
 
     private void updateDictStatus() {
         if (dictStatus == null) return;
+        if (usePlanMode && selectedPlan != null && !selectedPlan.items.isEmpty()) {
+            dictStatus.setText(L.f("多字典计划: %d 本 · 当前第 %d 本",
+                    "Plan: %d dictionaries · now #%d",
+                    selectedPlan.items.size(), selectedPlan.displayIndex()));
+            return;
+        }
         int n = dictCount();
         if (n == 0) {
             dictStatus.setText(L.s("当前字典: 未选择", "Current dictionary: none"));
@@ -4056,6 +4077,24 @@ public class MainActivity extends Activity {
                         + Prefs.estimate(this, generic),
                 SRC_GENERIC.equals(currentDictSource),
                 dd -> buildGenericDict());
+
+        // ── 多字典计划（第一批补齐：与上面四种「单本字典」并列的第二种模式）──
+        {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan plan =
+                    io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                            io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this));
+            String planSub = plan.items.isEmpty()
+                    ? L.s("还没建。可在字典管理页把几本字典排成一个顺序", "Not built. Order several dictionaries in dictionary management")
+                    : L.f("已建 %d 本 · 按顺序自动接力 · %s",
+                          "%d dictionaries · auto-relay in order · %s",
+                          plan.items.size(),
+                          plan.autoAdvance ? L.s("自动连跑", "auto-advance") : L.s("单本停", "stop each"));
+            d.addIconItem(DictIcons.Kind.LIST,
+                    L.s("多字典计划（按顺序接力）", "Multi-dictionary plan (relay)"),
+                    planSub,
+                    usePlanMode,
+                    dd -> showPlanPicker());
+        }
 
         d.addItem(L.s("怎么选？看说明", "Which one? Read this"), dd -> showDictGuide());
         d.setNegative(L.s("关闭", "Close"), null);
@@ -4184,6 +4223,7 @@ public class MainActivity extends Activity {
      * 只存本机私有 SP，日志与界面一律走掩码。
      */
     private void showSeedDialog() {
+        usePlanMode = false; selectedPlan = null;
         final String key = currentTargetKey();
         final io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick pick = profileForCurrentTarget();
         final io.github.wlmosv_png.wpaforge.audit.SeedModel cur = pick.seeds;
@@ -4342,6 +4382,7 @@ public class MainActivity extends Activity {
      * 不落地会出现「候选显示正常但一跑就秒结束」。
      */
     private void deriveFromTarget() {
+        usePlanMode = false; selectedPlan = null;
         if (targetNet == null) {
             Toast.makeText(this, L.s("请先选择目标网络",
                     "Select a target network first"), Toast.LENGTH_SHORT).show();
@@ -4395,6 +4436,7 @@ public class MainActivity extends Activity {
 
     /** 内置生成器（通用词法），同样先落盘 */
     private void buildGenericDict() {
+        usePlanMode = false; selectedPlan = null;
         appendStream(L.s("正在编排通用载荷...", "Building built-in dictionary..."));
         new Thread(() -> {
             io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
@@ -4546,7 +4588,68 @@ public class MainActivity extends Activity {
      */
     private static final int DICT_LOAD_LIMIT = 120000;
 
+    /**
+     * 选择多字典计划（破解页第二种模式）。
+     *
+     * <p>没有计划时明确提示「先去字典管理页建立」，并给一个直达入口；
+     * 有计划时列出成员与顺序，用户点「用这个计划」即切换到计划模式 ——
+     * 之后启动不再逐本选字典。
+     */
+    private void showPlanPicker() {
+        io.github.wlmosv_png.wpaforge.audit.DictPlan plan =
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this));
+
+        if (plan.items.isEmpty()) {
+            NetDialog d = new NetDialog(this, L.s("还没有多字典计划", "No plan yet"),
+                    L.s("多字典计划需要在「字典管理」页里建立：\n把几本字典按顺序加进去、调好顺序，再回来这里选它。\n\n现在去建立吗？",
+                            "A multi-dictionary plan is built in \"Dictionary management\": add several dictionaries in order, then come back to pick it here.\n\nOpen it now?"));
+            d.setNegative(L.s("取消", "Cancel"), null);
+            d.setPositive(L.s("去字典管理", "Open dictionary management"), dd -> {
+                startActivity(new android.content.Intent(this, DictActivity.class));
+            });
+            d.show();
+            return;
+        }
+
+        NetDialog d = new NetDialog(this, L.s("多字典计划", "Multi-dictionary plan"),
+                L.f("共 %d 本 · %s · 当前第 %d 本",
+                        "%d dictionaries · %s · now #%d",
+                        plan.items.size(),
+                        plan.autoAdvance ? L.s("自动连跑", "auto-advance") : L.s("单本停", "stop each"),
+                        plan.displayIndex()));
+        StringBuilder members = new StringBuilder();
+        for (int i = 0; i < plan.items.size(); i++) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item it = plan.items.get(i);
+            members.append(i + 1).append(". ").append(it.name);
+            if (i == plan.index) members.append(L.s("  ← 当前", "  ← now"));
+            if (i < plan.items.size() - 1) members.append("\n");
+        }
+        d.addHint(members.toString());
+        d.addHint(L.s("计划模式：启动后按这个顺序一本接一本跑，命中即停。\n不再需要逐本选字典。",
+                "Plan mode: runs these in order, one after another, stopping on a hit. No per-dictionary selection needed."));
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.setPositive(L.s("用这个计划", "Use this plan"), dd -> {
+            usePlanMode = true;
+            selectedPlan = plan;
+            // 计划自带目标快照时，把破解页目标对齐到计划目标 —— 这样 triedSet 键、
+            // 服务端 loadPlanForRun 的目标一致性检查都自然对齐，不靠用户手动再选。
+            if (plan.targetBssid != null && !plan.targetBssid.isEmpty()) {
+                targetNet = plan.toNetRecord();
+                Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
+                updateTargetLabel();
+                refreshSkippedForCurrentDict();
+            }
+            updateDictStatus();
+            updateConnectDict();
+            Toast.makeText(this, L.f("已选多字典计划（%d 本）", "%d-dictionary plan selected",
+                    plan.items.size()), Toast.LENGTH_SHORT).show();
+        });
+        d.show();
+    }
+
     private void loadDictFile(io.github.wlmosv_png.wpaforge.audit.DictStore.Entry e) {
+        usePlanMode = false; selectedPlan = null;
         appendLog(L.f("正在读取 %s ...", "Reading %s ...", e.name));
         new Thread(() -> {
             java.util.List<Candidate> list = null;
@@ -5924,6 +6027,30 @@ public class MainActivity extends Activity {
             }
         }
 
+        // ①½ 计划模式恢复：进程被杀/重进页面后，若服务端正在跑多字典计划
+        // （planForDisplay 非空），把界面切回计划模式，别让用户误以为还是单本。
+        if (!usePlanMode) {
+            CrackService svc0 = liveService();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan livePlan = svc0 == null ? null : svc0.planForDisplay();
+            if (livePlan != null && !livePlan.items.isEmpty()) {
+                usePlanMode = true;
+                selectedPlan = livePlan;
+                updateDictStatus();
+                updateConnectDict();
+            } else if (!CrackService.planSummary().isEmpty()) {
+                // 服务不在/拿不到活计划，但确有计划摘要：从盘上读一份做界面快照。
+                io.github.wlmosv_png.wpaforge.audit.DictPlan p =
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                                io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this));
+                if (!p.items.isEmpty()) {
+                    usePlanMode = true;
+                    selectedPlan = p;
+                    updateDictStatus();
+                    updateConnectDict();
+                }
+            }
+        }
+
         // ② 字典
         if ((currentDict == null || currentDict.isEmpty()) && !dictReloading) {
             CrackService svc = liveService();
@@ -6157,6 +6284,15 @@ public class MainActivity extends Activity {
     /** 破解页显示当前选中的字典 */
     private void updateConnectDict() {
         if (connectDictView == null) return;
+        if (usePlanMode && selectedPlan != null && !selectedPlan.items.isEmpty()) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = selectedPlan.current();
+            connectDictView.setText(L.f("多字典计划 · %d 本 · 当前「%s」",
+                    "Plan · %d dictionaries · now \"%s\"",
+                    selectedPlan.items.size(), cur == null ? "-" : cur.name));
+            connectDictView.setTextColor(ACCENT);
+            updateEmptyHint();
+            return;
+        }
         int n = dictCount();
         if (n <= 0) {
             connectDictView.setText(L.s("未选择字典 —— 点这里选择",
@@ -6802,6 +6938,23 @@ public class MainActivity extends Activity {
         int su = CrackService.lastSkippedUndetermined();
         StringBuilder sb = new StringBuilder();
         if (plan != null && !plan.isEmpty()) sb.append(plan);
+        // 计划模式下补一行「第几本 / 当前 / 下一本 / 整体进度」，数据来自服务端活计划。
+        if (usePlanMode) {
+            CrackService svc = liveService();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan live = svc == null ? null : svc.planForDisplay();
+            if (live != null && !live.items.isEmpty()) {
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = live.current();
+                String next = (live.index + 1 < live.items.size())
+                        ? live.items.get(live.index + 1).name : L.s("（最后一本）", "(last)");
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(L.f("第 %d/%d 本 · 当前「%s」%s · 下一本「%s」 · 整体 %d%%",
+                        "#%d of %d · now \"%s\" %s · next \"%s\" · %d%% overall",
+                        live.displayIndex(), live.items.size(),
+                        cur == null ? "-" : cur.name,
+                        cur == null ? "" : (cur.offset + "/" + cur.dictSize),
+                        next, Math.round(live.progress() * 100)));
+            }
+        }
         if (sc + su > 0) {
             if (sb.length() > 0) sb.append("   ·   ");
             sb.append(L.s("跳过 " + (sc + su) + " 条（已证实错误 " + sc
@@ -7074,14 +7227,26 @@ public class MainActivity extends Activity {
             Toast.makeText(this, L.s("请先选择目标网络", "Select a target network first"), Toast.LENGTH_SHORT).show();
             return;
         }
-        if (currentDict == null || currentDict.isEmpty()) {
-            Toast.makeText(this, L.s("字典为空，请先到审计页加载或生成", "Dictionary is empty — load or generate one in the Audit tab"), Toast.LENGTH_SHORT).show();
+        // 多字典计划模式：字典来自计划，不要求「当前已加载单本字典」。
+        // 计划的目标快照在入队时对齐，无需用户再逐本选字典。
+        if (!usePlanMode) {
+            if (currentDict == null || currentDict.isEmpty()) {
+                Toast.makeText(this, L.s("字典为空，请先到审计页加载或生成", "Dictionary is empty — load or generate one in the Audit tab"), Toast.LENGTH_SHORT).show();
+                return;
+            }
+        } else if (selectedPlan == null || selectedPlan.items.isEmpty()) {
+            Toast.makeText(this, L.s("计划为空，请先到字典管理页建立计划", "Plan is empty — build one in dictionary management first"), Toast.LENGTH_SHORT).show();
             return;
         }
 
         // B 方案：目标被 forget 过（不在系统已保存列表）且本网络有已试记录时，
         // 先提示是否清空已试记录从头开始；确认（或无需处理）后再走真正入队流程。
-        maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+        // 计划模式的目标来自计划快照，不走这套「单字典目标 forget」提示。
+        if (usePlanMode) {
+            startConnectAfterGuards();
+        } else {
+            maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+        }
     }
 
     /**
@@ -7105,7 +7270,8 @@ public class MainActivity extends Activity {
 
         // 耗时预估：按实测速度算，比固定假设准
         {
-            int planned = currentDict.size();
+            int planned = (currentDict == null || currentDict.isEmpty())
+                    ? 0 : currentDict.size();
             String est = Prefs.estimate(this, planned);
             String rate = Prefs.avgRateLabel(this);
             boolean sampled = Prefs.hasRateSample(this);
@@ -7139,16 +7305,44 @@ public class MainActivity extends Activity {
 
         // 入队。crackService 可能还没绑定好（bindService 是异步的），
         // 所以先直接写持久化队列，不依赖服务实例 —— 避免 NPE。
-        final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
-                currentDictPath, currentDictName,
-                targetDictEnabled, smartSortEnabled, Prefs.mode(this),
-                profileForCurrentTarget().seeds.encode());
-        queueCache.clear();
-        queueCache.addAll(TaskQueue.load(this));
-        renderQueue();
+        //
+        // 多字典计划模式：不逐本选字典。入队的任务用**计划的目标快照**与
+        // **计划当前指向的那本字典**，让服务端既有的 loadPlanForRun 干净接管
+        // （目标一致 + 计划未终态 + 计划有成员），之后按计划顺序自动接力。
+        if (usePlanMode && selectedPlan != null && !selectedPlan.items.isEmpty()) {
+            final io.github.wlmosv_png.wpaforge.audit.DictPlan sp = selectedPlan;
+            // 计划自带目标快照时用它（bssid/ssid 与计划 targetKey 同源，服务端
+            // loadPlanForRun 的目标一致性检查自然通过）；计划还没绑定目标时退回
+            // 破解页当前选中的目标 —— 第一次跑计划就是这种情况。
+            final io.github.wlmosv_png.wpaforge.core.NetRecord planTarget =
+                    (sp.targetBssid != null && !sp.targetBssid.isEmpty())
+                            ? sp.toNetRecord() : targetNet;
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = sp.current();
+            final String planDictPath = cur == null || cur.path.isEmpty() ? "" : cur.path;
+            final String planDictName = cur == null || cur.name.isEmpty() ? L.s("计划字典", "Plan dictionary") : cur.name;
+            final TaskQueue.Task t = TaskQueue.enqueue(this, planTarget,
+                    planDictPath, planDictName,
+                    false, false, Prefs.mode(this), "");
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
+            renderQueue();
 
-        appendStream(L.s("已加入队列: ", "Added to queue: ") + targetNet.displayName()
-                + L.s("   字典 ", "   dictionary ") + currentDictName + "（" + currentDict.size() + L.s(" 条）", " entries)"));
+            appendStream(L.s("已加入队列: ", "Added to queue: ") + planTarget.displayName()
+                    + L.s("   多字典计划 ", "   plan ") + sp.items.size()
+                    + L.s(" 本 · 从「", " dictionaries · from \"") + planDictName
+                    + L.s("」开始自动接力", "\" auto-relaying"));
+        } else {
+            final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
+                    currentDictPath, currentDictName,
+                    targetDictEnabled, smartSortEnabled, Prefs.mode(this),
+                    profileForCurrentTarget().seeds.encode());
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
+            renderQueue();
+
+            appendStream(L.s("已加入队列: ", "Added to queue: ") + targetNet.displayName()
+                    + L.s("   字典 ", "   dictionary ") + currentDictName + "（" + currentDict.size() + L.s(" 条）", " entries)"));
+        }
         if (smartSortEnabled) appendStream(L.s("智能排序: 开", "Smart ranking: on"));
         if (targetDictEnabled) appendStream(L.s("目标派生: 开", "Target derivation: on"));
         appendStream(L.s("破解在后台进行，可以切走或锁屏。通知栏能看到进度。", "Cracking runs in the background — you can switch away or lock the screen. Progress shows in the notification."));

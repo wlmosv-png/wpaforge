@@ -964,7 +964,12 @@ public class DictActivity extends Activity {
      * 不改变计划成员身份；彻底删除才是真正不可恢复的动作，单独二次确认。
      */
     private void showTrash() {
-        final java.util.List<File> trash = DictTrash.list(DictStore.defaultDir(this));
+        // 每本恢复/清空后都**关掉旧弹窗、按新列表重开**，保证连续恢复多本时
+        // 列表实时刷新（旧实现 keepOpen 不刷新，已恢复的项还挂在上面，再点会报失败）。
+        showTrashDialog(DictTrash.list(DictStore.defaultDir(this)));
+    }
+
+    private void showTrashDialog(final java.util.List<File> trash) {
         NetDialog d = new NetDialog(this, L.s("回收站", "Trash"),
                 trash.isEmpty()
                         ? L.s("回收站是空的。", "The trash is empty.")
@@ -972,12 +977,14 @@ public class DictActivity extends Activity {
                                 trash.size() + " file(s). Tap one to restore, or clear below."));
         for (final File f : trash) {
             final String shown = f.getName().replaceAll("\\.(txt|lst|dic)$", "");
-            d.addItemKeepOpen(L.s("恢复 ", "Restore ") + shown, dd -> {
+            d.addItem(L.s("恢复 ", "Restore ") + shown, dd -> {
                 File back = DictTrash.restore(DictStore.defaultDir(this), f);
                 Toast.makeText(this, back != null
                                 ? L.s("已恢复", "Restored")
                                 : L.s("恢复失败", "Restore failed"), Toast.LENGTH_SHORT).show();
                 refresh();
+                // 重开回收站：列表已随 restore 变化，旧弹窗里那个条目已失效。
+                showTrashDialog(DictTrash.list(DictStore.defaultDir(this)));
             });
         }
         d.setNegative(L.s("关闭", "Close"), null);
@@ -987,6 +994,7 @@ public class DictActivity extends Activity {
                 Toast.makeText(this, L.s("已彻底删除 " + n + " 个文件", "Permanently deleted " + n),
                         Toast.LENGTH_SHORT).show();
                 refresh();
+                showTrashDialog(DictTrash.list(DictStore.defaultDir(this)));
             });
         }
         d.show();

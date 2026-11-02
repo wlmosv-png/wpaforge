@@ -100,9 +100,11 @@ public class VerdictFlowTest {
         check("无事件 + 结束时连着目标 → UNKNOWN（无法归因，不算成功）",
                 CrackEngine.classifyDeadline(false, true, false, false, false).verdict
                         == CrackEngine.Verdict.UNKNOWN);
-        check("无事件 + 未连目标 + 通道正常 → TIMEOUT（**不是** AUTH_FAIL）",
+        // 2026-11-02 审计：生命周期读不到 → 不得报「已终止」的 TIMEOUT，
+        // 统一为 INCOMPLETE（仍**不是** AUTH_FAIL）。
+        check("无事件 + 未连目标 + 通道正常 → INCOMPLETE（**不是** AUTH_FAIL）",
                 CrackEngine.classifyDeadline(false, false, false, false, false).verdict
-                        == CrackEngine.Verdict.TIMEOUT);
+                        == CrackEngine.Verdict.INCOMPLETE);
         check("命令未生效 → ERROR（未尝试，不是密码错）",
                 CrackEngine.classifyDeadline(true, false, false, false, false).verdict
                         == CrackEngine.Verdict.ERROR);

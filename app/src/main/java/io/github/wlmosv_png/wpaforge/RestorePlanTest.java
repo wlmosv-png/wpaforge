@@ -217,9 +217,11 @@ public class RestorePlanTest {
                     + "io/github/wlmosv_png/wpaforge/audit/RestoreRunner.java");
             ok("破坏性动作之前先过 fail-closed 闸门（armRestore 在 executeTask 里）",
                     svc.contains("RestoreGuard.Decision gate = armRestore(task);"));
+            // 2026-11-02：闸门分支改为走统一收尾（finishTaskEarly），
+            // 终态仍是 PAUSED（不丢进度），但会一并完成落盘、计划上报与界面通知。
             ok("闸门不过就不进引擎（任务置 PAUSED，不丢进度）",
                     svc.contains("if (!gate.proceed)")
-                            && svc.contains("task.state = TaskQueue.State.PAUSED;"));
+                            && svc.contains("finishTaskEarly(task, TaskQueue.State.PAUSED"));
             ok("闸门位置在 runViaEngine 之前",
                     svc.indexOf("RestoreGuard.Decision gate = armRestore(task);") > 0
                             && svc.indexOf("RestoreGuard.Decision gate = armRestore(task);")

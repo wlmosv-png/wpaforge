@@ -130,8 +130,11 @@ public final class AuthCastAttributionTest {
             CrackEngine.Attempt aA = eA.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
             info("A netId 可取(613) -> verdict=" + aA.verdict + " grade=" + aA.grade
                     + " by=" + aA.confirmedBy);
-            ok("A 产出 NETWORK_AUTH_FAIL（网络级事件，不是候选级失败）",
-                    aA.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL, "verdict=" + aA.verdict);
+            // 2026-11-02 审计：观察到 AUTHCAST 失败证据时连接**仍在进行**，
+            // 「请求未结束」→ 不得产出任何失败类结论（原来会给 NETWORK_AUTH_FAIL，
+            // 而那会被账本当作「已终止的候选」进省时档跳过集合）。
+            ok("A 连接未终止 → INCOMPLETE（不给 NETWORK_AUTH_FAIL，更不是候选级失败）",
+                    aA.verdict == CrackEngine.Verdict.INCOMPLETE, "verdict=" + aA.verdict);
             ok("A 确实由 authcast 判定", "authcast".equals(aA.confirmedBy),
                     "by=" + aA.confirmedBy);
             // C1 契约更新（收紧，不是放宽）：
@@ -151,8 +154,8 @@ public final class AuthCastAttributionTest {
                     + " by=" + aB.confirmedBy
                     + " detail=" + (aB.detail == null ? "" : aB.detail.substring(
                             Math.max(0, aB.detail.length() - 40))));
-            ok("B 产出 NETWORK_AUTH_FAIL",
-                    aB.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL, "verdict=" + aB.verdict);
+            ok("B 连接未终止 → INCOMPLETE（同上）",
+                    aB.verdict == CrackEngine.Verdict.INCOMPLETE, "verdict=" + aB.verdict);
             ok("B 由 authcast 判定", "authcast".equals(aB.confirmedBy), "by=" + aB.confirmedBy);
             ok("B 不可持久化（NONE -> 不写 triedSet / 不推 cursor）",
                     aB.grade == EvidenceGrade.Level.NONE, "grade=" + aB.grade);
@@ -169,8 +172,12 @@ public final class AuthCastAttributionTest {
                     + " by=" + aC.confirmedBy);
             // D1 契约更新：这类证据只能证明「网络发生过认证失败」，
             // 绑不到当前候选 -> NETWORK_AUTH_FAIL，**不是**候选级失败。
-            ok("C 同 SSID 多配置 -> NETWORK_AUTH_FAIL（网络级，非候选级）",
-                    aC.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL, "verdict=" + aC.verdict);
+            // 2026-11-02 审计：本场景连接未确认终止（status 仍在进行中），
+            // 因此规则 3/4 的生命周期门槛不成立 —— 不得产出任何失败类结论。
+            // 原来这里期望 NETWORK_AUTH_FAIL，而那会被账本当成「已终止的候选」
+            // 进省时档跳过集合（审计确证的缺陷路径）。
+            ok("C 同 SSID 多配置（连接未终止）-> INCOMPLETE（非候选级）",
+                    aC.verdict == CrackEngine.Verdict.INCOMPLETE, "verdict=" + aC.verdict);
             ok("C 不可持久化（grade=NONE）",
                     aC.grade == EvidenceGrade.Level.NONE, "grade=" + aC.grade);
 
@@ -180,8 +187,9 @@ public final class AuthCastAttributionTest {
             CrackEngine.Attempt aD = eD.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
             info("D netId 613 属别的 SSID -> verdict=" + aD.verdict + " grade=" + aD.grade
                     + " by=" + aD.confirmedBy);
-            ok("D netId 复用 -> NETWORK_AUTH_FAIL / NONE",
-                    aD.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+            // 2026-11-02 审计：本场景连接未确认终止 → 不得产出失败类结论
+            ok("D netId 复用（连接未终止）-> INCOMPLETE / NONE",
+                    aD.verdict == CrackEngine.Verdict.INCOMPLETE
                             && aD.grade == EvidenceGrade.Level.NONE,
                     aD.verdict + "/" + aD.grade);
 

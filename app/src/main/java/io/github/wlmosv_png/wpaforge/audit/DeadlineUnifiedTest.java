@@ -157,9 +157,10 @@ public final class DeadlineUnifiedTest {
                 CrackEngine.Lifecycle.UNKNOWN);
         ok("五参重载 == UNKNOWN 生命周期", a.verdict == b.verdict
                 && a.reason.equals(b.reason), a + " vs " + b);
-        ok("无证据 + 状态读不到 -> TIMEOUT/no-evidence（不冒充 UNKNOWN）",
-                a.verdict == CrackEngine.Verdict.TIMEOUT
-                        && "no-evidence".equals(a.reason),
+        // 2026-11-02 审计：状态读不到 → 不得报 TIMEOUT（那等于说「请求已终止」）。
+        ok("无证据 + 状态读不到 -> INCOMPLETE/no-evidence-state-unknown",
+                a.verdict == CrackEngine.Verdict.INCOMPLETE
+                        && "no-evidence-state-unknown".equals(a.reason),
                 a.verdict + "/" + a.reason);
 
         // ---- 反向：闸门失败入口必须拒绝 OK ----

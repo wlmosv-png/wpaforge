@@ -71,10 +71,12 @@ public class AttributionTest {
         check("基线未连 → 后来完成握手 → SUCCESS",
                 SuccessRule.assess("LAB-TARGET", "LAB-TARGET", "COMPLETED", "192.168.1.3", 613, 613)
                         .verdict == CrackEngine.Verdict.SUCCESS);
-        // 基线未连、始终未连、也没有任何失败证据 → TIMEOUT（**不再**是 AUTH_FAIL）
-        check("基线未连 → 始终未连且无证据 → TIMEOUT（不是 AUTH_FAIL）",
+        // 基线未连、始终未连、也没有任何失败证据。
+        // 2026-11-02 审计：该组合的生命周期读不到（UNKNOWN），因此**不能**说
+        // 「请求已终止」—— 结论从 TIMEOUT 改为 INCOMPLETE（仍不是 AUTH_FAIL）。
+        check("基线未连 → 始终未连且无证据 → INCOMPLETE（不是 AUTH_FAIL，也不是「已终止」）",
                 CrackEngine.classifyDeadline(false, false, false, false, false).verdict
-                        == CrackEngine.Verdict.TIMEOUT);
+                        == CrackEngine.Verdict.INCOMPLETE);
         check("同一个组合会被判成失败吗？不会（这正是本次修复的点）",
                 CrackEngine.classifyDeadline(false, false, false, false, false).verdict
                         != CrackEngine.Verdict.AUTH_FAIL);

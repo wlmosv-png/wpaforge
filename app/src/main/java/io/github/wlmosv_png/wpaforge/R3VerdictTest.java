@@ -95,9 +95,11 @@ public class R3VerdictTest {
         eq("status 显示目标但证据不足 → UNKNOWN/status-unclear", "status-unclear",
                 CrackEngine.classifyDeadline(false, false, false, false, true).reason);
         CrackEngine.DeadlineOutcome o6 = CrackEngine.classifyDeadline(false, false, false, false, false);
-        eq("全无证据 → TIMEOUT/no-evidence", "no-evidence", o6.reason);
-        ok("到期无证据 = TIMEOUT（**不是** AUTH_FAIL）",
-                o6.verdict == CrackEngine.Verdict.TIMEOUT
+        // 2026-11-02 审计：生命周期读不到 ≠ 请求已终止 → INCOMPLETE + 独立 reason
+        eq("全无证据（生命周期读不到）→ no-evidence-state-unknown",
+                "no-evidence-state-unknown", o6.reason);
+        ok("到期无证据 = INCOMPLETE（**不是** AUTH_FAIL，也不是「已终止」）",
+                o6.verdict == CrackEngine.Verdict.INCOMPLETE
                         && o6.verdict != CrackEngine.Verdict.AUTH_FAIL);
 
         System.out.println("== R3-5 到期归类：穷举 32 种组合的不变量 ==");
@@ -180,9 +182,10 @@ public class R3VerdictTest {
                         && !WpaLogReader.sawNegotiatedFor(
                                 AttemptMarker.sliceAfter(truncatedTail, MID), BSSID));
         // 降级语义：任何「证据缺失」组合都不得变成认证失败
-        ok("证据全缺 → TIMEOUT（不是 AUTH_FAIL）",
+        // 2026-11-02 审计：生命周期读不到时不得报「已终止」的 TIMEOUT
+        ok("证据全缺（生命周期读不到）→ INCOMPLETE（不是 AUTH_FAIL）",
                 CrackEngine.classifyDeadline(false, false, false, false, false).verdict
-                        == CrackEngine.Verdict.TIMEOUT);
+                        == CrackEngine.Verdict.INCOMPLETE);
 
         System.out.println("== R3-7d 过滤遗漏：漏一类行只能降级为「无证据」 ==");
         // 过滤式若漏掉某类判据行，该类证据永远不会出现 —— 语义上必须等价于

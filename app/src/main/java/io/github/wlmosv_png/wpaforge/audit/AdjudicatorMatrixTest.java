@@ -166,8 +166,12 @@ public final class AdjudicatorMatrixTest {
         Adjudicator.Result noneUnk = Adjudicator.adjudicate(
                 st(AttemptState.Gate.OK, CrackEngine.Lifecycle.UNKNOWN),
                 new ArrayList<Evidence>());
-        ok("无证据 + 连接状态未知 -> TIMEOUT / NONE",
-                noneUnk.verdict == CrackEngine.Verdict.TIMEOUT, noneUnk.toString());
+        // 2026-11-02 审计：连接状态未知绝不等于「已终止」。这里的期望从
+        // TIMEOUT 改为 INCOMPLETE，并额外钉住 reason 必须可区分。
+        ok("无证据 + 连接状态未知 -> INCOMPLETE / NONE",
+                noneUnk.verdict == CrackEngine.Verdict.INCOMPLETE, noneUnk.toString());
+        ok("无证据 + 状态未知的 reason 与「确认终止」不同",
+                !"no-evidence".equals(noneUnk.reason), noneUnk.reason);
         ok("无证据家族永不产 AUTH_FAIL",
                 none.verdict != CrackEngine.Verdict.AUTH_FAIL
                         && noneTerm.verdict != CrackEngine.Verdict.AUTH_FAIL

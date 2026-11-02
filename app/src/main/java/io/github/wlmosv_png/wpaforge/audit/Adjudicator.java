@@ -182,6 +182,32 @@ public final class Adjudicator {
 
         // ---- 规则 3/4：密钥不符（按归属分两级，语义不同）----
         if (sawWrongKey) {
+            /* 生命周期门槛（2026-11-02 专项审计修复）
+             *
+             * 观察到 WRONG_KEY **不能**推出「这次请求已经结束」：日志行可能来自
+             * 上一条候选的迟到广播、系统对旧配置的后台重试，或本次握手仍在
+             * 进行时的中间事件（真机事故：ASSOCIATING 期间的弱失败日志）。
+             *
+             * 因此只有连接**已确认终止**（TERMINATED）时，才允许把 WRONG_KEY
+             * 解释成失败结论 —— 候选级或网络级都一样。其余情况一律保持
+             * 「不确定」，且必须与「确认终止」用不同的 reason 区分开。
+             *
+             * 这条门槛同时挡住两个后果：
+             *   ① ACTIVE 时产出的 AUTH_FAIL 会写进 triedSet **永久排除**；
+             *   ② ACTIVE 时产出的 NETWORK_AUTH_FAIL 会被账本当成
+             *      「已终止的候选」进入省时档跳过集合。
+             */
+            if (state.lifecycle != CrackEngine.Lifecycle.TERMINATED) {
+                boolean active = state.lifecycle == CrackEngine.Lifecycle.ACTIVE;
+                return new Result(CrackEngine.Verdict.INCOMPLETE, EvidenceGrade.Level.NONE,
+                        active ? "wrong-key-active" : "wrong-key-state-unknown", wrongSrc,
+                        active
+                                ? "wrong-key evidence seen while the connection is still in "
+                                + "progress - this attempt has not ended (re-adjudicable)"
+                                : "wrong-key evidence seen but the connection state cannot be "
+                                + "confirmed - this attempt cannot be treated as ended "
+                                + "(re-adjudicable)");
+            }
             boolean bound = rank(bestWrongKey) >= rank(Evidence.Attribution.AT3);
             if (bound) {
                 // ③ 能证明「当前候选密码导致失败」-> 候选级结论
@@ -250,10 +276,19 @@ public final class Adjudicator {
                         "observation window ended with no attributable evidence "
                                 + "and the connection is terminated");
             default:
-                return new Result(CrackEngine.Verdict.TIMEOUT, EvidenceGrade.Level.NONE,
-                        "no-evidence", null,
-                        "observation window ended with no attributable evidence "
-                                + "(connection state unknown)");
+                /* Lifecycle.UNKNOWN —— 状态读不到 / 解析失败 / 不可识别。
+                 *
+                 * 旧实现把它和 TERMINATED 合并成同一个 TIMEOUT、同一个 reason
+                 * （2026-11-02 审计确认：两者在账本里完全不可区分），于是
+                 * 「请求状态未知」被当成「请求已结束」进了省时档跳过集合。
+                 *
+                 * 「未知必须保持未知」——这里与规则 6 的 default 保持同一语义，
+                 * 但 reason 独立，便于事后区分是哪一条路径。
+                 */
+                return new Result(CrackEngine.Verdict.INCOMPLETE, EvidenceGrade.Level.NONE,
+                        "no-evidence-state-unknown", null,
+                        "observation window ended with no attributable evidence and the "
+                                + "connection state cannot be confirmed (re-adjudicable)");
         }
     }
 

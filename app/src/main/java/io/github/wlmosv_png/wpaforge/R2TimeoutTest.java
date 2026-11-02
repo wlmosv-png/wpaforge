@@ -121,8 +121,10 @@ public class R2TimeoutTest {
         System.out.println("== R2-5 到期无证据：TIMEOUT 而不是失败（不变量）==");
         CrackEngine.DeadlineOutcome none =
                 CrackEngine.classifyDeadline(false, false, false, false, false);
-        eq("全无证据 → TIMEOUT", CrackEngine.Verdict.TIMEOUT, none.verdict);
-        eq("理由码 = no-evidence", "no-evidence", none.reason);
+        // 2026-11-02 审计：生命周期读不到 ≠ 请求已终止 → 结论为 INCOMPLETE
+        eq("全无证据（生命周期读不到）→ INCOMPLETE",
+                CrackEngine.Verdict.INCOMPLETE, none.verdict);
+        eq("理由码 = no-evidence-state-unknown", "no-evidence-state-unknown", none.reason);
         ok("TIMEOUT 不是 AUTH_FAIL", none.verdict != CrackEngine.Verdict.AUTH_FAIL);
         ok("TIMEOUT 不计入退避样本（不是 AP 的响应）",
                 !io.github.wlmosv_png.wpaforge.audit.BackoffPolicy.countable(

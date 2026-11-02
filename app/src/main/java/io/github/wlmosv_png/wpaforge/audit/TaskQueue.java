@@ -1089,8 +1089,54 @@ public final class TaskQueue {
         t.offset = Math.max(0, offset);
         t.dictSize = 0;
         list.add(t);
-        save(ctx, list);
-        return t;
+        // 2026-11-02 审计修复：原来忽略 save 的返回值、无条件返回 t，
+        // 于是调用方的「派生失败」分支成了死代码，写盘失败时静默丢一本。
+        return save(ctx, list) ? t : null;
+    }
+
+    /**
+     * **幂等**地保证「计划当前那一本」在队列里有可执行任务。
+     *
+     * <h3>它与 {@link #deriveForPlan} 的区别</h3>
+     * {@code deriveForPlan} 每次都新建（给「刚跑完一本、要开下一本」用）；
+     * 本方法给**恢复**用：同一本可能已经被补建过（重复启动、连续恢复），
+     * 所以先找同字典且仍在进行中的任务 —— 找到就复用并只校正由计划说了算的
+     * 字段（档位 / 强制重跑 / offset），找不到才新建。
+     *
+     * <h3>PAUSED 的处理</h3>
+     * 计划模式下，计划已经把状态置为 RUNNING 并**明确指向这一本**，
+     * 那么这条 PAUSED 就是「计划要跑的那一本」，恢复为 PENDING。
+     * 普通队列模式不走这里，原暂停语义不受影响。
+     *
+     * @return 可执行的任务；{@code null} = 落盘失败（**不假装成功**）
+     */
+    public static Task ensurePlanTask(Context ctx, io.github.wlmosv_png.wpaforge.core.NetRecord target,
+                                     String dictPath, String dictName,
+                                     int skipPolicyId, boolean forceRerun, int offset,
+                                     boolean useTargetDict, boolean useSmartSort,
+                                     int crackMode, String seedsJson) {
+        if (ctx == null || target == null) return null;
+        List<Task> list = load(ctx);
+        for (Task t : list) {
+            if (t == null) continue;
+            String tp = t.dictPath == null ? "" : t.dictPath;
+            if (dictPath != null && !dictPath.isEmpty() && dictPath.equals(tp)
+                    && (t.state == State.PENDING || t.state == State.PAUSED
+                        || t.state == State.RUNNING)) {
+                t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
+                t.forceRerun = forceRerun;
+                t.offset = Math.max(0, offset);
+                if (t.state == State.PAUSED) t.state = State.PENDING;
+                return save(ctx, list) ? t : null;
+            }
+        }
+        Task t = Task.from(target, dictPath, dictName, useTargetDict, useSmartSort,
+                crackMode, seedsJson);
+        t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
+        t.forceRerun = forceRerun;
+        t.offset = Math.max(0, offset);
+        list.add(t);
+        return save(ctx, list) ? t : null;
     }
 
     /** 取下一个待处理任务（跳过已完成的） */

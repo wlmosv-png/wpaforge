@@ -20,6 +20,7 @@ import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.CnHot;
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
 import io.github.wlmosv_png.wpaforge.audit.DictPlan;
+import io.github.wlmosv_png.wpaforge.audit.PlanRecovery;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
@@ -471,7 +472,14 @@ public class CrackService extends Service {
     private volatile boolean planMode = false;
     /** 本轮是否发生过通道级阻塞（要把计划标成 BLOCKED，而不是伪装成未命中）。 */
     private volatile boolean planBlockedThisRun = false;
-
+    /**
+     * 本轮用户是否**主动暂停过**。
+     *
+     * <p>计划模式需要区分两种 PAUSED：<b>上一轮遗留</b>（应恢复，否则「继续」
+     * 永远点不动）与<b>本轮用户刚按的</b>（必须真的停下来）。只靠盘上的状态
+     * 分不出来，所以在内存里记一笔：{@link #pause()} 置真，每轮 runQueue 开头清零。
+     */
+    private volatile boolean userPausedThisRun = false;
     /**
      * 服务**正在使用**的那份候选列表（只读用途：界面回前台后重建显示）。
      *
@@ -514,6 +522,14 @@ public class CrackService extends Service {
             }
             return;
         }
+        /* 计划优先于队列（2026-11-02 审计修复）。
+         *
+         * 旧实现在这里直接用 hasWork() 判「有没有 PENDING 任务」—— 但
+         * 「计划已推进、派生任务之前进程被杀」时队列里**恰好没有** PENDING，
+         * 于是计划根本没被读到就收工了，下一本字典永久丢失（真机复现）。
+         * 现在先按计划做一次恢复（复用/补建），再交给普通队列逻辑。 */
+        if (recoverPlanForRun()) return;
+
         if (!TaskQueue.hasWork(this)) {
             log(L.s("队列里没有待办任务", "No pending tasks in the queue"));
             stopSelfSafe();
@@ -527,6 +543,7 @@ public class CrackService extends Service {
 
     /** 暂停：当前任务保留进度，队列原地等待 */
     public void pause() {
+        userPausedThisRun = true;      // 见字段注释：区分「遗留暂停」与「本轮暂停」
         flushTried();   // 暂停时把"已试"落盘，避免被系统回收后重跑一截
         // ★ 最关键的一步：把「暂停」真正送到引擎。
         //
@@ -564,6 +581,14 @@ public class CrackService extends Service {
 
         CrackEngine eng = engineRef;
         if (eng != null) eng.cancel();
+
+        /* 计划必须一起落 STOPPED（2026-11-02 审计修复）。
+         *
+         * 旧实现只动任务：worker 已经退出时 currentTask 为 null、队列里也没有
+         * PENDING，于是 stopAll() 什么都没写 —— 真机上表现为「点了停止，
+         * 队列仍是 PAUSED、计划仍是 RUNNING」，下次启动还会自动继续。
+         * 用户明确要求：停止必须持久化，且不得被错误恢复成自动继续。 */
+        planStop();
 
         // 当前任务立刻标为已停止
         TaskQueue.Task cur = currentTask;
@@ -871,6 +896,7 @@ public class CrackService extends Service {
         showKeepAliveOverlay();
         planMode = loadPlanForRun();
         planBlockedThisRun = false;
+        userPausedThisRun = false;
         try {
             while (!stopRequested) {
                 if (Thread.currentThread().isInterrupted()) break;
@@ -885,8 +911,26 @@ public class CrackService extends Service {
                 TaskQueue.Task task = TaskQueue.nextPending(this);
                 if (task == null) break;
                 if (task.state == TaskQueue.State.PAUSED) {
-                    log(L.f("任务「%s」处于暂停，跳过", "Task “%s” is paused, skipping", task.ssid));
-                    break;
+                    /* 计划模式下，计划已经明确指向这一本 —— 那条 PAUSED 就是
+                     * 「计划要跑的那一本」，应当恢复执行而不是中断整条队列。
+                     * （2026-11-02 真机确证：这里 break 会让「继续」与
+                     *  「进程被杀后恢复」双双失效。）
+                     *
+                     * 但**本轮用户刚按的暂停**必须尊重：用 userPausedThisRun
+                     * 区分，否则「暂停」会被自己立刻撤销。 */
+                    if (planMode && plan != null && !userPausedThisRun
+                            && plan.state == DictPlan.State.RUNNING
+                            && PlanRecovery.sameDict(task, plan.current())) {
+                        task.state = TaskQueue.State.PENDING;
+                        TaskQueue.update(this, task);
+                        log(L.f("计划模式：接管当前字典「%s」的暂停状态，继续执行",
+                                "plan mode: taking over the paused dictionary \"%s\"",
+                                task.ssid));
+                    } else {
+                        log(L.f("任务「%s」处于暂停，跳过",
+                                "Task “%s” is paused, skipping", task.ssid));
+                        break;
+                    }
                 }
                 executeTask(task);
                 if (stopRequested) break;
@@ -960,9 +1004,9 @@ public class CrackService extends Service {
                     + io.github.wlmosv_png.wpaforge.audit.RestoreGuard.describe(gate));
             // P1：把「阻塞原因 + 下一步」写给用户 —— 不把定向拦截伪装成普通暂停。
             log(io.github.wlmosv_png.wpaforge.audit.RestoreRunner.blockHelp(gate));
-            task.state = TaskQueue.State.PAUSED;
-            TaskQueue.update(this, task);
-            notifyQueue();
+            // 环境不可用 ≠ 用户暂停：标成阻塞，计划不得把它当成正常未命中。
+            planBlockedThisRun = true;
+            finishTaskEarly(task, TaskQueue.State.PAUSED, L.s("环境闸门未通过", "gate blocked"));
             return;
         }
 
@@ -1126,9 +1170,10 @@ public class CrackService extends Service {
             } else {
                 log(L.s("候选为空，跳过", "Empty candidate set, skipping"));
             }
-            task.state = TaskQueue.State.DONE_MISS;
-            TaskQueue.update(this, task);
-            notifyQueue();
+            // 这一本确实没有可跑的候选 —— 属于「正常跑完但未命中」，
+            // 必须走统一收尾，否则计划收不到结论（真机复现的缺陷）。
+            finishTaskEarly(task, TaskQueue.State.DONE_MISS,
+                    L.s("候选为空", "no candidates"));
             return;
         }
 
@@ -1259,7 +1304,15 @@ public class CrackService extends Service {
                  * 记进去等于把没真正验证过的候选当成"已排除"。 */
                 if (triedSet != null && a.password != null && !a.password.isEmpty()) {
                     // 证据模型分流：只有 DIRECT 进永久集合；INFERRED 只进本轮内存。
-                    if (EvidenceGrade.persistable(a.grade)) {
+                    //
+                    // **命中（SUCCESS）永远不写 triedSet**（2026-11-02 审计修复）：
+                    // triedSet 的语义是「这条密码已证实是错的」，而命中恰恰证明
+                    // 它是对的。旧实现把 SUCCESS 也当成 persistable 写进去，
+                    // 于是正确口令长期占着「已排除」的名额 —— 换个目标再用同一份
+                    // 字典时，它会因为是「已试过的错误密码」而被跳过。
+                    if (a.verdict == CrackEngine.Verdict.SUCCESS) {
+                        // 明确不写：命中属于结果，不属于「已试错误」。
+                    } else if (EvidenceGrade.persistable(a.grade)) {
                         if (triedSet.add(a.password) && ++triedSinceFlush >= 32) {
                             triedSinceFlush = 0;
                             flushTried();
@@ -1475,12 +1528,17 @@ public class CrackService extends Service {
             DictPlan p = DictPlan.load(DictPlan.fileFor(this));
             if (p.items.isEmpty()) { plan = null; return false; }
             if (p.state.isTerminal()) {
-                log(L.f("多字典计划已结束（%s），本次按普通队列执行",
-                        "plan already finished (%s); running as a plain queue",
+                // 终态计划**不退回普通队列**：退回就意味着命中之后残留的 PENDING
+                // 会在下次「开始」时被当普通任务执行（审计点名场景）。
+                log(L.f("多字典计划已结束（%s）：不执行任何残留任务；如需继续请新建计划",
+                        "plan already finished (%s); leftover tasks will not run",
                         p.state.name()));
                 plan = null;
+                LAST_PLAN_SUMMARY = p.summary();
                 return false;
             }
+            // 上个进程死在执行中（盘上 RUNNING）→ 归一为可解释的中断状态
+            p.state = DictPlan.recover(p.state);
             TaskQueue.Task t = TaskQueue.nextPending(this);
             if (t == null) { plan = null; return false; }
             String key = TriedSet.targetKey(t.bssid, t.ssid);
@@ -1571,6 +1629,18 @@ public class CrackService extends Service {
             cur.offset = Math.max(0, ft.offset);
             if (ft.dictSize > 0) cur.dictSize = ft.dictSize;
         }
+        // 目标快照：崩溃后队列可能被清空，计划要能**独立**重建任务
+        // （见 DictPlan.targetSsid 的说明）。每次上报刷新，代价可忽略。
+        if (ft.ssid != null && !ft.ssid.isEmpty()) {
+            p.targetSsid = ft.ssid;
+            p.targetBssid = ft.bssid == null ? "" : ft.bssid;
+            p.targetRssi = ft.rssi;
+            p.targetFreq = ft.frequencyMhz;
+            p.targetSec = ft.securityOrdinal;
+            if (p.targetKey == null || p.targetKey.isEmpty()) {
+                p.targetKey = TriedSet.targetKey(ft.bssid, ft.ssid);
+            }
+        }
 
         DictPlan.Outcome o = planOutcomeOf(ft.state, planBlockedThisRun, hit);
         DictPlan.Step st = p.apply(o);
@@ -1604,6 +1674,173 @@ public class CrackService extends Service {
 
     /** 给界面用：引擎当前正在使用的计划（未启用计划模式时为 null）。 */
     public DictPlan planForDisplay() { return plan; }
+
+    // ---------------------------------------------------------------- 计划恢复
+
+    /**
+     * 启动前的**计划恢复**（2026-11-02 审计新增）。
+     *
+     * <h3>它修的是什么</h3>
+     * 旧流程是「先看队列有没有 PENDING → 没有就收工」。但进程可能死在
+     * 「计划已推进、派生任务之前」这个窗口里，那时队列恰好没有 PENDING，
+     * 于是计划根本没被读到，下一本字典**永久丢失**（真机复现日志：
+     * {@code 队列里没有待办任务}）。
+     *
+     * <p>现在改为：计划优先。<b>幂等</b> —— 重复调用只会复用已有任务，
+     * 不会重复建；连续启动两次、三次结果一致。
+     *
+     * @return true = 已经处理完（调用方不要再走普通队列流程）
+     */
+    private boolean recoverPlanForRun() {
+        DictPlan p;
+        try {
+            p = DictPlan.load(DictPlan.fileFor(this));
+        } catch (Throwable t) {
+            return false;
+        }
+        if (p.items.isEmpty()) return false;
+
+        PlanRecovery.Decision d = PlanRecovery.decide(p, TaskQueue.load(this), planTargetKey(p));
+        switch (d.action) {
+            case NONE:
+                return false;
+
+            case BLOCK:
+                log(L.s("多字典计划：", "plan: ") + d.reason);
+                if (d.planState != null) {
+                    p.state = d.planState;
+                    p.save(DictPlan.fileFor(this));
+                }
+                LAST_PLAN_SUMMARY = p.summary();
+                stopSelfSafe();
+                return true;
+
+            case ADVANCE_THEN_CREATE:
+                // 崩溃窗口：这一本已完成、计划没跟上 → 先推进，再补建下一本
+                p.state = DictPlan.recover(p.state);
+                p.apply(d.advanceWith);
+                if (!p.save(DictPlan.fileFor(this))) {
+                    log(L.s("计划推进落盘失败：本次不启动（避免丢字典）",
+                            "failed to persist the advanced plan; not starting"));
+                    stopSelfSafe();
+                    return true;
+                }
+                log(L.f("计划推进：%s", "plan advanced: %s", d.reason));
+                return createPlanTask(p, d.dictPath, d.dictName, d.offset);
+
+            case CREATE_NEXT:
+                return createPlanTask(p, d.dictPath, d.dictName, d.offset);
+
+            case RUN_EXISTING:
+                p.state = DictPlan.State.RUNNING;
+                p.save(DictPlan.fileFor(this));
+                if (d.revivePaused) revivePlanTask(d.taskId);
+                LAST_PLAN_SUMMARY = p.summary();
+                log(L.s("多字典计划：", "plan: ") + d.reason);
+                return false;
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * 任务在**真正开跑之前**就结束时的统一收尾。
+     *
+     * <h3>它修的是什么</h3>
+     * 2026-11-02 控制流审计：{@code executeTask} 里有两处提前 {@code return}
+     * （环境闸门未通过、候选为空）各自改了状态就返回，**绕过 {@code finishTask}**
+     * —— 于是多字典计划永远收不到本本结论，停在第 N 本不动，后面的字典不跑
+     * （真机复现：{@code 候选为空，跳过} → {@code 队列已结束}，计划仍是 RUNNING）。
+     *
+     * <p>现在所有终结路径都经过这里：落盘任务状态 → 上报计划 → 通知界面。
+     * 与 {@code finishTask} 的差别只有「没有引擎统计」，因此不写
+     * missConfirmedFail / missInconclusive（那两项描述的是候选执行结果）。
+     *
+     * @param st  终态。**调用方必须选对**：环境不可用/通道异常走 PAUSED + planBlocked，
+     *            候选为空走 DONE_MISS；不得把错误伪装成「未命中」。
+     */
+    private void finishTaskEarly(TaskQueue.Task task, TaskQueue.State st, String why) {
+        task.state = st;
+        TaskQueue.update(this, task);
+        log(L.s("任务结束（未开跑）：", "task ended before running: ") + why);
+        reportToPlan(task, st == TaskQueue.State.DONE_HIT);
+        for (UiCallback cb : callbacks) cb.onTaskDone(task, null, st.name());
+        notifyQueue();
+    }
+
+    /** 幂等补建当前字典的任务；返回 false = 让正常流程继续跑它。 */
+    private boolean createPlanTask(DictPlan p, String dictPath, String dictName, int offset) {
+        TaskQueue.Task seed = null;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            if (t.dictPath != null && !t.dictPath.isEmpty() && t.dictPath.equals(dictPath)) {
+                seed = t;
+                break;
+            }
+        }
+        TaskQueue.Task nt = TaskQueue.ensurePlanTask(this, p.toNetRecord(), dictPath, dictName,
+                p.skipPolicyId, p.forceRerun, offset,
+                seed != null && seed.useTargetDict,
+                seed != null && seed.useSmartSort,
+                seed != null ? seed.crackMode : 0,
+                seed != null ? seed.seedsJson : "");
+        if (nt == null) {
+            // 写盘失败**不假装成功**：宁可这次不启动，也不留下「计划说在跑、
+            // 实际没有任务」的假状态。
+            log(L.s("计划恢复失败：无法写回队列，本次不启动（避免丢字典）",
+                    "plan recovery failed: cannot persist the queue; not starting"));
+            stopSelfSafe();
+            return true;
+        }
+        log(L.f("计划恢复：已就绪第 %d/%d 本「%s」（自第 %d 条）",
+                "plan recovery: ready #%d of %d \"%s\" (from #%d)",
+                p.displayIndex(), p.items.size(), dictName, offset));
+        LAST_PLAN_SUMMARY = p.summary();
+        return false;
+    }
+
+    /** 计划模式下把「计划指向的那一本」从暂停恢复为待执行。 */
+    private void revivePlanTask(String taskId) {
+        if (taskId == null) return;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            if (taskId.equals(t.id) && t.state == TaskQueue.State.PAUSED) {
+                t.state = TaskQueue.State.PENDING;
+                TaskQueue.update(this, t);
+                log(L.s("计划模式：已把当前字典的任务从暂停恢复为待执行",
+                        "plan mode: current dictionary revived to pending"));
+                return;
+            }
+        }
+    }
+
+    /**
+     * 用户点停止时**同步把计划落成 STOPPED**。
+     *
+     * <p>不这么做就会出现「worker 已退出、计划仍 RUNNING」的假状态，
+     * 下次启动还会自动继续 —— 真机审计确证过。
+     */
+    private void planStop() {
+        DictPlan p = plan;
+        if (p == null) {
+            try { p = DictPlan.load(DictPlan.fileFor(this)); } catch (Throwable t) { return; }
+        }
+        if (p == null || p.items.isEmpty() || p.state.isTerminal()) return;
+        p.apply(DictPlan.Outcome.STOPPED);
+        p.save(DictPlan.fileFor(this));
+        planBlockedThisRun = false;
+        LAST_PLAN_SUMMARY = p.summary();
+        log(L.s("多字典计划：已随停止一同落盘（STOPPED）",
+                "plan: persisted as STOPPED together with the user stop"));
+    }
+
+    /** 计划的目标键；计划里没有就退化为队列第一个任务的目标。 */
+    private String planTargetKey(DictPlan p) {
+        if (p != null && p.targetKey != null && !p.targetKey.isEmpty()) return p.targetKey;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            return TriedSet.targetKey(t.bssid, t.ssid);
+        }
+        return "";
+    }
 
     private void saveProgress(TaskQueue.Task ft, int offset, boolean force) {
         if (ft == null || offset <= 0) return;

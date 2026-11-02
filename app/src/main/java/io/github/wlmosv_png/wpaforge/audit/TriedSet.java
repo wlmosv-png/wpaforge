@@ -269,13 +269,18 @@ public final class TriedSet {
 
     /** 指纹：FNV-1a 64。不需要密码学强度 —— 只要"同串同值、不同串基本不同值"。 */
     public static long hash(String pw) {
-        long h = 0xcbf29ce484222325L;
-        byte[] b = pw.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        for (byte x : b) {
-            h ^= (x & 0xff);
-            h *= 0x100000001b3L;
-        }
-        return h;
+        /* 2026-11-02 审计：与 {@link AttemptLedger} 统一到**同一个身份函数**
+         * （{@link CandidateId}：SHA-256 前 8 字节，完整 64 位）。
+         *
+         * 此前这里用 FNV-1a 64 位，而账本用它的 55 位截断值 —— 两套账本对
+         * 「同一条候选」有两套身份规则，审计判定不可接受。
+         *
+         * 副作用（预期且安全）：旧 {@code .tried} 文件里存的是 FNV-1a 值，
+         * 现在查不到了 → 那些「已证实错误」记录**全部失效** → 对应候选会
+         * 重新执行一次。方向是「宁可重跑，不要靠陈旧身份规则误认」，
+         * 与审计要求一致；不会因此漏判或误跳过。
+         */
+        return CandidateId.of(pw);
     }
 
     /**

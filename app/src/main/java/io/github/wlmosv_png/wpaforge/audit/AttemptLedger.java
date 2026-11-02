@@ -32,41 +32,53 @@ import java.util.Locale;
  *       <td>是（由 {@code triedSet} 负责）</td><td>是</td></tr>
  *   <tr><td>{@link Level#NETWORK_TERMINATED} / {@link Level#TERMINATED_UNKNOWN}
  *       / {@link Level#TIMEOUT}</td>
- *       <td>NETWORK_AUTH_FAIL / TERMINATED_UNKNOWN / TIMEOUT</td>
+ *       <td>已确认终止的失败类结论</td>
  *       <td><b>否</b></td><td><b>否</b>（仅「省时」档）</td></tr>
- *   <tr><td>{@link Level#NOT_EXECUTED}（不记）</td>
- *       <td>INCOMPLETE / ABORTED / 通道 ERROR</td>
+ *   <tr><td>{@link Level#UNKNOWN_ON_TARGET}（记但不跳）</td>
+ *       <td>UNKNOWN（当时仍连着目标）</td>
+ *       <td>否</td><td><b>任何档都不跳</b>（连接没终止）</td></tr>
+ *   <tr><td>不记</td><td>INCOMPLETE / ABORTED / 通道 ERROR</td>
  *       <td>否</td><td><b>任何档都不跳</b></td></tr>
  * </table>
  *
- * <h3>三条硬约束</h3>
- * <ol>
- *   <li><b>不存明文</b> —— 只存 56 位哈希 + 8 位等级，沿用明文卫生原则。</li>
- *   <li><b>绝不跨目标共享</b> —— 复用 {@link TriedSet#targetKey} 的隔离规则
- *       （BSSID 优先，退化到 SSID 哈希）。</li>
- *   <li><b>损坏即降级为「没有记录」</b> —— 丢了的代价是重跑，不是漏判。</li>
- * </ol>
+ * <h3>存储格式 v2（2026-11-02 审计后重构）</h3>
+ * <pre>
+ *   头 8 字节：magic "WPLG"(4) + version=2(4)
+ *   之后每条 16 字节：身份(8, 见 CandidateId) + 等级(8)
+ * </pre>
+ * <b>为什么不再打包进一个 long</b>：v1 把「56 位哈希 + 8 位等级」压进一个 long，
+ * 结果哈希必须截断到 55 位（保住有符号排序可用）。审计判定这等于拿候选身份
+ * 的可靠性去换 8 个字节，不能接受。v2 让**排序键就是身份本身**，等级独立存放，
+ * 且换用 SHA-256 前 8 字节（与 {@code triedSet} 统一口径，见 {@link CandidateId}）。
  *
- * <h3>单调升级</h3>
- * 同一候选多次执行时，只允许**更强**的证据覆盖：
- * {@code CONFIRMED_WRONG} 一旦写入，后来的「未确定」不会把它降级；
- * 反过来，先「未确定」后「已确定错误」会升级。
+ * <h3>旧数据</h3>
+ * 任何非 v2 的文件（含 v1）在读入时被判为**空账本** —— 代价是重跑，
+ * 不是漏判。这是审计明确要求的安全降级方向。
  *
  * <p>纯逻辑 + 文件 IO，可在 JVM 完整测试（见 {@code AttemptLedgerTest}）。
  */
 public final class AttemptLedger {
 
-    /** 单目标上限（8 字节/条，100 万条 = 8 MB）。 */
+    /** 单目标上限（16 字节/条，100 万条 = 16 MB）。 */
     public static final int MAX = 1_000_000;
 
-    /** 文件布局版本。加版本位是为了将来能安全识别旧文件。 */
-    public static final int FORMAT_VERSION = 1;
+    /** 文件布局版本（v2 起：身份与等级分开存，身份改用 SHA-256 摘要）。 */
+    public static final int FORMAT_VERSION = 2;
+
+    /** 文件魔数（"WPLG"）。旧文件没有它 → 判为旧格式 → 空账本。 */
+    static final int MAGIC = 0x57504C47;
+
+    /** 头部字节数。 */
+    static final int HEADER_BYTES = 8;
+
+    /** 每条记录字节数：身份 8 + 等级 8。 */
+    static final int RECORD_BYTES = 16;
 
     /**
      * 候选在本目标上的执行结论等级。
      *
      * <p><b>数值越小＝证据越强</b>，这样「只允许更强覆盖」就是
-     * {@code newLevel < oldLevel} 一个比较。
+     * {@code newLevel.rank < oldLevel.rank} 一个比较。
      *
      * <h3>为什么失败类要分四档，而不是压成一档</h3>
      * 四类「没连上」的证据性并不相同，压成一档会让界面只能给出一句笼统的
@@ -75,7 +87,7 @@ public final class AttemptLedger {
      * <ul>
      *   <li>{@link #NETWORK_TERMINATED} —— 网络确实发生了认证失败（归属不明）；</li>
      *   <li>{@link #TERMINATED_UNKNOWN} —— 连接确认终止，但原因不明；</li>
-     *   <li>{@link #TIMEOUT} —— 观察期内一条证据都没拿到；</li>
+     *   <li>{@link #TIMEOUT} —— 连接已终止且观察期内没拿到任何证据；</li>
      *   <li>{@link #UNKNOWN_ON_TARGET} —— 当时**仍连着目标**，无法归因。</li>
      * </ul>
      * 只有「省时」档才把前三档一并纳入跳过范围；{@link #UNKNOWN_ON_TARGET}
@@ -128,6 +140,11 @@ public final class AttemptLedger {
          *
          * <p>{@code AUTH_FAIL} 必须同时是 {@link EvidenceGrade#DIRECT} 才算
          * 已确定错误 —— 这条口径与 {@code triedSet} 完全一致（同源判定）。
+         *
+         * <p><b>上游保证</b>：2026-11-02 起 {@code Adjudicator} 规则 3/4 要求
+         * 生命周期已确认终止才会产出 {@code AUTH_FAIL/NETWORK_AUTH_FAIL}，
+         * 规则 9 的 {@code UNKNOWN} 分支产出 {@code INCOMPLETE} 而非
+         * {@code TIMEOUT}。因此本方法不会收到「请求尚未结束」的失败类结论。
          */
         public static Level classify(CrackEngine.Verdict v, EvidenceGrade.Level grade) {
             if (v == null) return null;
@@ -171,7 +188,7 @@ public final class AttemptLedger {
          */
         CONSERVATIVE(0),
         /**
-         * 省时：额外跳过「已执行且连接已终止，但未确定」的候选。
+         * 省时：额外跳过「已执行、且连接已确认终止、但未确定」的候选。
          *
          * <p><b>用户必须显式开启</b>，且开启前要看到跳过条数、未确定条数与风险提示。
          * 风险：若上轮遇到 AP 退避／信号差等**环境异常**，其中可能有正确密码
@@ -197,22 +214,10 @@ public final class AttemptLedger {
     // ---------------------------------------------------------------- 存储
 
     /**
-     * 每条 8 字节：**高 55 位哈希 + 低 8 位等级**（最高位恒为 0）。
+     * 成对存放：{@code buf[2i]} = 身份，{@code buf[2i+1]} = 等级 rank。
      *
-     * <h3>两个当场踩到的坑（都由本测试抓出，保留在此以免重犯）</h3>
-     * <ol>
-     *   <li><b>等级不能放高位</b>：第一版把等级放在 bit 56–63，于是
-     *       {@code Arrays.sort} 会**先按等级分组**再排哈希；而二分查找假定
-     *       数组按哈希有序 → 5000 条里 2079 条查不到。</li>
-     *   <li><b>哈希只能占 55 位，不能占 56 位</b>：{@code Arrays.sort(long[])}
-     *       是**有符号**排序。哈希占满 56 位时，bit 55 为 1 的条目
-     *       {@code (hash<<8)|rank} 整体为负，被排到数组最前面，
-     *       而无符号取值的二分又把它们当大数 → 顺序再次断裂，
-     *       5000 条里有 2500 条查不到。截到 55 位后最高位恒为 0，
-     *       有符号序与无符号序一致，问题消失。</li>
-     * </ol>
-     * <p>冲突率 2^-55（100 万条时约 3e-6），可忽略；换算成与 triedSet
-     * 相同口径的代价只是少一位。
+     * <p>拆开存是 v2 的核心：排序键**只有身份**（同身份时再比等级），
+     * 不再有任何附加位去挤压身份位宽。
      */
     private long[] buf;
     private int n;
@@ -220,27 +225,14 @@ public final class AttemptLedger {
     private static final int SORT_CHUNK = 256;
 
     public AttemptLedger() {
-        buf = new long[512];
+        buf = new long[2 * 512];
     }
 
     public int size() { return n; }
 
-    /** 哈希位掩码：**55 位**，保证打包后最高位恒为 0（见类注释的第二个坑）。 */
-    static final long HASH_MASK = 0x007FFFFFFFFFFFFFL;
-
-    /** 打包：哈希（55 位）在高位、等级在低位。 */
-    static long pack(long hash, Level lv) {
-        return ((hash & HASH_MASK) << 8) | ((long) lv.rank & 0xffL);
-    }
-
-    static long hashOf(long packed) {
-        return (packed >>> 8) & HASH_MASK;
-    }
-
-    static Level levelOf(long packed) {
-        int r = (int) (packed & 0xffL);
-        for (Level lv : PERSISTED) if (lv.rank == r) return lv;
-        return null;   // 未知等级（将来加了新档的旧文件）→ 当作没有记录
+    /** 候选身份（唯一的身份来源，见 {@link CandidateId}）。 */
+    public static long idOf(String pw) {
+        return CandidateId.of(pw);
     }
 
     /** 会真正出现在磁盘上的等级（{@link Level#NOT_EXECUTED} 只是查询返回值，不落盘）。 */
@@ -248,20 +240,14 @@ public final class AttemptLedger {
             Level.CONFIRMED_WRONG, Level.NETWORK_TERMINATED,
             Level.TERMINATED_UNKNOWN, Level.TIMEOUT, Level.UNKNOWN_ON_TARGET };
 
-    /**
-     * 候选哈希（截断到 56 位）。
-     *
-     * <p>复用 {@link TriedSet#hash} 的 FNV-1a —— 两套账本必须**认得同一条候选**，
-     * 所以口径必须完全一致（有测试钉住）。
-     *
-     * <p>截断到 **55 位**是为了给等级留 8 位、同时让打包结果恒为正
-     * （{@code Arrays.sort} 是有符号排序）。冲突率 2^-55，可忽略。
-     *
-     * <p><b>不做大小写归一</b>：WPA 口令是大小写敏感的，
-     * {@code Password1} 与 {@code password1} 是两条不同的候选，归并会漏判。
-     */
-    static long hash56(String pw) {
-        return TriedSet.hash(pw) & HASH_MASK;
+    /** 第 i 条的身份（测试与排查用）。 */
+    long idAt(int i) { return buf[2 * i]; }
+
+    /** 第 i 条的等级（测试与排查用）；未知 rank 返回 null。 */
+    Level levelAt(int i) {
+        int r = (int) buf[2 * i + 1];
+        for (Level lv : PERSISTED) if (lv.rank == r) return lv;
+        return null;
     }
 
     /**
@@ -271,22 +257,26 @@ public final class AttemptLedger {
      */
     public boolean record(String pw, Level lv) {
         if (pw == null || lv == null || !lv.executed) return false;   // 没执行完的不落盘
-        long h = hash56(pw);
-        int idx = findIndex(h);
+        long id = idOf(pw);
+        int idx = findIndex(id);
         if (idx >= 0) {
-            Level old = levelOf(buf[idx]);
+            Level old = levelAt(idx);
             if (old == null || lv.rank < old.rank) {     // 更强才覆盖
-                buf[idx] = pack(h, lv);
+                buf[2 * idx] = id;
+                buf[2 * idx + 1] = lv.rank;
                 return true;
             }
             return false;                                 // 同等或更弱 → 保持不变
         }
         if (n >= MAX) return false;
-        if (n == buf.length) {
-            int cap = buf.length < 4096 ? buf.length * 2 : buf.length + (buf.length >> 2);
-            buf = Arrays.copyOf(buf, Math.min(cap, MAX));
+        if (2 * n + 2 > buf.length) {
+            int cap = buf.length < 4096 ? buf.length * 2
+                    : buf.length + (buf.length >> 2);
+            buf = Arrays.copyOf(buf, Math.min(cap, 2 * MAX));
         }
-        buf[n++] = pack(h, lv);
+        buf[2 * n] = id;
+        buf[2 * n + 1] = lv.rank;
+        n++;
         if (n - sortedN > SORT_CHUNK) ensureSorted();
         return true;
     }
@@ -294,10 +284,10 @@ public final class AttemptLedger {
     /** 查这条候选在本目标上的执行等级；从未执行返回 {@link Level#NOT_EXECUTED}。 */
     public Level level(String pw) {
         if (pw == null || n == 0) return Level.NOT_EXECUTED;
-        long h = hash56(pw);
-        int idx = findIndex(h);
+        long id = idOf(pw);
+        int idx = findIndex(id);
         if (idx < 0) return Level.NOT_EXECUTED;
-        Level lv = levelOf(buf[idx]);
+        Level lv = levelAt(idx);
         return lv == null ? Level.NOT_EXECUTED : lv;
     }
 
@@ -306,10 +296,10 @@ public final class AttemptLedger {
         return p != null && p.skips(level(pw));
     }
 
-    /** 按等级统计条数（给 UI 显示「跳过 N 条 / 其中 M 条未确定」）。 */
+    /** 按等级统计条数。 */
     public int count(Level lv) {
         int c = 0;
-        for (int i = 0; i < n; i++) if (levelOf(buf[i]) == lv) c++;
+        for (int i = 0; i < n; i++) if (levelAt(i) == lv) c++;
         return c;
     }
 
@@ -319,13 +309,11 @@ public final class AttemptLedger {
      * <h3>为什么只数、不合并</h3>
      * 「跳过 120 条」这句话对用户毫无信息量：其中 119 条是已证实错误、
      * 1 条是上次超时，与「120 条全是超时」是完全不同的两件事。
-     * 所以界面必须同时给出 {@link #countSkippable} 与 {@link #countUndetermined}
-     * 的构成，并在省时档启用前把风险说清。
      */
     public int countSkippable(SkipPolicy p) {
         if (p == null) return 0;
         int c = 0;
-        for (int i = 0; i < n; i++) if (p.skips(levelOf(buf[i]))) c++;
+        for (int i = 0; i < n; i++) if (p.skips(levelAt(i))) c++;
         return c;
     }
 
@@ -338,59 +326,101 @@ public final class AttemptLedger {
     public int countUndetermined() {
         int c = 0;
         for (int i = 0; i < n; i++) {
-            Level lv = levelOf(buf[i]);
+            Level lv = levelAt(i);
             if (lv != null && lv.executed && lv != Level.CONFIRMED_WRONG) c++;
         }
         return c;
     }
 
+    // ---------------------------------------------------------------- 排序
+
     /** 先查已排序前缀（二分），再线性扫尾巴。 */
-    private int findIndex(long h) {
+    private int findIndex(long id) {
         ensureSorted();
         int lo = 0, hi = sortedN - 1;
         while (lo <= hi) {
             int mid = (lo + hi) >>> 1;
-            long v = hashOf(buf[mid]);
-            if (v == h) return mid;
-            if (v < h) lo = mid + 1; else hi = mid - 1;
+            long v = buf[2 * mid];
+            if (v == id) return mid;
+            if (v < id) lo = mid + 1; else hi = mid - 1;
         }
-        for (int i = sortedN; i < n; i++) if (hashOf(buf[i]) == h) return i;
+        for (int i = sortedN; i < n; i++) if (buf[2 * i] == id) return i;
         return -1;
     }
 
     private void ensureSorted() {
         if (sortedN >= n) return;
-        // 先按哈希排前缀，再处理尾巴：整体排序（尾巴很短，代价可接受）
-        Arrays.sort(buf, 0, n);
-        // 排序会打乱「哈希在前、等级在后」的包装顺序没问题（pack 后低 56 位是哈希，
-        // 高 8 位是等级；同哈希不同等级时按等级排序，等级更小（更强）排前面）。
-        // 去重：同哈希只保留最强的那条。
+        quickSort(0, n - 1);
+        // 同身份只保留最强的那条（排序已保证 rank 升序，强在前）
         int w = 0;
         for (int i = 0; i < n; i++) {
-            if (w > 0 && hashOf(buf[w - 1]) == hashOf(buf[i])) {
-                // 已按等级升序（强在前），保留前一条
-                continue;
+            if (w > 0 && buf[2 * (w - 1)] == buf[2 * i]) continue;
+            if (w != i) {
+                buf[2 * w] = buf[2 * i];
+                buf[2 * w + 1] = buf[2 * i + 1];
             }
-            buf[w++] = buf[i];
+            w++;
         }
         n = w;
         sortedN = n;
     }
 
+    /** 按 (身份, 等级) 升序排。有符号比较 —— 与二分查找口径一致。 */
+    private void quickSort(int lo, int hi) {
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            long ph = buf[2 * mid], pr = buf[2 * mid + 1];
+            int i = lo, j = hi;
+            while (i <= j) {
+                while (less(i, ph, pr)) i++;
+                while (less(ph, pr, j)) j--;
+                if (i <= j) { swap(i, j); i++; j--; }
+            }
+            if (j - lo < hi - i) { quickSort(lo, j); lo = i; }
+            else { quickSort(i, hi); hi = j; }
+        }
+    }
+
+    /** 第 i 条 < (h, r)。 */
+    private boolean less(int i, long h, long r) {
+        long a = buf[2 * i], b = buf[2 * i + 1];
+        return a < h || (a == h && b < r);
+    }
+
+    /** (h, r) < 第 j 条。 */
+    private boolean less(long h, long r, int j) {
+        long a = buf[2 * j], b = buf[2 * j + 1];
+        return h < a || (h == a && r < b);
+    }
+
+    private void swap(int a, int b) {
+        long h = buf[2 * a], r = buf[2 * a + 1];
+        buf[2 * a] = buf[2 * b];
+        buf[2 * a + 1] = buf[2 * b + 1];
+        buf[2 * b] = h;
+        buf[2 * b + 1] = r;
+    }
+
     // ---------------------------------------------------------------- 落盘
 
     /**
-     * 读。**任何异常/损坏/版本不符都返回空账本** ——
+     * 读。**任何异常 / 损坏 / 版本不符 / 旧格式都返回空账本** ——
      * 丢了的代价是重复劳动，不是漏判，所以降级做在内部。
+     *
+     * <p>v1（8 字节/条、无头部）会被这里判空。审计要求的方向是
+     * 「旧格式不能无损迁移时，安全降级为不跳过，允许重新执行」。
      */
     public static AttemptLedger load(File f) {
         AttemptLedger t = new AttemptLedger();
         if (f == null || !f.isFile()) return t;
         long len = f.length();
-        if (len <= 0 || len % 8 != 0 || len / 8 > MAX) return t;
-        int cnt = (int) (len / 8);
+        if (len <= HEADER_BYTES) return t;
+        long body = len - HEADER_BYTES;
+        if (body % RECORD_BYTES != 0) return t;
+        int cnt = (int) (body / RECORD_BYTES);
+        if (cnt <= 0 || cnt > MAX) return t;
         try (FileInputStream in = new FileInputStream(f)) {
-            byte[] raw = new byte[cnt * 8];
+            byte[] raw = new byte[(int) len];
             int read = 0;
             while (read < raw.length) {
                 int r = in.read(raw, read, raw.length - read);
@@ -398,13 +428,15 @@ public final class AttemptLedger {
                 read += r;
             }
             if (read != raw.length) return t;      // 截断 → 空账本
-            t.buf = new long[Math.max(512, cnt)];
+
+            long head = readLong(raw, 0);
+            if ((int) (head >>> 32) != MAGIC) return t;      // 旧格式/非本类文件
+            if ((int) (head & 0xffffffffL) != FORMAT_VERSION) return t;
+
+            t.buf = new long[Math.max(512, cnt) * 2];
             for (int i = 0; i < cnt; i++) {
-                long v = 0;
-                for (int b = 0; b < 8; b++) {
-                    v |= ((long) (raw[i * 8 + b] & 0xff)) << (8 * b);
-                }
-                t.buf[i] = v;
+                t.buf[2 * i] = readLong(raw, HEADER_BYTES + i * RECORD_BYTES);
+                t.buf[2 * i + 1] = readLong(raw, HEADER_BYTES + i * RECORD_BYTES + 8);
             }
             t.n = cnt;
             t.sortedN = 0;      // 文件可能被外部改过 —— 查前补排序
@@ -414,7 +446,7 @@ public final class AttemptLedger {
         return t;
     }
 
-    /** 写：排序去重后按 8 字节小端连续落盘（与 triedSet 同一布局）。 */
+    /** 写：头部 + 每条 16 字节（小端）连续落盘。 */
     public boolean save(File f) {
         if (f == null) return false;
         try {
@@ -423,17 +455,20 @@ public final class AttemptLedger {
             if (dir != null && !dir.exists() && !dir.mkdirs()) return false;
             File tmp = new File(f.getAbsolutePath() + ".tmp");
             try (FileOutputStream out = new FileOutputStream(tmp)) {
-                byte[] chunk = new byte[8 * 4096];
+                byte[] head = new byte[HEADER_BYTES];
+                writeLong(head, 0, ((long) MAGIC << 32) | (FORMAT_VERSION & 0xffffffffL));
+                out.write(head);
+                byte[] chunk = new byte[RECORD_BYTES * 1024];
                 int off = 0;
                 for (int i = 0; i < n; i++) {
-                    long v = buf[i];
-                    int base = (i % 4096) * 8;
-                    for (int b = 0; b < 8; b++) chunk[base + b] = (byte) (v >>> (8 * b));
-                    if ((i + 1) % 4096 == 0) {
+                    int base = (i % 1024) * RECORD_BYTES;
+                    writeLong(chunk, base, buf[2 * i]);
+                    writeLong(chunk, base + 8, buf[2 * i + 1]);
+                    if ((i + 1) % 1024 == 0) {
                         out.write(chunk);
                         off = 0;
                     } else {
-                        off = base + 8;
+                        off = base + RECORD_BYTES;
                     }
                 }
                 if (off > 0) out.write(chunk, 0, off);
@@ -446,6 +481,16 @@ public final class AttemptLedger {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static long readLong(byte[] b, int off) {
+        long v = 0;
+        for (int i = 0; i < 8; i++) v |= ((long) (b[off + i] & 0xff)) << (8 * i);
+        return v;
+    }
+
+    private static void writeLong(byte[] b, int off, long v) {
+        for (int i = 0; i < 8; i++) b[off + i] = (byte) (v >>> (8 * i));
     }
 
     // ---------------------------------------------------------------- 路径
@@ -470,5 +515,11 @@ public final class AttemptLedger {
         if (ctx == null || targetKey == null || targetKey.isEmpty()) return false;
         File f = fileFor(ctx, targetKey);
         return !f.exists() || f.delete();
+    }
+
+    /** 一行摘要（日志用，不含口令）。 */
+    public String summary() {
+        return String.format(Locale.ROOT, "账本 %d 条（已确定错误 %d · 未确定 %d）",
+                n, count(Level.CONFIRMED_WRONG), countUndetermined());
     }
 }

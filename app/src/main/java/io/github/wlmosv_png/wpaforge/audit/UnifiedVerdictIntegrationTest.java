@@ -189,8 +189,14 @@ public final class UnifiedVerdictIntegrationTest {
             Shell sh3 = new Shell();
             // 前 40 轮：什么都不给（status 空 + 日志只有标记）
             for (int i = 0; i < 40; i++) { sh3.status(""); sh3.log(mk(aid)); }
-            // 之后：明确失败证据
-            for (int i = 0; i < 3000; i++) { sh3.status(associatingFrame()); sh3.log(wrongKey); }
+            // 之后：明确失败证据。
+            //
+            // 2026-11-02 审计修正：这里原来一直喂 ASSOCIATING（连接仍在进行），
+            // 旧实现据此就产出了 NETWORK_AUTH_FAIL。但「观察到 WRONG_KEY」不能
+            // 推出「本次请求已结束」——规则 3/4 现在要求生命周期已确认终止。
+            // 所以本用例补正为「连接已终止」，继续验证规则 4 的本意；
+            // 「仍在进行」的对照见下面的 U8。
+            for (int i = 0; i < 3000; i++) { sh3.status(notConnected()); sh3.log(wrongKey); }
             CrackEngine.Attempt a3 = engine(sh3).tryOne(t, "WPA2", "WrongPass12", 3000L, aid);
             info("U3 先无证据后明确失败 -> verdict=" + a3.verdict + " grade=" + a3.grade
                     + " reason=" + a3.reason);
@@ -232,7 +238,8 @@ public final class UnifiedVerdictIntegrationTest {
                     + logLine("CTRL-EVENT-SSID-TEMP-DISABLED id=613 ssid=\"" + SSID
                             + "\" auth_failures=1 reason=WRONG_KEY") + "\n";
             Shell sh6 = new Shell();
-            for (int i = 0; i < 3000; i++) { sh6.status(associatingFrame()); sh6.log(at3Log); }
+            // 前提同上：候选级结论要求连接已确认终止
+            for (int i = 0; i < 3000; i++) { sh6.status(notConnected()); sh6.log(at3Log); }
             sh6.list("613   " + SSID + "   WPA2\n");
             CrackEngine.Attempt a6 = engine(sh6).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
             info("U6 id=613 绑定本次配置 -> verdict=" + a6.verdict + " grade=" + a6.grade
@@ -244,7 +251,7 @@ public final class UnifiedVerdictIntegrationTest {
 
             // U7：同一条日志但本次配置 netId=700（id 对不上）-> 退回网络级
             Shell sh7 = new Shell();
-            for (int i = 0; i < 3000; i++) { sh7.status(associatingFrame()); sh7.log(at3Log); }
+            for (int i = 0; i < 3000; i++) { sh7.status(notConnected()); sh7.log(at3Log); }
             sh7.list("700   " + SSID + "   WPA2\n");
             CrackEngine.Attempt a7 = engine(sh7).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
             info("U7 id=613 但本次配置=700 -> verdict=" + a7.verdict + " grade=" + a7.grade);
@@ -252,6 +259,37 @@ public final class UnifiedVerdictIntegrationTest {
                     a7.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
                             && a7.grade == EvidenceGrade.Level.NONE,
                     a7.verdict + "/" + a7.grade);
+
+            // ---------------- U8（2026-11-02 审计新增）：ACTIVE 下的失败证据不得定案 ----
+            // 证据与 U3/U6/U7 完全相同，唯一区别是**连接仍在进行**（ASSOCIATING）。
+            // 旧实现在这种状态下就产出了 AUTH_FAIL（会写 triedSet 永久排除）
+            // 与 NETWORK_AUTH_FAIL（会进省时档跳过集合）。这两条是审计确认的
+            // 真实缺陷，本段是它们的回归测试 —— 必须永远不通过定案。
+            for (String label : new String[]{"AT1", "AT3"}) {
+                String lg = "AT3".equals(label) ? at3Log : wrongKey;
+                Shell sha = new Shell();
+                for (int i = 0; i < 3000; i++) { sha.status(associatingFrame()); sha.log(lg); }
+                sha.list("613   " + SSID + "   WPA2\n");
+                CrackEngine.Attempt a = engine(sha).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
+                info("U8 ACTIVE+" + label + " -> verdict=" + a.verdict + " grade=" + a.grade
+                        + " reason=" + a.reason);
+                ok("U8 ACTIVE+" + label + " 不得产候选级 AUTH_FAIL",
+                        a.verdict != CrackEngine.Verdict.AUTH_FAIL, String.valueOf(a.verdict));
+                ok("U8 ACTIVE+" + label + " 不得产 NETWORK_AUTH_FAIL",
+                        a.verdict != CrackEngine.Verdict.NETWORK_AUTH_FAIL, String.valueOf(a.verdict));
+                ok("U8 ACTIVE+" + label + " 不得给 DIRECT（不得永久排除）",
+                        a.grade != EvidenceGrade.Level.DIRECT, String.valueOf(a.grade));
+                ok("U8 ACTIVE+" + label + " 不得进省时档跳过集合",
+                        !AttemptLedger.SkipPolicy.SAVE_TIME.skips(
+                                AttemptLedger.Level.classify(a.verdict, a.grade)),
+                        a.verdict + "/" + a.grade);
+                ok("U8 ACTIVE+" + label + " 结论必须明确表示「未结束」",
+                        a.verdict == CrackEngine.Verdict.INCOMPLETE
+                                || a.verdict == CrackEngine.Verdict.TIMEOUT
+                                || a.verdict == CrackEngine.Verdict.UNKNOWN
+                                || a.verdict == CrackEngine.Verdict.TERMINATED_UNKNOWN,
+                        String.valueOf(a.verdict));
+            }
 
             // ---------------- U5：两个 Attempt 事件交错 ----------------
             String otherAid = attemptIdOf(2);

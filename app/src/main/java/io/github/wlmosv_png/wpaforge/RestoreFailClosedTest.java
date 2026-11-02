@@ -150,8 +150,9 @@ public class RestoreFailClosedTest {
             ok("不放行时直接 return（不进引擎）",
                     svc.indexOf("if (!gate.proceed)") > 0
                             && svc.indexOf("if (!gate.proceed)") < engine);
+            // 2026-11-02：闸门分支改为走统一收尾（终态仍是 PAUSED，不丢进度）
             ok("不放行时把任务置为可续跑（不丢进度）",
-                    svc.contains("task.state = TaskQueue.State.PAUSED;"));
+                    svc.contains("finishTaskEarly(task, TaskQueue.State.PAUSED"));
             ok("落盘前先问「这一次能不能开」（同目标冲突 / 记录损坏 / 堆积）",
                     svc.contains("checkNewTask(task.id, task.ssid)")
                             && svc.contains("if (blk.blocked)"));

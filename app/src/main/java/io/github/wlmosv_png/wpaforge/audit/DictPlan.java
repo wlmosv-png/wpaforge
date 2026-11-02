@@ -184,7 +184,36 @@ public final class DictPlan {
     public boolean forceRerun = false;
     /** 目标网络键（与 triedSet / 账本同源），用于界面显示与隔离。 */
     public String targetKey = "";
+    /**
+     * 目标网络快照。
+     *
+     * <h3>为什么计划里必须自带目标信息</h3>
+     * 恢复时要能**独立于队列**重建任务：进程可能在「计划已推进、派生任务之前」
+     * 被杀，那时队列里没有任何可用任务；也可能用户在崩溃后手动清了队列。
+     * 只存一个 targetKey 不足以建出 {@link io.github.wlmosv_png.wpaforge.core.NetRecord}
+     * （还需要 SSID/BSSID/加密方式），所以这里把目标快照一起落盘。
+     *
+     * <p>快照只包含**网络标识信息**，不含任何口令。
+     */
+    public String targetSsid = "";
+    public String targetBssid = "";
+    public int targetRssi = -70;
+    public int targetFreq = 2437;
+    /** {@link io.github.wlmosv_png.wpaforge.core.NetRecord.Security} 的 ordinal。 */
+    public int targetSec = 3;
     public final List<Item> items = new ArrayList<>();
+
+    /** 用目标快照重建 NetRecord（恢复补建任务时用）。 */
+    public io.github.wlmosv_png.wpaforge.core.NetRecord toNetRecord() {
+        io.github.wlmosv_png.wpaforge.core.NetRecord.Security[] all =
+                io.github.wlmosv_png.wpaforge.core.NetRecord.Security.values();
+        io.github.wlmosv_png.wpaforge.core.NetRecord.Security sec =
+                (targetSec >= 0 && targetSec < all.length)
+                        ? all[targetSec]
+                        : io.github.wlmosv_png.wpaforge.core.NetRecord.Security.WPA2;
+        return new io.github.wlmosv_png.wpaforge.core.NetRecord(
+                targetSsid, targetBssid, targetRssi, targetFreq, sec, false, "");
+    }
 
     // ================================================================ 状态机
 
@@ -455,6 +484,11 @@ public final class DictPlan {
             o.put("skipPolicy", skipPolicyId);
             o.put("forceRerun", forceRerun);
             o.put("targetKey", targetKey == null ? "" : targetKey);
+            o.put("tSsid", targetSsid == null ? "" : targetSsid);
+            o.put("tBssid", targetBssid == null ? "" : targetBssid);
+            o.put("tRssi", targetRssi);
+            o.put("tFreq", targetFreq);
+            o.put("tSec", targetSec);
             JSONArray arr = new JSONArray();
             for (Item it : items) {
                 JSONObject e = new JSONObject();
@@ -494,6 +528,11 @@ public final class DictPlan {
             p.skipPolicyId = o.optInt("skipPolicy", 0);
             p.forceRerun = o.optBoolean("forceRerun", false);
             p.targetKey = o.optString("targetKey", "");
+            p.targetSsid = o.optString("tSsid", "");
+            p.targetBssid = o.optString("tBssid", "");
+            p.targetRssi = o.optInt("tRssi", -70);
+            p.targetFreq = o.optInt("tFreq", 2437);
+            p.targetSec = o.optInt("tSec", 3);
             JSONArray arr = o.optJSONArray("items");
             if (arr != null) {
                 for (int i = 0; i < arr.length() && p.items.size() < MAX_ITEMS; i++) {

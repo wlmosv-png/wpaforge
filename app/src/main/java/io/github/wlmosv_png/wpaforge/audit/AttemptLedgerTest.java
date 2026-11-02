@@ -123,7 +123,10 @@ public final class AttemptLedgerTest {
             }
             File f = new File(tmpDir, "roundtrip.ledger");
             ok("落盘成功", l.save(f) && f.isFile() && f.length() > 0, "save 失败");
-            ok("文件长度是 8 的整数倍", f.length() % 8 == 0, String.valueOf(f.length()));
+            ok("文件结构合法（8 字节头 + N×16 字节记录）",
+                    f.length() > 8 && (f.length() - 8) % 16 == 0
+                            && (f.length() - 8) / 16 == l.size(),
+                    f.length() + " 字节 / " + l.size() + " 条");
 
             AttemptLedger back = AttemptLedger.load(f);
             ok("读回条数一致", back.size() == l.size(),
@@ -180,11 +183,13 @@ public final class AttemptLedgerTest {
         // ---- ⑩ 未知等级位（将来加档）→ 当作没有记录，绝不误跳 ----
         {
             File f = new File(tmpDir, "future.ledger");
-            long h = AttemptLedger.hash56("futurepw");
-            long packed = (h << 8) | 7L;           // 等级位 = 7（当前未定义的一档）
-            try (FileOutputStream o = new FileOutputStream(f)) {
-                for (int b = 0; b < 8; b++) o.write((byte) (packed >>> (8 * b)));
-            }
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            long head = ((long) AttemptLedger.MAGIC << 32) | AttemptLedger.FORMAT_VERSION;
+            for (int b = 0; b < 8; b++) bo.write((byte) (head >>> (8 * b)));
+            long id = AttemptLedger.idOf("futurepw");
+            for (int b = 0; b < 8; b++) bo.write((byte) (id >>> (8 * b)));
+            for (int b = 0; b < 8; b++) bo.write((byte) (7L >>> (8 * b)));   // rank=7 未定义
+            try (FileOutputStream o = new FileOutputStream(f)) { o.write(bo.toByteArray()); }
             AttemptLedger l = AttemptLedger.load(f);
             ok("未知等级 → NOT_EXECUTED（不误跳）",
                     l.level("futurepw") == AttemptLedger.Level.NOT_EXECUTED,
@@ -193,13 +198,16 @@ public final class AttemptLedgerTest {
 
         // ---- ⑪ 哈希口径与 triedSet 一致（同一候选两套账本必须认得同一条）----
         {
-            ok("hash56 与 TriedSet.hash 同源（同一候选两套账本必须认得同一条）",
-                    AttemptLedger.hash56("SamePass1")
-                            == (TriedSet.hash("SamePass1") & AttemptLedger.HASH_MASK), "不一致");
-            // 口令是大小写敏感的：Password1 与 password1 是两条 different 候选，
+            ok("账本身份 == triedSet 身份（同一个 CandidateId，不再各用一套规则）",
+                    AttemptLedger.idOf("SamePass1") == TriedSet.hash("SamePass1"), "不一致");
+            ok("身份来自 SHA-256 摘要前 8 字节（完整 64 位，不截断）",
+                    AttemptLedger.idOf("SamePass1") == CandidateId.of("SamePass1")
+                            && AttemptLedger.idOf("SamePass1") == CandidateId.of("SamePass1"),
+                    "不一致");
+            // 口令是大小写敏感的：Password1 与 password1 是两条不同的候选，
             // 归并它们会漏判。这里钉住「不归并」这个**刻意**的行为。
             ok("口令大小写敏感（不同候选不归并）",
-                    AttemptLedger.hash56("Password1") != AttemptLedger.hash56("password1"), "被误归并");
+                    AttemptLedger.idOf("Password1") != AttemptLedger.idOf("password1"), "被误归并");
         }
 
         // ---- ⑫ classify：一条结论该记哪一格（唯一映射点）----
@@ -332,6 +340,53 @@ public final class AttemptLedgerTest {
                             + b.level("p4"));
             ok("往返后「还连着目标」在省时档仍不跳",
                     !b.shouldSkip("p4", AttemptLedger.SkipPolicy.SAVE_TIME), "误跳过");
+        }
+
+        // ---- ⑰ v1 旧格式 / 版本不符 → 空账本（安全降级=重跑，绝不误跳）----
+        {
+            // v1 布局：无头部、每条 8 字节（哈希 + 等级打包）。长度是 8 的倍数但
+            // 不是「8 + 16k」→ 必须被判空。
+            File v1 = new File(tmpDir, "legacy-v1.ledger");
+            try (FileOutputStream o = new FileOutputStream(v1)) {
+                o.write(new byte[8 * 5]);
+            }
+            ok("v1 旧格式 → 空账本（旧记录失效，候选会重跑而不是被误跳）",
+                    AttemptLedger.load(v1).size() == 0, String.valueOf(AttemptLedger.load(v1).size()));
+
+            // 头部版本号更高 → 不猜语义，判空
+            File v9 = new File(tmpDir, "future-ver.ledger");
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            long head = ((long) AttemptLedger.MAGIC << 32) | 9L;
+            for (int b = 0; b < 8; b++) bo.write((byte) (head >>> (8 * b)));
+            for (int b = 0; b < 16; b++) bo.write(0);
+            try (FileOutputStream o = new FileOutputStream(v9)) { o.write(bo.toByteArray()); }
+            ok("版本号更高的账本 → 空账本（不猜它的语义）",
+                    AttemptLedger.load(v9).size() == 0, String.valueOf(AttemptLedger.load(v9).size()));
+
+            // 魔数不对（别的文件被误当账本）
+            File alien = new File(tmpDir, "alien.ledger");
+            try (FileOutputStream o = new FileOutputStream(alien)) {
+                o.write(new byte[24]);
+            }
+            ok("魔数不符 → 空账本", AttemptLedger.load(alien).size() == 0, "非空");
+        }
+
+        // ---- ⑱ 大端/小端与排序：负身份值（SHA-256 高位为 1）必须能查到 ----
+        {
+            AttemptLedger l = new AttemptLedger();
+            int neg = 0, total = 0;
+            for (int i = 0; i < 4000; i++) {
+                String c = "shapw" + i;
+                if (AttemptLedger.idOf(c) < 0) neg++;
+                l.record(c, AttemptLedger.Level.TIMEOUT);
+                total++;
+            }
+            int miss = 0;
+            for (int i = 0; i < total; i++) {
+                if (l.level("shapw" + i) != AttemptLedger.Level.TIMEOUT) miss++;
+            }
+            ok("负身份值（约半数）在有符号排序下依然全部查得到",
+                    miss == 0, "漏 " + miss + " 条（负身份 " + neg + "/" + total + "）");
         }
 
         System.out.println();

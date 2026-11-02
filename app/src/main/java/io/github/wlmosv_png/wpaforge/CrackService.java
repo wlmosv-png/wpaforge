@@ -524,13 +524,19 @@ public class CrackService extends Service {
             }
             return;
         }
-        /* 计划优先于队列（2026-11-02 审计修复）。
+        /* 计划优先于队列（2026-11-02 审计修复；同日 P0 再修）。
          *
          * 旧实现在这里直接用 hasWork() 判「有没有 PENDING 任务」—— 但
          * 「计划已推进、派生任务之前进程被杀」时队列里**恰好没有** PENDING，
          * 于是计划根本没被读到就收工了，下一本字典永久丢失（真机复现）。
-         * 现在先按计划做一次恢复（复用/补建），再交给普通队列逻辑。 */
-        if (recoverPlanForRun()) return;
+         *
+         * P0 再修：计划**只接管「计划派生」的待办**。用户显式入队的普通任务
+         * (fromPlan=false) 永远不被计划终态阻塞 —— 旧实现无条件调
+         * recoverPlanForRun()，一个已结束的残留计划会让普通任务也永远跑不起来。
+         * 队列为空时仍走计划恢复（崩溃窗口：计划已推进、派生任务之前进程被杀）。 */
+        TaskQueue.Task nextPending = TaskQueue.nextPending(this);
+        boolean planRelevant = PlanRecovery.planRelevant(nextPending);
+        if (planRelevant && recoverPlanForRun()) return;
 
         if (!TaskQueue.hasWork(this)) {
             log(L.s("队列里没有待办任务", "No pending tasks in the queue"));
@@ -1538,8 +1544,10 @@ public class CrackService extends Service {
             if (p.state.isTerminal()) {
                 // 终态计划**不退回普通队列**：退回就意味着命中之后残留的 PENDING
                 // 会在下次「开始」时被当普通任务执行（审计点名场景）。
-                log(L.f("多字典计划已结束（%s）：不执行任何残留任务；如需继续请新建计划",
-                        "plan already finished (%s); leftover tasks will not run",
+                log(L.f("多字典计划已结束（%s）：不自动执行任何残留计划任务"
+                                + "（普通单字典任务不受影响；如需再跑计划，请清理或重建）",
+                        "plan already finished (%s): leftover plan tasks will not auto-run "
+                                + "(plain single-dictionary tasks are unaffected; clear or rebuild to run the plan again)",
                         p.state.name()));
                 plan = null;
                 planFileKey = "";
@@ -1682,6 +1690,13 @@ public class CrackService extends Service {
             }
         } else if (p.state.isTerminal()) {
             log(L.f("多字典计划结束：%s", "plan finished: %s", p.state.name()));
+            // P0：计划终态 -> 作废该计划派生的残留待办，避免被当普通任务误跑、
+            // 也避免下一次启动被终态计划挡住。不碰用户普通任务 / 账本 / 字典文件。
+            int killed = TaskQueue.stopPlanTasks(this);
+            if (killed > 0) {
+                log(L.f("计划结束：已作废 %d 条残留计划任务",
+                        "plan ended: %d leftover plan task(s) invalidated", killed));
+            }
         }
     }
 
@@ -1732,6 +1747,19 @@ public class CrackService extends Service {
                     p.save(DictPlan.fileFor(this, planFileKey));
                 }
                 LAST_PLAN_SUMMARY = p.summary();
+                // P0：作废该计划派生的残留待办 —— 它们既不该被误跑，也不该挡住普通任务。
+                int killedBlk = TaskQueue.stopPlanTasks(this);
+                if (killedBlk > 0) {
+                    log(L.f("已作废 %d 条计划残留任务（不影响普通任务）",
+                            "invalidated %d leftover plan task(s) (plain tasks unaffected)",
+                            killedBlk));
+                }
+                // 队列里还有**用户普通任务** -> 放行，让单字典流程继续跑（旧实现一律 stopSelf）。
+                if (PlanRecovery.hasPlainWork(TaskQueue.load(this))) {
+                    log(L.s("检测到普通任务：计划不接管，按单字典流程继续",
+                            "plain task present: plan not taking over"));
+                    return false;
+                }
                 stopSelfSafe();
                 return true;
 

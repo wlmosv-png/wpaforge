@@ -629,6 +629,31 @@ public final class DictPlan {
         }
     }
 
+    /** 计划是否有成员。 */
+    public boolean hasItems() { return !items.isEmpty(); }
+
+    /**
+     * **重置执行进度**（成员与顺序保留）。
+     *
+     * <p>与 {@link #delete} 的区别：
+     * <ul>
+     *   <li>{@code resetProgress} —— 计划还在（同一个字典序列），只把「跑到哪、
+     *       什么结论」清零，回到未开始；</li>
+     *   <li>{@code delete} —— 把整个计划删掉（成员、顺序、进度全没）。</li>
+     * </ul>
+     * 两者都**不碰**字典文件、triedSet、账本。
+     */
+    public void resetProgress() {
+        index = 0;
+        state = State.IDLE;
+        for (Item it : items) {
+            it.offset = 0;
+            it.dictSize = 0;
+            it.local = State.IDLE;
+            it.skipped = 0;
+        }
+    }
+
     /** 删除指定目标的计划文件（用户点「清空计划」）。 */
     public static boolean delete(Context ctx, String targetKey) {
         File f = fileFor(ctx, targetKey);

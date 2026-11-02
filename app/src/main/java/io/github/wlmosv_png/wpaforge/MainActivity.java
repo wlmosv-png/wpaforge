@@ -422,6 +422,10 @@ public class MainActivity extends Activity {
         L.init(this);
         dp = getResources().getDisplayMetrics().density;
         buildUi();
+        // 旧版单一计划文件 → 按目标分文件（一次性，幂等，不删旧文件）。
+        // 放在这里是为了：只开破解页（没进字典管理）时也能看到迁移后的计划。
+        try { io.github.wlmosv_png.wpaforge.audit.DictPlan.migrateLegacy(this); }
+        catch (Throwable ignored) {}
         requestPermsIfNeeded();
         scanner = new Scanner(this, scanListener);
         bindCrackService();
@@ -729,7 +733,32 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.audit.DictPlan lp = svc.planForDisplay();
             if (lp != null && !lp.items.isEmpty()) return lp;
         }
-        return selectedPlan;
+        // 不回落陈旧快照（那是「界面显示上一版、后台已变」的根源）：
+        // 直接读盘上当前目标的计划，永远新鲜。
+        return filePlan();
+    }
+
+    /** 盘上当前目标的计划（没选目标时是 unbound 计划）；没有则返回 null。 */
+    private io.github.wlmosv_png.wpaforge.audit.DictPlan filePlan() {
+        io.github.wlmosv_png.wpaforge.audit.DictPlan p =
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+        return (p == null || p.items.isEmpty()) ? null : p;
+    }
+
+    /**
+     * 当前执行来源（互斥）：{@code MULTI} = 多字典计划；{@code SINGLE} = 用户单字典；
+     * {@code NONE} = 还没选。同一时刻只会有一个值 —— 不存在「两种模式同时激活」。
+     */
+    private String currentMode() {
+        if (usePlanMode && filePlan() != null) return "MULTI";
+        return (currentDict != null && !currentDict.isEmpty()) ? "SINGLE" : "NONE";
+    }
+
+    /** 退出计划模式（回到单字典语义）。 */
+    private void leavePlanMode() {
+        usePlanMode = false;
+        selectedPlan = null;
     }
 
     /**
@@ -3998,7 +4027,8 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.audit.DictPlan lp = livePlan();
             if (lp != null && !lp.items.isEmpty()) {
                 if (lp.state.isTerminal()) {
-                    dictStatus.setText(L.s("多字典计划: 已结束", "Plan: finished"));
+                    dictStatus.setText(L.s("多字典计划: 已结束（可清理或改回单字典）",
+                            "Plan: finished (clear it or switch to single)"));
                 } else {
                     dictStatus.setText(L.f("多字典计划: %d 本 · 当前第 %d 本",
                             "Plan: %d dictionaries · now #%d",
@@ -4655,8 +4685,21 @@ public class MainActivity extends Activity {
         d.addHint(L.s("计划模式：启动后按这个顺序一本接一本跑，命中即停。\n不再需要逐本选字典。",
                 "Plan mode: runs these in order, one after another, stopping on a hit. No per-dictionary selection needed."));
         d.setNegative(L.s("取消", "Cancel"), null);
+        if (plan.state.isTerminal()) {
+            d.addHint(L.s("这个计划已经结束（" + io.github.wlmosv_png.wpaforge.audit.DictPlan
+                            .stateLabel(plan.state) + "）。点「用这个计划」会重置进度重新开始；"
+                            + "或在下面清理它。",
+                    "This plan already finished. \"Use this plan\" resets and restarts it; "
+                            + "or clear it below."));
+        }
         d.setPositive(L.s("用这个计划", "Use this plan"), dd -> {
             usePlanMode = true;
+            // 终态计划：用之前先重置进度（成员与顺序保留），否则 startConnect 会被终态拦住。
+            if (plan.state.isTerminal()) {
+                plan.resetProgress();
+                plan.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                TaskQueue.stopPlanTasks(this);
+            }
             selectedPlan = plan;
             // 计划自带目标快照时，把破解页目标对齐到计划目标 —— 这样 triedSet 键、
             // 服务端 loadPlanForRun 的目标一致性检查都自然对齐，不靠用户手动再选。
@@ -4696,12 +4739,26 @@ public class MainActivity extends Activity {
         final boolean executing = running != null
                 && running.state == io.github.wlmosv_png.wpaforge.audit.DictPlan.State.RUNNING;
 
+        final boolean terminal = p.state.isTerminal();
+        final String modeTag = "MULTI".equals(currentMode())
+                ? L.s("当前执行方式：多字典计划", "Mode: multi-dictionary plan")
+                : L.s("当前执行方式：单字典（本目标暂无有效计划）",
+                        "Mode: single dictionary (no active plan for this target)");
+        String mgrSub;
+        if (executing) {
+            mgrSub = L.s("计划正在执行，暂不能调整顺序。\n先暂停或停止，再回来调整。",
+                    "Plan is running — pause or stop it first, then reorder.");
+        } else if (terminal) {
+            mgrSub = L.s("本目标的计划已结束（" + io.github.wlmosv_png.wpaforge.audit.DictPlan
+                            .stateLabel(p.state) + "）。\n"
+                            + "可调顺序后重新开始，或底部「清理本目标的计划」。",
+                    "This target's plan already finished.\nReorder and restart, or clear it below.");
+        } else {
+            mgrSub = L.s("点 ↑/↓ 调顺序，× 移出本计划。改动立即保存。",
+                    "Tap ↑/↓ to reorder, × to remove. Changes save immediately.");
+        }
         NetDialog d = new NetDialog(this, L.s("管理计划顺序", "Manage plan order"),
-                executing
-                        ? L.s("计划正在执行，暂不能调整顺序。\n先暂停或停止，再回来调整。",
-                                "Plan is running — pause or stop it first, then reorder.")
-                        : L.s("点 ↑/↓ 调顺序，× 移出本计划。改动立即保存。",
-                                "Tap ↑/↓ to reorder, × to remove. Changes save immediately."));
+                modeTag + "\n" + mgrSub);
 
         for (int i = 0; i < p.items.size(); i++) {
             final int idx = i;
@@ -4753,9 +4810,78 @@ public class MainActivity extends Activity {
         d.addItem(L.s("管理字典（完整）", "Manage dictionaries (full)"), dd -> {
             startActivity(new android.content.Intent(this, DictActivity.class));
         });
+        // 清理：删除本目标的计划 + 作废其残留任务。**不删字典文件、不碰 triedSet/账本。**
+        d.addItem(L.s("清理本目标的计划（不动字典文件与历史）",
+                        "Clear this target's plan (keeps dict files & history)"),
+                dd -> confirmClearPlan());
+        // 重置进度：保留成员与顺序，只把「跑到哪 / 什么结论」清零（与删除不同）。
+        d.addItem(L.s("重置进度（保留字典与顺序）",
+                        "Reset progress (keep dictionaries & order)"),
+                dd -> {
+                    if (executing) {
+                        Toast.makeText(this, L.s("计划执行中，先暂停或停止",
+                                "Plan is running — pause or stop first"), Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    io.github.wlmosv_png.wpaforge.audit.DictPlan q =
+                            io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                                    io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                    q.resetProgress();
+                    q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                    TaskQueue.stopPlanTasks(this);
+                    refreshPlanLine();
+                    updateConnectDict();
+                    updateDictStatus();
+                    Toast.makeText(this, L.s("已重置进度，可重新开始",
+                            "Progress reset; ready to start"), Toast.LENGTH_SHORT).show();
+                });
+        // 改回单字典：退出计划模式，字典选择通道立即可用。
+        d.addItem(L.s("改回单字典模式", "Switch back to single dictionary"),
+                dd -> {
+                    leavePlanMode();
+                    updateDictStatus();
+                    updateConnectDict();
+                    Toast.makeText(this, L.s("已切回单字典模式，点字典可重新选择",
+                            "Back to single-dictionary mode; tap the dictionary to pick"),
+                            Toast.LENGTH_SHORT).show();
+                });
         d.setNegative(L.s("关闭", "Close"), null);
         d.show();
     }
+
+    /**
+     * 清理本目标的计划：删计划文件 + 作废该计划派生的残留任务。
+     *
+     * <p>严格边界：**不删任何字典原文件**，**不删 TriedSet / AttemptLedger**，
+     * 也不影响其它 Wi-Fi 目标的计划。删完立即回到单字典模式。
+     */
+    private void confirmClearPlan() {
+        NetDialog c = new NetDialog(this, L.s("清理本目标的计划", "Clear this target's plan"),
+                L.s("将删除本目标的多字典计划与它的残留任务。\n\n"
+                        + "不会删除：字典文件、已试记录、执行账本、其它 Wi-Fi 的计划。",
+                        "Deletes this target's plan and its leftover tasks.\n\n"
+                                + "Kept: dictionary files, tried records, attempt ledger, other targets' plans."));
+        c.setNegative(L.s("取消", "Cancel"), null);
+        c.setDanger(L.s("清理", "Clear"), dd -> {
+            String key = currentTargetKey();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.delete(this, key);
+            int killed = TaskQueue.stopPlanTasks(this);
+            int removed = TaskQueue.removePlanTasks(this);
+            leavePlanMode();
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
+            renderQueue();
+            updateDictStatus();
+            updateConnectDict();
+            refreshPlanLine();
+            Toast.makeText(this, L.f("已清理计划（作废 %d 条，移除 %d 条残留任务）",
+                            "Plan cleared (%d invalidated, %d removed)",
+                            killed + removed, removed),
+                    Toast.LENGTH_LONG).show();
+        });
+        c.show();
+    }
+
 
     private void loadDictFile(io.github.wlmosv_png.wpaforge.audit.DictStore.Entry e) {
         usePlanMode = false; selectedPlan = null;
@@ -6140,26 +6266,19 @@ public class MainActivity extends Activity {
         }
 
         // ①½ 计划模式恢复：进程被杀/重进页面后，若服务端正在跑多字典计划
-        // （planForDisplay 非空），把界面切回计划模式，别让用户误以为还是单本。
+        // （planForDisplay 非空且未终态），把界面切回计划模式，别让用户误以为还是单本。
+        //
+        // P0：终态计划（已命中/全部跑完/已停止）**不再抢占**模式与字典通道 ——
+        // 否则用户永远回不到普通单字典选择。终态只做提示，由用户显式清理或重选。
         if (!usePlanMode) {
             CrackService svc0 = liveService();
-            io.github.wlmosv_png.wpaforge.audit.DictPlan livePlan = svc0 == null ? null : svc0.planForDisplay();
-            if (livePlan != null && !livePlan.items.isEmpty()) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan livePlan =
+                    svc0 == null ? null : svc0.planForDisplay();
+            if (livePlan != null && !livePlan.items.isEmpty() && !livePlan.state.isTerminal()) {
                 usePlanMode = true;
                 selectedPlan = livePlan;
                 updateDictStatus();
                 updateConnectDict();
-            } else if (!CrackService.planSummary().isEmpty()) {
-                // 服务不在/拿不到活计划，但确有计划摘要：从盘上读一份做界面快照。
-                io.github.wlmosv_png.wpaforge.audit.DictPlan p =
-                        io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
-                                io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
-                if (!p.items.isEmpty()) {
-                    usePlanMode = true;
-                    selectedPlan = p;
-                    updateDictStatus();
-                    updateConnectDict();
-                }
             }
         }
 
@@ -6400,8 +6519,9 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.audit.DictPlan lp = livePlan();
             if (lp != null && !lp.items.isEmpty()) {
                 if (lp.state.isTerminal()) {
-                    connectDictView.setText(L.s("多字典计划 · 已结束", "Plan · finished"));
-                    connectDictView.setTextColor(TEXT_DIM);
+                    connectDictView.setText(L.s("多字典计划 · 已结束（点此清理或重选）",
+                            "Plan · finished (tap to clear or re-pick)"));
+                    connectDictView.setTextColor(AmberTheme.WARN);
                 } else {
                     io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = lp.current();
                     connectDictView.setText(L.f("多字典计划 · %d 本 · 当前「%s」",
@@ -7360,9 +7480,20 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, L.s("字典为空，请先到审计页加载或生成", "Dictionary is empty — load or generate one in the Audit tab"), Toast.LENGTH_SHORT).show();
                 return;
             }
-        } else if (selectedPlan == null || selectedPlan.items.isEmpty()) {
-            Toast.makeText(this, L.s("计划为空，请先到字典管理页建立计划", "Plan is empty — build one in dictionary management first"), Toast.LENGTH_SHORT).show();
-            return;
+        } else {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan p = filePlan();
+            if (p == null) {
+                Toast.makeText(this, L.s("计划为空，请先到字典管理页建立计划",
+                        "Plan is empty — build one in dictionary management first"),
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (p.state.isTerminal()) {
+                Toast.makeText(this, L.s("该目标的计划已结束，请先清理或重选执行方式",
+                        "This target's plan already finished — clear it or pick another mode"),
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
         }
 
         // B 方案：目标被 forget 过（不在系统已保存列表）且本网络有已试记录时，
@@ -7435,8 +7566,12 @@ public class MainActivity extends Activity {
         // 多字典计划模式：不逐本选字典。入队的任务用**计划的目标快照**与
         // **计划当前指向的那本字典**，让服务端既有的 loadPlanForRun 干净接管
         // （目标一致 + 计划未终态 + 计划有成员），之后按计划顺序自动接力。
-        if (usePlanMode && selectedPlan != null && !selectedPlan.items.isEmpty()) {
-            final io.github.wlmosv_png.wpaforge.audit.DictPlan sp = selectedPlan;
+        final io.github.wlmosv_png.wpaforge.audit.DictPlan planForStart =
+                usePlanMode ? filePlan() : null;
+        if (planForStart != null && !planForStart.items.isEmpty()
+                && !planForStart.state.isTerminal()) {
+            final io.github.wlmosv_png.wpaforge.audit.DictPlan sp = planForStart;
+            selectedPlan = sp;
             // 计划自带目标快照时用它（bssid/ssid 与计划 targetKey 同源，服务端
             // loadPlanForRun 的目标一致性检查自然通过）；计划还没绑定目标时退回
             // 破解页当前选中的目标 —— 第一次跑计划就是这种情况。
@@ -7446,9 +7581,10 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = sp.current();
             final String planDictPath = cur == null || cur.path.isEmpty() ? "" : cur.path;
             final String planDictName = cur == null || cur.name.isEmpty() ? L.s("计划字典", "Plan dictionary") : cur.name;
-            final TaskQueue.Task t = TaskQueue.enqueue(this, planTarget,
-                    planDictPath, planDictName,
-                    false, false, Prefs.mode(this), "");
+            // 用 enqueuePlan 标记「来源=计划」：执行侧据此让计划接管，
+            // 而不是把这条当成用户单字典任务。
+            final TaskQueue.Task t = TaskQueue.enqueuePlan(this, planTarget,
+                    planDictPath, planDictName, Prefs.mode(this));
             queueCache.clear();
             queueCache.addAll(TaskQueue.load(this));
             renderQueue();

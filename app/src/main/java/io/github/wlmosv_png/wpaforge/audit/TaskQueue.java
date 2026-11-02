@@ -72,6 +72,14 @@ public final class TaskQueue {
         /** 这条任务是不是从**旧格式（明文 hit）**读出来的 —— 迁移用，不落盘。 */
         public transient boolean legacyHitPlain = false;
         public State state = State.PENDING;
+        /**
+         * 这条任务是否由**多字典计划**派生。
+         *
+         * <p>它是「任务来源」的唯一标记，把计划任务与用户显式入队的普通任务分开。
+         * 执行侧据此决定要不要让计划接管 —— 计划只接管「计划自己派生」的待办；
+         * 用户普通任务永远按单字典语义执行，不被计划终态阻塞（P0 修复）。
+         */
+        public boolean fromPlan = false;
         public long createdAt;
         public long elapsedMs;
         /** 本次实际试过多少条（不算续跑前的） */
@@ -243,6 +251,7 @@ public final class TaskQueue {
                 o.put("lastRunId", lastRunId == null ? "" : lastRunId);
                 o.put("skipPolicyId", skipPolicyId);
                 o.put("forceRerun", forceRerun);
+                o.put("fromPlan", fromPlan);
             } catch (Exception ignored) {}
             return o;
         }
@@ -292,6 +301,7 @@ public final class TaskQueue {
             // 1.9.39：旧数据缺这两个字段 → 保守档 + 不强制重跑（= 旧行为，不猜）
             t.skipPolicyId = o.optInt("skipPolicyId", 0);
             t.forceRerun = o.optBoolean("forceRerun", false);
+            t.fromPlan = o.optBoolean("fromPlan", false);
             return t;
         }
     }
@@ -1088,6 +1098,7 @@ public final class TaskQueue {
         t.forceRerun = forceRerun;
         t.offset = Math.max(0, offset);
         t.dictSize = 0;
+        t.fromPlan = true;          // 来源标记：计划派生
         list.add(t);
         // 2026-11-02 审计修复：原来忽略 save 的返回值、无条件返回 t，
         // 于是调用方的「派生失败」分支成了死代码，写盘失败时静默丢一本。
@@ -1135,8 +1146,94 @@ public final class TaskQueue {
         t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
         t.forceRerun = forceRerun;
         t.offset = Math.max(0, offset);
+        t.fromPlan = true;          // 来源标记：计划派生
         list.add(t);
         return save(ctx, list) ? t : null;
+    }
+
+    /**
+     * 计划模式显式入队：把「用户点了开始计划」这条种子任务标成计划派生。
+     *
+     * <p>与 {@link #enqueue} 的差别只有来源标记 —— 去重、字段填充完全一致。
+     * 有了这个标记，执行侧才能区分「用户单字典任务」与「计划任务」。
+     */
+    public static Task enqueuePlan(Context ctx, NetRecord target, String dictPath,
+                                   String dictName) {
+        return enqueuePlan(ctx, target, dictPath, dictName, 0);
+    }
+
+    public static Task enqueuePlan(Context ctx, NetRecord target, String dictPath,
+                                   String dictName, int crackMode) {
+        Task t = enqueue(ctx, target, dictPath, dictName, false, false, crackMode, "");
+        if (t == null) return null;
+        if (!t.fromPlan) {
+            List<Task> list = load(ctx);
+            boolean changed = false;
+            for (Task x : list) {
+                if (x != null && t.id.equals(x.id) && !x.fromPlan) {
+                    x.fromPlan = true;
+                    changed = true;
+                }
+            }
+            if (changed) save(ctx, list);
+            t.fromPlan = true;
+        }
+        return t;
+    }
+
+    /** 队列里是否有「计划派生」的待办任务（用于执行侧判断该不该让计划接管）。 */
+    public static boolean hasPlanWork(Context ctx) {
+        for (Task t : load(ctx)) {
+            if (t != null && t.fromPlan
+                    && (t.state == State.PENDING || t.state == State.RUNNING
+                        || t.state == State.PAUSED)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 作废「计划派生」的**待到任务**（PENDING → STOPPED）。
+     *
+     * <p>计划结束/被取消时调用：让残留的计划任务不再可能被执行，
+     * 也不会挡住用户后续的普通任务。**只动 fromPlan 任务**，
+     * 不碰用户普通任务、不碰字典文件、不碰 triedSet / 账本。
+     *
+     * @return 被改动的任务数
+     */
+    public static int stopPlanTasks(Context ctx) {
+        List<Task> list = load(ctx);
+        int n = 0;
+        for (Task t : list) {
+            if (t != null && t.fromPlan && t.state == State.PENDING) {
+                t.state = State.STOPPED;
+                n++;
+            }
+        }
+        if (n > 0) save(ctx, list);
+        return n;
+    }
+
+    /**
+     * **移除**「计划派生」的任务（彻底清理）。
+     *
+     * <p>与 {@link #stopPlanTasks} 的区别：本方法把条目从队列里删掉，
+     * 适合「删除计划」时一并清干净。同样只动 fromPlan 任务。
+     *
+     * @return 被移除的任务数
+     */
+    public static int removePlanTasks(Context ctx) {
+        List<Task> list = load(ctx);
+        int before = list.size();
+        List<Task> keep = new java.util.ArrayList<>(list.size());
+        for (Task t : list) {
+            if (t != null && t.fromPlan) continue;
+            keep.add(t);
+        }
+        int removed = before - keep.size();
+        if (removed > 0) save(ctx, keep);
+        return removed;
     }
 
     /** 取下一个待处理任务（跳过已完成的） */

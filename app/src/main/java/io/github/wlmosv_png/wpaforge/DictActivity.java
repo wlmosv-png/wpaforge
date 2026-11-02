@@ -387,6 +387,9 @@ public class DictActivity extends Activity {
         acts.addView(miniBtn(L.s("加入选中", "Add selected"), ACCENT, v -> planAddSelected()));
         acts.addView(miniBtn(L.s("清空", "Clear"), AmberTheme.TEXT_DIM, v -> {
             DictPlan.delete(this, planKey());
+            // 一并作废本计划的残留任务（不动字典文件、triedSet、账本）
+            try { io.github.wlmosv_png.wpaforge.audit.TaskQueue.stopPlanTasks(this); }
+            catch (Throwable ignored) {}
             refresh();
         }));
         card.addView(acts);

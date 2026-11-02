@@ -97,8 +97,8 @@ public final class PlanRecovery {
         // ① 终态计划：**绝不退回普通队列**（否则命中的残留 PENDING 会在下次
         //    「开始」时被当普通任务执行 —— 审计点名的场景）。
         if (plan.state.isTerminal()) {
-            return Decision.block("计划已结束（" + plan.state + "）：不自动执行任何残留任务，"
-                    + "如需继续请新建计划", null);
+            return Decision.block("计划已结束（" + plan.state + "）：不自动执行任何残留计划任务"
+                    + "（普通任务不受影响）", null);
         }
         // ② 目标必须一致：换了网络却沿用旧进度，等于把别的网的结论套上来
         if (targetKey != null && !targetKey.isEmpty()
@@ -156,6 +156,43 @@ public final class PlanRecovery {
                 "计划当前字典在队列里没有任务：幂等补建",
                 null, false, cur.path, cur.name, Math.max(0, cur.offset),
                 DictPlan.State.RUNNING, null);
+    }
+
+    /**
+     * 这次启动，计划**要不要参与接管**（P0）。
+     *
+     * <p>唯一判据是「队列里第一个待办是不是计划派生的」：
+     * <ul>
+     *   <li>普通任务（{@code fromPlan == false}）→ <b>不接管</b>。
+     *       用户显式入队的单字典任务永远按单字典语义执行，不被任何
+     *       计划（包括已结束的残留计划）阻塞；</li>
+     *   <li>计划任务（{@code fromPlan == true}）或**队列为空**（崩溃窗口：
+     *       计划已推进、派生任务之前进程被杀）→ 接管。</li>
+     * </ul>
+     *
+     * <p>旧实现在此无条件接管，一个已结束的残留计划会让普通任务也跑不起来
+     * —— 这是本轮 P0 的直接病灶，本函数把判据钉死。
+     */
+    public static boolean planRelevant(TaskQueue.Task nextPending) {
+        return nextPending == null || nextPending.fromPlan;
+    }
+
+    /**
+     * 队列里是否还有**用户普通任务**（可继续执行的）。
+     *
+     * <p>终态计划 BLOCK 之后用它决定「放行普通流程」还是「收工」：
+     * 有普通任务 → 放行（P0：不再永久阻塞）；没有 → 才真的收工。
+     */
+    public static boolean hasPlainWork(java.util.List<TaskQueue.Task> queue) {
+        for (TaskQueue.Task t : asList(queue)) {
+            if (t == null || t.fromPlan) continue;
+            if (t.state == TaskQueue.State.PENDING
+                    || t.state == TaskQueue.State.RUNNING
+                    || t.state == TaskQueue.State.PAUSED) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 判断一条队列任务是否对应计划里的某一本。 */

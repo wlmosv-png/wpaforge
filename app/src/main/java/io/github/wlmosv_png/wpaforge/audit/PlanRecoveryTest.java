@@ -212,8 +212,12 @@ public final class PlanRecoveryTest {
         }
         String s = new String(Files.readAllBytes(src.toPath()), StandardCharsets.UTF_8);
 
-        ok("startQueue 先走计划恢复（不再因「没有 PENDING」就收工）",
-                s.contains("if (recoverPlanForRun()) return;"), "缺少调用");
+        // P0 修复后：计划恢复仍在，但**只对计划任务/空队列**生效 ——
+        // 用户普通任务不被终态计划阻塞。判据是 PlanRecovery.planRelevant。
+        ok("startQueue 先走计划恢复（只对计划任务/空队列；普通任务不被挡住）",
+                s.contains("PlanRecovery.planRelevant(nextPending)")
+                        && s.contains("if (planRelevant && recoverPlanForRun()) return;"),
+                "缺少调用");
         ok("recoverPlanForRun 使用 PlanRecovery.decide（决策只有一处实现）",
                 s.contains("PlanRecovery.decide("), "缺少调用");
         ok("计划恢复会接 DictPlan.recover（中断归一不再是无接线的死代码）",

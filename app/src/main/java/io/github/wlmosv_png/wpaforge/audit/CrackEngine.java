@@ -318,6 +318,7 @@ public final class CrackEngine {
     /** 连续多少条无证据超时后触发缩窗。 */
     private static final int TRIM_AFTER_NO_EVIDENCE = 4;
 
+
     public CrackEngine(Context ctx, int mode) {
         this.appCtx = ctx.getApplicationContext();
         this.watcher = new NetworkWatcher(appCtx);
@@ -437,6 +438,28 @@ public final class CrackEngine {
      * （{@code m1RetryImpliesWrongKey} 仍是「M1≥2 且无成功证据」）。
      */
     public static final long M1_RETRY_CONFIRM_MS = 1000L;
+
+    /**
+     * wpalog **支B**（无归属握手失败/关联被拒）的确认窗口（毫秒）。
+     *
+     * <h3>为什么支B 需要它，支A 不需要</h3>
+     * 支A（{@code sawWrongKeyForAttempt}）拿到的是 wpa_supplicant 对**这一次**
+     * 的直接否认（带 SSID 归属）→ 可靠，可立即结案。
+     * 支B 的 {@code 4-Way Handshake failed} / {@code CTRL-EVENT-ASSOC-REJECT}
+     * **零字段 / 仅 bssid**，无法证明属于本条候选（很可能是上一条的延迟残留）。
+     * 若立即 return，会**在上一条残留到达的那一刻**把本条正确密码判死 ——
+     * 真机事故（2026-11-02）：正确候选被判 {@code AUTH_FAIL/INFERRED/wpalog}。
+     *
+     * <h3>做法</h3>
+     * 支B 首次命中只「武装」计时器，**不结案**；窗口内继续轮询，
+     * 成功判据（在本次判定之前）仍有每轮的机会命中 → 后到的成功证据能参与裁决。
+     * 窗口到期仍无成功证据，才按 INFERRED 结案。
+     *
+     * <p><b>窗口时长的取值说明</b>：此处复用 {@link #M1_RETRY_CONFIRM_MS}
+     * （与 m1retry 的确认窗口同源，避免新增随意常量）。**该值需按真机测量调整** ——
+     * 慢速 AP 的成功证据可能晚于 1 秒到达；调整前不得宣称「已彻底解决」。
+     */
+    private static final long WPLOG_INFERRED_CONFIRM_MS = M1_RETRY_CONFIRM_MS;
 
     /**
      * 第二级早退判据（纯函数，便于离线单测）。
@@ -1438,6 +1461,9 @@ public final class CrackEngine {
         // 上面的成功判据会先返回 SUCCESS，不会造成漏判。
         boolean m1RetryArmed = false;
         long m1RetryArmedAt = 0L;
+        /** 支B（无归属握手失败）的确认窗口武装状态：首次命中只记时、不结案。 */
+        boolean wlInferredArmed = false;
+        long wlInferredArmedAt = 0L;
         // 认证失败广播的“武装”时刻（第三级早退的 120ms 复核用）
         long authArmedAt = 0L;
         // ---- 每条候选的耗时分解（2026-10-23 加：用来定位“时快时慢”）----
@@ -1931,26 +1957,61 @@ public final class CrackEngine {
                             && tried
                             && (WpaLogReader.sawHandshakeFailure(wlogSlice)
                                     || WpaLogReader.sawAssocReject(wlogSlice));
-                    if (logDirectFail || logInferredFail) {
+                    if (logDirectFail) {
+                        // ---- 支A：带 SSID 归属的直接否认 —— 可靠，立即结案 ----
                         long ms = clock().uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "快速失败(日志): "
-                                + (logDirectFail ? "带归属的直接否认" : "无归属的握手失败(推断)"));
+                        android.util.Log.i(TAG, "快速失败(日志): 带归属的直接否认");
                         Attempt wl = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                 L.s("日志显示握手失败（密码错误）",
-                                    "log shows handshake failure (wrong passphrase)")
-                                        + (logDirectFail ? "" : L.s("（归属不明，仅推断）",
-                                            " (attribution unknown, inferred only)")),
+                                    "log shows handshake failure (wrong passphrase)"),
                                 "wpalog");
-                        // 只有「带 SSID 归属的直接否认」才允许永久化
-                        wl.grade = logDirectFail
-                                ? EvidenceGrade.Level.DIRECT : EvidenceGrade.Level.INFERRED;
+                        wl.grade = EvidenceGrade.Level.DIRECT;
                         return wl;
+                    }
+                    if (logInferredFail) {
+                        // ---- 支B：零字段证据，不可归属 —— 先武装确认窗口，不抢答 ----
+                        // 首次命中只记时；窗口内继续轮询（成功判据每轮仍有机会），
+                        // 让「失败信号先到、成功证据后到」的后到成功参与同一次裁决。
+                        if (!wlInferredArmed) {
+                            wlInferredArmed = true;
+                            wlInferredArmedAt = clock().uptimeMillis();
+                            android.util.Log.i(TAG, "快速失败(日志/推断): 进入确认窗口，等待可能的成功证据");
+                        } else if (clock().uptimeMillis() - wlInferredArmedAt
+                                >= WPLOG_INFERRED_CONFIRM_MS) {
+                            long ms = clock().uptimeMillis() - t0;
+                            android.util.Log.i(TAG, "快速失败(日志): 无归属的握手失败(推断) - 确认窗口到期");
+                            Attempt wl = new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                    L.s("日志显示握手失败（密码错误）",
+                                        "log shows handshake failure (wrong passphrase)")
+                                            + L.s("（归属不明，仅推断）",
+                                                " (attribution unknown, inferred only)"),
+                                    "wpalog");
+                            wl.grade = EvidenceGrade.Level.INFERRED;
+                            return wl;
+                        }
+                        // 窗口未到期：不返回，继续循环
                     }
                 }
             }
         }
 
         long total = clock().uptimeMillis() - t0;
+
+        // 支B 曾命中、但确认窗口未及到期循环就结束 → 按 INFERRED 结案。
+        // 语义：确实观察到过「不可归属的握手失败/关联被拒」，只是来不及跑完确认窗口；
+        // 若这里退化成 TIMEOUT，就把一条**已有失败证据**的候选降级成了「没结论」——
+        // 那是另一种形式的判定能力损失（P05AttributionTest 场景 A 钉死了这条）。
+        if (wlInferredArmed) {
+            android.util.Log.i(TAG, "循环结束：支B 曾命中，按 INFERRED 结案（窗口未及到期）");
+            Attempt wlTail = new Attempt(password, Verdict.AUTH_FAIL, total,
+                    L.s("日志显示握手失败（密码错误）",
+                        "log shows handshake failure (wrong passphrase)")
+                            + L.s("（归属不明，仅推断）",
+                                " (attribution unknown, inferred only)"),
+                    "wpalog");
+            wlTail.grade = EvidenceGrade.Level.INFERRED;
+            return wlTail;
+        }
 
         // R6：循环里一次日志都没读到（例如通道不吐日志）时也要留下窗口状态，
         // 不能让「没读到日志」和「没采集元数据」在记录里长得一样。

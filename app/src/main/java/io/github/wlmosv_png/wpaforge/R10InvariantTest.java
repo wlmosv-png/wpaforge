@@ -136,7 +136,7 @@ public class R10InvariantTest {
                 if (callArgs.contains("\"\"") || !callArgs.contains("\"")) noCode++;
                 at++;
             }
-            eq("全文件的 AUTH_FAIL 出口数 = 4（全部是证据路径）", 4, auth);
+            eq("全文件的 AUTH_FAIL 出口数 = 6（failover/authcast/m1retry + 支A + 支B(窗口到期) + 支B(循环末尾兜底)，全部是证据路径）", 6, auth);
             eq("每个 AUTH_FAIL 都带非空归因码（没有匿名失败）", 0, noCode);
             ok("命令前的「候选不合法」不再是 AUTH_FAIL（复核修正）",
                     code.contains("if (!isValidLength(password)) {")

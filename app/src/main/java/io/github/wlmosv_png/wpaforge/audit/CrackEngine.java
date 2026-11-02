@@ -393,6 +393,20 @@ public final class CrackEngine {
         this.macRotate = false;
     }
 
+    /**
+     * **仅供测试**：给测试构造的引擎装一个认证失败监听器。
+     *
+     * <p>为什么不直接改 {@code CrackEngine(int)}：那条路径刻意把所有
+     * Android 系统对象置 null（见其注释）。authcast 分支的前置正是
+     * {@code authWatch != null && authWatch.isRegistered()}，
+     * 所以只能在测试里显式装一个**同样走生产判定代码**的实例。
+     *
+     * <p>生产路径不变：生产构造里 authWatch 由真实 Context 创建。
+     */
+    void setAuthWatchForTest(WifiAuthFailureWatcher w) {
+        this.authWatch = w;
+    }
+
     // ------------------------------------------------------------------ 通道
 
     /** shell 通道抽象 */
@@ -1988,13 +2002,37 @@ public final class CrackEngine {
                                 // 读不到 SSID 时（<unknown ssid>）归属不可靠 -> INFERRED。
                                 boolean ssidOwned = WifiAuthFailureWatcher.ssidOwnedByTarget(
                                         authWatch.lastErrorSsid(), target.ssid);
+                                /*
+                                 * 归属分级（B3）：广播只带 SSID，属 **AT-1**。
+                                 *
+                                 * 致命场景（同 SSID 多配置）：系统里还留着一条**旧配置**
+                                 * （旧密码）指向同一个 SSID。系统后台拿它重试失败 →
+                                 * 广播 SSID 与目标逐字相等 → 旧实现给 DIRECT →
+                                 * 本条候选被永久写进 triedSet。若本条其实是**正确**密码，
+                                 * 它就被永久排除了 —— 正是本任务要根除的事故形态。
+                                 *
+                                 * 要永久排除还必须有 **AT-3**：本次命令确实建出了配置
+                                 * （targetNetId >= 0），证明这次失败来自**本条候选建的**
+                                 * 那条配置，而不是同 SSID 的旧配置。
+                                 *
+                                 * 拿不到 netId（真机常见）→ 降 INFERRED：
+                                 *   · 判定能力不变（本轮仍报 AUTH_FAIL，用户看得见）
+                                 *   · 但不写 triedSet、不推 cursor → 续跑会重试
+                                 * 这是「正确性优先于速度」的同一取舍（见支A）。
+                                 */
+                                boolean at3Owned = targetNetId >= 0;
                                 Attempt ac = new Attempt(password, Verdict.AUTH_FAIL, ms,
                                         L.s("系统报告认证失败 → 密码错误",
                                             "system reported auth failure -> wrong passphrase")
-                                                + timing(tAssocMs, tM1Ms, tAuthMs),
+                                                + timing(tAssocMs, tM1Ms, tAuthMs)
+                                                + (at3Owned ? ""
+                                                    : L.s("（本次配置 netId 未取到，仅本轮结论）",
+                                                        " (this attempt's netId unavailable; "
+                                                            + "not a permanent exclusion)")),
                                         "authcast");
-                                ac.grade = ssidOwned
-                                        ? EvidenceGrade.Level.DIRECT : EvidenceGrade.Level.INFERRED;
+                                ac.grade = (ssidOwned && at3Owned)
+                                        ? EvidenceGrade.Level.DIRECT
+                                        : EvidenceGrade.Level.INFERRED;
                                 return ac;
                             }
                         }

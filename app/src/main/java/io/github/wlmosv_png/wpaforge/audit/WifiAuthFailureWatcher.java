@@ -111,7 +111,41 @@ public final class WifiAuthFailureWatcher {
         registered = false;
     }
 
-    public boolean isRegistered() { return registered; }
+    /**
+     * 测试注入标志（**生产永不置位**）。
+     *
+     * <p>为什么需要：{@link #isRegistered()} 为假时判定段直接跳过整个 authcast
+     * 分支。而 JVM 测试里没有真实 BroadcastReceiver，注册必然失败 ——
+     * 于是「authcast 这条唯一能给 DIRECT 的失败出口」在测试里**完全不可达**，
+     * 成了判定链上唯一没被生产入口测试覆盖的路径。
+     */
+    private volatile boolean autoInjectForTest = false;
+    private volatile String autoInjectSsid = null;
+
+    public boolean isRegistered() { return registered || autoInjectForTest; }
+
+    /**
+     * **仅供测试**：让每一条候选的窗口内都「稳定收到一次认证失败广播」。
+     *
+     * <p>语义：模拟真机上「每次尝试都失败并弹认证失败」的持续状态。
+     * 实现上不注册任何 Receiver，只在 {@link #clear()} 末尾把
+     * 「最近一次失败」重设为当前代际 + 极大时刻（保证 {@code errorAt > commandAt}）。
+     *
+     * <p>生产代码路径**完全不变**：本方法只被测试调用，不影响真实采集。
+     */
+    public void armAutoAuthFailureForTest(String ssid) {
+        this.autoInjectSsid = ssid;
+        this.autoInjectForTest = true;
+    }
+
+    /** 仅供测试：撤销注入。 */
+    public void disarmAutoAuthFailureForTest() {
+        this.autoInjectForTest = false;
+        this.autoInjectSsid = null;
+        lastErrorAt = 0L;
+        lastErrorSsid = null;
+        lastErrorGeneration = -1L;
+    }
 
     /** 最近一次认证失败的时刻（uptimeMillis；0 = 从未） */
     public long lastErrorAt() { return lastErrorAt; }
@@ -137,6 +171,13 @@ public final class WifiAuthFailureWatcher {
         lastErrorAt = 0L;
         lastErrorSsid = null;
         lastErrorGeneration = -1L;
+        // 测试注入：把「失败广播」重设到**当前代际**（真机上每条候选都会被系统
+        // 再广播一次失败，代际本来就是新的）。生产不会走到这里。
+        if (autoInjectForTest) {
+            lastErrorSsid = autoInjectSsid;
+            lastErrorAt = Long.MAX_VALUE;
+            lastErrorGeneration = generation;
+        }
     }
 
     /** 当前代际（排查用）。 */

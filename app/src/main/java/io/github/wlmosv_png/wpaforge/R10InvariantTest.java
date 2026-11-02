@@ -143,7 +143,12 @@ public class R10InvariantTest {
             //   · authcast = framework ERROR_AUTHENTICATING（系统「密码错误」广播）
             //   · 支A     = CTRL-EVENT-SSID-TEMP-DISABLED reason=WRONG_KEY
             eq("全文件的 AUTH_FAIL 出口数 = 2（authcast + 支A，均为 AP-3 明确密钥不符证据）", 2, auth);
-            eq("剩余 2 条 AUTH_FAIL 出口都不给 DIRECT（AT-1 级不可永久排除）", 0,
+            // B3b：authcast 原本无条件给 DIRECT（AT-1 只有 SSID）。
+            // 同 SSID 多配置时，旧配置的失败广播会把**正确**密码永久写进 triedSet。
+            // 现在 DIRECT 必须与 AT-3 同现（本次 netId 确实建出来了）。
+            ok("authcast 的 DIRECT 需 AT-3（本次 netId 建出来了）才成立",
+                    code.contains("ssidOwned && at3Owned"));
+            eq("除 authcast 外没有别的 AUTH_FAIL 出口给 DIRECT", 0,
                     countDirectAuthFail(code));
             eq("每个 AUTH_FAIL 都带非空归因码（没有匿名失败）", 0, noCode);
             ok("命令前的「候选不合法」不再是 AUTH_FAIL（复核修正）",
@@ -377,9 +382,15 @@ public class R10InvariantTest {
         if (code == null) return -1;
         int bad = 0, at = 0;
         while ((at = code.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at)) >= 0) {
-            int segEnd = Math.min(code.length(), at + 400);
+            // 出口到下一个出口之间才是本出口的代码体
+            int nextAt = code.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at + 1);
+            int segEnd = nextAt < 0 ? Math.min(code.length(), at + 1200)
+                                    : Math.min(nextAt, at + 1200);
             String seg = code.substring(at, segEnd);
-            if (seg.contains("EvidenceGrade.Level.DIRECT")) bad++;
+            if (seg.contains("EvidenceGrade.Level.DIRECT")
+                    && !seg.contains("at3Owned")) {   // authcast 的受控 DIRECT 不算
+                bad++;
+            }
             at++;
         }
         return bad;

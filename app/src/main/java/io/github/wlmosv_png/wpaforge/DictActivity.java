@@ -39,6 +39,8 @@ import io.github.wlmosv_png.wpaforge.audit.BuiltinDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictSources;
 import io.github.wlmosv_png.wpaforge.audit.DerivedDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
+import io.github.wlmosv_png.wpaforge.audit.DictPlan;
+import io.github.wlmosv_png.wpaforge.audit.AttemptLedger;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.SourceRank;
 import io.github.wlmosv_png.wpaforge.ui.NetDialog;
@@ -245,6 +247,328 @@ public class DictActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
+    }
+
+    // ================================================================ 多字典计划
+
+    /**
+     * 多字典计划卡片（列表顶部）。
+     *
+     * <h3>界面用语约定</h3>
+     * 这里只用用户能理解的说法：「多字典计划」「已证实错误」「没确定的」。
+     * 不出现 L1/L2/L3、账本、候选、targetKey 这些内部术语 —— 用户不需要
+     * 为了用功能先去学一套内部词汇。
+     */
+    private void renderPlanCard() {
+        DictPlan p = DictPlan.load(DictPlan.fileFor(this));
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(px(14), px(12), px(14), px(12));
+        card.setBackground(roundBgStroked(AmberTheme.CARD_2,
+                AmberTheme.ACCENT_EDGE, AmberTheme.RADIUS_CARD, 1f));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.bottomMargin = px(10);
+        card.setLayoutParams(clp);
+
+        TextView title = new TextView(this);
+        title.setText(L.s("多字典计划", "Multi-dictionary plan"));
+        title.setTextSize(AmberTheme.FS_TITLE);
+        title.setTextColor(TEXT);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        card.addView(title);
+
+        TextView hint = new TextView(this);
+        hint.setText(p.items.isEmpty()
+                ? L.s("按顺序跑多本字典：命中立即停，没命中才换下一本。\n"
+                        + "在下面长按字典可加入，或用「加入计划」按钮。",
+                "Runs dictionaries in order: stop on a hit, move on only on a miss.\n"
+                        + "Long-press a dictionary below to add it, or use the button.")
+                : L.s("共 " + p.items.size() + " 本 · 当前第 " + p.displayIndex()
+                        + " 本 · 进度 " + Math.round(p.progress() * 100) + "%",
+                p.items.size() + " dictionaries · now #" + p.displayIndex()
+                        + " · " + Math.round(p.progress() * 100) + "%"));
+        hint.setTextSize(AmberTheme.FS_SMALL);
+        hint.setTextColor(TEXT_DIM);
+        hint.setPadding(0, px(4), 0, px(8));
+        card.addView(hint);
+
+        // ── 每本一行：序号 / 名称 / 进度 / 顺序 / 移除 ──
+        for (int i = 0; i < p.items.size(); i++) {
+            final int idx = i;
+            DictPlan.Item it = p.items.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, px(4), 0, px(4));
+
+            TextView nm = new TextView(this);
+            boolean active = (i == p.index);
+            nm.setText((i + 1) + ". " + it.name + "   " + it.offset + "/" + it.dictSize);
+            nm.setTextSize(AmberTheme.FS_MONO);
+            nm.setTextColor(active ? ACCENT : TEXT);
+            nm.setSingleLine(true);
+            nm.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+            row.addView(nm, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            row.addView(miniBtn("↑", TEXT_DIM, v -> {
+                if (planEdit().move(idx, -1)) { planEditSave(); refresh(); }
+            }));
+            row.addView(miniBtn("↓", TEXT_DIM, v -> {
+                if (planEdit().move(idx, +1)) { planEditSave(); refresh(); }
+            }));
+            row.addView(miniBtn("×", AmberTheme.DANGER, v -> {
+                DictPlan q = planEdit();
+                q.removeAt(idx);
+                planEditSave();
+                refresh();
+            }));
+            card.addView(row);
+        }
+
+        // ── 主操作 ──
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        acts.setPadding(0, px(8), 0, 0);
+        acts.addView(miniBtn(L.s("加入选中", "Add selected"), ACCENT, v -> planAddSelected()));
+        acts.addView(miniBtn(L.s("清空", "Clear"), AmberTheme.TEXT_DIM, v -> {
+            DictPlan.delete(this);
+            refresh();
+        }));
+        card.addView(acts);
+
+        // ── 自动连跑 ──
+        card.addView(planSwitch(
+                L.s("自动跑下一本", "Auto-advance"),
+                L.s("关：跑完一本就停；开：没命中自动换下一本",
+                        "Off: stop after each dictionary; On: continue on a miss"),
+                p.autoAdvance, on -> {
+                    Prefs.setPlanAutoAdvance(this, on);
+                    DictPlan q = planEdit();
+                    q.autoAdvance = on;
+                    planEditSave();
+                    refresh();
+                }));
+
+        // ── 跨字典去重档位 ──
+        card.addView(planSwitch(
+                L.s("省时：跳过上次没跑完的", "Save time: skip undetermined"),
+                L.s("关（推荐）：没确定的候选这次会重试",
+                        "Off (recommended): undetermined candidates are retried"),
+                p.skipPolicyId == 1, on -> requestSkipPolicy(on)));
+
+        // ── 强制重跑 ──
+        card.addView(planSwitch(
+                L.s("本次强制重跑（不删历史）", "Force re-run (keeps history)"),
+                L.s("全部候选都重试一遍，已有的记录保留不动",
+                        "Retry every candidate; existing records are kept"),
+                p.forceRerun, on -> {
+                    DictPlan q = planEdit();
+                    q.forceRerun = on;
+                    planEditSave();
+                    refresh();
+                }));
+
+        // ── 跳过数量 / 未确定数量（如实拆开显示）──
+        card.addView(planLedgerSummary(p));
+
+        listBox.addView(card);
+    }
+
+    /**
+     * 取出「正在编辑」的那份计划。
+     *
+     * <p>必须**先读盘再改再存**，一次编辑一个对象 —— 每次操作都重新 load
+     * 一份新的，改动才会落到盘上；直接改刷新时读到的临时副本会静默丢弃。
+     */
+    private DictPlan planEdit() {
+        pendingPlan = DictPlan.load(DictPlan.fileFor(this));
+        return pendingPlan;
+    }
+
+    /** 把 {@link #planEdit()} 取出的那份写回盘上。 */
+    private void planEditSave() {
+        if (pendingPlan == null) return;
+        if (!pendingPlan.save(DictPlan.fileFor(this))) {
+            Toast.makeText(this, L.s("计划保存失败", "Failed to save the plan"),
+                    Toast.LENGTH_SHORT).show();
+        }
+        pendingPlan = null;
+    }
+
+    /** 编辑中的计划（避免每次 save 都重新 load 丢改动）。 */
+    private DictPlan pendingPlan;
+
+    /**
+     * 把选中的字典加入计划。
+     *
+     * <p>身份用**完整内容 SHA-256**：同一份内容换个名字再加一次会被拒（提示重复），
+     * 而内容改过的同名文件会被当成新字典（进度不沿用）。
+     */
+    private void planAddSelected() {
+        DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+        List<DictStore.Entry> src = new ArrayList<>();
+        if (!selected.isEmpty()) {
+            for (DictStore.Entry e : DictStore.scan(DictStore.defaultDir(this))) {
+                if (selected.contains(e.file.getAbsolutePath())) src.add(e);
+            }
+        } else {
+            src.addAll(DictStore.scan(DictStore.defaultDir(this)));
+        }
+        if (src.isEmpty()) {
+            Toast.makeText(this, L.s("没有可加入的字典", "Nothing to add"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int added = 0, dup = 0;
+        for (DictStore.Entry e : src) {
+            DictPlan.Item it = new DictPlan.Item(e.file.getAbsolutePath(), e.name);
+            it.sha256 = DictPlan.sha256Of(e.file);
+            it.parseRules = DictPlan.PARSE_RULES_VERSION;
+            it.dictSize = (int) Math.min(Integer.MAX_VALUE, DictStore.count(e.file));
+            if (q.add(it)) added++; else dup++;
+        }
+        if (q.targetKey.isEmpty()) q.targetKey = Prefs.targetKey(this);
+        q.save(DictPlan.fileFor(this));
+        Toast.makeText(this, L.s("已加入 " + added + " 本"
+                        + (dup > 0 ? "（" + dup + " 本重复，已忽略）" : ""),
+                "Added " + added + (dup > 0 ? " (" + dup + " duplicates ignored)" : "")),
+                Toast.LENGTH_SHORT).show();
+        refresh();
+    }
+
+    /**
+     * 打开「省时」档之前的风险确认。
+     *
+     * <p>需求要求：启用前必须显示**跳过数量、未确定数量**和漏掉正确候选的风险。
+     * 这里把三个数字与那条风险一次说清，用户点「启用」才真的生效 ——
+     * 不做「先开了再说」。
+     */
+    private void requestSkipPolicy(boolean on) {
+        if (!on) {
+            DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+            q.skipPolicyId = 0;
+            q.save(DictPlan.fileFor(this));
+            Prefs.setSkipPolicyId(this, 0);
+            refresh();
+            return;
+        }
+        String key = planKey();
+        AttemptLedger lg = AttemptLedger.load(AttemptLedger.fileFor(this, key));
+        int undetermined = lg.countUndetermined();
+        int proven = lg.count(AttemptLedger.Level.CONFIRMED_WRONG);
+
+        String msg = L.s("这个开关会跳过「上次跑过、但没跑出结果」的候选。\n\n"
+                        + "本目标已记录：\n"
+                        + "· 已证实错误（一定会跳过）：" + proven + " 条\n"
+                        + "· 没跑出结果（开了才跳过）：" + undetermined + " 条\n\n"
+                        + "风险：如果上次是因为信号差、路由器退避，或者你中途中断，"
+                        + "正确的密码可能就在这 " + undetermined + " 条里 —— "
+                        + "开了这次就不会再试它们。\n\n"
+                        + "建议只在网络稳定、上一轮完整跑完时使用。",
+                "This skips candidates that ran last time but produced no result.\n\n"
+                        + "Recorded for this network:\n"
+                        + "· proven wrong (always skipped): " + proven + "\n"
+                        + "· undetermined (skipped only if on): " + undetermined + "\n\n"
+                        + "Risk: if last run hit weak signal, router back-off or a manual "
+                        + "stop, the correct passphrase may be among those "
+                        + undetermined + " — with this on they will not be retried.\n\n"
+                        + "Only use it when the network was stable and the last run "
+                        + "finished cleanly.");
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("开启「省时」的风险", "Risk of \"save time\""))
+                .setMessage(msg)
+                .setNegativeButton(L.s("保持关闭", "Keep off"), (d, w) -> refresh())
+                .setPositiveButton(L.s("我了解，启用", "Enable"), (d, w) -> {
+                    DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+                    q.skipPolicyId = 1;
+                    q.save(DictPlan.fileFor(this));
+                    Prefs.setSkipPolicyId(this, 1);
+                    refresh();
+                })
+                .show();
+    }
+
+    /** 计划绑定的目标键（计划优先，退化到当前选中目标）。 */
+    private String planKey() {
+        DictPlan p = DictPlan.load(DictPlan.fileFor(this));
+        return p.targetKey.isEmpty() ? Prefs.targetKey(this) : p.targetKey;
+    }
+
+    /**
+     * 「本次会跳过多少条」——必须拆开显示。
+     *
+     * <p>「跳过 120 条」对用户没有信息量：119 条已证实错误和 120 条全是没确定
+     * 是完全不同的两件事。所以这里永远分两行给出，并把「没确定的」单独标色。
+     */
+    private View planLedgerSummary(DictPlan p) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, px(8), 0, 0);
+
+        String key = p.targetKey.isEmpty() ? Prefs.targetKey(this) : p.targetKey;
+        AttemptLedger lg = AttemptLedger.load(AttemptLedger.fileFor(this, key));
+        AttemptLedger.SkipPolicy pol = AttemptLedger.SkipPolicy.of(p.skipPolicyId);
+        int proven = lg.count(AttemptLedger.Level.CONFIRMED_WRONG);
+        int undetermined = lg.countUndetermined();
+        int willSkip = lg.countSkippable(pol);
+
+        TextView a = new TextView(this);
+        a.setText(key == null || key.isEmpty()
+                ? L.s("尚未绑定目标网络：先在上面选一个 Wi-Fi",
+                "No target network bound yet")
+                : L.s("本目标记录：已证实错误 " + proven + " 条 · 没跑出结果 "
+                        + undetermined + " 条",
+                "This network: " + proven + " proven wrong · " + undetermined
+                        + " undetermined"));
+        a.setTextSize(AmberTheme.FS_SMALL);
+        a.setTextColor(TEXT_DIM);
+        box.addView(a);
+
+        TextView b = new TextView(this);
+        b.setText(L.s("本次将跳过 " + willSkip + " 条"
+                        + (p.skipPolicyId == 1 ? "（含 " + undetermined + " 条没跑出结果的）" : ""),
+                "Will skip " + willSkip + " this run"
+                        + (p.skipPolicyId == 1 ? " (incl. " + undetermined + " undetermined)" : "")));
+        b.setTextSize(AmberTheme.FS_SMALL);
+        b.setTextColor(p.skipPolicyId == 1 && undetermined > 0 ? DANGER : OK_GREEN);
+        box.addView(b);
+
+        return box;
+    }
+
+    /** 一行标题 + 副标题 + 开关。 */
+    private View planSwitch(String title, String sub, boolean on,
+                            java.util.function.Consumer<Boolean> onSet) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, px(8), 0, 0);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(AmberTheme.FS_ACTION);
+        t.setTextColor(TEXT);
+        row.addView(t, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        android.widget.Switch sw = new android.widget.Switch(this);
+        sw.setChecked(on);
+        sw.setOnCheckedChangeListener((cb, v) -> onSet.accept(v));
+        row.addView(sw);
+        box.addView(row);
+
+        TextView s = new TextView(this);
+        s.setText(sub);
+        s.setTextSize(AmberTheme.FS_SMALL);
+        s.setTextColor(TEXT_DIM);
+        box.addView(s);
+        return box;
     }
 
     /** 底部操作条上的小按钮（比 chip 更紧凑） */
@@ -632,6 +956,7 @@ public class DictActivity extends Activity {
         File dir = DictStore.defaultDir(this);
         pathLabel.setText(dir.getAbsolutePath());
         listBox.removeAllViews();
+        renderPlanCard();
 
         List<DictStore.Entry> entries = DictStore.scan(dir);
         loadRankStatsIfStale();

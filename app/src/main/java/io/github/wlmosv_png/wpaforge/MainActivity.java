@@ -213,6 +213,8 @@ public class MainActivity extends Activity {
     private TextView statWrongView;
     /** 未确定（无结论 + 网络级失败 + 推断失败）—— 绝不显示成「密码错误」。 */
     private TextView statUnkView;
+    /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
+    private TextView planLineView;
     private TextView statTotalView;      /** 总数 */
     private TextView statPctView;        /** 完成度（大数字） */
     /**
@@ -4995,6 +4997,18 @@ public class MainActivity extends Activity {
         frlp.topMargin = px(10);
         progressCard.addView(footRow, frlp);
 
+        // ── 多字典计划 / 本次跳过 ────────────────────────────────────────
+        // 「跳过」必须拆成「已证实错误」与「没跑出结果」两半显示：
+        // 只写「跳过 120 条」，用户没法判断里面有没有可能包含正确密码。
+        planLineView = new TextView(this);
+        planLineView.setTextSize(AmberTheme.FS_SMALL);
+        planLineView.setTextColor(AmberTheme.TEXT_DIM);
+        planLineView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams pllp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pllp.topMargin = px(8);
+        progressCard.addView(planLineView, pllp);
+
         finishNote = new TextView(this);
         finishNote.setTextSize(AmberTheme.FS_SMALL);
         finishNote.setTextColor(ACCENT);
@@ -6322,6 +6336,7 @@ public class MainActivity extends Activity {
                 lastTallyConfirmed = confirmed;
                 lastTallyInconclusive = inconclusive;
                 lastTallyNetAuthFail = networkAuthFail;
+                refreshPlanLine();
             });
         }
 
@@ -6771,6 +6786,30 @@ public class MainActivity extends Activity {
         g.setBounds(0, 0, (int) (getResources().getDisplayMetrics().widthPixels * p
                 - px(64)), px(3));
         return g;
+    }
+
+    /**
+     * 刷新「计划 / 本次跳过」那一行。
+     *
+     * <p>数据来自 {@code CrackService} 的只读静态快照（条数 + 一行摘要），
+     * 不含候选、口令或任何内部标识。两项都为空时整行隐藏 ——
+     * 单字典、无历史时不该多出一行噪音。
+     */
+    private void refreshPlanLine() {
+        if (planLineView == null) return;
+        String plan = CrackService.planSummary();
+        int sc = CrackService.lastSkippedConfirmed();
+        int su = CrackService.lastSkippedUndetermined();
+        StringBuilder sb = new StringBuilder();
+        if (plan != null && !plan.isEmpty()) sb.append(plan);
+        if (sc + su > 0) {
+            if (sb.length() > 0) sb.append("   ·   ");
+            sb.append(L.s("跳过 " + (sc + su) + " 条（已证实错误 " + sc
+                            + " · 没跑出结果 " + su + "）",
+                    "skipped " + (sc + su) + " (" + sc + " proven · " + su + " no result)"));
+        }
+        planLineView.setText(sb.toString());
+        planLineView.setVisibility(sb.length() == 0 ? View.GONE : View.VISIBLE);
     }
 
     /**

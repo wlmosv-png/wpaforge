@@ -4,6 +4,64 @@
 
 ---
 
+## [1.9.33] - 2026-11-02
+
+### 判定链四条硬缺陷根治 + AT3 真机证据
+
+本轮不改进攻能力，只修「判定正确性」。全部修复都先有可复现用例，再改代码。
+
+#### D4 到期裁决并入唯一 Adjudicator
+
+- **根因**：`tryOneShell` 在四种前置闸门失败时直接 `new Attempt(UNKNOWN)`，
+  不经 Adjudicator；`AttemptState.Gate` 的 STALE_CONFIG / UNREADABLE /
+  DISCONNECT_FAILED 在生产代码里**从未被构造**，规则 0 是死分支。
+  同时 `classifyDeadline` 是并行的第二套判定，且函数末尾又叠一段
+  「生命周期兜底」二次覆盖 verdict。
+- **修复**：新增 `Adjudicator.gateBlocked()`（闸门失败唯一出口，拒绝 Gate.OK）；
+  `classifyDeadline` 改为「输入翻译 → Adjudicator」；生命周期作为**入参**，
+  删除二次覆盖。规则 9 按生命周期分派（ACTIVE→INCOMPLETE，
+  其余→TIMEOUT）。
+
+#### D2 运行序号基线落盘
+
+- **根因**：runId 唯一性依赖 bootId；`boot_id` 读不到且两次进程落在同一毫秒时，
+  旧 Attempt 的 attemptId 与新 Attempt 逐字节相同 → 证据串窗。
+- **修复**：`runOrdinal` 从落盘基线续接（`Prefs.runOrdinalBase/bumpRunOrdinal`），
+  跨进程单调，不再依赖 bootId 可读性与时钟精度。
+
+#### D3 堵住「成功帧到达时 netId 未知」的假阳性通道
+
+- **根因 a**：`targetNetId` 只在前 4 轮探测（≈80ms），而 netId 在
+  connect 后 242~324ms 才出现 → 恒 -1 → SuccessRule 的冲突检查被**关闭**，
+  系统回连旧的同名配置会被判 SUCCESS。
+- **根因 b**：`currentOnTarget` 把「本条候选正在握手」误判成「旧连接残留」，
+  慢 AP 的 ACTIVE 状态被报成 UNKNOWN 而不是 INCOMPLETE。
+- **修复**：拿到 netId 之前每轮补探 + 成功帧来临时补探一次；
+  `lastLifecycle == ACTIVE` 时不算 onTargetNow。
+
+#### U3 全局判定表达唯一化
+
+- TERMINATED_UNKNOWN 与 UNKNOWN 曾共用符号 `?` → 改为 `⊘`。
+- `VerdictTally` 对 ERROR / TARGET_GONE 不再计入 executed（与 VerdictView 同口径）。
+- `inconclusiveCount()` 补齐 NETWORK_AUTH_FAIL 与 inferred ——
+  此前「无结论 N 条」漏掉这两类，结果卡会误说「这本字典里没有」。
+
+#### AT3 真机证据（不可外推）
+
+本机（OnePlus PJX110 / Android 15）实测：`TEMP-DISABLED id=` **恒为 0**，
+Android netId 每次递增（1573/1574/1575）——**两个不同 ID 空间**。
+因此 AT3 在本机不可达，失败结论稳定落在 `NETWORK_AUTH_FAIL`（不排除候选）。
+详见 `doc/AT3-DEVICE-EVIDENCE.md`。
+
+#### 测试
+
+新增 6 个测试类：`DeadlineUnifiedTest`（96 格）、`GateReachesAdjudicatorTest`、
+`D2IdentityLifecycleTest`、`D3DelayedEventTest`、`R12ExclusionResumeTest`、
+`UiVerdictGlobalTest`、`AT3DeviceEvidenceTest`。
+门禁从 3804 → **3920 通过 / 0 失败 / 140 测试类**。
+
+---
+
 ## [1.9.32] - 2026-11-01
 
 ### 证据强度模型：失败结论分级，正确密码不再被一次误判永久锁死

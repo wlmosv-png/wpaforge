@@ -71,8 +71,10 @@ public final class P1SuccessNarrativeTest {
         // 「连接已终止」只属于 TERMINATED_UNKNOWN
         String termDesc = VerdictView.description(CrackEngine.Verdict.TERMINATED_UNKNOWN);
         info("Q2 TERMINATED_UNKNOWN 说明: " + termDesc);
-        ok("Q2 「连接已终止」只出现在 TERMINATED_UNKNOWN 的说明里",
-                termDesc.contains("连接已终止"), termDesc);
+        // P1b：该措辞已从全部结论里移除（连 TERMINATED_UNKNOWN 也不再说
+        // 「连接已终止」—— 它描述的是底层生命周期，不是用户该看到的结论）。
+        ok("Q2 TERMINATED_UNKNOWN 也不再用「连接已终止」（改用「没连上目标」）",
+                !termDesc.contains("连接已终止") && termDesc.contains("没连上"), termDesc);
         int otherHits = 0;
         for (CrackEngine.Verdict v : CrackEngine.Verdict.values()) {
             if (v == CrackEngine.Verdict.TERMINATED_UNKNOWN) continue;

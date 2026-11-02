@@ -54,7 +54,12 @@ public final class VerdictDownstreamTest {
                 !tInc.equals(tTerm) && !tTerm.equals(tUnk) && !tInc.equals(tUnk),
                 tInc + " | " + tTerm + " | " + tUnk);
         ok("INCOMPLETE 标签暗示「可继续」（含 续）", tInc.contains("续"), tInc);
-        ok("TERMINATED_UNKNOWN 标签暗示「已终止」（含 终）", tTerm.contains("终"), tTerm);
+        // P1b：标签从「连接终止」改为「未证实」。
+        // 理由：用户把「终止」读成「网络故障 / 密码错」，而这条结论的真实含义是
+        // 「本次没连上，但没证据证明密码对错」。断言跟着语义走，不是跟着字面。
+        ok("TERMINATED_UNKNOWN 标签表达「未证实」（含 未）", tTerm.contains("未"), tTerm);
+        ok("TERMINATED_UNKNOWN 标签不再说「终止」（避免误读为网络故障）",
+                !tTerm.contains("终"), tTerm);
 
         // ---------------------------------------------------------- 2) 分级
         int badGrade = 0;

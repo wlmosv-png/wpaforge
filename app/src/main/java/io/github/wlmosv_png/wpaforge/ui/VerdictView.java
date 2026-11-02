@@ -70,7 +70,9 @@ public final class VerdictView {
             case NETWORK_AUTH_FAIL: return "网络认证失败";
             case TIMEOUT: return "超时";
             case INCOMPLETE: return "未收敛";
-            case TERMINATED_UNKNOWN: return "连接终止";
+            // P1b：原为「连接终止」—— 用户读成「网络断了 / 软件连不上」。
+            // 真实含义是「本次尝试已结束，但没拿到能证明密码对错的证据」。
+            case TERMINATED_UNKNOWN: return "未证实";
             case UNKNOWN: return "不确定";
             case ERROR: return "通道异常";
             case ABORTED: return "已中断";
@@ -100,7 +102,13 @@ public final class VerdictView {
             case INCOMPLETE:
                 return "连接还在进行，只是等不下去了 —— 稍后可能成功";
             case TERMINATED_UNKNOWN:
-                return "连接已终止，但原因无法归因（不等于密码错误）";
+                // P1b：原文案「连接已终止，但原因无法归因（不等于密码错误）」——
+                // 「连接已终止」是**底层生命周期**的措辞，用户会读成「网络出故障」，
+                // 甚至「密码错了」。这里改成用户真正需要知道的三件事：
+                //   ① 这条候选没连上目标（事实）
+                //   ② 但没拿到证据证明密码错（不误伤）
+                //   ③ 下次会重试（可行动）
+                return "本次没连上目标，但没有证据证明这条密码错了 —— 下次会重试";
             case UNKNOWN:
                 return "无法确认结论（状态读不到或归属不明）";
             case ERROR:

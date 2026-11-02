@@ -682,7 +682,12 @@ public final class CrackEngine {
             // 「连接还在跑、可以重新裁决」与「连接已终止但无归因」在界面上
             // 和真正的未知混成一个符号，用户看不出该不该重试。三种必须分开。
             case INCOMPLETE: return pw + "=…续";        // 未收敛，可重新裁决
-            case TERMINATED_UNKNOWN: return pw + "=…终"; // 已终止，无归因证据
+            // P1b：原为 "=…终" —— 「终」被用户读成「连接断了 / 密码错了」。
+            // 实际是「本次没连上，但没有证据证明密码对错」。同时**必须带出来源**
+            // （failover / m1retry / wpalog），否则几十条相同的「未证实」在日志里
+            // 无法区分是哪一层判的，也就不可能排查。
+            case TERMINATED_UNKNOWN: return pw + "=未证实"
+                    + (by == null || by.isEmpty() ? "" : by);
             case UNKNOWN: return pw + "=?未定";          // 归属/状态不明确
             case TARGET_GONE: return pw + "=目标不在";
             // 归因码优先：ERROR 类里既有"通道出错"，也有"候选不合法/未尝试"，
@@ -3312,6 +3317,16 @@ public final class CrackEngine {
      * 而实际上有 8 条根本没被证伪、下次还会重试。
      * 现在统一由本方法给出「未证伪总数」，UI 与 {@code missProven()} 同口径。
      */
+    /**
+     * 本轮**网络级**认证失败条数（D1 独立分类）。
+     *
+     * <p>它不是「这条候选错了」，也不是「没结论」—— 是「环境里发生了认证失败」。
+     * UI 用它做独立表达（真机实测：错误密码下系统回连其它网络会稳定产生这类事件）。
+     */
+    public int networkAuthFailCount() {
+        return tally.networkAuthFail();
+    }
+
     public int inconclusiveCount() {
         return tally.inconclusive() + tally.networkAuthFail() + tally.inferred();
     }

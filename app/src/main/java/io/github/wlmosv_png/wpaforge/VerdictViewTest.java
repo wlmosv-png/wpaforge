@@ -86,8 +86,12 @@ public final class VerdictViewTest {
         ok("INCOMPLETE 的说明明确写「稍后可能成功」",
                 inc.contains("稍后可能成功"), inc);
         String term = VerdictView.description(CrackEngine.Verdict.TERMINATED_UNKNOWN);
-        ok("TERMINATED_UNKNOWN 的说明明确写「不等于密码错误」",
-                term.contains("不等于密码错误"), term);
+        // P1b：文案改写后仍必须传达同一件事（这条结论**不是**密码错误），
+        // 只是措辞从「不等于密码错误」换成用户更容易懂的说法。
+        ok("TERMINATED_UNKNOWN 的说明明确排除「密码错误」",
+                term.contains("没有证据证明") || term.contains("不等于密码错误"), term);
+        ok("TERMINATED_UNKNOWN 的说明给出下一步（会重试）",
+                term.contains("重试"), term);
 
         // ---------------------------------------------------------- 3) 与引擎口径一致
         System.out.println();

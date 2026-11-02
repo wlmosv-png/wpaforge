@@ -109,13 +109,17 @@ public class R3VerdictTest {
             combos++;
             if (o.verdict == CrackEngine.Verdict.AUTH_FAIL) authFail++;
             if (o.verdict == CrackEngine.Verdict.SUCCESS) success++;
+            // D4：TIMEOUT 必须且只能来自「零观察」那一种组合（reason=no-evidence）。
+            // 结构上不再要求「整个 32 格里只有一种 TIMEOUT」—— 因为零观察一格会按
+            // 生命周期分派（ACTIVE->INCOMPLETE，其余->TIMEOUT），
+            // 真实的硬约束是「TIMEOUT 的理由码只能是 no-evidence」。
             if (o.verdict == CrackEngine.Verdict.TIMEOUT && !(o.reason.equals("no-evidence"))) timeoutNonEmpty++;
             if (o.reason == null || o.reason.isEmpty()) missingReason++;
         }
         eq("穷举组合数 = 32", 32, combos);
         eq("**没有任何组合**产出 AUTH_FAIL（无归因证据不得判失败）", 0, authFail);
         eq("没有任何组合产出 SUCCESS（到期不是成功路径）", 0, success);
-        eq("TIMEOUT 只出现在「全无证据」一种组合", 0, timeoutNonEmpty);
+        eq("TIMEOUT 的理由码只能是 no-evidence", 0, timeoutNonEmpty);
         eq("每种组合都有理由码", 0, missingReason);
 
         System.out.println("== R3-6 窗口切片：陈旧行不得归因（审计 S3-2/S6-2）==");

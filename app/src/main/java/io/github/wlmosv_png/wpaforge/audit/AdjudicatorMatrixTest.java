@@ -143,14 +143,35 @@ public final class AdjudicatorMatrixTest {
         // ---------------------------------------------------------- 无证据
         System.out.println();
         System.out.println("-- 无证据 --");
+        // D4 之后本条按生命周期分派（规则 9）：
+        //   ACTIVE     -> INCOMPLETE（窗口结束但连接还在跑，可重新裁决）
+        //   TERMINATED -> TIMEOUT（窗口结束且连接已终止，无任何可归属证据）
+        //   UNKNOWN    -> TIMEOUT（状态读不到，同样没有可归属证据）
+        // 三者的**共同下限**是不产 AUTH_FAIL、等级 NONE（不可永久排除）。
         Adjudicator.Result none = Adjudicator.adjudicate(ok2, new ArrayList<Evidence>());
-        info("空证据 -> " + none);
-        ok("无证据 -> TIMEOUT / NONE（不是 AUTH_FAIL）",
-                none.verdict == CrackEngine.Verdict.TIMEOUT
+        info("空证据(ACTIVE) -> " + none);
+        ok("无证据 + 连接 ACTIVE -> INCOMPLETE / NONE（可重新裁决）",
+                none.verdict == CrackEngine.Verdict.INCOMPLETE
                         && none.grade == EvidenceGrade.Level.NONE, none.toString());
         Adjudicator.Result nullList = Adjudicator.adjudicate(ok2, null);
-        ok("证据集合为 null 时安全（不抛、不误判）",
-                nullList.verdict == CrackEngine.Verdict.TIMEOUT, nullList.toString());
+        ok("证据集合为 null 时安全（不抛、不误判，且与空列表同结论）",
+                nullList.verdict == none.verdict, nullList.toString());
+
+        Adjudicator.Result noneTerm = Adjudicator.adjudicate(
+                st(AttemptState.Gate.OK, CrackEngine.Lifecycle.TERMINATED),
+                new ArrayList<Evidence>());
+        ok("无证据 + 连接 TERMINATED -> TIMEOUT / NONE",
+                noneTerm.verdict == CrackEngine.Verdict.TIMEOUT
+                        && noneTerm.grade == EvidenceGrade.Level.NONE, noneTerm.toString());
+        Adjudicator.Result noneUnk = Adjudicator.adjudicate(
+                st(AttemptState.Gate.OK, CrackEngine.Lifecycle.UNKNOWN),
+                new ArrayList<Evidence>());
+        ok("无证据 + 连接状态未知 -> TIMEOUT / NONE",
+                noneUnk.verdict == CrackEngine.Verdict.TIMEOUT, noneUnk.toString());
+        ok("无证据家族永不产 AUTH_FAIL",
+                none.verdict != CrackEngine.Verdict.AUTH_FAIL
+                        && noneTerm.verdict != CrackEngine.Verdict.AUTH_FAIL
+                        && noneUnk.verdict != CrackEngine.Verdict.AUTH_FAIL, "violated");
         Adjudicator.Result nullState = Adjudicator.adjudicate(null, null);
         ok("AttemptState 为 null 时安全降级为 TIMEOUT/UNKNOWN 类，不抛",
                 nullState.verdict != CrackEngine.Verdict.SUCCESS, nullState.toString());

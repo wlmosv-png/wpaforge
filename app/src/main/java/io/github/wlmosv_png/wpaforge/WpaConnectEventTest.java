@@ -278,8 +278,18 @@ public final class WpaConnectEventTest {
             String src = new String(java.nio.file.Files.readAllBytes(
                     new java.io.File(TestPaths.javaPkgDir() + "audit/CrackEngine.java").toPath()),
                     java.nio.charset.StandardCharsets.UTF_8);
+            // D4：到期归类已并入 Adjudicator，原「五分支 if 链」形状不复存在。
+            // 本守卫改为守**新契约**的三个可执行形状：
+            //   ① 成功判定仍只走 SuccessRule（未被本次改动触碰）
+            //   ② classifyDeadline 内部改为调用 Adjudicator.adjudicate
+            //   ③ 生命周期作为**入参**参与裁决（而不是事后覆盖 verdict）
+            // 原断言 `if (onTargetNow) return new DeadlineOutcome(Verdict.UNKNOWN,`
+            // 是 D4 明确要删掉的那套第二判定，继续守它等于禁止修复本身。
             return src.contains("SuccessRule.assess(target.ssid, info.ssid,")
-                    && src.contains("if (onTargetNow) return new DeadlineOutcome(Verdict.UNKNOWN,");
+                    && src.contains("Adjudicator.Result r = Adjudicator.adjudicate(st,")
+                    && src.contains("boolean statusShowsTarget,")
+                    && src.contains("Lifecycle lifecycle)")
+                    && !src.contains("boolean lifecycleActiveAtEnd");
         } catch (Throwable t) {
             return false;
         }

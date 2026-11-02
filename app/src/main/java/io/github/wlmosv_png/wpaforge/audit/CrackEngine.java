@@ -712,12 +712,125 @@ public final class CrackEngine {
                                                    boolean suspectNetIdConflict,
                                                    boolean channelDead,
                                                    boolean statusShowsTarget) {
-        if (notAttempted) return new DeadlineOutcome(Verdict.ERROR, "not-attempted");
-        if (onTargetNow) return new DeadlineOutcome(Verdict.UNKNOWN, "on-target-unattributed");
-        if (suspectNetIdConflict) return new DeadlineOutcome(Verdict.UNKNOWN, "netid-conflict");
-        if (channelDead) return new DeadlineOutcome(Verdict.UNKNOWN, "channel-no-response");
-        if (statusShowsTarget) return new DeadlineOutcome(Verdict.UNKNOWN, "status-unclear");
-        return new DeadlineOutcome(Verdict.TIMEOUT, "no-evidence");
+        return classifyDeadline(notAttempted, onTargetNow, suspectNetIdConflict,
+                channelDead, statusShowsTarget, Lifecycle.UNKNOWN);
+    }
+
+    /**
+     * 到期归类（**D4：实现已并入 {@link Adjudicator}**）。
+     *
+     * <h3>为什么必须合并</h3>
+     * 修复前这里是**第二套判定**：五分支 if 链独立于 {@link Adjudicator} 产生
+     * Verdict，而 {@code tryOneShell} 拿到结果后又在下方叠一段「生命周期兜底」
+     * 把 UNKNOWN/TIMEOUT 覆盖成 INCOMPLETE。两张表先后执行、后者覆盖前者：
+     * <pre>
+     *   连接仍 ACTIVE + 无证据   -> 本函数 TIMEOUT -> 兜底 -> INCOMPLETE
+     *   连接已 TERMINATED + 无证据 -> 本函数 TIMEOUT -> 不动 -> TIMEOUT
+     *   连接状态读不到 + 无证据    -> 本函数 TIMEOUT -> 不动 -> TIMEOUT
+     * </pre>
+     * 后两行在最终结果里**完全一样**，而 {@link Adjudicator} 对它们有明确区分
+     * （{@code TERMINATED_UNKNOWN} vs {@code UNKNOWN}）。同一个「到期」事实
+     * 有两份答案，其中一份不认识 {@link AttemptState}，也不认识 {@link Evidence}。
+     *
+     * <p>现在本函数只做**输入翻译**：把五个布尔 + 生命周期翻译成一个
+     * {@link AttemptState} 与一条 {@link Evidence}，结论仍然只由
+     * {@link Adjudicator} 产生。签名保持不变（既有测试与
+     * {@code R3AuditProbe} 依赖它），因此它是「同一判定核心的另一种调用形状」，
+     * 而不是并行的第二套逻辑。
+     *
+     * <h3>翻译规则（逐条可核）</h3>
+     * <table>
+     *   <tr><th>输入</th><th>翻译成</th><th>裁决结果</th></tr>
+     *   <tr><td>{@code notAttempted}</td><td>证据 NOT_CONNECTED + 闸门 UNREADABLE</td>
+     *       <td>UNKNOWN（本函数再改写成 ERROR —— 见下）</td></tr>
+     *   <tr><td>{@code channelDead}</td><td>证据 NOT_CONNECTED + 闸门 UNREADABLE</td>
+     *       <td>UNKNOWN / channel-no-response</td></tr>
+     *   <tr><td>{@code onTargetNow} / {@code netid-conflict} / {@code status-unclear}</td>
+     *       <td>证据 CONNECTED + 归属 NONE（**不可归属**）</td>
+     *       <td>UNKNOWN / on-target-unattributed</td></tr>
+     *   <tr><td>以上都不成立</td><td>证据 NOT_CONNECTED + 归属 NONE</td>
+     *       <td>按生命周期：ACTIVE→INCOMPLETE，TERMINATED→TERMINATED_UNKNOWN，
+     *           UNKNOWN→UNKNOWN</td></tr>
+     * </table>
+     *
+     * <p><b>{@code notAttempted} 为什么仍返回 ERROR</b>：那不是「结论 unknown」，
+     * 而是「这条候选根本没被执行」（框架没建出配置 / connect 命令被静默丢弃）。
+     * ERROR 在 {@code VerdictTally} / {@code VerdictView} 里都不算「试过」，
+     * 语义与 UNKNOWN（试过但没结论）不同。这条映射**只在这里**发生一次，
+     * 属于「同一核心 + 明确的业务改写」，不是并行判定。
+     *
+     * @param lifecycle 到期时的连接生命周期三态（{@code null} 视为 UNKNOWN）
+     */
+    public static DeadlineOutcome classifyDeadline(boolean notAttempted, boolean onTargetNow,
+                                                   boolean suspectNetIdConflict,
+                                                   boolean channelDead,
+                                                   boolean statusShowsTarget,
+                                                   Lifecycle lifecycle) {
+        Lifecycle lc = lifecycle == null ? Lifecycle.UNKNOWN : lifecycle;
+
+        // ---- 输入翻译：闸门 ----
+        AttemptState.Gate gate = AttemptState.Gate.OK;
+        if (notAttempted || channelDead) {
+            // 命令没生效 / 通道不响应 -> 前置状态不可确认，规则 0 直接切掉。
+            gate = AttemptState.Gate.UNREADABLE;
+        }
+
+        // ---- 输入翻译：证据 ----
+        Evidence.Claim claim;
+        Evidence.Attribution attr = Evidence.Attribution.NONE;
+        String reasonOverride = null;
+        if (notAttempted) {
+            claim = Evidence.Claim.NOT_CONNECTED;
+            reasonOverride = "not-attempted";
+        } else if (onTargetNow) {
+            // 「现在连着目标」但拿不到本次归属 -> CONNECTED + NONE。
+            // Adjudicator 规则 2 会给出 UNKNOWN（既不当成功也不当失败）。
+            claim = Evidence.Claim.CONNECTED;
+            reasonOverride = "on-target-unattributed";
+        } else if (suspectNetIdConflict) {
+            claim = Evidence.Claim.CONNECTED;
+            reasonOverride = "netid-conflict";
+        } else if (channelDead) {
+            claim = Evidence.Claim.NOT_CONNECTED;
+            reasonOverride = "channel-no-response";
+        } else if (statusShowsTarget) {
+            claim = Evidence.Claim.CONNECTED;
+            reasonOverride = "status-unclear";
+        } else {
+            claim = Evidence.Claim.NOT_CONNECTED;
+        }
+
+        // 归属：本函数的证据**没有 attemptId 可绑**（它描述的是「窗口结束时的整体
+        // 观察」，不是某一条被标记的日志行）。Adjudicator 会丢弃未归属证据 ——
+        // 这里必须给一个**非空且与本状态相同**的占位 id，否则每条证据都会被
+        // 当成「别人的」丢掉，规则 1~8 全部退化到规则 9（TIMEOUT）。
+        // 这个占位 id 不会外泄：它不写进 Attempt，也不参与任何持久化。
+        final String selfAid = "deadline-window";
+        AttemptState st = new AttemptState(selfAid, lc, gate, false);
+        // 五个输入全为假 = 观察窗口结束了、**什么都没观察到**。
+        // 这时必须传**空证据列表**，才能命中 Adjudicator 规则 9 的 TIMEOUT
+        // （"no-evidence"）。若塞一条 NOT_CONNECTED，就会落到规则 8 变成 UNKNOWN ——
+        // 那会把「等满时限、毫无观察」错报成「观察到连接状态不明」，两种事实不同。
+        java.util.List<Evidence> evs;
+        if (!notAttempted && !onTargetNow && !suspectNetIdConflict
+                && !channelDead && !statusShowsTarget) {
+            evs = java.util.Collections.emptyList();
+        } else {
+            evs = java.util.Collections.singletonList(
+                    new Evidence(Evidence.Source.SUCCESS_STATUS, claim, attr, selfAid, 0L));
+        }
+        Adjudicator.Result r = Adjudicator.adjudicate(st, evs);
+
+        Verdict v = r.verdict;
+        // 业务改写（唯一一处）：命令没生效 -> ERROR，不是「试过但无结论」。
+        if (notAttempted) {
+            v = Verdict.ERROR;
+        }
+        String reason = reasonOverride != null ? reasonOverride : r.reason;
+        if (reason == null || reason.isEmpty()) {
+            reason = r.reason == null ? "" : r.reason;
+        }
+        return new DeadlineOutcome(v, reason);
     }
 
     /**
@@ -1538,11 +1651,11 @@ public final class CrackEngine {
         // 每条之前删净旧配置（配置复用会让任何密码都"成功"）。
         // 走引擎自带实现，保证各调用方行为一致。
         if (!forgetTargetByShell(target.ssid)) {
-            return new Attempt(password, Verdict.UNKNOWN,
-                    clock().uptimeMillis() - t0,
+            // D4：闸门失败也必须经 Adjudicator（规则 0），不再直造 UNKNOWN。
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.STALE_CONFIG, clock().uptimeMillis() - t0,
                     L.s("无法清除旧配置，本条结果不可信",
-                        "could not clear stale config; this attempt is unreliable"),
-                    "");
+                        "could not clear stale config; this attempt is unreliable"));
         }
 
         // **净检：确认目标配置真的没了**。
@@ -1555,12 +1668,11 @@ public final class CrackEngine {
         // 可信结论 —— 直接判 UNKNOWN，不让它污染结果。
         long staleNetId = netIdOfTarget(target.ssid);
         if (staleNetId >= 0) {
-            return new Attempt(password, Verdict.UNKNOWN,
-                    clock().uptimeMillis() - t0,
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.STALE_CONFIG, clock().uptimeMillis() - t0,
                     L.s("旧配置未清除（netId=" + staleNetId + "），本条结果不可信",
                         "stale config not cleared (netId=" + staleNetId
-                                + "); this attempt is unreliable"),
-                    "");
+                                + "); this attempt is unreliable"));
         }
 
         // **如果上一条已经连上了目标，必须先真正断开**。
@@ -1609,12 +1721,11 @@ public final class CrackEngine {
             // 两侧都读不到 -> 无法确认系统是否还挂着目标配置。
             // 绝不能按「干净」放行：若此刻系统仍连着目标，命令后四条件会立刻成立，
             // 把任意候选误判成命中。
-            return new Attempt(password, Verdict.UNKNOWN,
-                    clock().uptimeMillis() - t0,
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.UNREADABLE, clock().uptimeMillis() - t0,
                     L.s("无法确认命令前的连接状态（status 与 list-networks 都读不到），本条结果不可信",
                         "pre-command link state unknown (status and list-networks both unreadable); "
-                                + "this attempt is unreliable"),
-                    "");
+                                + "this attempt is unreliable"));
         }
         if (bl == Baseline.DECIDE_LINKED) {
             if (linkedByNetId && !linkedBySsid) {
@@ -1622,11 +1733,10 @@ public final class CrackEngine {
             }
             boolean off = disconnectAndVerify(target.ssid);
             if (!off) {
-                return new Attempt(password, Verdict.UNKNOWN,
-                        clock().uptimeMillis() - t0,
+                return Adjudicator.gateBlocked(password, attemptId,
+                        AttemptState.Gate.DISCONNECT_FAILED, clock().uptimeMillis() - t0,
                         L.s("上一条的连接未能断开，本条判定不可信",
-                            "previous link could not be dropped; this attempt is unreliable"),
-                        "");
+                            "previous link could not be dropped; this attempt is unreliable"));
             }
         }
 
@@ -2416,13 +2526,15 @@ public final class CrackEngine {
         //   · 到期且无证据    → TIMEOUT（观察窗口结束，没有明确结论）
         // 旧实现在最后一种情形返回 AUTH_FAIL —— 那是把「没有成功证据」当成
         // 「失败已被证明」，是本次修复的核心根因之一。
+        // D4：生命周期**作为输入**交给统一裁决，不再拿到结果后二次覆盖。
         DeadlineOutcome out = classifyDeadline(
                 targetNetId < 0 && !sawAttempt && channelAlive,          // 命令未生效
                 currentOnTarget,
                 suspectNetIdConflict,
                 !sawAttempt && !channelAlive,                            // 通道无响应
                 !sawAttempt && channelAlive && lastStatusSsid != null
-                        && target.ssid.equals(lastStatusSsid));
+                        && target.ssid.equals(lastStatusSsid),
+                lastLifecycle);
 
         String detail;
         if ("not-attempted".equals(out.reason)) {
@@ -2471,29 +2583,18 @@ public final class CrackEngine {
         Verdict verdict = out.verdict;
 
         /*
-         * ---- 循环末统一生命周期兜底（B2）----
+         * D4：**这里不再有第二套「生命周期兜底」**。
          *
-         * 缺陷（2026-11-02 真机形态复现，慢速 AP）：正确密码 + AP 慢时，观察窗口结束时
-         * status 仍是 FOUR_WAY_HANDSHAKE（连接**仍在进行**），但
-         *   · 日志支B 没命中（日志不含 4-Way failed / assoc-reject 的机型很常见）
-         *   · 于是走 classifyDeadline 的默认分支 -> UNKNOWN
-         * 结论：把一条「连接还在跑、完全可能马上成功」的候选报成「没结论」。
-         * UNKNOWN 与 INCOMPLETE 在持久化上等价（都不写盘），但语义差一层：
-         * **INCOMPLETE 明确表示「这条可以重新裁决」**，UI/续跑据此决定是否再看一眼。
+         * 旧实现对 classifyDeadline 的结果再覆盖一次 UNKNOWN/TIMEOUT -> INCOMPLETE，
+         * 等于在同一函数里放了两张判定表。现在生命周期是 classifyDeadline 的
+         * **输入**（见上面的调用），"连接仍 ACTIVE -> INCOMPLETE" 由
+         * {@link Adjudicator} 规则 6 直接产出，不存在第二处覆盖点。
          *
-         * 归属保护：只有**确认连接仍在推进**（ACTIVE）才升级，且排除
-         *   · not-attempted     —— 命令没生效，跟目标连接无关
-         *   · channel-no-response —— 命令通道不响应，状态本来就不可信
-         * 这两种情况 lastLifecycle 往往是陈旧值，不能拿它下结论。
+         * 保留的只是**判词**补充（不改 verdict）：
          */
-        boolean lifecycleActiveAtEnd = lastLifecycle == Lifecycle.ACTIVE
-                && (verdict == Verdict.UNKNOWN || verdict == Verdict.TIMEOUT)
-                && !"not-attempted".equals(out.reason)
-                && !"channel-no-response".equals(out.reason);
-        if (lifecycleActiveAtEnd) {
+        if (verdict == Verdict.INCOMPLETE) {
             android.util.Log.i(TAG, "循环结束：连接仍在进行(" + lastStatusState
-                    + ") -> 升级为 INCOMPLETE（可重新裁决）");
-            verdict = Verdict.INCOMPLETE;
+                    + ") -> INCOMPLETE（可重新裁决）");
             detail = L.s("观察窗口结束，但目标连接仍在进行（未收敛）—— 可重新裁决",
                     "observation window ended while the target connection was still in "
                             + "progress - re-adjudicable")

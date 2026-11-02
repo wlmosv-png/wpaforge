@@ -78,6 +78,42 @@ public final class Adjudicator {
     }
 
     /**
+     * **前置闸门未通过时的唯一裁决出口**（D4）。
+     *
+     * <p>修复前，{@code CrackEngine.tryOneShell} 在四种前置闸门失败时
+     * 直接 {@code new Attempt(password, Verdict.UNKNOWN, ...)} —— 不产生
+     * {@link Evidence}、不经过本类。于是 {@link AttemptState.Gate} 的
+     * {@code STALE_CONFIG} / {@code UNREADABLE} / {@code DISCONNECT_FAILED}
+     * 三个值在生产代码里**从未被构造**，规则 0 是一段死代码，
+     * 而矩阵测试却把 4 种闸门全部跑了一遍（测的是不存在的输入维度）。
+     *
+     * <p>现在闸门失败也必须走这里：传真实 {@code gate} + 空证据，
+     * 由规则 0 一次性裁成 {@code UNKNOWN / NONE}，{@code reason = gate-<name>}。
+     * 调用方只负责给人为可读文案，不再自己决定结论。
+     *
+     * @param attemptId 本条尝试标识（可为空，闸门失败时归属无意义）
+     * @param gate      真实的失败闸门（**不得传 {@code OK}**）
+     * @param elapsedMs 本条耗时
+     * @param humanDetail 人为可读补充（沿用既有判词口径）
+     * @return 终局 Attempt（verdict=UNKNOWN, grade=NONE）
+     * @throws IllegalArgumentException gate 为 {@code OK} 或 {@code null} 时
+     *         —— 那是「没有闸门失败」，必须走 {@link #adjudicate} 正常路径
+     */
+    public static CrackEngine.Attempt gateBlocked(String password, String attemptId,
+                                                  AttemptState.Gate gate, long elapsedMs,
+                                                  String humanDetail) {
+        if (gate == null || gate == AttemptState.Gate.OK) {
+            throw new IllegalArgumentException(
+                    "gateBlocked() 只能用于闸门失败（STALE_CONFIG/UNREADABLE/"
+                            + "DISCONNECT_FAILED），收到 " + gate);
+        }
+        AttemptState st = new AttemptState(attemptId,
+                CrackEngine.Lifecycle.UNKNOWN, gate, false);
+        Result r = adjudicate(st, java.util.Collections.<Evidence>emptyList());
+        return toAttempt(password, r, elapsedMs, humanDetail);
+    }
+
+    /**
      * 裁决一次尝试。
      *
      * @param st        尝试状态（生命周期 + 前置闸门）
@@ -195,10 +231,30 @@ public final class Adjudicator {
             }
         }
 
-        // ---- 规则 9：什么证据都没有 ----
-        return new Result(CrackEngine.Verdict.TIMEOUT, EvidenceGrade.Level.NONE,
-                "no-evidence", null,
-                "observation window ended with no attributable evidence");
+        // ---- 规则 9：观察窗口结束，但没有任何可归属证据 ----
+        //
+        // D4：这里必须**再按生命周期分一次**。修复前它无条件返回 TIMEOUT，
+        // 于是「连接仍在握手」与「连接已终止」这两种截然不同的事实
+        // 都被报成同一个 TIMEOUT —— 而调用方（tryOneShell）只好在函数外面
+        // 再叠一段「生命周期兜底」把 UNKNOWN/TIMEOUT 改写成 INCOMPLETE，
+        // 形成第二套判定表。现在分派留在这里，调用方不再需要二次覆盖。
+        switch (state.lifecycle) {
+            case ACTIVE:
+                return new Result(CrackEngine.Verdict.INCOMPLETE, EvidenceGrade.Level.NONE,
+                        "no-evidence-active", null,
+                        "observation window ended with no attributable evidence, "
+                                + "but the connection is still in progress (re-adjudicable)");
+            case TERMINATED:
+                return new Result(CrackEngine.Verdict.TIMEOUT, EvidenceGrade.Level.NONE,
+                        "no-evidence", null,
+                        "observation window ended with no attributable evidence "
+                                + "and the connection is terminated");
+            default:
+                return new Result(CrackEngine.Verdict.TIMEOUT, EvidenceGrade.Level.NONE,
+                        "no-evidence", null,
+                        "observation window ended with no attributable evidence "
+                                + "(connection state unknown)");
+        }
     }
 
     private static int rank(Evidence.Attribution a) {

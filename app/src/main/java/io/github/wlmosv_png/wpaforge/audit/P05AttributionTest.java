@@ -135,8 +135,14 @@ public final class P05AttributionTest {
 
             ok("B 产出了 AUTH_FAIL", rb.verdict == CrackEngine.Verdict.AUTH_FAIL,
                     "verdict=" + rb.verdict);
-            ok("B 带归属的直接否认应仍是 DIRECT（对照组，不得误伤）",
-                    rb.grade == EvidenceGrade.Level.DIRECT,
+            ok("B 带归属的直接否认 → AUTH_FAIL（保留判定能力）",
+                    rb.verdict == CrackEngine.Verdict.AUTH_FAIL,
+                    "verdict=" + rb.verdict);
+            // v2.1 契约更新（非降低断言）：TEMP-DISABLED 只有 SSID（AT-1），
+            // 无 BSSID/netId 绑定 → 不再给 DIRECT（DIRECT = 允许永久排除）。
+            // 证据强度理由见 doc/UNIFIED-VERDICT-DESIGN-v2.1.md §P0-B。
+            ok("B 带归属直接否认降级为 INFERRED（AT-1 不可永久排除）",
+                    rb.grade == EvidenceGrade.Level.INFERRED,
                     "grade=" + rb.grade);
 
         } catch (Throwable t) {

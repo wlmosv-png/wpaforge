@@ -72,6 +72,16 @@ public final class CrackEngine {
         /** 超时，没等到结论 → **不判成功** */
         TIMEOUT,
         /**
+         * 观察期限结束，但**连接仍处于活动状态**（关联/认证/取 IP 中）。
+         *
+         * <p>与 {@link #TIMEOUT} 的区别：TIMEOUT = 连接已终止且无结论；
+         * INCOMPLETE = 连接**还没结束**，只是我们等不下去了。
+         *
+         * <p>语义（强制）：**不写 triedSet、不推进 cursor、不永久排除候选**；
+         * 它是**可更新快照** —— 后续到达的成功/失败证据可以重新裁决同一 Attempt。
+         */
+        INCOMPLETE,
+        /**
          * 目标不在扫描范围 → 这条无意义。
          *
          * <p><b>当前没有生产出口</b>（历史遗留，仅测试引用）。保留是因为枚举是
@@ -659,6 +669,34 @@ public final class CrackEngine {
      * @param basePerItem 基准单发时限（毫秒）
      * @return 本条候选应使用的单发时限
      */
+    /**
+     * 连接是否**仍处于活动状态**（v2.1 新增，纯函数可测）。
+     *
+     * <p>用于区分「观察期限到」的两种含义：
+     * <ul>
+     *   <li>连接**仍活动**（ASSOCIATING/AUTHENTICATING/FOUR_WAY_HANDSHAKE/GROUP_HANDSHAKE，
+     *       或 COMPLETED 但还没 IP）→ 观察期只是"等不下去"，**不得判密码错** → INCOMPLETE；</li>
+     *   <li>连接**已终止**（DISCONNECTED/INACTIVE/状态缺失）→ 可走 TIMEOUT/既有裁决。</li>
+     * </ul>
+     *
+     * <p><b>为什么必须有它</b>：真实事故（2026-11-02，ASSOCIATING 期间）——
+     * 弱失败日志在连接还活着时就把候选判成 AUTH_FAIL。
+     */
+    public static boolean connectionStillActive(String supplicantState) {
+        if (supplicantState == null || supplicantState.isEmpty()) return false;
+        String st = supplicantState.toUpperCase(java.util.Locale.ROOT);
+        switch (st) {
+            case "ASSOCIATING":
+            case "AUTHENTICATING":
+            case "FOUR_WAY_HANDSHAKE":
+            case "GROUP_HANDSHAKE":
+            case "SCANNING":
+                return true;
+            default:
+                return false;   // DISCONNECTED / INACTIVE / COMPLETED(另有成功判据) / 其它
+        }
+    }
+
     public static long adaptiveWindow(int noEvidence, long basePerItem) {
         if (noEvidence >= TRIM_AFTER_NO_EVIDENCE) {
             return Math.min(basePerItem, WINDOW_TRIMMED_MS);
@@ -1488,6 +1526,8 @@ public final class CrackEngine {
         // 「密码错」和「通道死」区分开，不再一律 UNKNOWN。
         boolean channelAlive = false;
         String lastStatusSsid = null;
+        /** 循环内最后一次读到的 supplicant state（供"连接是否仍活动"判定用）。 */
+        String lastStatusState = null;
         // 分层证据记录（结束时不命中就逐层打印，让用户看清卡在哪一层）
         int logRounds = 0, statusRounds = 0;
         int logRound = 0;
@@ -1601,6 +1641,7 @@ public final class CrackEngine {
                 statusRounds++;
                 SupplicantParser.Info info = SupplicantParser.parse(st);
                 lastStatusSsid = info.ssid;
+                lastStatusState = info.state;
 
                 // 记录「目标是否进入过握手」——用于区分「密码错」和「根本没试」
                 if (!sawAttempt && target.ssid.equals(info.ssid)
@@ -1965,7 +2006,12 @@ public final class CrackEngine {
                                 L.s("日志显示握手失败（密码错误）",
                                     "log shows handshake failure (wrong passphrase)"),
                                 "wpalog");
-                        wl.grade = EvidenceGrade.Level.DIRECT;
+                        // 归属等级修正（v2.1）：TEMP-DISABLED 只有 SSID（+有序+失败前导），
+                        // 属 **AT-1** —— 无 BSSID / 无 netId 绑定。
+                        // 按「AT-3 × AP-3 才可永久排除」原则，**降为 INFERRED**：
+                        // 本轮可判 AUTH_FAIL（保留判定能力），但**不写 triedSet、不推 cursor**。
+                        // 代价：错误密码不再被永久排除（续跑会重试）—— 正确性优先于速度。
+                        wl.grade = EvidenceGrade.Level.INFERRED;
                         return wl;
                     }
                     if (logInferredFail) {
@@ -1976,19 +2022,14 @@ public final class CrackEngine {
                             wlInferredArmed = true;
                             wlInferredArmedAt = clock().uptimeMillis();
                             android.util.Log.i(TAG, "快速失败(日志/推断): 进入确认窗口，等待可能的成功证据");
-                        } else if (clock().uptimeMillis() - wlInferredArmedAt
-                                >= WPLOG_INFERRED_CONFIRM_MS) {
-                            long ms = clock().uptimeMillis() - t0;
-                            android.util.Log.i(TAG, "快速失败(日志): 无归属的握手失败(推断) - 确认窗口到期");
-                            Attempt wl = new Attempt(password, Verdict.AUTH_FAIL, ms,
-                                    L.s("日志显示握手失败（密码错误）",
-                                        "log shows handshake failure (wrong passphrase)")
-                                            + L.s("（归属不明，仅推断）",
-                                                " (attribution unknown, inferred only)"),
-                                    "wpalog");
-                            wl.grade = EvidenceGrade.Level.INFERRED;
-                            return wl;
                         }
+                        // v2.1：**不再设独立"确认窗口到期即结案"**。
+                        // 原因（实测）：1 秒窗口 < 慢速 AP 建立连接所需（真机 12~19 秒），
+                        // 会把「失败信号先到、成功证据后到」的正确密码判死（缺陷 D1）。
+                        // 现在支B 只「武装」，**结案统一交给循环末尾的裁决**：
+                        //   · 期间成功判据每轮都有机会命中 → 后到成功参与裁决；
+                        //   · 循环结束（deadline）：连接仍活动 → INCOMPLETE；
+                        //     连接已终止 → AUTH_FAIL/INFERRED（本轮的弱证据结论）。
                         // 窗口未到期：不返回，继续循环
                     }
                 }
@@ -2002,6 +2043,17 @@ public final class CrackEngine {
         // 若这里退化成 TIMEOUT，就把一条**已有失败证据**的候选降级成了「没结论」——
         // 那是另一种形式的判定能力损失（P05AttributionTest 场景 A 钉死了这条）。
         if (wlInferredArmed) {
+            boolean liveAtEnd = connectionStillActive(lastStatusState);
+            if (liveAtEnd) {
+                // 连接仍活动 → INCOMPLETE（不是密码错）：不写 triedSet、不推 cursor、可重新裁决
+                android.util.Log.i(TAG, "循环结束：连接仍活动(" + lastStatusState + ") → INCOMPLETE");
+                Attempt inc = new Attempt(password, Verdict.INCOMPLETE, total,
+                        L.s("观察期限结束，但目标连接仍在进行（未收敛）",
+                            "observation window ended while the target connection was still in progress"),
+                        "wpalog");
+                inc.grade = EvidenceGrade.Level.NONE;
+                return inc;
+            }
             android.util.Log.i(TAG, "循环结束：支B 曾命中，按 INFERRED 结案（窗口未及到期）");
             Attempt wlTail = new Attempt(password, Verdict.AUTH_FAIL, total,
                     L.s("日志显示握手失败（密码错误）",

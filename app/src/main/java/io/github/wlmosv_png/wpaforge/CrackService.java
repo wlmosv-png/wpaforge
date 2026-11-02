@@ -397,6 +397,8 @@ public class CrackService extends Service {
 
     /** 本目标的"已试候选"集合（跑的时候往里记，下次不重复） */
     private volatile TriedSet triedSet;
+    /** P0：过滤**之前**的候选列表快照（仅用于换算等效续跑位置）。 */
+    private java.util.List<Candidate> workBeforeFilter = null;
     /**
      * 载入 triedSet 时用的目标键。
      *
@@ -933,6 +935,9 @@ public class CrackService extends Service {
                 triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
                 triedSinceFlush = 0;
                 if (triedSet.size() > 0) {
+                    // P0：换算等效续跑位置需要「过滤前的原列表」——
+                    // 过滤只保持相对顺序，位置可由「前 o 条里被删了几条」精确得出。
+                    workBeforeFilter = work;
                     TriedFilter f = filterTried(work, triedSet);
                     if (f.skipped > 0) {
                         log(L.f("已跳过 %d 条本目标试过的候选（本目标累计 %d 条）",
@@ -972,12 +977,19 @@ public class CrackService extends Service {
         taskStartAt = System.currentTimeMillis();
         lastOffsetSaveAt = 0L;
         lastSavedOffset = -1;
-        final int startOffset = effectiveStartOffset(task.offset, filteredBeforeRun);
+        // P0：**不再因为「有过过滤」就把位置归零**。
+        //
+        // 旧实现走 effectiveStartOffset(offset, filtered)，过滤时无条件返回 0，
+        // 续跑会把 offset 之前的未试候选全部重跑一遍 —— 真机表现就是「从零开始」。
+        // 现在按「原列表前 o 条里被删掉几条」精确换算（过滤保持顺序，位置可算）。
+        final int startOffset = workBeforeFilter != null
+                ? resumeIndexAfterFilter(workBeforeFilter, triedSet, task.offset)
+                : effectiveStartOffset(task.offset, filteredBeforeRun);
         if (startOffset != task.offset) {
-            log(L.s("候选列表已因「本目标试过」过滤而变短，续跑位置从第 "
-                            + task.offset + " 条重置为列表开头（避免跳过未试候选）",
-                    "candidate list shrank due to already-tried filtering; resume offset "
-                            + task.offset + " reset to the beginning (avoid skipping untried)"));
+            log(L.s("续跑位置按「已试过滤」换算：第 " + task.offset + " 条 -> 第 "
+                            + startOffset + " 条（过滤后列表内）",
+                    "resume offset remapped after tried-filtering: "
+                            + task.offset + " -> " + startOffset));
         } else if (startOffset > 0) {
             log(L.s("从第 ", "Resuming from ") + startOffset + L.s(" 条继续", " entries"));
         }
@@ -1302,6 +1314,65 @@ public class CrackService extends Service {
     public static int effectiveStartOffset(int savedOffset, boolean filtered) {
         if (filtered) return 0;
         return savedOffset < 0 ? 0 : savedOffset;
+    }
+
+    /**
+     * **过滤之后的等效续跑位置**（P0 修复，纯函数）。
+     *
+     * <h3>它修的是什么</h3>
+     * 旧规则 {@link #effectiveStartOffset}：只要发生过「已试过滤」就返回 {@code 0}。
+     * 那条规则的前提是「过滤可能删掉任意条目，位置不可换算」，但实际过滤
+     * <b>保持顺序</b>，所以位置是可精确换算的：
+     * <pre>
+     *   原列表 P[0..n)，已试集合 T，过滤后 K = P 去掉 T 的成员（保序）
+     *   原 offset = o
+     *   d = 「P[0..o) 中被删掉的条数」
+     *   等效位置 = o - d
+     * </pre>
+     *
+     * <h3>为什么归零是错的</h3>
+     * 归零会让续跑重试 <b>offset 之前的全部未试候选</b>，
+     * 且 {@code tested} 从 0 重新计 —— 用户看到的就是「从零开始」。
+     * 真机现象（2026-11-02）：跑 23 条后停止，继续时界面从第 1 条附近重来。
+     *
+     * <h3>边界</h3>
+     * <ul>
+     *   <li>{@code offset <= 0} → 0</li>
+     *   <li>{@code offset >= n} → 过滤后列表长度（越界收敛，不越界访问）</li>
+     *   <li>{@code d > o} 不可能发生（d 统计的就是 P[0..o) 的子集）</li>
+     * </ul>
+     *
+     * @param original 过滤前的候选列表（顺序即字典顺序）
+     * @param tried    已试集合（决定哪些条目会被删掉）
+     * @param offset   任务里保存的 offset
+     * @return 过滤后列表中的等效起跑下标
+     */
+    public static int resumeIndexAfterFilter(List<Candidate> original,
+                                             java.util.Set<String> tried, int offset) {
+        return resumeIndexAfterFilterInternal(original,
+                tried == null ? null : (String pw) -> tried.contains(pw), offset);
+    }
+
+    /** 重载：直接吃 {@link TriedSet}（生产路径用这个，避免构造中间 Set）。 */
+    public static int resumeIndexAfterFilter(List<Candidate> original,
+                                             TriedSet tried, int offset) {
+        return resumeIndexAfterFilterInternal(original,
+                tried == null ? null : tried::contains, offset);
+    }
+
+    private interface PwMatch { boolean test(String pw); }
+
+    private static int resumeIndexAfterFilterInternal(List<Candidate> original,
+                                                      PwMatch tried, int offset) {
+        if (original == null || original.isEmpty()) return 0;
+        if (offset <= 0) return 0;
+        int o = Math.min(offset, original.size());
+        int d = 0;
+        for (int i = 0; i < o; i++) {
+            String pw = original.get(i).password;
+            if (tried != null && pw != null && tried.test(pw)) d++;
+        }
+        return Math.max(0, o - d);
     }
 
     static void applyMissCounts(TaskQueue.Task ft,

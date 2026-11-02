@@ -125,6 +125,21 @@ public class MainActivity extends Activity {
     private int savedWifiTotal = -1;
     private int savedWifiWeak = -1;
     private TextView observeNotice;
+    /**
+     * 破解页自己的提示条（WiFi 未开等）。
+     *
+     * <h3>为什么要与 observeNotice 分开</h3>
+     * 原来两页**共用同一个字段**：观测页构造一次、破解页又构造一次并覆盖字段，
+     * 各自 addView 到自己的页面。后果有两条（2026-11-02 用户截图）：
+     * <ul>
+     *   <li>字段最终指向破解页那个 → 观测页的提示条**永远不显示**
+     *       （扫描不到网时用户看不到任何原因）；</li>
+     *   <li>Scanner 写的「WiFi 未开启」被投到**破解页**上，而且用户后来
+     *       打开 WiFi 也**不会消失** —— 变成一条残留的假状态。</li>
+     * </ul>
+     * 现在拆成两个独立控件，各管各的。
+     */
+    private TextView connectNotice;
     /** 信道建议卡（观测页，信道占用图下方） */
     private TextView adviceCard;
     private List<NetRecord> lastRecords = new ArrayList<>();
@@ -331,6 +346,10 @@ public class MainActivity extends Activity {
      * （{@code streamLines} 全量保留、文件日志逐条落盘）。
      */
     private boolean streamCollapsed = true;
+    /** 折叠态日志窗高度（dp）。约 4~5 行，且**可内部滚动**。 */
+    private static final int STREAM_COLLAPSED_DP = 132;
+    /** 展开态日志窗高度（dp）。 */
+    private static final int STREAM_EXPANDED_DP = 320;
     private RootProber rootProber;
     private volatile boolean rootProberRunning = false;
     private NetRecord targetNet;
@@ -4660,13 +4679,14 @@ public class MainActivity extends Activity {
         dictCard.addView(connectDictView, dlp);
         pageConnect.addView(dictCard, cardLp(AmberTheme.GAP_CARD));
 
-        // 提示条（权限、通道错误等）—— 内容与显示时机完全由原逻辑控制
-        observeNotice = new TextView(this);
-        observeNotice.setTextSize(12);
-        observeNotice.setTextColor(DANGER);
-        observeNotice.setPadding(px(4), px(10), px(4), 0);
-        observeNotice.setVisibility(View.GONE);
-        pageConnect.addView(observeNotice);
+        // 破解页提示条：**只由破解页自己的状态驱动**（当前只有「WiFi 未开启」）。
+        // 不再与观测页共用控件 —— 见 connectNotice 字段注释里的事故。
+        connectNotice = new TextView(this);
+        connectNotice.setTextSize(12);
+        connectNotice.setTextColor(DANGER);
+        connectNotice.setPadding(px(4), px(10), px(4), 0);
+        connectNotice.setVisibility(View.GONE);
+        pageConnect.addView(connectNotice);
 
         // ================= ③ 命中卡（命中时才显示） =================
         hitCard = new LinearLayout(this);
@@ -4891,9 +4911,28 @@ public class MainActivity extends Activity {
         flowHeader.setGravity(Gravity.CENTER_VERTICAL);
         flowHeader.setPadding(0, px(12), 0, px(6));
 
+        /*
+         * 展开/收起按钮（2026-11-02 重绘）。
+         *
+         * 用户原话：「那个小窗旁边的展开按钮太小了」。原实现是一个 11.5sp 的
+         * 裸三角 ▸/▾，既没有背景也没有触摸扩张，在高 DPI 屏上只有几毫米，
+         * 看不出它是可点的。
+         *
+         * 现在做成 32dp 的圆形按钮：有底色、有箭头、有按下反馈，
+         * 尺寸达到可直接拇指点中的量级（整行也仍可点，双保险）。
+         */
         flowChevron = new TextView(this);
-        flowChevron.setTextSize(11.5f);
-        flowChevron.setTextColor(ACCENT);
+        flowChevron.setTextSize(14f);
+        flowChevron.setTextColor(AmberTheme.ON_ACCENT);
+        flowChevron.setGravity(Gravity.CENTER);
+        int chev = px(32);
+        LinearLayout.LayoutParams cvp = new LinearLayout.LayoutParams(chev, chev);
+        cvp.rightMargin = px(4);
+        flowChevron.setLayoutParams(cvp);
+        flowChevron.setBackground(roundBg(ACCENT, chev / 2f));
+        flowChevron.setClickable(true);
+        flowChevron.setFocusable(true);
+        flowChevron.setOnClickListener(v -> toggleStream());
         flowHeader.addView(flowChevron);
 
         flowLabel = new TextView(this);
@@ -5869,7 +5908,46 @@ public class MainActivity extends Activity {
      * 这一行不可点。可用性由上面的设置页实时检测负责，
      * 这里只报「用什么通道 + 实测多快」。
      */
+    /**
+     * 刷新破解页提示条（当前只有「WiFi 未开启」）。
+     *
+     * <h3>修的两个问题</h3>
+     * <ul>
+     *   <li><b>残留</b>：旧实现只在 Scanner 报告时写入，WiFi 恢复后无人清除
+     *       —— 用户明明开了 WiFi，屏幕上还挂着「WiFi 未开启」。</li>
+     *   <li><b>越位</b>：那条提示原本属于观测页，被双父 bug 搬到了破解页。</li>
+     * </ul>
+     * 现在每次都问一次系统真实状态，开着就隐藏、关着才显示。
+     */
+    private void refreshConnectNotice() {
+        if (connectNotice == null) return;
+        boolean wifiOn;
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    getApplicationContext().getSystemService(WIFI_SERVICE);
+            wifiOn = wm != null && wm.isWifiEnabled();
+        } catch (Throwable t) {
+            // 拿不到状态时**不显示**警告：宁可少提示，也不要给假状态。
+            wifiOn = true;
+        }
+        if (wifiOn) {
+            if (connectNotice.getVisibility() != View.GONE) {
+                connectNotice.setVisibility(View.GONE);
+            }
+        } else {
+            String msg = L.s("WiFi 未开启，请先打开 WiFi 开关",
+                    "Wi-Fi is off — turn it on first");
+            if (!msg.contentEquals(connectNotice.getText())) connectNotice.setText(msg);
+            if (connectNotice.getVisibility() != View.VISIBLE) {
+                connectNotice.setVisibility(View.VISIBLE);
+            }
+        }
+    }
+
     private void updateConnectMode() {
+        // 顺带刷新破解页的 WiFi 提示：状态变回「开着」时**必须自动消失**，
+        // 不能像原来那样留在屏幕上当假状态（用户实测到过）。
+        refreshConnectNotice();
         if (connectModeView == null) return;
         // 用「每条约 X 秒」而不是「X 条/秒」。
         // 0.1 条/秒看着像「没在动」，换算成「每条约 10 秒」
@@ -6964,6 +7042,13 @@ public class MainActivity extends Activity {
         streamCollapsed = !streamCollapsed;
         applyStreamHeight();
         updateFlowHeader();
+        // 切换后**回到最新**：折叠态只有几行高度，若停在中间会看到一段
+        // 与当下无关的旧内容（用户报的「文字残留」观感来源之一）。
+        streamAutoScroll = true;
+        if (streamScroll != null) {
+            streamScroll.post(() -> streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+        }
+        updateJumpLatest();
     }
 
     /** 折叠时只留几行；展开时约 240dp。高度作用在 ScrollView 上。 */
@@ -6974,18 +7059,26 @@ public class MainActivity extends Activity {
         if (empty) {
             streamParams.height = 0;
             streamParams.weight = 0f;
-            connectStreamView.setMaxLines(1);
-            connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
-        } else if (streamCollapsed) {
-            // 折叠态：约 4 行（110dp）。旧值 160dp 在高 DPI 上接近 1/6 屏，
-            // 与「核心状态优先」冲突。
-            streamParams.height = px(110);
-            streamParams.weight = 0f;
-            connectStreamView.setMaxLines(4);
-            connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else {
-            streamParams.height = px(300);   // 展开态：一屏能看到更多历史
+            streamParams.height = px(streamCollapsed ? STREAM_COLLAPSED_DP : STREAM_EXPANDED_DP);
             streamParams.weight = 0f;
+        }
+        /*
+         * **不再给 TextView 设 maxLines / ellipsize。**
+         *
+         * 用户实测（2026-11-02）两件事都由它引起：
+         *   ① 「小窗里滚不动」—— maxLines=4 + ellipsize=END 把 TextView 压成
+         *      恰好 4 行高，ScrollView 里没有可滚内容，手势等于白滑；
+         *   ② 「文字残留」—— 被裁掉的是**尾部**，所以小窗永远显示日志开头的
+         *      几行（任务启动时的保活提示），后面的判定结论一条都看不到。
+         *
+         * 现在高度只由**容器**决定，TextView 完整渲染；由 ScrollView 负责滚动、
+         * 由 streamAutoScroll 负责自动跟到底部。于是：
+         *   · 小窗能看到**最新**几行；
+         *   · 手指在小窗里可以往上滑看历史；
+         *   · 原始证据一条都没裁掉。
+         */
+        if (connectStreamView != null) {
             connectStreamView.setMaxLines(Integer.MAX_VALUE);
             connectStreamView.setEllipsize(null);
         }
@@ -7023,7 +7116,11 @@ public class MainActivity extends Activity {
     /** 刷新头部箭头与行数 */
     private void updateFlowHeader() {
         if (flowChevron != null) {
-            flowChevron.setText(streamCollapsed ? "▸" : "▾");
+            // 折叠时箭头朝下（点了往下展开），展开时朝上（点了收起）。
+            flowChevron.setText(streamCollapsed ? "▾" : "▴");
+            // 无障碍：读屏用户也要知道这个按钮干什么
+            flowChevron.setContentDescription(streamCollapsed
+                    ? L.s("展开日志", "Expand log") : L.s("收起日志", "Collapse log"));
         }
         if (flowCount != null) {
             int shown = 0;

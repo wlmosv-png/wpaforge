@@ -45,10 +45,22 @@ public final class UiRefactorTest {
         ok("① 日志默认折叠（streamCollapsed = true）",
                 ma.contains("private boolean streamCollapsed = true;"), "未默认折叠");
 
-        // 折叠高度已收敛
-        ok("① 折叠高度 110dp（原 160dp）", ma.contains("streamParams.height = px(110);"),
-                "高度未收敛");
-        ok("① 折叠态最多 4 行", ma.contains("connectStreamView.setMaxLines(4);"), "行数未收");
+        // 折叠高度由常量控制（132dp ≈ 4~5 行，且**可内部滚动**）
+        ok("① 折叠高度走常量 STREAM_COLLAPSED_DP",
+                ma.contains("STREAM_COLLAPSED_DP") && ma.contains("STREAM_COLLAPSED_DP = 132"),
+                "高度未走常量");
+        ok("① 展开高度走常量 STREAM_EXPANDED_DP",
+                ma.contains("STREAM_EXPANDED_DP = 320"), "缺失");
+        // 用户反馈：「小窗里滚不动」+「文字残留」都源于 maxLines/ellipsize。
+        // 现在必须**不**再用它们做裁剪，交给 ScrollView 滚动。
+        ok("① 不再用 maxLines/ellipsize 裁剪日志（保证可滚动 + 显示最新）",
+                !ma.contains("connectStreamView.setMaxLines(4)")
+                        && !ma.contains("connectStreamView.setMaxLines(1)"),
+                "仍在裁剪");
+        ok("① 明确定义 maxLines 为 MAX_VALUE（完整渲染）",
+                ma.contains("connectStreamView.setMaxLines(Integer.MAX_VALUE)"), "缺失");
+        ok("① 切换折叠后回到最新（fullScroll FOCUS_DOWN 在 toggleStream 内）",
+                ma.contains("streamScroll.post(() -> streamScroll.fullScroll"), "缺失");
 
         // ---- ② 统计四列 ----
         for (String label : new String[]{"已执行", "已证实错误", "未确定", "总数"}) {

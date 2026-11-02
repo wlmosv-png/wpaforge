@@ -94,12 +94,13 @@ public class CrackPageLayoutTest {
         System.out.println("== 2. 破解页展示位：一个都不能漏赋值 ==");
         String[] views = {"connectTargetView", "connectDictView", "connectModeView",
                 "connectProgress", "candBox", "candLabel", "candRoll", "candPrev",
-                "hitCard", "hitPw", "hitMeta", "observeNotice", "flowHeader", "flowChevron",
+                "hitCard", "hitPw", "hitMeta", "connectNotice", "flowHeader", "flowChevron",
                 "flowLabel", "flowCount", "chipKey", "chipAll", "flowClear",
                 "connectStreamView", "streamScroll", "streamParams", "jumpLatestBtn",
                 "connectEmptyHint", "startBtn", "pauseBtn", "stopBtn", "queueBox",
                 "netMetaView", "netSecChip", "statDoneView", "statTotalView", "statPctView",
                 "statRateView", "statEtaView", "stateBig", "actionsHint",
+                "statWrongView", "statUnkView",
                 "progressCard", "eventCard", "actionsCard"};
         int missing = 0;
         StringBuilder miss = new StringBuilder();

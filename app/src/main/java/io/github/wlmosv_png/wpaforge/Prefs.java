@@ -50,6 +50,10 @@ public final class Prefs {
     private static final String K_TARGET_LABEL = "target_label";
     /** 老版本的单槽线索是否已迁到"默认模板" */
     private static final String K_PROFILE_MIGRATED = "profile_migrated";
+    /** 跨字典去重档位（0=保守 / 1=省时）—— 新建任务时的默认值 */
+    private static final String K_SKIP_POLICY = "skip_policy_id";
+    /** 是否自动连续执行下一本字典（计划模式） */
+    private static final String K_PLAN_AUTO = "plan_auto_advance";
 
     private Prefs() {}
 
@@ -109,6 +113,25 @@ public final class Prefs {
 
     public static void setProfileMigrated(Context ctx) {
         sp(ctx).edit().putBoolean(K_PROFILE_MIGRATED, true).apply();
+    }
+
+    /** 跨字典去重档位（0=保守 1=省时）。默认 0 = 绝不跳过未确定候选。 */
+    public static int skipPolicyId(Context ctx) {
+        int v = sp(ctx).getInt(K_SKIP_POLICY, 0);
+        return v == 1 ? 1 : 0;
+    }
+
+    public static void setSkipPolicyId(Context ctx, int id) {
+        sp(ctx).edit().putInt(K_SKIP_POLICY, id == 1 ? 1 : 0).apply();
+    }
+
+    /** 多字典自动连续执行。默认关 = 与单字典模式行为一致。 */
+    public static boolean planAutoAdvance(Context ctx) {
+        return sp(ctx).getBoolean(K_PLAN_AUTO, false);
+    }
+
+    public static void setPlanAutoAdvance(Context ctx, boolean on) {
+        sp(ctx).edit().putBoolean(K_PLAN_AUTO, on).apply();
     }
 
     public static boolean dictGuideSeen(Context ctx) {

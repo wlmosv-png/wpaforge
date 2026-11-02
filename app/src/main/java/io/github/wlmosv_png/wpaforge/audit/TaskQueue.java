@@ -116,6 +116,21 @@ public final class TaskQueue {
          * 旧数据没有这个字段 → 默认空串。
          */
         public String lastRunId = "";
+        /**
+         * 跨字典去重档位（1.9.39）：0=保守（默认）/ 1=省时。
+         *
+         * <p>存在**任务**上而不是全局读一次，是为了让「同一次任务的过滤口径」
+         * 在整轮执行里保持一致 —— 中途去设置页改档位不会让前一半候选按旧档、
+         * 后一半按新档过滤。旧数据没有这个字段 → 0（与 1.9.38 行为一致）。
+         */
+        public int skipPolicyId = 0;
+        /**
+         * 本条任务是否要求**强制重跑**：绕过本次的历史过滤。
+         *
+         * <p>它**只影响读**，不清空、不改写任何历史记录 —— 想真正丢掉历史，
+         * 要用字典页的「清空本目标已试记录」。旧数据没有这个字段 → false。
+         */
+        public boolean forceRerun = false;
 
         public Task() {}
 
@@ -226,6 +241,8 @@ public final class TaskQueue {
                 o.put("crackMode", crackMode);
                 o.put("interrupted", interrupted);
                 o.put("lastRunId", lastRunId == null ? "" : lastRunId);
+                o.put("skipPolicyId", skipPolicyId);
+                o.put("forceRerun", forceRerun);
             } catch (Exception ignored) {}
             return o;
         }
@@ -272,6 +289,9 @@ public final class TaskQueue {
             // 旧版本数据没有这两个字段 → 取默认值，不抛异常、不伪造
             t.interrupted = o.optBoolean("interrupted", false);
             t.lastRunId = o.optString("lastRunId", "");
+            // 1.9.39：旧数据缺这两个字段 → 保守档 + 不强制重跑（= 旧行为，不猜）
+            t.skipPolicyId = o.optInt("skipPolicyId", 0);
+            t.forceRerun = o.optBoolean("forceRerun", false);
             return t;
         }
     }
@@ -1039,6 +1059,35 @@ public final class TaskQueue {
         }
         Task t = Task.from(target, dictPath, dictName, useTargetDict, useSmartSort, crackMode,
                 seedsJson);
+        list.add(t);
+        save(ctx, list);
+        return t;
+    }
+
+    /**
+     * 由**计划**派生下一本字典的任务。
+     *
+     * <h3>为什么不用 {@link #enqueue}</h3>
+     * {@code enqueue} 带「同目标 + 同字典且仍在进行中 → 直接返回已有任务」的
+     * 幂等逻辑，那是给用户手动排队用的。计划的派生需要两件 enqueue 不能保证的事：
+     * <ul>
+     *   <li>**offset 由计划说了算**（计划是唯一真相源，队列只是派生物）；</li>
+     *   <li>档位与「强制重跑」必须跟着计划走，而不是读全局设置。</li>
+     * </ul>
+     *
+     * <p>只继承目标与线索相关的字段（SSID / BSSID / 加密方式 / 派生开关 /
+     * 智能排序 / 线索），**不继承**命中与统计字段 —— 那些是本字典自己的战果。
+     */
+    public static Task deriveForPlan(Context ctx, Task from, String dictPath, String dictName,
+                                     int skipPolicyId, boolean forceRerun, int offset) {
+        if (ctx == null || from == null) return null;
+        List<Task> list = load(ctx);
+        Task t = Task.from(from.toNetRecord(), dictPath, dictName,
+                from.useTargetDict, from.useSmartSort, from.crackMode, from.seedsJson);
+        t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
+        t.forceRerun = forceRerun;
+        t.offset = Math.max(0, offset);
+        t.dictSize = 0;
         list.add(t);
         save(ctx, list);
         return t;

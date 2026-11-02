@@ -133,6 +133,8 @@ public class DictActivity extends Activity {
         L.init(this);
         dp = getResources().getDisplayMetrics().density;
         buildUi();
+        // 旧版单一计划文件 → 按目标分文件（一次性，幂等，不删旧文件）
+        try { DictPlan.migrateLegacy(this); } catch (Throwable ignored) {}
         // 首次启动释放内置字典（后台做，不卡界面）
         new Thread(() -> {
             int migrated = DictStore.migrateFromOldDir();
@@ -278,7 +280,7 @@ public class DictActivity extends Activity {
      * 不出现 L1/L2/L3、账本、候选、targetKey 这些内部术语。
      */
     private void renderPlanCard() {
-        DictPlan p = DictPlan.load(DictPlan.fileFor(this));
+        DictPlan p = DictPlan.load(DictPlan.fileFor(this, planKey()));
 
         // 计划成员的绝对路径 -> 1 起顺序号（行内「计划 #N」徽标用）。
         // 路径即计划当前真实引用的文件；改名/移动会让计划引用失效，徽标也随之消失，
@@ -384,7 +386,7 @@ public class DictActivity extends Activity {
         acts.setPadding(0, px(8), 0, 0);
         acts.addView(miniBtn(L.s("加入选中", "Add selected"), ACCENT, v -> planAddSelected()));
         acts.addView(miniBtn(L.s("清空", "Clear"), AmberTheme.TEXT_DIM, v -> {
-            DictPlan.delete(this);
+            DictPlan.delete(this, planKey());
             refresh();
         }));
         card.addView(acts);
@@ -433,14 +435,14 @@ public class DictActivity extends Activity {
      * 一份新的，改动才会落到盘上；直接改刷新时读到的临时副本会静默丢弃。
      */
     private DictPlan planEdit() {
-        pendingPlan = DictPlan.load(DictPlan.fileFor(this));
+        pendingPlan = DictPlan.load(DictPlan.fileFor(this, planKey()));
         return pendingPlan;
     }
 
     /** 把 {@link #planEdit()} 取出的那份写回盘上。 */
     private void planEditSave() {
         if (pendingPlan == null) return;
-        if (!pendingPlan.save(DictPlan.fileFor(this))) {
+        if (!pendingPlan.save(DictPlan.fileFor(this, planKey()))) {
             Toast.makeText(this, L.s("计划保存失败", "Failed to save the plan"),
                     Toast.LENGTH_SHORT).show();
         }
@@ -488,9 +490,9 @@ public class DictActivity extends Activity {
      */
     private void requestSkipPolicy(boolean on) {
         if (!on) {
-            DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+            DictPlan q = DictPlan.load(DictPlan.fileFor(this, planKey()));
             q.skipPolicyId = 0;
-            q.save(DictPlan.fileFor(this));
+            q.save(DictPlan.fileFor(this, planKey()));
             Prefs.setSkipPolicyId(this, 0);
             refresh();
             return;
@@ -522,19 +524,19 @@ public class DictActivity extends Activity {
                 .setMessage(msg)
                 .setNegativeButton(L.s("保持关闭", "Keep off"), (d, w) -> refresh())
                 .setPositiveButton(L.s("我了解，启用", "Enable"), (d, w) -> {
-                    DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+                    DictPlan q = DictPlan.load(DictPlan.fileFor(this, planKey()));
                     q.skipPolicyId = 1;
-                    q.save(DictPlan.fileFor(this));
+                    q.save(DictPlan.fileFor(this, planKey()));
                     Prefs.setSkipPolicyId(this, 1);
                     refresh();
                 })
                 .show();
     }
 
-    /** 计划绑定的目标键（计划优先，退化到当前选中目标）。 */
+    /** 当前目标键（计划文件、账本、triedSet 同源）；没选目标时为空串 → 计划落 unbound。 */
     private String planKey() {
-        DictPlan p = DictPlan.load(DictPlan.fileFor(this));
-        return p.targetKey.isEmpty() ? Prefs.targetKey(this) : p.targetKey;
+        String key = Prefs.targetKey(this);
+        return key == null ? "" : key;
     }
 
     /**
@@ -1777,7 +1779,7 @@ public class DictActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+        DictPlan q = DictPlan.load(DictPlan.fileFor(this, planKey()));
         int added = 0, dup = 0;
         for (DictStore.Entry e : src) {
             DictPlan.Item it = new DictPlan.Item(e.file.getAbsolutePath(), e.name);
@@ -1787,7 +1789,7 @@ public class DictActivity extends Activity {
             if (q.add(it)) added++; else dup++;
         }
         if (q.targetKey.isEmpty()) q.targetKey = Prefs.targetKey(this);
-        q.save(DictPlan.fileFor(this));
+        q.save(DictPlan.fileFor(this, planKey()));
         Toast.makeText(this, L.s("已加入 " + added + " 本"
                         + (dup > 0 ? "（" + dup + " 本重复，已忽略）" : ""),
                 "Added " + added + (dup > 0 ? " (" + dup + " duplicates ignored)" : "")),

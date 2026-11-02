@@ -61,6 +61,7 @@ public final class DictRelayChainTest {
         pauseStopIncomplete();
         crashRecovery();
         uiConsistencyRealFiles();
+        targetIsolation();
         System.out.println();
         System.out.println("=== 接力: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
@@ -355,6 +356,63 @@ public final class DictRelayChainTest {
 
         // 清理
         purge(fa); purge(fb); purge(fc); d.delete(); root.delete();
+    }
+
+    // ------------------------------------------------- ⑥ 目标隔离（按目标分文件）
+
+    /**
+     * 每个 Wi-Fi 目标一份计划文件（{@code DictPlan.fileAt(dir, key)}）。
+     * 验证：不同目标 → 不同文件；A 的计划/进度不会串到 B。
+     */
+    private static void targetIsolation() {
+        System.out.println();
+        System.out.println("-- ⑥ 目标隔离：A/B 计划文件互不相干 --");
+
+        java.io.File dir = new java.io.File(System.getProperty("java.io.tmpdir"),
+                "relay-iso-" + System.currentTimeMillis());
+        dir.mkdirs();
+        String keyA = "b001122334455";   // 目标 A（模拟 BSSID 派生键）
+        String keyB = "baabbccddeeff";   // 目标 B
+        java.io.File fa = DictPlan.fileAt(dir, keyA);
+        java.io.File fb = DictPlan.fileAt(dir, keyB);
+        ok("⑥ A/B 计划文件不同", !fa.getAbsolutePath().equals(fb.getAbsolutePath()),
+                fa.getName() + " vs " + fb.getName());
+        ok("⑥ 空目标键落 unbound", DictPlan.fileAt(dir, "").getName().equals("unbound.plan.json"),
+                DictPlan.fileAt(dir, "").getName());
+
+        // A 建三本，跑到第 2 本（offset 前进）
+        DictPlan a = new DictPlan();
+        a.autoAdvance = true;
+        a.targetKey = keyA;
+        a.add(item("/d/A1.txt", "A1"));
+        a.add(item("/d/A2.txt", "A2"));
+        a.add(item("/d/A3.txt", "A3"));
+        a.apply(DictPlan.Outcome.MISS);   // A1 miss → A2
+        a.items.get(0).offset = 500;      // A1 跑到 500
+        a.save(fa);
+
+        // B 是全新计划（只有一本，无进度）
+        DictPlan b = new DictPlan();
+        b.autoAdvance = true;
+        b.targetKey = keyB;
+        b.add(item("/d/B1.txt", "B1"));
+        b.save(fb);
+
+        // 读回：A 的三本 + offset 都在 A 文件；B 只有一本、offset 0
+        DictPlan ra = DictPlan.load(fa);
+        DictPlan rb = DictPlan.load(fb);
+        ok("⑥ A 计划 3 本", ra.items.size() == 3, String.valueOf(ra.items.size()));
+        ok("⑥ A 停在 A2（第 2 本）", ra.displayIndex() == 2, String.valueOf(ra.displayIndex()));
+        ok("⑥ A 的 A1 offset=500 保留", ra.items.get(0).offset == 500,
+                String.valueOf(ra.items.get(0).offset));
+        ok("⑥ B 计划只有 1 本（不继承 A 的 3 本）", rb.items.size() == 1,
+                String.valueOf(rb.items.size()));
+        ok("⑥ B 的 offset=0（不继承 A 的进度）", rb.items.get(0).offset == 0,
+                String.valueOf(rb.items.get(0).offset));
+        ok("⑥ B 的 targetKey 是 B", keyB.equals(rb.targetKey), rb.targetKey);
+
+        // 清理
+        fa.delete(); fb.delete(); dir.delete();
     }
 
     private static void write(java.io.File f, String content) throws Exception {

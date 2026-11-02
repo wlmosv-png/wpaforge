@@ -192,7 +192,9 @@ public class CrackPageLayoutTest {
         ok("选目标 → showTargetPicker()",
                 ma.contains("connectTargetView.setOnClickListener(v -> showTargetPicker());"));
         ok("选字典 → showDictSource()",
-                ma.contains("connectDictView.setOnClickListener(v -> showDictSource());"));
+                ma.contains("connectDictView.setOnClickListener(v -> {")
+                        && ma.contains("if (usePlanMode) showPlanManager();")
+                        && ma.contains("else showDictSource();"));
         ok("日志折叠 → toggleStream()",
                 ma.contains("flowHeader.setOnClickListener(v -> toggleStream());"));
         ok("「关键」筛选语义不变",

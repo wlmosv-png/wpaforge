@@ -468,6 +468,8 @@ public class CrackService extends Service {
      * 的中间态 —— 任意时刻被杀，盘上要么是新计划要么是旧计划。
      */
     private volatile DictPlan plan;
+    /** 当前计划文件的目标键（加载时定下，落盘时用同一份，避免跨目标串写）。 */
+    private volatile String planFileKey = "";
     /** 本轮是否处于计划模式（计划文件可用，且目标与当前队列一致）。 */
     private volatile boolean planMode = false;
     /** 本轮是否发生过通道级阻塞（要把计划标成 BLOCKED，而不是伪装成未命中）。 */
@@ -1525,7 +1527,13 @@ public class CrackService extends Service {
             LAST_PLAN_SUMMARY = "";
             LAST_SKIPPED_CONFIRMED = 0;
             LAST_SKIPPED_UNDETERMINED = 0;
-            DictPlan p = DictPlan.load(DictPlan.fileFor(this));
+            planFileKey = "";
+            // 目标键来自队列里第一个待办任务 —— 与 triedSet/账本同源，
+            // 计划按这个键隔离（每个 Wi-Fi 目标一份计划）。
+            TaskQueue.Task t0 = TaskQueue.nextPending(this);
+            if (t0 == null) { plan = null; return false; }
+            String key = TriedSet.targetKey(t0.bssid, t0.ssid);
+            DictPlan p = DictPlan.load(DictPlan.fileFor(this, key));
             if (p.items.isEmpty()) { plan = null; return false; }
             if (p.state.isTerminal()) {
                 // 终态计划**不退回普通队列**：退回就意味着命中之后残留的 PENDING
@@ -1534,24 +1542,28 @@ public class CrackService extends Service {
                         "plan already finished (%s); leftover tasks will not run",
                         p.state.name()));
                 plan = null;
+                planFileKey = "";
                 LAST_PLAN_SUMMARY = p.summary();
                 return false;
             }
             // 上个进程死在执行中（盘上 RUNNING）→ 归一为可解释的中断状态
             p.state = DictPlan.recover(p.state);
-            TaskQueue.Task t = TaskQueue.nextPending(this);
-            if (t == null) { plan = null; return false; }
-            String key = TriedSet.targetKey(t.bssid, t.ssid);
-            if (!p.targetKey.isEmpty() && !p.targetKey.equals(key)) {
+            // 计划自身 targetKey 若为空（旧计划/未绑定），在此绑定到当前目标并落盘
+            if (p.targetKey == null || p.targetKey.isEmpty()) {
+                p.targetKey = key;
+            }
+            if (!p.targetKey.equals(key)) {
                 log(L.f("计划目标与队列目标不一致（计划 %s / 队列 %s）：不接管",
                         "plan target differs from queue target (%s vs %s): not taking over",
                         p.targetKey, key));
                 plan = null;
+                planFileKey = "";
                 return false;
             }
+            planFileKey = key;
             if (p.state.isResumable()) {
                 p.state = DictPlan.State.RUNNING;
-                p.save(DictPlan.fileFor(this));
+                p.save(DictPlan.fileFor(this, planFileKey));
                 log(L.f("多字典计划继续运行（%s）", "resuming multi-dictionary plan (%s)",
                         p.state.name()));
             }
@@ -1568,6 +1580,7 @@ public class CrackService extends Service {
                     "failed to read the plan (falling back to a plain queue): %s",
                     String.valueOf(e)));
             plan = null;
+            planFileKey = "";
             return false;
         }
     }
@@ -1644,7 +1657,7 @@ public class CrackService extends Service {
 
         DictPlan.Outcome o = planOutcomeOf(ft.state, planBlockedThisRun, hit);
         DictPlan.Step st = p.apply(o);
-        if (!p.save(DictPlan.fileFor(this))) {
+        if (!p.save(DictPlan.fileFor(this, planFileKey))) {
             log(L.s("计划落盘失败：本轮计划的进度可能不被保留（已给出的判定不受影响）",
                     "failed to persist the plan (verdicts are unaffected)"));
         }
@@ -1694,7 +1707,14 @@ public class CrackService extends Service {
     private boolean recoverPlanForRun() {
         DictPlan p;
         try {
-            p = DictPlan.load(DictPlan.fileFor(this));
+            // 目标键来自队列第一个任务（恢复时队列里可能只有残留任务，也可能空）。
+            String key = "";
+            for (TaskQueue.Task t : TaskQueue.load(this)) {
+                key = TriedSet.targetKey(t.bssid, t.ssid);
+                break;
+            }
+            planFileKey = key;
+            p = DictPlan.load(DictPlan.fileFor(this, key));
         } catch (Throwable t) {
             return false;
         }
@@ -1709,7 +1729,7 @@ public class CrackService extends Service {
                 log(L.s("多字典计划：", "plan: ") + d.reason);
                 if (d.planState != null) {
                     p.state = d.planState;
-                    p.save(DictPlan.fileFor(this));
+                    p.save(DictPlan.fileFor(this, planFileKey));
                 }
                 LAST_PLAN_SUMMARY = p.summary();
                 stopSelfSafe();
@@ -1719,7 +1739,7 @@ public class CrackService extends Service {
                 // 崩溃窗口：这一本已完成、计划没跟上 → 先推进，再补建下一本
                 p.state = DictPlan.recover(p.state);
                 p.apply(d.advanceWith);
-                if (!p.save(DictPlan.fileFor(this))) {
+                if (!p.save(DictPlan.fileFor(this, planFileKey))) {
                     log(L.s("计划推进落盘失败：本次不启动（避免丢字典）",
                             "failed to persist the advanced plan; not starting"));
                     stopSelfSafe();
@@ -1733,7 +1753,7 @@ public class CrackService extends Service {
 
             case RUN_EXISTING:
                 p.state = DictPlan.State.RUNNING;
-                p.save(DictPlan.fileFor(this));
+                p.save(DictPlan.fileFor(this, planFileKey));
                 if (d.revivePaused) revivePlanTask(d.taskId);
                 LAST_PLAN_SUMMARY = p.summary();
                 log(L.s("多字典计划：", "plan: ") + d.reason);
@@ -1821,12 +1841,13 @@ public class CrackService extends Service {
      */
     private void planStop() {
         DictPlan p = plan;
+        String key = planFileKey;
         if (p == null) {
-            try { p = DictPlan.load(DictPlan.fileFor(this)); } catch (Throwable t) { return; }
+            try { p = DictPlan.load(DictPlan.fileFor(this, key)); } catch (Throwable t) { return; }
         }
         if (p == null || p.items.isEmpty() || p.state.isTerminal()) return;
         p.apply(DictPlan.Outcome.STOPPED);
-        p.save(DictPlan.fileFor(this));
+        p.save(DictPlan.fileFor(this, key));
         planBlockedThisRun = false;
         LAST_PLAN_SUMMARY = p.summary();
         log(L.s("多字典计划：已随停止一同落盘（STOPPED）",

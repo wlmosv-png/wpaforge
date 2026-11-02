@@ -462,13 +462,33 @@ public final class DictPlan {
 
     // ================================================================ 落盘
 
-    public static File fileFor(Context ctx) {
-        if (ctx == null) return new File("dictplan.json");
-        return new File(ctx.getFilesDir(), "dictplan.json");
+    /** 旧版单一计划文件名（迁移源）。 */
+    public static final String LEGACY_FILE = "dictplan.json";
+    /** 未绑定目标时的计划键。 */
+    public static final String UNBOUND_KEY = "unbound";
+
+    /**
+     * 计划文件 —— **按目标键隔离**（与 triedSet / 账本同一套隔离语义）。
+     *
+     * <p>每个 Wi-Fi 目标一份计划：{@code plans/<targetKey>.plan.json}。
+     * 切换目标不会丢失也不会串台 —— A 的计划与进度、B 的计划与进度互不相干。
+     * {@code targetKey} 为空（还没选目标）时落到 {@value #UNBOUND_KEY}。
+     */
+    public static File fileFor(Context ctx, String targetKey) {
+        if (ctx == null) return new File(LEGACY_FILE);
+        String k = (targetKey == null || targetKey.trim().isEmpty()) ? UNBOUND_KEY : targetKey;
+        return new File(new File(ctx.getFilesDir(), "plans"), k + ".plan.json");
     }
 
-    public static File fileAt(File dir) {
-        return new File(dir, "dictplan.json");
+    /** 兼容旧调用：仍指向旧版单一计划文件（迁移用，别在生产路径里用）。 */
+    public static File fileFor(Context ctx) {
+        if (ctx == null) return new File(LEGACY_FILE);
+        return new File(ctx.getFilesDir(), LEGACY_FILE);
+    }
+
+    public static File fileAt(File dir, String targetKey) {
+        String k = (targetKey == null || targetKey.trim().isEmpty()) ? UNBOUND_KEY : targetKey;
+        return new File(dir, k + ".plan.json");
     }
 
     /** 序列化（不含任何口令 —— 计划里本来就只有字典路径与进度）。 */
@@ -609,10 +629,51 @@ public final class DictPlan {
         }
     }
 
-    /** 删除计划文件（用户点「清空计划」）。 */
+    /** 删除指定目标的计划文件（用户点「清空计划」）。 */
+    public static boolean delete(Context ctx, String targetKey) {
+        File f = fileFor(ctx, targetKey);
+        return !f.exists() || f.delete();
+    }
+
+    /** 兼容旧调用：删除旧版单一计划文件。 */
     public static boolean delete(Context ctx) {
         File f = fileFor(ctx);
         return !f.exists() || f.delete();
+    }
+
+    /**
+     * 一次性迁移：旧版单一 {@code dictplan.json} → 按目标的 {@code plans/<key>.plan.json}。
+     *
+     * <p>只在目标文件不存在时执行；用旧计划内部已存的 {@code targetKey} 决定去向，
+     * 拿不到就落 {@value #UNBOUND_KEY}。迁移后**不删旧文件**（保留可回退），
+     * 后续读一律走按目标的新路径。
+     *
+     * @return 迁移到的目标键；没有旧文件返回 {@code null}。
+     */
+    public static String migrateLegacy(Context ctx) {
+        if (ctx == null) return null;
+        File legacy = fileFor(ctx);
+        if (!legacy.isFile()) return null;
+        DictPlan old = load(legacy);
+        String key = (old.targetKey == null || old.targetKey.isEmpty())
+                ? UNBOUND_KEY : old.targetKey;
+        File dst = fileFor(ctx, key);
+        if (dst.exists()) return key;   // 已迁移过，跳过
+        try {
+            if (dst.getParentFile() != null && !dst.getParentFile().exists()) {
+                dst.getParentFile().mkdirs();
+            }
+            // 用纯字节流复制：android 的 java.nio.file.Files 是残缺子集，copy 未必可用。
+            try (java.io.InputStream in = new java.io.FileInputStream(legacy);
+                 java.io.OutputStream out = new java.io.FileOutputStream(dst)) {
+                byte[] buf = new byte[1 << 14];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            }
+            return key;
+        } catch (Throwable t) {
+            return key;
+        }
     }
 
     /**

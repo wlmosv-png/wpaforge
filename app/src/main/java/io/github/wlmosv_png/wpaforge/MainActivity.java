@@ -4108,7 +4108,7 @@ public class MainActivity extends Activity {
         {
             io.github.wlmosv_png.wpaforge.audit.DictPlan plan =
                     io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
-                            io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this));
+                            io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
             String planSub = plan.items.isEmpty()
                     ? L.s("还没建。可在字典管理页把几本字典排成一个顺序", "Not built. Order several dictionaries in dictionary management")
                     : L.f("已建 %d 本 · 按顺序自动接力 · %s",
@@ -4624,7 +4624,7 @@ public class MainActivity extends Activity {
     private void showPlanPicker() {
         io.github.wlmosv_png.wpaforge.audit.DictPlan plan =
                 io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
-                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this));
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
 
         if (plan.items.isEmpty()) {
             NetDialog d = new NetDialog(this, L.s("还没有多字典计划", "No plan yet"),
@@ -4671,6 +4671,89 @@ public class MainActivity extends Activity {
             Toast.makeText(this, L.f("已选多字典计划（%d 本）", "%d-dictionary plan selected",
                     plan.items.size()), Toast.LENGTH_SHORT).show();
         });
+        d.show();
+    }
+
+    /**
+     * 破解页的轻量计划管理（管理顺序 / 移出计划）。
+     *
+     * <p>与字典管理页共用**同一份权威计划数据**（按目标键的 plan 文件），
+     * 不另造一套、不复制状态。调整直接 {@code DictPlan.move/removeAt} + 落盘，
+     * 保存后立即刷新破解页计划展示。
+     *
+     * <p>运行保护：计划正在执行（RUNNING）时禁改，避免任务错位；
+     * 暂停/空闲时可改，已完成字典的进度随条目一起移动（不被清掉）。
+     */
+    private void showPlanManager() {
+        io.github.wlmosv_png.wpaforge.audit.DictPlan p =
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+        if (p.items.isEmpty()) {
+            showPlanPicker();
+            return;
+        }
+        final io.github.wlmosv_png.wpaforge.audit.DictPlan running = livePlan();
+        final boolean executing = running != null
+                && running.state == io.github.wlmosv_png.wpaforge.audit.DictPlan.State.RUNNING;
+
+        NetDialog d = new NetDialog(this, L.s("管理计划顺序", "Manage plan order"),
+                executing
+                        ? L.s("计划正在执行，暂不能调整顺序。\n先暂停或停止，再回来调整。",
+                                "Plan is running — pause or stop it first, then reorder.")
+                        : L.s("点 ↑/↓ 调顺序，× 移出本计划。改动立即保存。",
+                                "Tap ↑/↓ to reorder, × to remove. Changes save immediately."));
+
+        for (int i = 0; i < p.items.size(); i++) {
+            final int idx = i;
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item it = p.items.get(i);
+            final String name = it.name;
+            final String status = io.github.wlmosv_png.wpaforge.audit.DictPlan.stateLabel(it.local);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(px(4), px(6), px(4), px(6));
+
+            TextView nm = new TextView(this);
+            nm.setText((i + 1) + ". " + name + "   " + status);
+            nm.setTextSize(AmberTheme.FS_ACTION);
+            nm.setTextColor(TEXT);
+            nm.setSingleLine(true);
+            nm.setEllipsize(TextUtils.TruncateAt.END);
+            row.addView(nm, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            // 上移 / 下移 / 移出：直接改同一份 plan 并落盘，再重画本弹窗
+            Button up = smallChip(L.s("↑", "↑"), ACCENT, v -> {
+                if (executing) { Toast.makeText(this, L.s("计划执行中，暂不能调整", "Plan running — cannot reorder"), Toast.LENGTH_SHORT).show(); return; }
+                io.github.wlmosv_png.wpaforge.audit.DictPlan q = io.github.wlmosv_png.wpaforge.audit.DictPlan.load(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                if (q.move(idx, -1)) { q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey())); }
+                refreshPlanLine(); updateConnectDict(); updateDictStatus();
+                d.dismiss(); showPlanManager();
+            });
+            Button down = smallChip(L.s("↓", "↓"), ACCENT, v -> {
+                if (executing) { Toast.makeText(this, L.s("计划执行中，暂不能调整", "Plan running — cannot reorder"), Toast.LENGTH_SHORT).show(); return; }
+                io.github.wlmosv_png.wpaforge.audit.DictPlan q = io.github.wlmosv_png.wpaforge.audit.DictPlan.load(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                if (q.move(idx, +1)) { q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey())); }
+                refreshPlanLine(); updateConnectDict(); updateDictStatus();
+                d.dismiss(); showPlanManager();
+            });
+            Button rm = smallChip(L.s("×", "×"), AmberTheme.DANGER, v -> {
+                if (executing) { Toast.makeText(this, L.s("计划执行中，暂不能调整", "Plan running — cannot reorder"), Toast.LENGTH_SHORT).show(); return; }
+                io.github.wlmosv_png.wpaforge.audit.DictPlan q = io.github.wlmosv_png.wpaforge.audit.DictPlan.load(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                if (q.removeAt(idx)) { q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey())); }
+                refreshPlanLine(); updateConnectDict(); updateDictStatus();
+                d.dismiss(); showPlanManager();
+            });
+            row.addView(up);
+            row.addView(down);
+            row.addView(rm);
+            d.addView(row);
+        }
+
+        d.addItem(L.s("管理字典（完整）", "Manage dictionaries (full)"), dd -> {
+            startActivity(new android.content.Intent(this, DictActivity.class));
+        });
+        d.setNegative(L.s("关闭", "Close"), null);
         d.show();
     }
 
@@ -4923,7 +5006,10 @@ public class MainActivity extends Activity {
         connectDictView.setTextColor(TEXT_DIM);
         connectDictView.setSingleLine(true);
         connectDictView.setEllipsize(TextUtils.TruncateAt.END);
-        connectDictView.setOnClickListener(v -> showDictSource());
+        connectDictView.setOnClickListener(v -> {
+            if (usePlanMode) showPlanManager();
+            else showDictSource();
+        });
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         dlp.topMargin = px(5);
@@ -6067,7 +6153,7 @@ public class MainActivity extends Activity {
                 // 服务不在/拿不到活计划，但确有计划摘要：从盘上读一份做界面快照。
                 io.github.wlmosv_png.wpaforge.audit.DictPlan p =
                         io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
-                                io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this));
+                                io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
                 if (!p.items.isEmpty()) {
                     usePlanMode = true;
                     selectedPlan = p;

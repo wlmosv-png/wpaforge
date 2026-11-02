@@ -70,8 +70,12 @@ public final class EvidenceGrade {
                 // 四条件同源于同一行 WifiInfo，归属由前置闸门保证
                 return Level.DIRECT;
             case AUTH_FAIL:
-                // 保守默认：可能是 m1retry / failover 这类推断
+                // 保守默认：调用方没给等级时按推断处理，绝不当成可直接验证
                 return Level.INFERRED;
+            case NETWORK_AUTH_FAIL:
+                // D1：网络级事件**永远**不可持久化、不可推进游标。
+                // 它不是「这条候选有结论」，而是「环境里发生了认证失败」。
+                return Level.NONE;
             case TIMEOUT:
             case UNKNOWN:
             case ERROR:

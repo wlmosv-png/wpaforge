@@ -67,8 +67,43 @@ public final class CrackEngine {
     public enum Verdict {
         /** 系统确认连上 → 密码正确 */
         SUCCESS,
-        /** 系统尝试后失败 → 密码错误 */
+        /**
+         * **候选级**失败：能证明「这条候选的密钥被拒」。
+         *
+         * <p>语义边界（D1 重新定义，必读）：
+         * <ul>
+         *   <li>它**不是**「网络上发生过认证失败」——那只是
+         *       {@link #NETWORK_AUTH_FAIL}。</li>
+         *   <li>它要求证据能把这次失败绑到**当前候选建的配置**上（AT3）。</li>
+         * </ul>
+         * 当前平台能力下 AT3 尚不可达（见 {@link #NETWORK_AUTH_FAIL} 的说明），
+         * 因此这条**短期内不会产生**。保留它是为了让「候选级失败」这个语义
+         * 有明确的落点，而不是被含糊地并进网络事件。
+         */
         AUTH_FAIL,
+        /**
+         * **网络级**事件：目标网络确实发生了认证失败，但证明不了它属于当前候选。
+         *
+         * <h3>为什么必须与 AUTH_FAIL 分开</h3>
+         * 三层问题常被混为一谈：
+         * <pre>
+         *   ① 目标网络发生了认证失败          —— AT1 就能证明
+         *   ② **当前 Attempt** 发生了认证失败  —— 需要证据绑定到本次请求
+         *   ③ **当前候选密码**导致认证失败     —— 需要绑定到本条候选建的配置
+         * </pre>
+         * 只有 ③ 成立才算「这个密码错了」。同 SSID 多配置、系统后台重试旧配置、
+         * 上一条候选的迟到广播，都能只让 ① 成立却与本条候选无关。
+         *
+         * <p>把它显示成「密码错误」会直接误导用户：用户会据此认定这条候选已被
+         * 排除。所以它是一个**独立的结论**：
+         * <ul>
+         *   <li>不写 triedSet、不推 cursor（{@code EvidenceGrade.defaultOf} -> NONE）</li>
+         *   <li>不计入「已证实失败」，也不计入「推断失败」</li>
+         *   <li>不计入退避样本（它不说明候选有问题）</li>
+         *   <li>UI 必须用独立文案与视觉，不得显示成「密码错误」</li>
+         * </ul>
+         */
+        NETWORK_AUTH_FAIL,
         /** 超时，没等到结论 → **不判成功** */
         TIMEOUT,
         /**
@@ -602,6 +637,9 @@ public final class CrackEngine {
         switch (v) {
             case SUCCESS: return pw + "=✓" + (by == null || by.isEmpty() ? "hit" : by);
             case AUTH_FAIL: return pw + "=✗" + (by == null || by.isEmpty() ? "auth" : by);
+            // D1：网络级认证失败有**独立**符号 —— 不能与候选级 ✗ 混用。
+            case NETWORK_AUTH_FAIL: return pw + "=网✗"
+                    + (by == null || by.isEmpty() ? "" : by);
             case TIMEOUT: return pw + "=超时";
             // B5：B2 新增的两个 verdict 此前落到 default，一律显示「?不明」——
             // 「连接还在跑、可以重新裁决」与「连接已终止但无归因」在界面上
@@ -2255,29 +2293,58 @@ public final class CrackEngine {
                      *       **不写 permanent triedSet、不推进续跑游标**。</li>
                      * </ul>
                      */
-                    boolean logDirectFail = logWinUsable
+                    /*
+                     * D5：把「网络级认证失败」与「候选级失败」拆成两级。
+                     *
+                     * 证据链（AT3 要求第 3 条）：
+                     *   ① 命令前目标配置已删净并回读确认（前置闸门，进循环即已成立）
+                     *   ② 命令后本次新建配置拿到 netId = targetNetId
+                     *   ③ TEMP-DISABLED 行的 id= **等于** targetNetId
+                     *   ④ 该行 ssid == 目标，且切片内有序（associate -> 失败前导 -> 该行）
+                     *
+                     * 只要全部成立，这条失败就绑在**本条候选建的配置**上 -> AT3。
+                     * 若 ③ 不成立（例如 supplicant id 与 Android Net ID 不同体系，
+                     * 或 netId 没取到），退回 AT1 -> NETWORK_AUTH_FAIL（网络级事件）。
+                     *
+                     * **降级方向是安全的**：假设错误只会让我们少给 DIRECT，
+                     * 不会错给 DIRECT。
+                     */
+                    boolean logBoundFail = logWinUsable
+                            && WpaLogReader.sawWrongKeyForConfig(
+                                    wlogSlice, target.ssid, target.bssid, targetNetId);
+                    boolean logAttemptFail = logWinUsable && !logBoundFail
                             && WpaLogReader.sawWrongKeyForAttempt(
                                     wlogSlice, target.ssid, target.bssid);
-                    boolean logInferredFail = logWinUsable && !logDirectFail
+                    boolean logInferredFail = logWinUsable && !logBoundFail && !logAttemptFail
                             && tried
                             && (WpaLogReader.sawHandshakeFailure(wlogSlice)
                                     || WpaLogReader.sawAssocReject(wlogSlice));
-                    if (logDirectFail) {
-                        // ---- 支A：带 SSID 归属的直接否认 —— 可靠，立即结案 ----
+                    if (logBoundFail) {
+                        // ---- 支A-AT3：绑定到本条候选建的配置 -> 候选级失败 ----
                         long ms = clock().uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "快速失败(日志): 带归属的直接否认");
-                        // 证据：带 SSID 归属的直接否认（AP-3 级主张）。
-                        // 但归属只到 AT1：TEMP-DISABLED 只有 SSID，无 BSSID / netId 绑定
-                        // -> INFERRED，**不永久排除**（与迁移前逐字一致）。
-                        Attempt wl = judge(password, lastLifecycle, AttemptState.Gate.OK,
+                        android.util.Log.i(TAG, "快速失败(日志/AT3): id=" + targetNetId
+                                + " 落在本次配置上");
+                        return judge(password, lastLifecycle, AttemptState.Gate.OK,
+                                Evidence.Source.WPALOG_A, Evidence.Claim.WRONG_KEY,
+                                Evidence.Attribution.AT3, attemptId,
+                                true, ms,
+                                L.s("日志显示握手失败（密码错误）—— 失败行绑定了本次新建的配置",
+                                    "log shows handshake failure; the failing entry carries "
+                                        + "this attempt's config id"));
+                    }
+                    if (logAttemptFail) {
+                        // ---- 支A-AT1：只证明「网络认证失败」，绑不到本条候选 ----
+                        long ms = clock().uptimeMillis() - t0;
+                        android.util.Log.i(TAG, "快速失败(日志/网络级): 目标认证失败但未绑定本次配置");
+                        return judge(password, lastLifecycle, AttemptState.Gate.OK,
                                 Evidence.Source.WPALOG_A, Evidence.Claim.WRONG_KEY,
                                 Evidence.Attribution.AT1, attemptId,
                                 targetNetId >= 0, ms,
-                                L.s("日志显示握手失败（密码错误）",
-                                    "log shows handshake failure (wrong passphrase)"));
-                        // 归属等级与持久化能力由 Adjudicator 按 AT1 决定，
-                        // 这里不再自行覆盖 grade（否则就是绕过统一裁决）。
-                        return wl;
+                                L.s("目标网络报告认证失败，但无法证明属于本条候选的配置"
+                                        + "（网络级事件，不是已证实的密码错误）",
+                                    "the target network reported an auth failure, but it "
+                                        + "cannot be bound to this candidate's config "
+                                        + "(network-level event, NOT a proven wrong passphrase)"));
                     }
                     if (logInferredFail) {
                         // ---- 支B：零字段证据，不可归属 —— 先武装确认窗口，不抢答 ----

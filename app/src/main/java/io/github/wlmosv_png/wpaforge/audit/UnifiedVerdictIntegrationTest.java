@@ -45,8 +45,27 @@ public final class UnifiedVerdictIntegrationTest {
         String listOut = "";
         /** true = list-networks **无论何时**都回 listOut（模拟「命令前旧配置就在」）。 */
         boolean listAlways = false;
-        boolean attemptStarted = false;
+        /**
+         * 是否已收到 connect-network 命令。
+         *
+         * <p>引擎把 connect 放在**异步线程**里发（不让它阻塞轮询），
+         * 所以主循环第一次探测很可能早于那条线程真正执行 —— 这是测试脚手架的
+         * 竞态根源（曾导致 targetNetId 恒为 -1，AT3 永远不可达）。
+         *
+         * <p>这里用「短暂让步等待」消除竞态：list/status 若发现尚未见到 connect，
+         * 最多让出 50ms 等它到达。测试是离线脚本，这点等待不影响结论，
+         * 但让「命令后」与「命令前」的判定变成确定的。
+         */
+        volatile boolean connectSeen = false;
         int sc = 0, lc = 0;
+
+        private boolean awaitConnect() {
+            long t0 = System.nanoTime();
+            while (!connectSeen && (System.nanoTime() - t0) < 50_000_000L) {
+                Thread.yield();
+            }
+            return connectSeen;
+        }
 
         Shell status(String s) { statusScript.add(s); return this; }
         Shell log(String s) { logScript.add(s); return this; }
@@ -54,15 +73,17 @@ public final class UnifiedVerdictIntegrationTest {
 
         @Override public String exec(String cmd, long timeoutMs) {
             if (cmd == null) return "";
-            if (cmd.contains("connect-network") || cmd.contains("add-network")) attemptStarted = true;
+            if (cmd.contains("connect-network") || cmd.contains("add-network")) {
+                connectSeen = true;
+            }
             if (cmd.startsWith("cmd wifi status")) {
-                if (!attemptStarted) return "Wifi is not connected\n";
+                if (!awaitConnect()) return "Wifi is not connected\n";    // 前置闸门阶段
                 int i = Math.min(sc++, statusScript.size() - 1);
                 return statusScript.get(Math.max(0, i));
             }
             if (cmd.startsWith("cmd wifi list-networks")) {
                 if (listAlways) return listOut;
-                return attemptStarted ? listOut : "";
+                return awaitConnect() ? listOut : "";                      // 命令前：无目标配置
             }
             if (cmd.contains("logcat")) {
                 int i = Math.min(lc++, logScript.size() - 1);
@@ -173,10 +194,14 @@ public final class UnifiedVerdictIntegrationTest {
             CrackEngine.Attempt a3 = engine(sh3).tryOne(t, "WPA2", "WrongPass12", 3000L, aid);
             info("U3 先无证据后明确失败 -> verdict=" + a3.verdict + " grade=" + a3.grade
                     + " reason=" + a3.reason);
-            ok("U3 后到的明确证据必须改变结论（判 AUTH_FAIL）",
-                    a3.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + a3.verdict);
-            ok("U3 归属只到 AT1 -> INFERRED（不永久排除）",
-                    a3.grade == EvidenceGrade.Level.INFERRED, "grade=" + a3.grade);
+            // D1：后到的证据确实改变了结论（从「无证据」变成「网络认证失败」），
+            // 但归属只到 AT1，绑不到当前候选 -> 网络级事件，不可永久排除。
+            ok("U3 后到的明确证据必须改变结论（不再是 TIMEOUT）",
+                    a3.verdict != CrackEngine.Verdict.TIMEOUT, "verdict=" + a3.verdict);
+            ok("U3 归属只到 AT1 -> NETWORK_AUTH_FAIL / NONE（不永久排除）",
+                    a3.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+                            && a3.grade == EvidenceGrade.Level.NONE,
+                    a3.verdict + "/" + a3.grade);
 
             // ---------------- U4：同一 Attempt 多来源重复证据 ----------------
             // 同一窗口里同时有 assoc-reject、handshake failed、M1 重发
@@ -198,6 +223,35 @@ public final class UnifiedVerdictIntegrationTest {
                             || a4.verdict == CrackEngine.Verdict.TERMINATED_UNKNOWN
                             || a4.verdict == CrackEngine.Verdict.TIMEOUT,
                     "verdict=" + a4.verdict);
+
+            // ---------------- U6：AT-3 真实可达（D5）----------------
+            // 本次命令建的配置 netId=613，且失败行的 id=613 -> 候选级结论
+            String at3Log = mk(aid) + "\n" + assoc() + "\n"
+                    + logLine("RSN: RX message 1 of 4-Way Handshake from " + BSSID) + "\n"
+                    + logLine("WPA: 4-Way Handshake failed - pre-shared key may be incorrect") + "\n"
+                    + logLine("CTRL-EVENT-SSID-TEMP-DISABLED id=613 ssid=\"" + SSID
+                            + "\" auth_failures=1 reason=WRONG_KEY") + "\n";
+            Shell sh6 = new Shell();
+            for (int i = 0; i < 3000; i++) { sh6.status(associatingFrame()); sh6.log(at3Log); }
+            sh6.list("613   " + SSID + "   WPA2\n");
+            CrackEngine.Attempt a6 = engine(sh6).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
+            info("U6 id=613 绑定本次配置 -> verdict=" + a6.verdict + " grade=" + a6.grade
+                    + " reason=" + a6.reason);
+            ok("U6 id 绑定本次配置 -> **AUTH_FAIL（候选级）**",
+                    a6.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + a6.verdict);
+            ok("U6 候选级失败可持久化（DIRECT）",
+                    a6.grade == EvidenceGrade.Level.DIRECT, "grade=" + a6.grade);
+
+            // U7：同一条日志但本次配置 netId=700（id 对不上）-> 退回网络级
+            Shell sh7 = new Shell();
+            for (int i = 0; i < 3000; i++) { sh7.status(associatingFrame()); sh7.log(at3Log); }
+            sh7.list("700   " + SSID + "   WPA2\n");
+            CrackEngine.Attempt a7 = engine(sh7).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
+            info("U7 id=613 但本次配置=700 -> verdict=" + a7.verdict + " grade=" + a7.grade);
+            ok("U7 id 对不上 -> 退回 NETWORK_AUTH_FAIL（不永久排除）",
+                    a7.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+                            && a7.grade == EvidenceGrade.Level.NONE,
+                    a7.verdict + "/" + a7.grade);
 
             // ---------------- U5：两个 Attempt 事件交错 ----------------
             String otherAid = attemptIdOf(2);

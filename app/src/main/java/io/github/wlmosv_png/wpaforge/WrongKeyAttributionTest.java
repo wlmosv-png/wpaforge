@@ -102,17 +102,36 @@ public final class WrongKeyAttributionTest {
 
         // ============================================================ 场景 4：无 id 的行
         System.out.println();
-        System.out.println("== S4 该行自带 [id=N]，但生产判据从未使用它 ==");
+        System.out.println("== S4 该行自带 id=N —— D5 之后生产判据**已经用它**（AT3 绑定）==");
         List<WpaLogReader.LogEvent> ev = WpaLogReader.parse(
                 wpa("CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"" + SSID
                         + "\" auth_failures=1 duration=5 reason=WRONG_KEY"), 0L);
         ok("S4-a 解析出 wrong_key 事件", ev.size() == 1
                 && WpaLogReader.KIND_WRONG_KEY.equals(ev.get(0).kind));
         info("raw = " + (ev.isEmpty() ? "<none>" : ev.get(0).raw.trim()));
-        // wrong_key 行里的 `id=0` 是 supplicant 的 network id，但 LogEvent.netId 只由
-        // CONNECTED 行填充 → 这里恒为 UNKNOWN。
-        ok("S4-b wrong_key 事件的 netId 恒为 UNKNOWN（该字段未接入本判据）",
-                ev.size() == 1 && ev.get(0).netId == WpaLogReader.NETID_UNKNOWN);
+        // D5 契约更新（收紧）：wrong_key 行的 `id=0` 现在会被解析进 LogEvent.netId。
+        // 这是 AT3 绑定的唯一字段 —— 之前它恒为 UNKNOWN，所以永远不可能有 AT3。
+        ok("S4-b wrong_key 事件的 netId 已解析（id=0 -> 0，不再是 UNKNOWN）",
+                ev.size() == 1 && ev.get(0).netId == 0L);
+        info("解析出的 id = " + (ev.isEmpty() ? "<none>" : String.valueOf(ev.get(0).netId)));
+
+        // 绑定判据：id 与本次配置 netId 一致才给 AT3
+        String bound = wpa("wlan0: Trying to associate with SSID '" + SSID + "'")
+                + wpa("RSN: RX message 1 of 4-Way Handshake from " + BSSID)
+                + wpa("CTRL-EVENT-SSID-TEMP-DISABLED id=613 ssid=\"" + SSID
+                        + "\" auth_failures=1 duration=5 reason=WRONG_KEY");
+        ok("S4-c id=613 与本次配置 netId=613 一致 -> 绑定成立（AT3 可达）",
+                WpaLogReader.sawWrongKeyForConfig(bound, SSID, BSSID, 613L));
+        ok("S4-d id=613 但本次配置 netId=700（不同体系/别的配置）-> 不绑定",
+                !WpaLogReader.sawWrongKeyForConfig(bound, SSID, BSSID, 700L));
+        ok("S4-e netId 没取到（-1）-> 不绑定（无从证明，安全降级）",
+                !WpaLogReader.sawWrongKeyForConfig(bound, SSID, BSSID, -1L));
+        String noId = wpa("wlan0: Trying to associate with SSID '" + SSID + "'")
+                + wpa("RSN: RX message 1 of 4-Way Handshake from " + BSSID)
+                + wpa("CTRL-EVENT-SSID-TEMP-DISABLED ssid=\"" + SSID
+                        + "\" auth_failures=1 reason=WRONG_KEY");
+        ok("S4-f 该行没有 id= 字段 -> 不绑定（不会因为「反正对不上」而误放行）",
+                !WpaLogReader.sawWrongKeyForConfig(noId, SSID, BSSID, 613L));
 
         // ============================================================ 场景 5：历史污染
         System.out.println();

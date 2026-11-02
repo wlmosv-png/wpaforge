@@ -84,11 +84,33 @@ public final class VerdictDownstreamTest {
                 !EvidenceGrade.advancesCursor(
                         EvidenceGrade.defaultOf(CrackEngine.Verdict.TERMINATED_UNKNOWN)), "");
 
+        // ---------------------------------------------------------- 2b) 网络级
+        System.out.println();
+        System.out.println("-- NETWORK_AUTH_FAIL 必须独立成类（D1）--");
+        VerdictTally tn = new VerdictTally();
+        tn.add(CrackEngine.Verdict.NETWORK_AUTH_FAIL, EvidenceGrade.Level.NONE);
+        info("NETWORK_AUTH_FAIL -> executed=" + tn.executed()
+                + " 已证实=" + tn.confirmedFail() + " 推断=" + tn.inferred()
+                + " 无结论=" + tn.inconclusive() + " 网络级=" + tn.networkAuthFail());
+        ok("NETWORK_AUTH_FAIL 只计入 networkAuthFail（不混入已证实/推断/无结论）",
+                tn.networkAuthFail() == 1 && tn.confirmedFail() == 0
+                        && tn.inferred() == 0 && tn.inconclusive() == 0,
+                tn.networkAuthFail() + "/" + tn.confirmedFail() + "/" + tn.inferred());
+        ok("存在网络级失败时 missProven() 必须为 false（不能宣称「未命中」）",
+                !tn.missProven(), "");
+        ok("NETWORK_AUTH_FAIL 不计入退避样本（它不说明候选有问题）",
+                !io.github.wlmosv_png.wpaforge.audit.BackoffPolicy.countable(
+                        CrackEngine.Verdict.NETWORK_AUTH_FAIL), "");
+        ok("NETWORK_AUTH_FAIL 不推进游标",
+                !EvidenceGrade.advancesCursor(
+                        EvidenceGrade.defaultOf(CrackEngine.Verdict.NETWORK_AUTH_FAIL)), "");
+
         // ---------------------------------------------------------- 3) 统计闭合
         for (CrackEngine.Verdict v : ALL) {
             VerdictTally t = new VerdictTally();
             t.add(v, EvidenceGrade.defaultOf(v));
-            int sum = t.confirmedFail() + t.inferred() + t.inconclusive();
+            int sum = t.confirmedFail() + t.inferred() + t.inconclusive()
+                    + t.networkAuthFail();
             boolean excluded = (v == CrackEngine.Verdict.SUCCESS
                     || v == CrackEngine.Verdict.ABORTED);
             int expectExecuted = excluded ? 0 : 1;
@@ -119,8 +141,9 @@ public final class VerdictDownstreamTest {
         t4.add(CrackEngine.Verdict.SUCCESS, EvidenceGrade.Level.DIRECT);     // 不计
         info("混合: executed=" + t4.executed() + " 已证实失败=" + t4.confirmedFail()
                 + " 推断失败=" + t4.inferred() + " 无结论=" + t4.inconclusive());
-        ok("混合场景闭合：executed = 已证实 + 推断 + 无结论",
-                t4.executed() == t4.confirmedFail() + t4.inferred() + t4.inconclusive(),
+        ok("混合场景闭合：executed = 已证实 + 推断 + 无结论 + 网络级",
+                t4.executed() == t4.confirmedFail() + t4.inferred()
+                        + t4.inconclusive() + t4.networkAuthFail(),
                 "executed=" + t4.executed());
         ok("混合场景具体数值正确（4 条计入，1 已证实 / 1 推断 / 2 无结论）",
                 t4.executed() == 4 && t4.confirmedFail() == 1

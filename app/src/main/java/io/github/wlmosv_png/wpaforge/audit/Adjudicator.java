@@ -21,8 +21,10 @@ import java.util.Collection;
  *   <tr><td>1</td><td>CONNECTED 且归属 AT3</td><td>SUCCESS / DIRECT</td><td>—</td></tr>
  *   <tr><td>2</td><td>CONNECTED 但归属 &lt; AT3</td>
  *       <td>UNKNOWN（归属不明）</td><td>否</td></tr>
- *   <tr><td>3</td><td>WRONG_KEY 且归属 AT3</td><td>AUTH_FAIL / DIRECT</td><td><b>是</b></td></tr>
- *   <tr><td>4</td><td>WRONG_KEY 且归属 AT2 / AT1</td><td>AUTH_FAIL / INFERRED</td><td>否</td></tr>
+ *   <tr><td>3</td><td>WRONG_KEY 且归属 AT3（绑到本条建的配置）</td>
+ *       <td>AUTH_FAIL / DIRECT</td><td><b>是</b></td></tr>
+ *   <tr><td>4</td><td>WRONG_KEY 但归属 AT2 / AT1（只证明网络失败）</td>
+ *       <td><b>NETWORK_AUTH_FAIL / NONE</b></td><td>否</td></tr>
  *   <tr><td>5</td><td>NETWORK_REJECTED（无 WRONG_KEY）</td>
  *       <td>UNKNOWN（reason=network-rejected）</td><td>否</td></tr>
  *   <tr><td>6</td><td>只有 NOT_CONNECTED，生命周期 ACTIVE</td><td>INCOMPLETE</td><td>否</td></tr>
@@ -142,15 +144,27 @@ public final class Adjudicator {
                     "target appears connected but cannot be attributed to this attempt");
         }
 
-        // ---- 规则 3/4：明确密钥不符 ----
+        // ---- 规则 3/4：密钥不符（按归属分两级，语义不同）----
         if (sawWrongKey) {
-            boolean permanent = rank(bestWrongKey) >= rank(Evidence.Attribution.AT3);
-            return new Result(CrackEngine.Verdict.AUTH_FAIL,
-                    permanent ? EvidenceGrade.Level.DIRECT : EvidenceGrade.Level.INFERRED,
-                    "wrong-key", wrongSrc,
-                    permanent
-                            ? "explicit wrong-key evidence attributed to this attempt (AT3)"
-                            : "wrong-key evidence without AT3 attribution - this round only");
+            boolean bound = rank(bestWrongKey) >= rank(Evidence.Attribution.AT3);
+            if (bound) {
+                // ③ 能证明「当前候选密码导致失败」-> 候选级结论
+                return new Result(CrackEngine.Verdict.AUTH_FAIL,
+                        EvidenceGrade.Level.DIRECT, "wrong-key", wrongSrc,
+                        "explicit wrong-key evidence bound to the config created "
+                                + "by this attempt (AT3)");
+            }
+            // ①/② 只能证明「网络发生了认证失败」，绑不到当前候选 ->
+            // **网络级事件**，不是候选级失败。
+            //
+            // 旧实现这里给 AUTH_FAIL / INFERRED，UI 会把它显示成「密码错误」，
+            // 用户据此认为这条候选已被排除 —— 那是错的（同 SSID 多配置、
+            // 系统后台重试旧配置、上一条候选的迟到广播都能只让 ① 成立）。
+            return new Result(CrackEngine.Verdict.NETWORK_AUTH_FAIL,
+                    EvidenceGrade.Level.NONE, "network-auth-fail", wrongSrc,
+                    "authentication failed on the network, but the evidence cannot be "
+                            + "bound to the config created by this attempt "
+                            + "(network-level event, NOT a proven wrong passphrase)");
         }
 
         // ---- 规则 5：网络拒绝（关联被拒等）----

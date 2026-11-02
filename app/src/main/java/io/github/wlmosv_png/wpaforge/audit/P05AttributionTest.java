@@ -145,17 +145,13 @@ public final class P05AttributionTest {
             b.add("10-31 12:00:02.000  1000  1000 I wpa_supplicant: CTRL-EVENT-SSID-TEMP-DISABLED ssid=\"" + TARGET + "\" reason=WRONG_KEY auth_failures=1");
             CrackEngine.Attempt rb = run("B 带归属直接否认", b);
 
-            ok("B 产出了 AUTH_FAIL", rb.verdict == CrackEngine.Verdict.AUTH_FAIL,
+            // D1 契约更新：TEMP-DISABLED 只有 SSID（AT1），绑不到**本条候选建的配置**。
+            // 它证明的是「网络发生了认证失败」，不是「这条密码错了」。
+            ok("B 带归属的直接否认 -> NETWORK_AUTH_FAIL（网络级事件）",
+                    rb.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL,
                     "verdict=" + rb.verdict);
-            ok("B 带归属的直接否认 → AUTH_FAIL（保留判定能力）",
-                    rb.verdict == CrackEngine.Verdict.AUTH_FAIL,
-                    "verdict=" + rb.verdict);
-            // v2.1 契约更新（非降低断言）：TEMP-DISABLED 只有 SSID（AT-1），
-            // 无 BSSID/netId 绑定 → 不再给 DIRECT（DIRECT = 允许永久排除）。
-            // 证据强度理由见 doc/UNIFIED-VERDICT-DESIGN-v2.1.md §P0-B。
-            ok("B 带归属直接否认降级为 INFERRED（AT-1 不可永久排除）",
-                    rb.grade == EvidenceGrade.Level.INFERRED,
-                    "grade=" + rb.grade);
+            ok("B 不可永久排除（grade=NONE）",
+                    rb.grade == EvidenceGrade.Level.NONE, "grade=" + rb.grade);
 
         } catch (Throwable t) {
             fail++;

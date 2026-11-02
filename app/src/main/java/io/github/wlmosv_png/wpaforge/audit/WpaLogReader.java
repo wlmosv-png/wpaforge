@@ -211,6 +211,22 @@ public final class WpaLogReader {
             Pattern.compile("CTRL-EVENT-SSID-TEMP-DISABLED[^\\n]*ssid=\"([^\"]+)\"");
 
     /**
+     * 同一条 TEMP-DISABLED 行里的 {@code id=N}（D5）。
+     *
+     * <p>真机样本：
+     * <pre>
+     *   CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="B212" auth_failures=1 duration=10 reason=WRONG_KEY
+     * </pre>
+     * 注意这里是 {@code id=0}（**不是** {@code [id=0]}）—— 与
+     * {@code CTRL-EVENT-CONNECTED ... [id=0]} 的写法不同，所以必须单独一条正则。
+     *
+     * <p>前置有 {@code (?:^|\\s)} 锚定，避免把 {@code ssid="...id=..."} 这种
+     * 值里恰好含 {@code id=} 的内容误当字段。
+     */
+    private static final Pattern P_WRONG_KEY_ID =
+            Pattern.compile("(?:^|\\s)id=(-?[0-9]+)");
+
+    /**
      * 同一条 TEMP-DISABLED 行里的 {@code auth_failures=N}。
      *
      * <p>它是 wpa_supplicant 对这个网络的**累计认证失败次数**：
@@ -346,8 +362,18 @@ public final class WpaLogReader {
                     try { af = Integer.parseInt(mf.group(1)); }
                     catch (Throwable ignored) { af = LogEvent.AUTH_FAILURES_UNKNOWN; }
                 }
+                // D5：把这条行的 id=N 也解析出来。
+                // 它是**唯一**能把「网络级认证失败」绑到「本条建的配置」的字段。
+                long wkNetId = NETID_UNKNOWN;
+                Matcher mi = P_WRONG_KEY_ID.matcher(line);
+                if (mi.find()) {
+                    try {
+                        long v = Long.parseLong(mi.group(1));
+                        if (v >= 0) wkNetId = v;   // 负数只可能是噪音
+                    } catch (Throwable ignored) { }
+                }
                 out.add(new LogEvent(at, mw.group(1), null, KIND_WRONG_KEY, line,
-                        NETID_UNKNOWN, af));
+                        wkNetId, af));
                 continue;
             }
             Matcher mc2 = P_CONNECTED.matcher(line);
@@ -514,6 +540,53 @@ public final class WpaLogReader {
             // 这里不再额外否决 —— 保留与旧行为一致的宽松度，只增加正向证据。
         }
         return true;
+    }
+
+    /**
+     * **AT3 级** WRONG_KEY：能证明「这次失败来自本条候选建的配置」（D5）。
+     *
+     * <h3>为什么需要它</h3>
+     * {@link #sawWrongKeyForAttempt} 只到 AT1：它证明「本次窗口里，目标网络
+     * 发生过一次带 SSID 的认证失败」。但同 SSID 多配置时，系统后台用**旧配置**
+     * 重试失败同样满足它 —— 证据绑不到**本条候选**，只能算网络级事件。
+     *
+     * <h3>AT3 的判据（比 AT1 多一条硬绑定）</h3>
+     * <ol>
+     *   <li>满足 {@link #sawWrongKeyForAttempt} 的全部条件（有序 + 失败前导）；</li>
+     *   <li><b>该 TEMP-DISABLED 行的 {@code id=N} 必须等于本次命令新建配置的
+     *       netId</b>（{@code targetNetId}）。</li>
+     * </ol>
+     * 第 2 条是**配置级绑定**：netId 是本条命令之后才出现的（命令前目标配置
+     * 已被删净并回读确认），所以「id 等于它」只可能指向本条候选建的配置。
+     *
+     * <h3>安全边界（必须理解）</h3>
+     * 这里隐含一个前提：<b>wpa_supplicant 的 {@code id=} 与 Android 的 Net ID
+     * 属于同一编号空间</b>。该前提**尚未在真机上证实**（残余风险 R-4）。
+     *
+     * <p>但**假设错误是安全的**：
+     * <ul>
+     *   <li>若两者不同体系 → {@code id} 几乎不可能恰好等于本次 netId →
+     *       本方法恒 false → 退回 AT1 的 NETWORK_AUTH_FAIL（保守，不误判）；</li>
+     *   <li>若两者同体系 → 绑定成立，可以安全地给出 AT3。</li>
+     * </ul>
+     * 换句话说：<b>这个设计只会「少给 DIRECT」，不会「错给 DIRECT」</b>。
+     * 这一点是它能被采用的关键理由 —— 它不是靠假设成立来保证安全，
+     * 而是靠假设**失败时的降级方向**来保证安全。
+     *
+     * @param targetNetId 本次命令新建配置的 netId；{@code < 0} 表示没拿到（直接 false）
+     */
+    public static boolean sawWrongKeyForConfig(String logcatOutput, String targetSsid,
+                                               String targetBssid, long targetNetId) {
+        if (targetSsid == null || targetSsid.isEmpty() || logcatOutput == null) return false;
+        if (targetNetId < 0) return false;   // 没有本次配置的 netId 就无从绑定
+        if (!sawWrongKeyForAttempt(logcatOutput, targetSsid, targetBssid)) return false;
+
+        for (LogEvent e : parse(logcatOutput)) {
+            if (!KIND_WRONG_KEY.equals(e.kind)) continue;
+            if (!targetSsid.equals(e.ssid)) continue;
+            if (e.netId == targetNetId) return true;
+        }
+        return false;
     }
 
     /**

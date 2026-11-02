@@ -49,6 +49,7 @@ public final class AdjudicatorMatrixTest {
 
         int cells = 0, badAuthFail = 0, badDirect = 0, badGate = 0,
                 badActive = 0, badTerm = 0, badUnknownLc = 0, badSuccess = 0;
+        int badBound = 0, badNet = 0;
 
         for (AttemptState.Gate g : gates) {
             for (CrackEngine.Lifecycle lc : lcs) {
@@ -86,6 +87,14 @@ public final class AdjudicatorMatrixTest {
                         if (r.verdict == CrackEngine.Verdict.SUCCESS
                                 && (c != Evidence.Claim.CONNECTED
                                     || a != Evidence.Attribution.AT3)) badSuccess++;
+                        // I6（D1）：AUTH_FAIL 只在 WRONG_KEY + AT3；
+                        // NETWORK_AUTH_FAIL 只在 WRONG_KEY 且 < AT3。
+                        if (r.verdict == CrackEngine.Verdict.AUTH_FAIL
+                                && (c != Evidence.Claim.WRONG_KEY
+                                    || a != Evidence.Attribution.AT3)) badBound++;
+                        if (r.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+                                && (c != Evidence.Claim.WRONG_KEY
+                                    || a == Evidence.Attribution.AT3)) badNet++;
                     }
                 }
             }
@@ -99,6 +108,8 @@ public final class AdjudicatorMatrixTest {
         eq("I4b NOT_CONNECTED + TERMINATED -> TERMINATED_UNKNOWN", 0, badTerm);
         eq("I4c NOT_CONNECTED + UNKNOWN -> UNKNOWN（未知不得当终止）", 0, badUnknownLc);
         eq("I5 SUCCESS 只在 CONNECTED + AT3", 0, badSuccess);
+        eq("I6a AUTH_FAIL（候选级）只在 WRONG_KEY + AT3", 0, badBound);
+        eq("I6b NETWORK_AUTH_FAIL（网络级）只在 WRONG_KEY 且 < AT3", 0, badNet);
 
         // ---------------------------------------------------------- 未归属证据
         System.out.println();
@@ -154,9 +165,9 @@ public final class AdjudicatorMatrixTest {
         Adjudicator.Result rd = Adjudicator.adjudicate(
                 st(AttemptState.Gate.OK, CrackEngine.Lifecycle.TERMINATED), dup);
         info("三条 AT1 WRONG_KEY -> " + rd);
-        ok("多来源重复证据只裁决一次（AUTH_FAIL / INFERRED）",
-                rd.verdict == CrackEngine.Verdict.AUTH_FAIL
-                        && rd.grade == EvidenceGrade.Level.INFERRED, rd.toString());
+        ok("多来源重复证据只裁决一次（三条 AT1 -> 一个 NETWORK_AUTH_FAIL / NONE）",
+                rd.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+                        && rd.grade == EvidenceGrade.Level.NONE, rd.toString());
 
         // ---------------------------------------------------------- 冲突证据
         System.out.println();
@@ -194,7 +205,7 @@ public final class AdjudicatorMatrixTest {
             info("WRONG_KEY / " + a + " -> " + r + " persistable="
                     + EvidenceGrade.persistable(r.grade));
         }
-        ok("只有 AT3 的 AUTH_FAIL 可持久化（其余一律 INFERRED）",
+        ok("只有 AT3 的 AUTH_FAIL 可持久化（低于 AT3 一律 NETWORK_AUTH_FAIL / NONE）",
                 EvidenceGrade.persistable(Adjudicator.adjudicate(
                         st(AttemptState.Gate.OK, CrackEngine.Lifecycle.TERMINATED),
                         java.util.Collections.singletonList(

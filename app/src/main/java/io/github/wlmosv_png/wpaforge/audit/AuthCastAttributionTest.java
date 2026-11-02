@@ -130,8 +130,8 @@ public final class AuthCastAttributionTest {
             CrackEngine.Attempt aA = eA.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
             info("A netId 可取(613) -> verdict=" + aA.verdict + " grade=" + aA.grade
                     + " by=" + aA.confirmedBy);
-            ok("A 仍然产出 AUTH_FAIL（判定能力不能丢）",
-                    aA.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + aA.verdict);
+            ok("A 产出 NETWORK_AUTH_FAIL（网络级事件，不是候选级失败）",
+                    aA.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL, "verdict=" + aA.verdict);
             ok("A 确实由 authcast 判定", "authcast".equals(aA.confirmedBy),
                     "by=" + aA.confirmedBy);
             // C1 契约更新（收紧，不是放宽）：
@@ -139,7 +139,7 @@ public final class AuthCastAttributionTest {
             // **不**证明这条广播属于它 —— 广播本身不带 netId/BSSID。
             // 所以即使 netId 建出来了，也只能 INFERRED。
             ok("A 即使 netId 建出来（613）**也不得** DIRECT（广播与配置无关联证据）",
-                    aA.grade == EvidenceGrade.Level.INFERRED, "grade=" + aA.grade);
+                    aA.grade != EvidenceGrade.Level.DIRECT, "grade=" + aA.grade);
             ok("A 的判词说明「无法证明属于本次配置」",
                     aA.detail != null && aA.detail.contains("无法证明属于本次配置"),
                     "detail=" + aA.detail);
@@ -151,11 +151,11 @@ public final class AuthCastAttributionTest {
                     + " by=" + aB.confirmedBy
                     + " detail=" + (aB.detail == null ? "" : aB.detail.substring(
                             Math.max(0, aB.detail.length() - 40))));
-            ok("B 仍然产出 AUTH_FAIL（本轮结论保留）",
-                    aB.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + aB.verdict);
+            ok("B 产出 NETWORK_AUTH_FAIL",
+                    aB.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL, "verdict=" + aB.verdict);
             ok("B 由 authcast 判定", "authcast".equals(aB.confirmedBy), "by=" + aB.confirmedBy);
-            ok("B 拿不到 netId -> INFERRED（**不永久排除**，续跑会重试）",
-                    aB.grade == EvidenceGrade.Level.INFERRED, "grade=" + aB.grade);
+            ok("B 不可持久化（NONE -> 不写 triedSet / 不推 cursor）",
+                    aB.grade == EvidenceGrade.Level.NONE, "grade=" + aB.grade);
             ok("B 的判词显式说明「仅本轮结论」",
                     aB.detail != null && aB.detail.contains("仅本轮结论"),
                     "detail=" + aB.detail);
@@ -167,10 +167,12 @@ public final class AuthCastAttributionTest {
             CrackEngine.Attempt aC = eC.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
             info("C 同 SSID 两条配置 -> verdict=" + aC.verdict + " grade=" + aC.grade
                     + " by=" + aC.confirmedBy);
-            ok("C 同 SSID 多配置仍然 INFERRED（不得永久排除：可能是旧配置在失败）",
-                    aC.grade == EvidenceGrade.Level.INFERRED, "grade=" + aC.grade);
-            ok("C 仍然是 AUTH_FAIL（判定能力保留）",
-                    aC.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + aC.verdict);
+            // D1 契约更新：这类证据只能证明「网络发生过认证失败」，
+            // 绑不到当前候选 -> NETWORK_AUTH_FAIL，**不是**候选级失败。
+            ok("C 同 SSID 多配置 -> NETWORK_AUTH_FAIL（网络级，非候选级）",
+                    aC.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL, "verdict=" + aC.verdict);
+            ok("C 不可持久化（grade=NONE）",
+                    aC.grade == EvidenceGrade.Level.NONE, "grade=" + aC.grade);
 
             // ---- 场景 D：netId 复用（同一个 netId 属于别的配置）----
             // 只证明「这个数字存在过」，不证明「这条广播属于它」。
@@ -178,20 +180,25 @@ public final class AuthCastAttributionTest {
             CrackEngine.Attempt aD = eD.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
             info("D netId 613 属别的 SSID -> verdict=" + aD.verdict + " grade=" + aD.grade
                     + " by=" + aD.confirmedBy);
-            ok("D netId 复用场景下仍然 INFERRED", 
-                    aD.grade == EvidenceGrade.Level.INFERRED, "grade=" + aD.grade);
+            ok("D netId 复用 -> NETWORK_AUTH_FAIL / NONE",
+                    aD.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+                            && aD.grade == EvidenceGrade.Level.NONE,
+                    aD.verdict + "/" + aD.grade);
 
             // ---- 场景 E：配置创建失败（list-networks 一直空）----
             CrackEngine eE = attemptWith("");
             CrackEngine.Attempt aE = eE.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
             info("E 配置创建失败 -> verdict=" + aE.verdict + " grade=" + aE.grade
                     + " by=" + aE.confirmedBy);
-            ok("E 配置没建出来时也不得给 DIRECT", 
+            ok("E 配置没建出来时也不得给 DIRECT",
                     aE.grade != EvidenceGrade.Level.DIRECT, "grade=" + aE.grade);
 
             // ---- 不变量：INFERRED 不写 triedSet、不推 cursor ----
-            ok("AUTH_FAIL/INFERRED 不进永久集合（persistable=false）",
+            ok("INFERRED 不进永久集合（persistable=false）",
                     !EvidenceGrade.persistable(EvidenceGrade.Level.INFERRED), "");
+            ok("NETWORK_AUTH_FAIL 默认分级 NONE，同样不可持久化",
+                    EvidenceGrade.defaultOf(CrackEngine.Verdict.NETWORK_AUTH_FAIL)
+                            == EvidenceGrade.Level.NONE, "");
             ok("AUTH_FAIL/DIRECT 才进永久集合（persistable=true）",
                     EvidenceGrade.persistable(EvidenceGrade.Level.DIRECT), "");
             ok("INFERRED 不推进续跑游标",

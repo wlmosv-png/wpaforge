@@ -32,12 +32,25 @@ public final class VerdictTally {
      */
     private int inferred;
     private int inconclusive;
+    /**
+     * **网络级**认证失败条数（{@link CrackEngine.Verdict#NETWORK_AUTH_FAIL}）。
+     *
+     * <p>D1：它与「已证实失败」「推断失败」是**三种不同的事实**：
+     * <ul>
+     *   <li>{@code confirmedFail}：能证明这条候选的密钥被拒（候选级）</li>
+     *   <li>{@code inferred}     ：曾经用来装「推断」，D1 之后不再产生</li>
+     *   <li>{@code networkAuthFail}：网络确实认证失败，但绑不到当前候选（环境级）</li>
+     * </ul>
+     * 把第三类并进前两类，用户就会把「这条密码错了」当成事实去行动。
+     */
+    private int networkAuthFail;
     private int executed;
 
     public void reset() {
         confirmedFail = 0;
         inferred = 0;
         inconclusive = 0;
+        networkAuthFail = 0;
         executed = 0;
     }
 
@@ -55,6 +68,10 @@ public final class VerdictTally {
             // 推断失败单列，不得伪装成确定结论。
             if (EvidenceGrade.persistable(g)) confirmedFail++;
             else inferred++;
+        } else if (v == CrackEngine.Verdict.NETWORK_AUTH_FAIL) {
+            // D1：独立分类。它既不是「这条候选错了」，也不是「没有结论」——
+            // 它是「环境里发生了认证失败」。不写盘、不计退避、不推进游标。
+            networkAuthFail++;
         } else if (v == CrackEngine.Verdict.TIMEOUT || v == CrackEngine.Verdict.UNKNOWN
                 || v == CrackEngine.Verdict.INCOMPLETE
                 || v == CrackEngine.Verdict.TERMINATED_UNKNOWN
@@ -89,9 +106,19 @@ public final class VerdictTally {
         return confirmedFail;
     }
 
-    /** 无结论的条数（TIMEOUT/UNKNOWN）—— 这些条目不代表密码错。 */
+    /** 无结论的条数（TIMEOUT/UNKNOWN/INCOMPLETE/TERMINATED_UNKNOWN/ERROR/TARGET_GONE）。 */
     public int inconclusive() {
         return inconclusive;
+    }
+
+    /**
+     * **网络级**认证失败条数 —— 网络确实认证失败，但证明不了属于当前候选。
+     *
+     * <p><b>不得**把它显示成「错误密码」**。它只说明「这个网络刚才拒绝过认证」，
+     * 而同 SSID 多配置、系统后台重试旧配置都可能造成这个现象。
+     */
+    public int networkAuthFail() {
+        return networkAuthFail;
     }
 
     /** 执行过的条数（不含 SUCCESS/ABORTED）。 */
@@ -106,6 +133,7 @@ public final class VerdictTally {
     public boolean missProven() {
         // 推断失败同样**不是**确证：只要存在推断失败或无结论，
         // 「未命中」就没有被充分证明。
-        return inconclusive == 0 && inferred == 0;
+        // D1：网络级认证失败也是「有事件但无候选级结论」，同样不能算证伪成功。
+        return inconclusive == 0 && inferred == 0 && networkAuthFail == 0;
     }
 }

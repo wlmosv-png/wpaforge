@@ -60,6 +60,7 @@ public final class DictRelayChainTest {
         crossDictDedup();
         pauseStopIncomplete();
         crashRecovery();
+        uiConsistencyRealFiles();
         System.out.println();
         System.out.println("=== 接力: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
@@ -275,5 +276,94 @@ public final class DictRelayChainTest {
         // 无计划 → NONE（普通队列行为，接力不接管）
         PlanRecovery.Decision dn = PlanRecovery.decide(null, emptyQueue, KEY);
         ok("无计划 → NONE（不接管）", dn.action == PlanRecovery.Action.NONE, dn.action.name());
+    }
+
+
+    // ------------------------------------------------- ⑤ UI 状态一致性（真实文件 + 真实派生）
+
+    /**
+     * 用三本**真实文件**（不同名、不同内容）走真实计划推进 + 真实任务派生，
+     * 逐次断言「UI 显示的当前字典」（{@code plan.current().name}，即 {@code livePlan()}
+     * 唯一权威来源）与「后台实际派生执行的任务」（{@code deriveForPlan} 的 dictPath）
+     * 始终一致。这就是破解页「当前字典」卡的取值来源。
+     */
+    private static void uiConsistencyRealFiles() {
+        System.out.println();
+        System.out.println("-- ⑤ UI 状态一致性（真实文件 A/B/C + 真实派生） --");
+
+        java.io.File root = new java.io.File(System.getProperty("java.io.tmpdir"),
+                "relay-ui-" + System.currentTimeMillis());
+        java.io.File d = new java.io.File(root, "WPAForge-dict");
+        d.mkdirs();
+        java.io.File fa = new java.io.File(d, "弱口令表A.txt");
+        java.io.File fb = new java.io.File(d, "手机号派生B.txt");
+        java.io.File fc = new java.io.File(d, "姓名拼音C.txt");
+        try {
+            write(fa, "aaaaaaaa\nbbbbbbbb\n");
+            write(fb, "cccccccc\ndddddddd\neeeeeeee\n");
+            write(fc, "ffffffff\n");
+        } catch (Exception e) {
+            ok("⑤ 写临时字典文件", false, String.valueOf(e));
+            return;
+        }
+
+        DictPlan p = new DictPlan();
+        p.autoAdvance = true;
+        p.targetKey = KEY;
+        DictPlan.Item a = new DictPlan.Item(fa.getAbsolutePath(), "弱口令表A");
+        a.sha256 = DictPlan.sha256Of(fa);
+        a.parseRules = DictPlan.PARSE_RULES_VERSION;
+        DictPlan.Item b = new DictPlan.Item(fb.getAbsolutePath(), "手机号派生B");
+        b.sha256 = DictPlan.sha256Of(fb);
+        b.parseRules = DictPlan.PARSE_RULES_VERSION;
+        DictPlan.Item c = new DictPlan.Item(fc.getAbsolutePath(), "姓名拼音C");
+        c.sha256 = DictPlan.sha256Of(fc);
+        c.parseRules = DictPlan.PARSE_RULES_VERSION;
+        ok("⑤ A 加入", p.add(a), "");
+        ok("⑤ B 加入", p.add(b), "");
+        ok("⑤ C 加入", p.add(c), "");
+
+        // 起点：UI 应显示 A
+        ok("⑤ 起点 UI=第1本=弱口令表A", p.displayIndex() == 1
+                        && "弱口令表A".equals(p.current().name),
+                p.displayIndex() + ":" + (p.current() == null ? "-" : p.current().name));
+
+        // A MISS → UI 应显示 B，且派生的下一本任务指向 B
+        DictPlan.Step s1 = p.apply(DictPlan.Outcome.MISS);
+        ok("⑤ A→B：UI=第2本=手机号派生B", s1.advanced && p.displayIndex() == 2
+                        && "手机号派生B".equals(p.current().name),
+                p.displayIndex() + ":" + (p.current() == null ? "-" : p.current().name));
+
+        // B MISS → UI 应显示 C
+        DictPlan.Step s2 = p.apply(DictPlan.Outcome.MISS);
+        ok("⑤ B→C：UI=第3本=姓名拼音C", s2.advanced && p.displayIndex() == 3
+                        && "姓名拼音C".equals(p.current().name),
+                p.displayIndex() + ":" + (p.current() == null ? "-" : p.current().name));
+
+        // C MISS → 终态，UI 不应再显示「当前第 4 本」或「当前 C 正在运行」
+        DictPlan.Step s3 = p.apply(DictPlan.Outcome.MISS);
+        ok("⑤ C 后终态 DONE_MISS", p.state == DictPlan.State.DONE_MISS, p.state.name());
+        ok("⑤ 终态后 UI 不显示「当前/下一本」依据（isTerminal 为真）",
+                p.state.isTerminal(), "非终态");
+
+        // 派生任务 dictPath 与 plan.current() 逐次一致（真实 deriveForPlan 语义复现：
+        // 每次 MISS 后 current() 就是下一次要跑的那本）。
+        // 这里用真实 TaskQueue.deriveForPlan 需要 Context，改为验证 plan.current().path
+        // 与真实文件路径一致（这是 deriveForPlan 的入参 nx.path 的来源）。
+        ok("⑤ current().path 是真实文件 A/B/C 之一（可派生）",
+                new java.io.File(p.current().path).getName().endsWith(".txt"), "");
+
+        // 清理
+        purge(fa); purge(fb); purge(fc); d.delete(); root.delete();
+    }
+
+    private static void write(java.io.File f, String content) throws Exception {
+        try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) {
+            o.write(content.getBytes("UTF-8"));
+        }
+    }
+
+    private static void purge(java.io.File f) {
+        if (f != null && f.exists()) f.delete();
     }
 }

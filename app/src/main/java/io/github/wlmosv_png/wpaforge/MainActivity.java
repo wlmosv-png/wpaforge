@@ -714,6 +714,25 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * 计划模式下「当前字典」的**唯一权威来源**。
+     *
+     * <p>优先取服务端**活计划**（{@code planForDisplay}）——接力过程中计划 index
+     * 随 {@code apply(MISS)} 前进，只有它能反映「此刻真的在第几本」。
+     * 服务没起来\/拿不到活计划时退回 {@link #selectedPlan} 快照（启动前选计划时用）。
+     *
+     * <p>不能用 {@link #currentDict} 或 {@link #currentDictName}：那两个是单本模式的
+     * 字段，接力时仍停在第一本，用了就是「界面显示 A、后台在跑 B」的错位。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.DictPlan livePlan() {
+        CrackService svc = liveService();
+        if (svc != null) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp = svc.planForDisplay();
+            if (lp != null && !lp.items.isEmpty()) return lp;
+        }
+        return selectedPlan;
+    }
+
+    /**
      * 刷新按钮状态。
      *
      * 唯一真相是「队列里有没有进行中的任务」，不是服务实例上的标志 ——
@@ -3975,11 +3994,18 @@ public class MainActivity extends Activity {
 
     private void updateDictStatus() {
         if (dictStatus == null) return;
-        if (usePlanMode && selectedPlan != null && !selectedPlan.items.isEmpty()) {
-            dictStatus.setText(L.f("多字典计划: %d 本 · 当前第 %d 本",
-                    "Plan: %d dictionaries · now #%d",
-                    selectedPlan.items.size(), selectedPlan.displayIndex()));
-            return;
+        if (usePlanMode) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp = livePlan();
+            if (lp != null && !lp.items.isEmpty()) {
+                if (lp.state.isTerminal()) {
+                    dictStatus.setText(L.s("多字典计划: 已结束", "Plan: finished"));
+                } else {
+                    dictStatus.setText(L.f("多字典计划: %d 本 · 当前第 %d 本",
+                            "Plan: %d dictionaries · now #%d",
+                            lp.items.size(), lp.displayIndex()));
+                }
+                return;
+            }
         }
         int n = dictCount();
         if (n == 0) {
@@ -6284,14 +6310,22 @@ public class MainActivity extends Activity {
     /** 破解页显示当前选中的字典 */
     private void updateConnectDict() {
         if (connectDictView == null) return;
-        if (usePlanMode && selectedPlan != null && !selectedPlan.items.isEmpty()) {
-            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = selectedPlan.current();
-            connectDictView.setText(L.f("多字典计划 · %d 本 · 当前「%s」",
-                    "Plan · %d dictionaries · now \"%s\"",
-                    selectedPlan.items.size(), cur == null ? "-" : cur.name));
-            connectDictView.setTextColor(ACCENT);
-            updateEmptyHint();
-            return;
+        if (usePlanMode) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp = livePlan();
+            if (lp != null && !lp.items.isEmpty()) {
+                if (lp.state.isTerminal()) {
+                    connectDictView.setText(L.s("多字典计划 · 已结束", "Plan · finished"));
+                    connectDictView.setTextColor(TEXT_DIM);
+                } else {
+                    io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = lp.current();
+                    connectDictView.setText(L.f("多字典计划 · %d 本 · 当前「%s」",
+                            "Plan · %d dictionaries · now \"%s\"",
+                            lp.items.size(), cur == null ? "-" : cur.name));
+                    connectDictView.setTextColor(ACCENT);
+                }
+                updateEmptyHint();
+                return;
+            }
         }
         int n = dictCount();
         if (n <= 0) {
@@ -6328,6 +6362,11 @@ public class MainActivity extends Activity {
                 renderProgressCardState();   // 同上：队列变了就重画状态行
                 // 队列是持久化权威：界面被重建后靠它把「目标/字典」的显示补回来
                 restoreSelectionFromAuthority();
+                // 接力切换字典时，队列变了、计划 index 也变了 —— 必须同步刷新
+                // 「当前字典」卡与「计划/第几本」行，否则 A 切 B 后还显示 A。
+                updateDictStatus();
+                updateConnectDict();
+                refreshPlanLine();
             });
         }
 
@@ -6939,10 +6978,11 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         if (plan != null && !plan.isEmpty()) sb.append(plan);
         // 计划模式下补一行「第几本 / 当前 / 下一本 / 整体进度」，数据来自服务端活计划。
+        // 计划终态（命中/全部跑完/停止）时**不显示**「当前/下一本」——那会让人以为还在跑。
         if (usePlanMode) {
             CrackService svc = liveService();
             io.github.wlmosv_png.wpaforge.audit.DictPlan live = svc == null ? null : svc.planForDisplay();
-            if (live != null && !live.items.isEmpty()) {
+            if (live != null && !live.items.isEmpty() && !live.state.isTerminal()) {
                 io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = live.current();
                 String next = (live.index + 1 < live.items.size())
                         ? live.items.get(live.index + 1).name : L.s("（最后一本）", "(last)");

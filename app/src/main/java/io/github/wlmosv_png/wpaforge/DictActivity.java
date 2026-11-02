@@ -40,6 +40,7 @@ import io.github.wlmosv_png.wpaforge.audit.DictSources;
 import io.github.wlmosv_png.wpaforge.audit.DerivedDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
 import io.github.wlmosv_png.wpaforge.audit.DictPlan;
+import io.github.wlmosv_png.wpaforge.audit.DictTrash;
 import io.github.wlmosv_png.wpaforge.audit.AttemptLedger;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.SourceRank;
@@ -68,6 +69,18 @@ public class DictActivity extends Activity {
      * 免得主列表被一次性产物淹没；要看/要删时点开。
      */
     private boolean showDerived = false;
+
+    /**
+     * 是否展开「多字典计划」卡片（第一批：默认折叠）。
+     *
+     * <p>计划卡片含开关/去重/每本进度等一堆信息，全展开会占掉半屏，
+     * 把真正要看的字典列表挤下去。默认只给一行摘要，点开才看细节。
+     * 这是界面折叠，不碰任何计划数据：成员、顺序、开关照常生效。
+     */
+    private boolean showPlan = false;
+
+    /** 计划成员的绝对路径 -> 1 起顺序号（用于行内「计划 #N」徽标）。每次 refresh 重算。 */
+    private final java.util.Map<String, Integer> planOrderByPath = new java.util.HashMap<>();
 
     /** 本机各字典的历史战绩（{@link SourceRank}）。懒加载 + 有历史记录变更时才重算 */
     private Map<String, io.github.wlmosv_png.wpaforge.audit.SourceRank.Stat> rankStats =
@@ -231,7 +244,8 @@ public class DictActivity extends Activity {
         selectCount.setTextColor(TEXT);
         selectBar.addView(selectCount, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        selectBar.addView(miniBtn(L.s("合并", "Merge"), ACCENT, v -> doMerge()));
+        selectBar.addView(miniBtn(L.s("加入计划", "Add to plan"), ACCENT, v -> planAddSelected()));
+        selectBar.addView(miniBtn(L.s("合并", "Merge"), AmberTheme.TEXT_DIM, v -> doMerge()));
         selectBar.addView(miniBtn(L.s("删除", "Delete"), AmberTheme.DANGER,
                 v -> confirmDeleteSelected()));
         selectBar.addView(miniBtn(L.s("取消", "Cancel"), AmberTheme.TEXT_DIM,
@@ -254,13 +268,26 @@ public class DictActivity extends Activity {
     /**
      * 多字典计划卡片（列表顶部）。
      *
+     * <h3>第一批：默认折叠</h3>
+     * 计划卡片含开关/去重/每本进度，全展开占半屏，把字典列表挤下去。
+     * 默认只给一行摘要（几本 / 当前第几本 / 进度），点标题或箭头才展开细节。
+     * 折叠是纯界面行为，计划数据（成员/顺序/开关）不因折叠而变。
+     *
      * <h3>界面用语约定</h3>
      * 这里只用用户能理解的说法：「多字典计划」「已证实错误」「没确定的」。
-     * 不出现 L1/L2/L3、账本、候选、targetKey 这些内部术语 —— 用户不需要
-     * 为了用功能先去学一套内部词汇。
+     * 不出现 L1/L2/L3、账本、候选、targetKey 这些内部术语。
      */
     private void renderPlanCard() {
         DictPlan p = DictPlan.load(DictPlan.fileFor(this));
+
+        // 计划成员的绝对路径 -> 1 起顺序号（行内「计划 #N」徽标用）。
+        // 路径即计划当前真实引用的文件；改名/移动会让计划引用失效，徽标也随之消失，
+        // 这与「计划还能不能续跑」是同一事实，不粉饰。
+        planOrderByPath.clear();
+        for (int i = 0; i < p.items.size(); i++) {
+            String path = p.items.get(i).path;
+            if (path != null && !path.isEmpty()) planOrderByPath.put(path, i + 1);
+        }
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -272,29 +299,52 @@ public class DictActivity extends Activity {
         clp.bottomMargin = px(10);
         card.setLayoutParams(clp);
 
+        // ── 头部：标题 + 折叠箭头（整行可点，点了就展开/收起）──
+        LinearLayout headRow = new LinearLayout(this);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView title = new TextView(this);
         title.setText(L.s("多字典计划", "Multi-dictionary plan"));
         title.setTextSize(AmberTheme.FS_TITLE);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        card.addView(title);
+        headRow.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+        TextView arrow = new TextView(this);
+        arrow.setText(showPlan ? "▲" : "▼");
+        arrow.setTextSize(AmberTheme.FS_BODY);
+        arrow.setTextColor(AmberTheme.TEXT_DIM);
+        arrow.setPadding(px(8), px(4), px(4), px(4));
+        headRow.addView(arrow);
+        card.addView(headRow);
+
+        // ── 摘要行：空计划给引导，有计划给「几本 / 当前第几本 / 进度」──
         TextView hint = new TextView(this);
         hint.setText(p.items.isEmpty()
-                ? L.s("按顺序跑多本字典：命中立即停，没命中才换下一本。\n"
-                        + "在下面长按字典可加入，或用「加入计划」按钮。",
-                "Runs dictionaries in order: stop on a hit, move on only on a miss.\n"
-                        + "Long-press a dictionary below to add it, or use the button.")
+                ? L.s("还没有添加字典。长按下面的字典加入，或展开后点「加入选中」。",
+                "No dictionaries yet. Long-press one below, or expand and use \"Add selected\".")
                 : L.s("共 " + p.items.size() + " 本 · 当前第 " + p.displayIndex()
-                        + " 本 · 进度 " + Math.round(p.progress() * 100) + "%",
+                        + " 本 · 进度 " + Math.round(p.progress() * 100) + "%"
+                        + (p.autoAdvance ? " · 自动连跑" : " · 单本停"),
                 p.items.size() + " dictionaries · now #" + p.displayIndex()
-                        + " · " + Math.round(p.progress() * 100) + "%"));
+                        + " · " + Math.round(p.progress() * 100) + "%"
+                        + (p.autoAdvance ? " · auto-advance" : " · stop each")));
         hint.setTextSize(AmberTheme.FS_SMALL);
         hint.setTextColor(TEXT_DIM);
         hint.setPadding(0, px(4), 0, px(8));
         card.addView(hint);
 
-        // ── 每本一行：序号 / 名称 / 进度 / 顺序 / 移除 ──
+        headRow.setOnClickListener(v -> { showPlan = !showPlan; refresh(); });
+
+        // 折叠态到此为止：只留标题 + 摘要，不渲染明细与开关。
+        if (!showPlan) {
+            listBox.addView(card);
+            return;
+        }
+
+        // ── 展开态：每本一行（序号 / 名称 / 进度 / 上移下移 / 移除）──
         for (int i = 0; i < p.items.size(); i++) {
             final int idx = i;
             DictPlan.Item it = p.items.get(i);
@@ -376,7 +426,6 @@ public class DictActivity extends Activity {
 
         listBox.addView(card);
     }
-
     /**
      * 取出「正在编辑」的那份计划。
      *
@@ -408,35 +457,26 @@ public class DictActivity extends Activity {
      * 而内容改过的同名文件会被当成新字典（进度不沿用）。
      */
     private void planAddSelected() {
-        DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+        // 只把「明确选中的」加入计划；没有选中任何一本时，退回把全部字典加入
+        // （这是「加入选中」按钮在没有多选上下文时的兜底，见 plan 卡文案）。
+        // 匹配用 File 身份（绝对路径），不能拿 Entry 跟 String 比 —— 那会恒 false。
         List<DictStore.Entry> src = new ArrayList<>();
         if (!selected.isEmpty()) {
             for (DictStore.Entry e : DictStore.scan(DictStore.defaultDir(this))) {
-                if (selected.contains(e.file.getAbsolutePath())) src.add(e);
+                if (isSelected(e)) src.add(e);
             }
         } else {
             src.addAll(DictStore.scan(DictStore.defaultDir(this)));
         }
-        if (src.isEmpty()) {
-            Toast.makeText(this, L.s("没有可加入的字典", "Nothing to add"),
-                    Toast.LENGTH_SHORT).show();
-            return;
+        addEntriesToPlan(src);
+    }
+
+    /** 某本字典是否在「多选」里（按文件身份，不是按对象引用）。 */
+    private boolean isSelected(DictStore.Entry e) {
+        for (DictStore.Entry sel : selected) {
+            if (sel.file.getAbsolutePath().equals(e.file.getAbsolutePath())) return true;
         }
-        int added = 0, dup = 0;
-        for (DictStore.Entry e : src) {
-            DictPlan.Item it = new DictPlan.Item(e.file.getAbsolutePath(), e.name);
-            it.sha256 = DictPlan.sha256Of(e.file);
-            it.parseRules = DictPlan.PARSE_RULES_VERSION;
-            it.dictSize = (int) Math.min(Integer.MAX_VALUE, DictStore.count(e.file));
-            if (q.add(it)) added++; else dup++;
-        }
-        if (q.targetKey.isEmpty()) q.targetKey = Prefs.targetKey(this);
-        q.save(DictPlan.fileFor(this));
-        Toast.makeText(this, L.s("已加入 " + added + " 本"
-                        + (dup > 0 ? "（" + dup + " 本重复，已忽略）" : ""),
-                "Added " + added + (dup > 0 ? " (" + dup + " duplicates ignored)" : "")),
-                Toast.LENGTH_SHORT).show();
-        refresh();
+        return false;
     }
 
     /**
@@ -767,6 +807,8 @@ public class DictActivity extends Activity {
                 dd -> resetDictDir());
         d.addItem(L.s("释放内置字典", "Restore built-in dictionaries"),
                 dd -> releaseBuiltin());
+        d.addItem(L.s("回收站", "Trash"),
+                dd -> showTrash());
         d.addItem(L.s("清空全部字典", "Delete all dictionaries"),
                 dd -> confirmClearAll());
         d.setNegative(L.s("取消", "Cancel"), null);
@@ -915,15 +957,54 @@ public class DictActivity extends Activity {
         }).start();
     }
 
+    /**
+     * 回收站：列出、恢复、彻底删除。
+     *
+     * <p>移入回收站的字典不占主列表，这里统一管理。恢复是「搬回字典目录」，
+     * 不改变计划成员身份；彻底删除才是真正不可恢复的动作，单独二次确认。
+     */
+    private void showTrash() {
+        final java.util.List<File> trash = DictTrash.list(DictStore.defaultDir(this));
+        NetDialog d = new NetDialog(this, L.s("回收站", "Trash"),
+                trash.isEmpty()
+                        ? L.s("回收站是空的。", "The trash is empty.")
+                        : L.s("共 " + trash.size() + " 个文件。点一条恢复，或底部清空。",
+                                trash.size() + " file(s). Tap one to restore, or clear below."));
+        for (final File f : trash) {
+            final String shown = f.getName().replaceAll("\\.(txt|lst|dic)$", "");
+            d.addItemKeepOpen(L.s("恢复 ", "Restore ") + shown, dd -> {
+                File back = DictTrash.restore(DictStore.defaultDir(this), f);
+                Toast.makeText(this, back != null
+                                ? L.s("已恢复", "Restored")
+                                : L.s("恢复失败", "Restore failed"), Toast.LENGTH_SHORT).show();
+                refresh();
+            });
+        }
+        d.setNegative(L.s("关闭", "Close"), null);
+        if (!trash.isEmpty()) {
+            d.setDanger(L.s("清空回收站（不可恢复）", "Empty trash (permanent)"), dd -> {
+                int n = DictTrash.purgeAll(DictStore.defaultDir(this));
+                Toast.makeText(this, L.s("已彻底删除 " + n + " 个文件", "Permanently deleted " + n),
+                        Toast.LENGTH_SHORT).show();
+                refresh();
+            });
+        }
+        d.show();
+    }
+
     private void confirmClearAll() {
-        NetDialog d = new NetDialog(this, L.s("清空全部字典", "Delete all dictionaries"),
-                L.s("将删除字典目录里的所有 txt 文件。此操作不可恢复。", "This deletes every txt file in the dictionary folder. It cannot be undone."));
+        NetDialog d = new NetDialog(this, L.s("清空全部字典", "Move all to trash"),
+                L.s("将把字典目录里的所有字典文件移入回收站，可随时恢复；不会立刻永久删除。",
+                        "Moves every dictionary file into the trash; nothing is permanently deleted."));
         d.setNegative(L.s("取消", "Cancel"), null);
-        d.setDanger(L.s("全部删除", "Delete all"), dd -> {
+        d.setDanger(L.s("全部移入回收站", "Move all to trash"), dd -> {
             java.util.List<DictStore.Entry> list = DictStore.scan(DictStore.defaultDir(this));
             int n = 0;
-            for (DictStore.Entry e : list) if (e.file.delete()) n++;
-            Toast.makeText(this, L.s("删除了 ", "Deleted ") + n + " 个文件", Toast.LENGTH_SHORT).show();
+            for (DictStore.Entry e : list) {
+                if (DictTrash.trash(DictStore.defaultDir(this), e.file) != null) n++;
+            }
+            Toast.makeText(this, L.s("已移入 ", "Moved ") + n + L.s(" 个文件", " files"),
+                    Toast.LENGTH_SHORT).show();
             refresh();
         });
         d.show();
@@ -1455,6 +1536,12 @@ public class DictActivity extends Activity {
                     .append(new java.text.SimpleDateFormat("MM-dd", java.util.Locale.ROOT)
                             .format(new java.util.Date(when)));
         }
+        // 计划成员状态：这本是否已在多字典计划里、排第几。
+        // 用「计划 #N」说人话，不写「成员/idx」这类内部词。
+        Integer order = planOrderByPath.get(e.file.getAbsolutePath());
+        if (order != null) {
+            sb.append(L.s(" · 计划 #" + order, " \u00b7 plan #" + order));
+        }
         return sb.toString();
     }
 
@@ -1593,16 +1680,24 @@ public class DictActivity extends Activity {
     private void confirmDeleteSelected() {
         if (selected.isEmpty()) return;
         final List<DictStore.Entry> victims = new ArrayList<>(selected);
-        NetDialog d = new NetDialog(this, L.s("删除选中的字典", "Delete selected dictionaries"),
-                L.s("将删除 " + victims.size() + " 本，此操作不可恢复。",
-                        victims.size() + " file(s) will be deleted. This cannot be undone."));
+        int inPlan = 0;
+        for (DictStore.Entry e : victims) if (planOrderByPath.containsKey(e.file.getAbsolutePath())) inPlan++;
+        String body = L.s("将把 " + victims.size() + " 本移入回收站，可随时恢复。",
+                victims.size() + " file(s) will be moved to the trash and can be restored.");
+        if (inPlan > 0) {
+            body += L.s("\n\n其中 " + inPlan + " 本在「多字典计划」里，移入回收站后这些引用会失效，\n但不删除计划本身或其他字典。",
+                    "\n\n" + inPlan + " of them are in the plan; trashing breaks their references but deletes nothing else.");
+        }
+        NetDialog d = new NetDialog(this, L.s("移入回收站", "Move to trash"), body);
         d.setNegative(L.s("取消", "Cancel"), null);
-        d.setDanger(L.s("删除", "Delete"), dd -> {
+        d.setDanger(L.s("移入回收站", "Move to trash"), dd -> {
             int ok = 0;
-            for (DictStore.Entry e : victims) if (e.file.delete()) ok++;
+            for (DictStore.Entry e : victims) {
+                if (DictTrash.trash(DictStore.defaultDir(this), e.file) != null) ok++;
+            }
             selected.clear();
             selectMode = false;
-            Toast.makeText(this, L.s("已删除 " + ok + " 本", "Deleted " + ok),
+            Toast.makeText(this, L.s("已移入 " + ok + " 本", "Moved " + ok + " to trash"),
                     Toast.LENGTH_SHORT).show();
             refresh();
         });
@@ -1622,6 +1717,13 @@ public class DictActivity extends Activity {
 
     private void showRowMenu(DictStore.Entry e) {
         NetDialog d = new NetDialog(this, e.name, metaLine(e));
+        // 加入/移出计划是最高频的「对这本字典做的事」之一，放在菜单第一位。
+        // 文案随当前成员状态翻转，点击调同一套 togglePlanMembership（三个入口同源）。
+        boolean inPlan = planOrderByPath.containsKey(e.file.getAbsolutePath());
+        d.addItem(inPlan
+                        ? L.s("从计划移除", "Remove from plan")
+                        : L.s("加入计划", "Add to plan"),
+                dd -> togglePlanMembership(e));
         d.addItem(L.s("查看内容", "View contents"), dd -> viewDict(e));
         d.addItem(L.s("编辑", "Edit"), dd -> editDict(e));
         d.addItem(L.s("统计", "Stats"), dd -> showStats(e));
@@ -1630,6 +1732,59 @@ public class DictActivity extends Activity {
         d.setNegative(L.s("取消", "Cancel"), null);
         d.setDanger(L.s("删除", "Delete"), dd -> confirmDelete(e));
         d.show();
+    }
+
+    /**
+     * 切换某本字典的计划成员状态：不在计划里就加入，在就移除。
+     *
+     * <p>三个入口（卡片「加入选中」、多选条「加入计划」、行菜单）里，
+     * 「加入」都走 {@link #planAddSelected} 的同一套身份去重逻辑；
+     * 「移除」走 {@link DictPlan#removeAt} 按下标删，不删字典文件。
+     */
+    private void togglePlanMembership(DictStore.Entry e) {
+        boolean inPlan = planOrderByPath.containsKey(e.file.getAbsolutePath());
+        if (inPlan) {
+            DictPlan q = planEdit();
+            Integer order = planOrderByPath.get(e.file.getAbsolutePath());
+            if (order != null && order >= 1 && order - 1 < q.items.size()) {
+                q.removeAt(order - 1);
+                planEditSave();
+                refresh();
+            }
+            return;
+        }
+        // 加入：只加这一本（不把别的字典带进来）。
+        List<DictStore.Entry> one = new ArrayList<>();
+        one.add(e);
+        addEntriesToPlan(one);
+    }
+
+    /**
+     * 把一批字典加入计划（身份去重 + 顺序追加）。{@link #planAddSelected} 与
+     * {@link #togglePlanMembership} 共用这一条，保证「只加明确选中的、重复不加」。
+     */
+    private void addEntriesToPlan(List<DictStore.Entry> src) {
+        if (src == null || src.isEmpty()) {
+            Toast.makeText(this, L.s("没有可加入的字典", "Nothing to add"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        DictPlan q = DictPlan.load(DictPlan.fileFor(this));
+        int added = 0, dup = 0;
+        for (DictStore.Entry e : src) {
+            DictPlan.Item it = new DictPlan.Item(e.file.getAbsolutePath(), e.name);
+            it.sha256 = DictPlan.sha256Of(e.file);
+            it.parseRules = DictPlan.PARSE_RULES_VERSION;
+            it.dictSize = (int) Math.min(Integer.MAX_VALUE, DictStore.count(e.file));
+            if (q.add(it)) added++; else dup++;
+        }
+        if (q.targetKey.isEmpty()) q.targetKey = Prefs.targetKey(this);
+        q.save(DictPlan.fileFor(this));
+        Toast.makeText(this, L.s("已加入 " + added + " 本"
+                        + (dup > 0 ? "（" + dup + " 本重复，已忽略）" : ""),
+                "Added " + added + (dup > 0 ? " (" + dup + " duplicates ignored)" : "")),
+                Toast.LENGTH_SHORT).show();
+        refresh();
     }
 
     private void renameDict(DictStore.Entry e) {
@@ -2318,12 +2473,19 @@ public class DictActivity extends Activity {
     }
 
     private void confirmDelete(DictStore.Entry e) {
-        NetDialog d = new NetDialog(this, L.s("删除字典", "Delete dictionary"),
-                L.s("确定删除「", "Delete “") + e.name + L.s("」？此操作不可恢复。", "”? This cannot be undone."));
+        boolean inPlan = planOrderByPath.containsKey(e.file.getAbsolutePath());
+        String body = L.s("「", "“") + e.name + L.s("」将移入回收站，可随时恢复。", "” will be moved to the trash and can be restored.");
+        if (inPlan) {
+            body += L.s("\n\n这本在「多字典计划」里：移入回收站后计划里它的引用会失效，\n但不会删掉其他字典或计划本身。",
+                    "\n\nThis dictionary is in the plan: trashing it breaks the plan's reference to it, but deletes nothing else.");
+        }
+        NetDialog d = new NetDialog(this, L.s("移入回收站", "Move to trash"), body);
         d.setNegative(L.s("取消", "Cancel"), null);
-        d.setDanger(L.s("删除", "Delete"), dlg -> {
-            boolean ok = e.file.delete();
-            Toast.makeText(this, ok ? L.s("已删除", "Deleted") : L.s("删除失败", "Delete failed"), Toast.LENGTH_SHORT).show();
+        d.setDanger(L.s("移入回收站", "Move to trash"), dlg -> {
+            File moved = DictTrash.trash(DictStore.defaultDir(this), e.file);
+            Toast.makeText(this, moved != null
+                            ? L.s("已移入回收站", "Moved to trash")
+                            : L.s("移入失败", "Move failed"), Toast.LENGTH_SHORT).show();
             refresh();
         });
         d.show();

@@ -136,7 +136,15 @@ public class R10InvariantTest {
                 if (callArgs.contains("\"\"") || !callArgs.contains("\"")) noCode++;
                 at++;
             }
-            eq("全文件的 AUTH_FAIL 出口数 = 5（failover/authcast/m1retry + 支A + 支B(循环末尾兜底)，全部是证据路径）", 5, auth);
+            // B2 收紧（非降低断言）：出口从 5 收敛到 2。
+            // failover / m1retry / 支B 三条 AP-1 路径已改判非失败结论（
+            // 它们只证明「本次没连上」，不证明密钥不符）。
+            // 剩余两条都必须具备**明确密钥不符证据**：
+            //   · authcast = framework ERROR_AUTHENTICATING（系统「密码错误」广播）
+            //   · 支A     = CTRL-EVENT-SSID-TEMP-DISABLED reason=WRONG_KEY
+            eq("全文件的 AUTH_FAIL 出口数 = 2（authcast + 支A，均为 AP-3 明确密钥不符证据）", 2, auth);
+            eq("剩余 2 条 AUTH_FAIL 出口都不给 DIRECT（AT-1 级不可永久排除）", 0,
+                    countDirectAuthFail(code));
             eq("每个 AUTH_FAIL 都带非空归因码（没有匿名失败）", 0, noCode);
             ok("命令前的「候选不合法」不再是 AUTH_FAIL（复核修正）",
                     code.contains("if (!isValidLength(password)) {")
@@ -356,6 +364,25 @@ public class R10InvariantTest {
         System.out.println();
         System.out.println("=== R10 不变量测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
+    }
+
+    /**
+     * 统计「AUTH_FAIL 出口 + 紧邻一行内被赋 DIRECT」的条数（B2 新不变量）。
+     *
+     * <p>为什么需要它：出口数从 5 收到 2 之后，剩下这两条**必须**是
+     * AT-1 级（不可永久排除）。若哪次改动把 DIRECT 直接写在 AUTH_FAIL 出口上，
+     * 候选就会被永久排除 —— 那正是本不变量要拦住的回归。
+     */
+    private static int countDirectAuthFail(String code) {
+        if (code == null) return -1;
+        int bad = 0, at = 0;
+        while ((at = code.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at)) >= 0) {
+            int segEnd = Math.min(code.length(), at + 400);
+            String seg = code.substring(at, segEnd);
+            if (seg.contains("EvidenceGrade.Level.DIRECT")) bad++;
+            at++;
+        }
+        return bad;
     }
 
     private static String stripComments(String src) {

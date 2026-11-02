@@ -119,11 +119,23 @@ public final class P05AttributionTest {
             a.add("10-31 12:00:01.900  1000  1000 I wpa_supplicant: WPA: 4-Way Handshake failed - pre-shared key may be incorrect");
             CrackEngine.Attempt ra = run("A 无归属握手失败", a);
 
-            ok("A 确实产出了 AUTH_FAIL", ra.verdict == CrackEngine.Verdict.AUTH_FAIL,
-                    "verdict=" + ra.verdict);
-            ok("**A 无归属证据不得判 DIRECT**（应 INFERRED）",
-                    ra.grade != EvidenceGrade.Level.DIRECT,
-                    "grade=" + ra.grade + "（该失败行不带 SSID/BSSID，无任何归属证据）");
+            // v2.1 契约更新（B2，非降低断言）：
+            // 场景 A 是 **AP-1**（零字段 / 无归属的 4-Way Handshake failed）。
+            // AP-1 只能证明「本次没连上」，**不能证明密钥不符** ——
+            // 旧契约要求它产 AUTH_FAIL，正是「连接终止 = 密码错」这个错误等式的残留。
+            // 现在它必须落到生命周期分派的非失败结论上。
+            ok("A（AP-1 无归属握手失败）不得产出 AUTH_FAIL",
+                    ra.verdict != CrackEngine.Verdict.AUTH_FAIL,
+                    "verdict=" + ra.verdict + "（连接终止 != 密码错）");
+            // FakeShell 的 status 恒为 `Wifi is not connected` = 系统明确说「没连上」
+            // → 生命周期 TERMINATED（**不是** UNKNOWN）。
+            ok("A 的连接已确认终止 -> TERMINATED_UNKNOWN（不是 UNKNOWN、更不是 AUTH_FAIL）",
+                    ra.verdict == CrackEngine.Verdict.TERMINATED_UNKNOWN,
+                    "verdict=" + ra.verdict
+                            + "（status 明确 'Wifi is not connected' 属可判定的终止）");
+            ok("A 结论为 NONE 级 -> 不写 triedSet、不推 cursor（不永久排除）",
+                    ra.grade == EvidenceGrade.Level.NONE,
+                    "grade=" + ra.grade);
 
             // ---------- 场景 B：带归属的直接否认（对照组，应仍为 DIRECT）
             List<String> b = new ArrayList<>();

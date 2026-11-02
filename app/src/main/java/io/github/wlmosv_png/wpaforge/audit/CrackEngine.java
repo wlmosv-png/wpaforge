@@ -82,6 +82,15 @@ public final class CrackEngine {
          */
         INCOMPLETE,
         /**
+         * 连接**已确认终止**，但原因不明（既没有成功证据，也没有足够的失败证据）。
+         *
+         * <p>与 {@link #TIMEOUT} 的区别：TIMEOUT = 观察期内没有拿到任何证据；
+         * TERMINATED_UNKNOWN = 观察到「连接确实结束了」，但结束原因无法归因。
+         *
+         * <p>语义（强制）：**不得解释为密码错误**，不写 triedSet、不推 cursor。
+         */
+        TERMINATED_UNKNOWN,
+        /**
          * 目标不在扫描范围 → 这条无意义。
          *
          * <p><b>当前没有生产出口</b>（历史遗留，仅测试引用）。保留是因为枚举是
@@ -682,8 +691,25 @@ public final class CrackEngine {
      * <p><b>为什么必须有它</b>：真实事故（2026-11-02，ASSOCIATING 期间）——
      * 弱失败日志在连接还活着时就把候选判成 AUTH_FAIL。
      */
-    public static boolean connectionStillActive(String supplicantState) {
-        if (supplicantState == null || supplicantState.isEmpty()) return false;
+    /** 连接生命周期三态（v2.1）。 */
+    public enum Lifecycle {
+        /** 连接仍在进行（关联/认证/握手/扫描中）。 */
+        ACTIVE,
+        /** 已确认终止（明确看到 DISCONNECTED / INACTIVE）。 */
+        TERMINATED,
+        /** 状态读不到 / 解析失败 / 不可识别 —— **不得当作 TERMINATED**。 */
+        UNKNOWN
+    }
+
+    /**
+     * 由 supplicant state 得出生命周期三态（纯函数可测）。
+     *
+     * <p><b>为什么必须是三态而不是 boolean</b>：真机事故里，
+     * 「state 读不到」（命令失败/null/解析失败）曾被当成「连接已终止」，
+     * 于是弱失败证据被升级成 AUTH_FAIL。**未知必须保持未知。**
+     */
+    public static Lifecycle lifecycleOf(String supplicantState) {
+        if (supplicantState == null || supplicantState.isEmpty()) return Lifecycle.UNKNOWN;
         String st = supplicantState.toUpperCase(java.util.Locale.ROOT);
         switch (st) {
             case "ASSOCIATING":
@@ -691,10 +717,78 @@ public final class CrackEngine {
             case "FOUR_WAY_HANDSHAKE":
             case "GROUP_HANDSHAKE":
             case "SCANNING":
-                return true;
+            case "COMPLETED":       // 已连上（可能还没 IP）——不是失败
+            case "OBTAINING_IPADDR":
+                return Lifecycle.ACTIVE;
+            case "DISCONNECTED":
+            case "INACTIVE":
+            case "INTERFACE_DISABLED":
+                return Lifecycle.TERMINATED;
             default:
-                return false;   // DISCONNECTED / INACTIVE / COMPLETED(另有成功判据) / 其它
+                return Lifecycle.UNKNOWN;   // 未知状态一律 UNKNOWN，绝不当 TERMINATED
         }
+    }
+
+    /** 构造一个**非失败**终局 Attempt（NONE 级，不写 triedSet、不推 cursor）。 */
+    private static Attempt tailOf(String password, Verdict v, long ms, String by, String detail) {
+        Attempt a = new Attempt(password, v, ms, detail, by);
+        a.grade = EvidenceGrade.Level.NONE;
+        return a;
+    }
+
+    /** 兼容入口：是否仍活动（仅 ACTIVE 为真）。 */
+    public static boolean connectionStillActive(String supplicantState) {
+        return lifecycleOf(supplicantState) == Lifecycle.ACTIVE;
+    }
+
+    /**
+     * 由 {@code cmd wifi status} 的**原始输出**得出生命周期（纯函数，可离线穷举）。
+     *
+     * <h3>为什么不能只用 {@link #lifecycleOf(String)}</h3>
+     * {@code lifecycleOf} 吃的是「已解析出的 Supplicant state」。但真机上最常见的
+     * 两种情形根本没有 state 可解析：
+     * <pre>
+     *   连接已断开   : Wifi is not connected
+     *   Wi-Fi 被关掉 : Wifi is disabled
+     * </pre>
+     * 这两行是**系统明确告诉你「现在没有连接」**，属于可判定的 TERMINATED。
+     * 旧实现把它们解析成 {@code state == null} -> UNKNOWN，于是「连接确实终止」
+     * 与「命令读不到」两种完全不同的情况被混为一谈 —— 判定能力被白白丢掉一层，
+     * TERMINATED_UNKNOWN 永远不可达。
+     *
+     * <h3>反过来也不能过度解读</h3>
+     * <ul>
+     *   <li>输出为空 / null（命令失败、通道无响应）-> <b>UNKNOWN</b>，不是 TERMINATED。<br>
+     *       读不到 != 没连接。这是修复前的核心事故形态。</li>
+     *   <li>有输出但既无 WifiInfo 行也无已知字面量 -> <b>UNKNOWN</b>（不敢断言）。</li>
+     * </ul>
+     *
+     * <h3>回连他网必须算 TERMINATED</h3>
+     * {@code COMPLETED} 只有在**属于目标 SSID** 时才算「本次尝试仍在推进」。
+     * 若 WifiInfo 显示已连上**别的**网络，本次尝试显然已经结束（failover 现场），
+     * 必须判 TERMINATED —— 否则会长期停在 ACTIVE，把一条本该
+     * TERMINATED_UNKNOWN 的候选拖成 INCOMPLETE。
+     *
+     * @param rawStatus {@code cmd wifi status} 的原始输出，可为 null
+     * @param targetSsid 目标 SSID，可为 null（此时不看归属）
+     */
+    public static Lifecycle lifecycleOfStatus(String rawStatus, String targetSsid) {
+        if (rawStatus == null || rawStatus.trim().isEmpty()) return Lifecycle.UNKNOWN;
+        String lower = rawStatus.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("wifi is not connected")) return Lifecycle.TERMINATED;
+        if (lower.contains("wifi is disabled")) return Lifecycle.TERMINATED;
+        SupplicantParser.Info info = SupplicantParser.parse(rawStatus);
+        if (info.raw) {
+            String st = info.state;
+            if (st == null || st.isEmpty()) return Lifecycle.UNKNOWN;
+            if (targetSsid != null && !targetSsid.isEmpty()
+                    && info.ssid != null && !info.ssid.isEmpty()
+                    && !targetSsid.equals(info.ssid)) {
+                return Lifecycle.TERMINATED;
+            }
+            return lifecycleOf(st);
+        }
+        return Lifecycle.UNKNOWN;
     }
 
     public static long adaptiveWindow(int noEvidence, long basePerItem) {
@@ -1528,6 +1622,14 @@ public final class CrackEngine {
         String lastStatusSsid = null;
         /** 循环内最后一次读到的 supplicant state（供"连接是否仍活动"判定用）。 */
         String lastStatusState = null;
+        /**
+         * 最近一次**可用** status 观察得出的生命周期三态。
+         *
+         * <p>与 {@code lastStatusState} 的区别：state 只是「state 字段」；
+         * 生命周期还要看原始输出（{@code Wifi is not connected} / 回连他网）。
+         * 初值 UNKNOWN = 「从未成功观察到」——**不是 TERMINATED**。
+         */
+        Lifecycle lastLifecycle = Lifecycle.UNKNOWN;
         // 分层证据记录（结束时不命中就逐层打印，让用户看清卡在哪一层）
         int logRounds = 0, statusRounds = 0;
         int logRound = 0;
@@ -1642,6 +1744,8 @@ public final class CrackEngine {
                 SupplicantParser.Info info = SupplicantParser.parse(st);
                 lastStatusSsid = info.ssid;
                 lastStatusState = info.state;
+                // 三态来自**原始输出**：明确未连接 -> TERMINATED；读不到 -> UNKNOWN。
+                lastLifecycle = lifecycleOfStatus(st, target.ssid);
 
                 // 记录「目标是否进入过握手」——用于区分「密码错」和「根本没试」
                 if (!sawAttempt && target.ssid.equals(info.ssid)
@@ -1777,16 +1881,14 @@ public final class CrackEngine {
                             // 证据冲突：本轮已有目标的成功证据 → 交给成功判据，不抢答失败
                             negotiatedThisRound)) {
                         long ms = clock().uptimeMillis() - t0;
-                        android.util.Log.i(TAG, "快速失败(回连): 系统已连上 " + info.ssid);
-                        // 证据等级：INFERRED —— 「系统去连别的网」只证明本次尝试结束，
-                        // 不能证明目标拒绝了这条口令（目标可能只是慢了一步）。
-                        Attempt fa = new Attempt(password, Verdict.AUTH_FAIL, ms,
-                                L.f("系统已回连到其它网络 %s —— 目标这次没连上",
-                                    "system fell back to %s - the target did not connect",
-                                    info.ssid),
-                                "failover");
-                        fa.grade = EvidenceGrade.Level.INFERRED;
-                        return fa;
+                        android.util.Log.i(TAG, "回连他网: 系统已连上 " + info.ssid);
+                        // v2.1：failover 是 **AP-1**（只证明「本次没连上」）→ 不产 AUTH_FAIL。
+                        // 「系统去连别的网」= 本次尝试已终止，但没有密钥不符证据。
+                        long msf = clock().uptimeMillis() - t0;
+                        return tailOf(password, Verdict.TERMINATED_UNKNOWN, msf, "failover",
+                                L.f("系统已回连到其它网络 %s —— 目标这次没连上（无归因证据）",
+                                    "system fell back to %s - the target did not connect (no attributable evidence)",
+                                    info.ssid));
                     }
                 }
             }
@@ -1951,13 +2053,17 @@ public final class CrackEngine {
                                     + " 次（握手无进展）");
                             // 证据等级：INFERRED —— M1 重发只说明「握手没进展」，
                             // 丢包 / AP 慢 / 上一条残留都能造成，不能据此永久排除候选。
-                            Attempt m1 = new Attempt(password, Verdict.AUTH_FAIL, ms,
-                                    L.s("M1 被重发（握手无进展）→ 密码错误",
-                                        "M1 retransmitted (no handshake progress) -> wrong passphrase")
-                                            + timing(tAssocMs, tM1Ms, tAuthMs),
-                                    "m1retry");
-                            m1.grade = EvidenceGrade.Level.INFERRED;
-                            return m1;
+                            // v2.1：m1retry 是 **AP-1**（握手无进展只证明「没连上」）→ 不产 AUTH_FAIL。
+                            Lifecycle m1lc = lastLifecycle;
+                            String m1d = L.s("M1 被重发（握手无进展）—— 本次没连上",
+                                        "M1 retransmitted (no handshake progress) - not connected")
+                                            + timing(tAssocMs, tM1Ms, tAuthMs);
+                            if (m1lc == Lifecycle.ACTIVE) {
+                                return tailOf(password, Verdict.INCOMPLETE, ms, "m1retry", m1d);
+                            }
+                            return tailOf(password, m1lc == Lifecycle.TERMINATED
+                                            ? Verdict.TERMINATED_UNKNOWN : Verdict.UNKNOWN,
+                                    ms, "m1retry", m1d);
                         }
                     }
 
@@ -2043,26 +2149,25 @@ public final class CrackEngine {
         // 若这里退化成 TIMEOUT，就把一条**已有失败证据**的候选降级成了「没结论」——
         // 那是另一种形式的判定能力损失（P05AttributionTest 场景 A 钉死了这条）。
         if (wlInferredArmed) {
-            boolean liveAtEnd = connectionStillActive(lastStatusState);
-            if (liveAtEnd) {
-                // 连接仍活动 → INCOMPLETE（不是密码错）：不写 triedSet、不推 cursor、可重新裁决
-                android.util.Log.i(TAG, "循环结束：连接仍活动(" + lastStatusState + ") → INCOMPLETE");
-                Attempt inc = new Attempt(password, Verdict.INCOMPLETE, total,
-                        L.s("观察期限结束，但目标连接仍在进行（未收敛）",
-                            "observation window ended while the target connection was still in progress"),
-                        "wpalog");
-                inc.grade = EvidenceGrade.Level.NONE;
-                return inc;
+            // ---- 支B 是 **AP-1**（零字段 4-Way Handshake failed，只证明「本次没连上」）----
+            // v2.1：**AP-1 永不产生 AUTH_FAIL**（连接终止 != 密码错）。
+            // 按生命周期三态分派，且 **UNKNOWN 不得当作 TERMINATED**。
+            Lifecycle lc = lastLifecycle;
+            android.util.Log.i(TAG, "循环结束：支B(AP-1) 命中，生命周期=" + lc + " state=" + lastStatusState);
+            switch (lc) {
+                case ACTIVE:
+                    return tailOf(password, Verdict.INCOMPLETE, total, "wpalog",
+                            L.s("观察期限结束，但目标连接仍在进行（未收敛）",
+                                "observation window ended while the target connection was still in progress"));
+                case TERMINATED:
+                    return tailOf(password, Verdict.TERMINATED_UNKNOWN, total, "wpalog",
+                            L.s("连接已终止但无归因证据（不等于密码错误）",
+                                "connection terminated without attributable evidence (not a wrong passphrase)"));
+                default:
+                    return tailOf(password, Verdict.UNKNOWN, total, "wpalog",
+                            L.s("连接状态无法确认（读取失败或未知状态），不作确定结论",
+                                "connection state unconfirmable (read failure or unknown state); no definitive verdict"));
             }
-            android.util.Log.i(TAG, "循环结束：支B 曾命中，按 INFERRED 结案（窗口未及到期）");
-            Attempt wlTail = new Attempt(password, Verdict.AUTH_FAIL, total,
-                    L.s("日志显示握手失败（密码错误）",
-                        "log shows handshake failure (wrong passphrase)")
-                            + L.s("（归属不明，仅推断）",
-                                " (attribution unknown, inferred only)"),
-                    "wpalog");
-            wlTail.grade = EvidenceGrade.Level.INFERRED;
-            return wlTail;
         }
 
         // R6：循环里一次日志都没读到（例如通道不吐日志）时也要留下窗口状态，
@@ -2143,6 +2248,36 @@ public final class CrackEngine {
                             + "evidence (this is NOT a proven wrong passphrase)");
         }
         Verdict verdict = out.verdict;
+
+        /*
+         * ---- 循环末统一生命周期兜底（B2）----
+         *
+         * 缺陷（2026-11-02 真机形态复现，慢速 AP）：正确密码 + AP 慢时，观察窗口结束时
+         * status 仍是 FOUR_WAY_HANDSHAKE（连接**仍在进行**），但
+         *   · 日志支B 没命中（日志不含 4-Way failed / assoc-reject 的机型很常见）
+         *   · 于是走 classifyDeadline 的默认分支 -> UNKNOWN
+         * 结论：把一条「连接还在跑、完全可能马上成功」的候选报成「没结论」。
+         * UNKNOWN 与 INCOMPLETE 在持久化上等价（都不写盘），但语义差一层：
+         * **INCOMPLETE 明确表示「这条可以重新裁决」**，UI/续跑据此决定是否再看一眼。
+         *
+         * 归属保护：只有**确认连接仍在推进**（ACTIVE）才升级，且排除
+         *   · not-attempted     —— 命令没生效，跟目标连接无关
+         *   · channel-no-response —— 命令通道不响应，状态本来就不可信
+         * 这两种情况 lastLifecycle 往往是陈旧值，不能拿它下结论。
+         */
+        boolean lifecycleActiveAtEnd = lastLifecycle == Lifecycle.ACTIVE
+                && (verdict == Verdict.UNKNOWN || verdict == Verdict.TIMEOUT)
+                && !"not-attempted".equals(out.reason)
+                && !"channel-no-response".equals(out.reason);
+        if (lifecycleActiveAtEnd) {
+            android.util.Log.i(TAG, "循环结束：连接仍在进行(" + lastStatusState
+                    + ") -> 升级为 INCOMPLETE（可重新裁决）");
+            verdict = Verdict.INCOMPLETE;
+            detail = L.s("观察窗口结束，但目标连接仍在进行（未收敛）—— 可重新裁决",
+                    "observation window ended while the target connection was still in "
+                            + "progress - re-adjudicable")
+                    + " · " + detail;
+        }
 
         android.util.Log.i(TAG, "tryOneShell end: " + total + "ms sawAttempt=" + sawAttempt
                 + " channelAlive=" + channelAlive + " lastStatusSsid=" + lastStatusSsid

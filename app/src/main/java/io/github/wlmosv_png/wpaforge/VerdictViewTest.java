@@ -160,6 +160,20 @@ public final class VerdictViewTest {
                             && act.contains("VerdictView.description"), "未使用统一映射");
             ok("旧的「非成功一律 ✗」分支已消失",
                     !act.contains("appendStreamDetail(\"✗  \""), "旧分支仍在");
+
+            // U2：运行状态必须只有一个来源。
+            // 真机实测过「顶部：已暂停」+「日志区：准备就绪」同屏矛盾，
+            // 根因就是两处各自推断状态。
+            ok("MainActivity 抽出唯一的队列状态方法 currentQueueState()",
+                    act.contains("private TaskQueue.State currentQueueState()"), "未抽出");
+            int uses = 0, at = 0;
+            while ((at = act.indexOf("currentQueueState()", at)) >= 0) { uses++; at++; }
+            ok("currentQueueState() 至少被两处消费（进度卡 + 空状态提示）",
+                    uses >= 3, "调用点=" + uses);   // 声明 1 + 使用 >=2
+            ok("renderProgressCardState 不再自己遍历 queueCache 推断状态",
+                    !act.contains("if (t.state == TaskQueue.State.RUNNING || "
+                            + "t.state == TaskQueue.State.PENDING) {\n                st = t.state;"),
+                    "仍在自行推断");
         } catch (Throwable t) {
             fail++;
             System.out.println("  FAIL 源码守卫异常: " + t);

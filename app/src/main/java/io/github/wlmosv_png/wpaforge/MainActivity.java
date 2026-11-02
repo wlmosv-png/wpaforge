@@ -5092,6 +5092,33 @@ public class MainActivity extends Activity {
      * 最近一次任务的真实 outcome。这里不新增状态位、不推断「成功/失败」，
      * 也不把「未知」写成「正常」。
      */
+    /**
+     * **当前队列的聚合状态 —— 唯一的运行状态来源**（U2）。
+     *
+     * <h3>为什么必须抽出来</h3>
+     * 真机实测（2026-11-02）：破解页顶部显示「已暂停 · 进度已保留」，
+     * 同一屏的攻击流空状态却写着「准备就绪 · 点下面的「▶ 开始」」——
+     * 一个是「有暂停的任务」，一个是「什么都没有」。用户完全不知道该点开始还是继续。
+     *
+     * <p>根因：两个地方各自推断状态 ——
+     * {@code renderProgressCardState()} 看 {@code queueCache} 的任务状态，
+     * 空状态提示只看「有没有选目标和字典」。它们不共享任何模型。
+     *
+     * <p>现在两处都调本方法。
+     */
+    private TaskQueue.State currentQueueState() {
+        // 运行/待处理优先（有任务在动就不是"暂停"）
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
+                return t.state;
+            }
+        }
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.PAUSED) return TaskQueue.State.PAUSED;
+        }
+        return null;
+    }
+
     private void renderProgressCardState() {
         String text;
         int color;
@@ -5103,18 +5130,7 @@ public class MainActivity extends Activity {
          * 结果就是——跑完了、去看别的字典、返回，界面又变回「运行中 100%」，
          * 用户在等一个永远不会来的结果。**跑完了是什么就该显示什么。** */
         boolean serviceRunning = CrackService.isRunning();
-        TaskQueue.State st = null;
-        for (TaskQueue.Task t : queueCache) {
-            if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
-                st = t.state;
-                break;
-            }
-        }
-        if (st == null) {
-            for (TaskQueue.Task t : queueCache) {
-                if (t.state == TaskQueue.State.PAUSED) { st = t.state; break; }
-            }
-        }
+        TaskQueue.State st = currentQueueState();   // U2：唯一来源
         if (st == TaskQueue.State.PAUSED) {
             text = L.s("已暂停 · 进度已保留", "Paused · progress kept");
             color = ACCENT;
@@ -5749,12 +5765,27 @@ public class MainActivity extends Activity {
                                 + " lines · tap “All” to view"));
             } else {
                 boolean ready = targetNet != null && currentDict != null && !currentDict.isEmpty();
+                // U2：这里**必须**看队列状态，不能只看「有没有选目标」。
+                // 否则会出现「顶部：已暂停」+「日志区：准备就绪，点开始」同屏矛盾
+                // （真机 2026-11-02 实测）。
+                TaskQueue.State qs = currentQueueState();
+                String hint;
+                if (qs == TaskQueue.State.PAUSED) {
+                    hint = L.s("已暂停 · 进度已保留\n点下面的「▶ 继续」接着跑",
+                            "Paused · progress kept\nTap “▶ Resume” below to continue");
+                } else if (qs == TaskQueue.State.PENDING) {
+                    hint = L.s("正在准备…", "Preparing…");
+                } else if (qs == TaskQueue.State.RUNNING) {
+                    hint = L.s("正在跑，结果会出现在这里", "Running - results appear here");
+                } else if (ready) {
+                    hint = L.s("准备就绪\n点下面的「▶ 开始」",
+                            "Ready\nTap “▶ Start” below");
+                } else {
+                    hint = L.s("先选目标和字典\n（点上面两行可以更换）",
+                            "Pick a target and a dictionary first\n(tap the lines above to change)");
+                }
                 // 空状态里带一句「看原理」—— 还没跑过的人最需要它
-                connectEmptyHint.setText((ready
-                        ? L.s("准备就绪\n点下面的「▶ 开始」",
-                                "Ready\nTap “▶ Start” below")
-                        : L.s("先选目标和字典\n（点上面两行可以更换）",
-                                "Pick a target and a dictionary first\n(tap the lines above to change)"))
+                connectEmptyHint.setText(hint
                         + L.s("\n\n右上角「?」看它是怎么破解的",
                                 "\n\nTap “?” at the top right to see how it works"));
             }

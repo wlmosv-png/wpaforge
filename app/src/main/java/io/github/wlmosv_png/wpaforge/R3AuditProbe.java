@@ -376,9 +376,13 @@ public final class R3AuditProbe {
                 Round.w(400, ST_TARGET_ASSOC, assoc() + m1(1)),
                 Round.w(1500, ST_TARGET_ASSOC, assoc() + m1(1) + m1(2)),
                 Round.w(1700, ST_TARGET_ASSOC, assoc() + m1(1) + m1(2)));
-        note("M1 被重发（协议层失败证据）的判定", retryFast);
-        ok("S4-1b", "M1 重发仍是可结案的失败证据（加速保留）",
-                retryFast.verdict == CrackEngine.Verdict.AUTH_FAIL
+        note("M1 被重发（协议层观察）的判定", retryFast);
+        // B3 契约更新：m1retry 是 **AP-1** —— 它只证明「握手没进展」，
+        // 不证明密钥不符。生产已不给 AUTH_FAIL；探针必须同语义，
+        // 否则报告里的「生产会这样判」是错的。
+        // 本例 status 一直是「目标的 ASSOCIATING」→ 连接仍在进行 → INCOMPLETE。
+        ok("S4-1b", "M1 重发是 AP-1：不判密码错，按生命周期给 INCOMPLETE（连接仍在进行）",
+                retryFast.verdict == CrackEngine.Verdict.INCOMPLETE
                         && "m1retry".equals(retryFast.by));
 
         // negotiated 的护栏在 bssid 为空时恒为假
@@ -723,6 +727,25 @@ public final class R3AuditProbe {
         }
     }
 
+    /**
+     * AP-1（只证明「本次没连上」）的结论映射 —— **与生产同一份判据**。
+     *
+     * <p>为什么探针必须调生产的 {@link CrackEngine#lifecycleOfStatus}：
+     * 探针的 {@link Loop} 是判定顺序的人工转写。一旦它在结论上与生产分叉，
+     * 报告里的「生产会这样判」就是错的 —— 那比没有探针更危险。
+     *
+     * @param rawStatus 最近一轮可用 status 输出（空 = 从未读到）
+     * @param target    目标 SSID
+     */
+    static CrackEngine.Verdict nonFailure(String rawStatus, String target) {
+        CrackEngine.Lifecycle lc = CrackEngine.lifecycleOfStatus(rawStatus, target);
+        switch (lc) {
+            case ACTIVE:     return CrackEngine.Verdict.INCOMPLETE;
+            case TERMINATED: return CrackEngine.Verdict.TERMINATED_UNKNOWN;
+            default:         return CrackEngine.Verdict.UNKNOWN;
+        }
+    }
+
     static final class Loop {
         /**
          * @param targetNetId 源码：命令后前 4 轮探测目标配置的 netId（-1 = 没建出来）
@@ -737,6 +760,11 @@ public final class R3AuditProbe {
             boolean leftBaseline = false;          // CrackEngine:937
             boolean sawAttempt = false;            // CrackEngine:946
             long targetNetId = targetNetIdMade;    // 源码：前 4 轮探测「本条命令有没有建出配置」
+            /**
+             * 最近一轮**可用**的 status 原始输出（B3）——生命周期三态由它判定。
+             * 与生产 {@code tryOneShell} 的 {@code lastStatusRaw} 同一口径。
+             */
+            String lastStatusRaw = "";
             int r = 0;
             for (Round round : rounds) {
                 r++;
@@ -754,6 +782,7 @@ public final class R3AuditProbe {
                 SupplicantParser.Info info = SupplicantParser.parse(
                         round.status == null ? "" : round.status);
                 boolean channelAlive = round.status != null && !round.status.trim().isEmpty();
+                if (channelAlive) lastStatusRaw = round.status;
 
                 if (!sawAttempt && info.ssid != null && target.equals(info.ssid)
                         && info.state != null && !info.state.isEmpty()) {
@@ -778,8 +807,11 @@ public final class R3AuditProbe {
                         sawAttempt || targetNetId >= 0,
                         // R3：本轮已有目标的成功证据 → 失败判据不得抢答
                         !slice.isEmpty() && WpaLogReader.sawNegotiatedFor(slice, targetBssid))) {
-                    return new Result(CrackEngine.Verdict.AUTH_FAIL, "failover",
-                            round.tMs, "回连判据（已证明本条被尝试过，且本轮无目标成功证据）");
+                    // B3：与生产对齐 —— failover 是 **AP-1**（只证明「本次没连上」），
+                    // 不产 AUTH_FAIL。否则探针会给出一份与生产相反的「真值」，
+                    // 审计结论直接反了。
+                    return new Result(nonFailure(lastStatusRaw, target), "failover",
+                            round.tMs, "回连判据（AP-1：本次结束但无归因证据，不判密码错）");
                 }
 
                 // ---- 日志段（CrackEngine:1310-1450）----
@@ -808,15 +840,19 @@ public final class R3AuditProbe {
                     if (CrackEngine.m1RetryImpliesWrongKey(m1Count, succ)) {
                         if (!m1RetryArmed) { m1RetryArmed = true; m1RetryArmedAt = round.tMs; }
                         else if (round.tMs - m1RetryArmedAt >= 120L) {
-                            return new Result(CrackEngine.Verdict.AUTH_FAIL, "m1retry",
-                                    round.tMs, "M1 重发 " + m1Count + " 次");
+                            // B3：m1retry 也是 AP-1（握手没进展 != 密钥不符）
+                            return new Result(nonFailure(lastStatusRaw, target), "m1retry",
+                                    round.tMs, "M1 重发 " + m1Count + " 次（AP-1，不判密码错）");
                         }
                     }
                     if (WpaLogReader.sawWrongKeyFor(wlog, target)
                             || (tried && (WpaLogReader.sawHandshakeFailure(wlog)
                                     || WpaLogReader.sawAssocReject(wlog)))) {
-                        return new Result(CrackEngine.Verdict.AUTH_FAIL, "wpalog",
-                                round.tMs, "带/不带归属的失败行");
+                        // B3：支B（零字段/无归属失败行）是 AP-1，不产 AUTH_FAIL。
+                        // 带归属的直接否认（TEMP-DISABLED reason=WRONG_KEY）才是 AP-3，
+                        // 但本探针不区分，统一按 AP-1 保守处理。
+                        return new Result(nonFailure(lastStatusRaw, target), "wpalog",
+                                round.tMs, "失败行（AP-1：无归属证据，不判密码错）");
                     }
                 }
             }

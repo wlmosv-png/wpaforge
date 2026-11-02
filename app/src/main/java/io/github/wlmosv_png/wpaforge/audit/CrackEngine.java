@@ -796,6 +796,50 @@ public final class CrackEngine {
     }
 
     /**
+     * **唯一结论出口**（C3）：把一条证据交给 {@link Adjudicator} 裁决。
+     *
+     * <p>五种证据源（failover / authcast / m1retry / wpalog 支A / wpalog 支B）
+     * 迁移后都不再自己 {@code new Attempt(..., Verdict.AUTH_FAIL, ...)}，
+     * 而是构造一条 {@link Evidence} 交到这里 —— 「这算成功还是失败、能不能
+     * 永久排除」只由 {@link Adjudicator} 回答一次。
+     *
+     * @param password    本条候选（仅用于判词脱敏）
+     * @param lifecycle   当前连接生命周期三态
+     * @param gate        前置闸门结果（循环内意味着已通过，传 OK）
+     * @param source      证据来源
+     * @param claim       主张
+     * @param attribution 归属强度（决定能否永久排除）
+     * @param attemptId   本条 Attempt 的 id（归属过滤用）
+     * @param netIdKnown  本次是否建出配置（**只作诊断，不构成归属证据**）
+     * @param ms          本条耗时
+     * @param humanDetail 人为可读补充（沿用原判词口径，便于对比迁移前后）
+     */
+    private Attempt judge(String password, Lifecycle lifecycle, AttemptState.Gate gate,
+                          Evidence.Source source, Evidence.Claim claim,
+                          Evidence.Attribution attribution, String attemptId,
+                          boolean netIdKnown, long ms, String humanDetail) {
+        AttemptState st = new AttemptState(attemptId, lifecycle, gate, netIdKnown);
+        Evidence e = new Evidence(source, claim, attribution, attemptId, ms);
+        Adjudicator.Result r = Adjudicator.adjudicate(st, java.util.Collections.singletonList(e));
+        return Adjudicator.toAttempt(password, r, ms, humanDetail, byNameOf(source));
+    }
+
+    /** 证据来源 -> 判词里的 by 标签（与迁移前逐字一致，便于比对旧日志）。 */
+    private static String byNameOf(Evidence.Source src) {
+        if (src == null) return "";
+        switch (src) {
+            case FAILOVER: return "failover";
+            case AUTHCAST: return "authcast";
+            case M1RETRY: return "m1retry";
+            case WPALOG_A:
+            case WPALOG_B: return "wpalog";
+            case SUCCESS_STATUS: return "supplicant";
+            case SUCCESS_LOG: return "wpalog";
+            default: return "";
+        }
+    }
+
+    /**
      * 由 {@code cmd wifi status} 的**原始输出**得出生命周期（纯函数，可离线穷举）。
      *
      * <h3>为什么不能只用 {@link #lifecycleOf(String)}</h3>
@@ -1899,10 +1943,24 @@ public final class CrackEngine {
                     }
                     android.util.Log.i(TAG, "命中: " + info
                             + " (targetNetId=" + targetNetId + ")");
-                    return new Attempt(password, Verdict.SUCCESS, ms,
+                    /*
+                     * 证据：CONNECTED，归属 **AT3**。
+                     *
+                     * <p>为什么这里能给 AT3（而 AUTH_FAIL 不能）：
+                     * 成功证据是「SSID + Supplicant state + IP + netId **同行**」，
+                     * 而命令前有两道闸门（目标配置已删净并回读、需要时已确认断开）。
+                     * 因此命令之后出现的「目标已连上」只可能来自**本条候选建的配置**
+                     * —— 这是结构性归因，不是「SSID 一样」这种弱证据。
+                     * 若 netId 与本次配置冲突，SuccessRule 已在上面返回 UNKNOWN，
+                     * 走不到这里（归属冲突不会被当成成功）。
+                     */
+                    return judge(password, Lifecycle.ACTIVE, AttemptState.Gate.OK,
+                            Evidence.Source.SUCCESS_STATUS, Evidence.Claim.CONNECTED,
+                            Evidence.Attribution.AT3, attemptId, targetNetId >= 0, ms,
                             L.s("握手完成且已获取 IP（确认连上）",
-                                "handshake completed and IP obtained"),
-                            sa.evidence);
+                                "handshake completed and IP obtained")
+                                    + (sa.evidence == null || sa.evidence.isEmpty()
+                                        ? "" : " · " + sa.evidence));
                 } else {
                     /*
                      * ---- 失败加速：系统已经回连到别的网络 ----
@@ -1939,7 +1997,12 @@ public final class CrackEngine {
                         // v2.1：failover 是 **AP-1**（只证明「本次没连上」）→ 不产 AUTH_FAIL。
                         // 「系统去连别的网」= 本次尝试已终止，但没有密钥不符证据。
                         long msf = clock().uptimeMillis() - t0;
-                        return tailOf(password, Verdict.TERMINATED_UNKNOWN, msf, "failover",
+                        // 证据：本次没连上（AP-1）。归属 AT1 —— 只看到「系统去连别的网」，
+                        // 与「本条候选的密钥被拒」之间没有因果链。
+                        return judge(password, lastLifecycle, AttemptState.Gate.OK,
+                                Evidence.Source.FAILOVER, Evidence.Claim.NOT_CONNECTED,
+                                Evidence.Attribution.AT1, attemptId,
+                                targetNetId >= 0, msf,
                                 L.f("系统已回连到其它网络 %s —— 目标这次没连上（无归因证据）",
                                     "system fell back to %s - the target did not connect (no attributable evidence)",
                                     info.ssid));
@@ -2000,10 +2063,14 @@ public final class CrackEngine {
                             wlogSlice, target.bssid, targetNetId)) {
                         long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "命中(日志): 关联目标后完成协商");
-                        return new Attempt(password, Verdict.SUCCESS, ms,
+                        // 证据：CONNECTED。归属 AT3 —— 要求「目标 BSSID 的
+                        // Key negotiation completed」，且带 netId 归属
+                        // （sawNegotiatedForAttempt 已把 netId 纳入）。
+                        return judge(password, Lifecycle.ACTIVE, AttemptState.Gate.OK,
+                                Evidence.Source.SUCCESS_LOG, Evidence.Claim.CONNECTED,
+                                Evidence.Attribution.AT3, attemptId, targetNetId >= 0, ms,
                                 L.s("日志确认握手完成（Key negotiation completed）",
-                                    "log confirms handshake completed"),
-                                "wpalog");
+                                    "log confirms handshake completed"));
                     }
                     // 失败判定**不再要求先看到 "Trying to associate"**：
                     // `4-Way Handshake failed` / `reason=WRONG_KEY` 这两行本身就是
@@ -2043,37 +2110,51 @@ public final class CrackEngine {
                                 boolean ssidOwned = WifiAuthFailureWatcher.ssidOwnedByTarget(
                                         authWatch.lastErrorSsid(), target.ssid);
                                 /*
-                                 * 归属分级（B3）：广播只带 SSID，属 **AT-1**。
+                                 * 归属分级（C1）：authcast **永远**是 INFERRED。
                                  *
-                                 * 致命场景（同 SSID 多配置）：系统里还留着一条**旧配置**
-                                 * （旧密码）指向同一个 SSID。系统后台拿它重试失败 →
-                                 * 广播 SSID 与目标逐字相等 → 旧实现给 DIRECT →
-                                 * 本条候选被永久写进 triedSet。若本条其实是**正确**密码，
-                                 * 它就被永久排除了 —— 正是本任务要根除的事故形态。
+                                 * <h3>为什么 targetNetId >= 0 不够（B3b 的错误，已纠正）</h3>
+                                 * 「本次命令建出了配置并拿到 netId」只回答第 2 层问题。
+                                 * 要把它当成 AT-3 必须逐层成立：
+                                 * <pre>
+                                 *   ① 当前命令创建了配置          —— targetNetId >= 0 可证
+                                 *   ② 当前配置获得了 netId        —— 同上
+                                 *   ③ **广播**携带了 netId        —— 不可能：系统广播只有
+                                 *        EXTRA_NEW_STATE 与 EXTRA_SUPPLICANT_ERROR
+                                 *        （EXTRA_SSID / EXTRA_BSSID / EXTRA_NETWORK_INFO
+                                 *         在 Android 12+ 已废弃，本机读不到）
+                                 *   ④ 广播与当前配置可验证关联    —— 无通道可证
+                                 *   ⑤ 广播与当前 Attempt 可验证  —— 无通道可证
+                                 * </pre>
+                                 * 第 3 层就已经断了。**存在 targetNetId 不构成关联证据。**
+                                 * 更何况 netId 会被系统复用（净检里已记录该现象），
+                                 * 同一个 netId 可能先后属于不同配置。
                                  *
-                                 * 要永久排除还必须有 **AT-3**：本次命令确实建出了配置
-                                 * （targetNetId >= 0），证明这次失败来自**本条候选建的**
-                                 * 那条配置，而不是同 SSID 的旧配置。
+                                 * <h3>致命场景（为什么不能给 DIRECT）</h3>
+                                 * 同 SSID 多配置：系统里还留着一条**旧配置**（旧密码）
+                                 * 指向同一个 SSID。后台拿它重试失败 → 广播 SSID 与目标
+                                 * 逐字相等 → 若给 DIRECT，本条候选被永久写进 triedSet。
+                                 * 若本条其实是**正确**密码，它就被永久排除了。
                                  *
-                                 * 拿不到 netId（真机常见）→ 降 INFERRED：
-                                 *   · 判定能力不变（本轮仍报 AUTH_FAIL，用户看得见）
-                                 *   · 但不写 triedSet、不推 cursor → 续跑会重试
+                                 * <h3>代价（明确记录）</h3>
+                                 * AUTH_FAIL 不再有任何 DIRECT 出口 → 错误密码不会被
+                                 * 永久排除，续跑会重试。判定能力不变（本轮仍报
+                                 * AUTH_FAIL，用户看得见），只放弃「永久排除」这个
+                                 * 尚未被任何可靠证据支持的能力。
                                  * 这是「正确性优先于速度」的同一取舍（见支A）。
                                  */
-                                boolean at3Owned = targetNetId >= 0;
-                                Attempt ac = new Attempt(password, Verdict.AUTH_FAIL, ms,
+                                // 证据：framework 明确报「认证失败」（AP-3 级主张）。
+                                // 归属只到 AT1 —— 广播不含 netId/BSSID，无法绑到本次配置。
+                                return judge(password, lastLifecycle, AttemptState.Gate.OK,
+                                        Evidence.Source.AUTHCAST, Evidence.Claim.WRONG_KEY,
+                                        Evidence.Attribution.AT1, attemptId,
+                                        targetNetId >= 0, ms,
                                         L.s("系统报告认证失败 → 密码错误",
                                             "system reported auth failure -> wrong passphrase")
                                                 + timing(tAssocMs, tM1Ms, tAuthMs)
-                                                + (at3Owned ? ""
-                                                    : L.s("（本次配置 netId 未取到，仅本轮结论）",
-                                                        " (this attempt's netId unavailable; "
-                                                            + "not a permanent exclusion)")),
-                                        "authcast");
-                                ac.grade = (ssidOwned && at3Owned)
-                                        ? EvidenceGrade.Level.DIRECT
-                                        : EvidenceGrade.Level.INFERRED;
-                                return ac;
+                                                + L.s("（广播不含 netId 或 BSSID，无法证明属于本次配置，仅本轮结论）",
+                                                    " (broadcast carries no netId/BSSID; "
+                                                        + "cannot be tied to this config - "
+                                                        + "not a permanent exclusion)"));
                             }
                         }
                     }
@@ -2136,12 +2217,11 @@ public final class CrackEngine {
                             String m1d = L.s("M1 被重发（握手无进展）—— 本次没连上",
                                         "M1 retransmitted (no handshake progress) - not connected")
                                             + timing(tAssocMs, tM1Ms, tAuthMs);
-                            if (m1lc == Lifecycle.ACTIVE) {
-                                return tailOf(password, Verdict.INCOMPLETE, ms, "m1retry", m1d);
-                            }
-                            return tailOf(password, m1lc == Lifecycle.TERMINATED
-                                            ? Verdict.TERMINATED_UNKNOWN : Verdict.UNKNOWN,
-                                    ms, "m1retry", m1d);
+                            // 证据：握手没进展（AP-1）。归属 AT1 —— M1 行不带 SSID/BSSID。
+                            return judge(password, m1lc, AttemptState.Gate.OK,
+                                    Evidence.Source.M1RETRY, Evidence.Claim.NOT_CONNECTED,
+                                    Evidence.Attribution.AT1, attemptId,
+                                    targetNetId >= 0, ms, m1d);
                         }
                     }
 
@@ -2186,16 +2266,17 @@ public final class CrackEngine {
                         // ---- 支A：带 SSID 归属的直接否认 —— 可靠，立即结案 ----
                         long ms = clock().uptimeMillis() - t0;
                         android.util.Log.i(TAG, "快速失败(日志): 带归属的直接否认");
-                        Attempt wl = new Attempt(password, Verdict.AUTH_FAIL, ms,
+                        // 证据：带 SSID 归属的直接否认（AP-3 级主张）。
+                        // 但归属只到 AT1：TEMP-DISABLED 只有 SSID，无 BSSID / netId 绑定
+                        // -> INFERRED，**不永久排除**（与迁移前逐字一致）。
+                        Attempt wl = judge(password, lastLifecycle, AttemptState.Gate.OK,
+                                Evidence.Source.WPALOG_A, Evidence.Claim.WRONG_KEY,
+                                Evidence.Attribution.AT1, attemptId,
+                                targetNetId >= 0, ms,
                                 L.s("日志显示握手失败（密码错误）",
-                                    "log shows handshake failure (wrong passphrase)"),
-                                "wpalog");
-                        // 归属等级修正（v2.1）：TEMP-DISABLED 只有 SSID（+有序+失败前导），
-                        // 属 **AT-1** —— 无 BSSID / 无 netId 绑定。
-                        // 按「AT-3 × AP-3 才可永久排除」原则，**降为 INFERRED**：
-                        // 本轮可判 AUTH_FAIL（保留判定能力），但**不写 triedSet、不推 cursor**。
-                        // 代价：错误密码不再被永久排除（续跑会重试）—— 正确性优先于速度。
-                        wl.grade = EvidenceGrade.Level.INFERRED;
+                                    "log shows handshake failure (wrong passphrase)"));
+                        // 归属等级与持久化能力由 Adjudicator 按 AT1 决定，
+                        // 这里不再自行覆盖 grade（否则就是绕过统一裁决）。
                         return wl;
                     }
                     if (logInferredFail) {
@@ -2232,20 +2313,15 @@ public final class CrackEngine {
             // 按生命周期三态分派，且 **UNKNOWN 不得当作 TERMINATED**。
             Lifecycle lc = lastLifecycle;
             android.util.Log.i(TAG, "循环结束：支B(AP-1) 命中，生命周期=" + lc + " state=" + lastStatusState);
-            switch (lc) {
-                case ACTIVE:
-                    return tailOf(password, Verdict.INCOMPLETE, total, "wpalog",
-                            L.s("观察期限结束，但目标连接仍在进行（未收敛）",
-                                "observation window ended while the target connection was still in progress"));
-                case TERMINATED:
-                    return tailOf(password, Verdict.TERMINATED_UNKNOWN, total, "wpalog",
-                            L.s("连接已终止但无归因证据（不等于密码错误）",
-                                "connection terminated without attributable evidence (not a wrong passphrase)"));
-                default:
-                    return tailOf(password, Verdict.UNKNOWN, total, "wpalog",
-                            L.s("连接状态无法确认（读取失败或未知状态），不作确定结论",
-                                "connection state unconfirmable (read failure or unknown state); no definitive verdict"));
-            }
+            // 证据：零字段/无归属的失败行（AP-1）。归属 NONE —— 连 SSID 都没有。
+            return judge(password, lc, AttemptState.Gate.OK,
+                    Evidence.Source.WPALOG_B, Evidence.Claim.NOT_CONNECTED,
+                    Evidence.Attribution.NONE, attemptId,
+                    targetNetId >= 0, total,
+                    L.s("观察期结束：日志有无归属的失败行，但连接生命周期"
+                            + (lc == Lifecycle.ACTIVE ? "仍在进行" : "已终止/未知"),
+                        "observation window ended with unattributed failure lines; lifecycle="
+                            + lc));
         }
 
         // R6：循环里一次日志都没读到（例如通道不吐日志）时也要留下窗口状态，

@@ -86,6 +86,16 @@ public final class LifecycleThreeStateTest {
         return (String) c.getMethod("of", String.class, int.class).invoke(null, run, seq);
     }
 
+    /** 读仓库内文件；读不到返回空串（不抛，避免守卫项变成噪音）。 */
+    private static String readOrEmpty(String root, String rel) {
+        try {
+            java.io.File f = new java.io.File(root, rel);
+            return new String(java.nio.file.Files.readAllBytes(f.toPath()), "UTF-8");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     private static CrackEngine newEngine() throws Exception {
         Constructor<?> ctor = CrackEngine.class.getDeclaredConstructor(int.class);
         ctor.setAccessible(true);
@@ -221,8 +231,15 @@ public final class LifecycleThreeStateTest {
             ok("存在基于原始输出的 lifecycleOfStatus", code.contains("lifecycleOfStatus("), "未找到方法");
             ok("tryOneShell 用 lastLifecycle（不是每次重算 state）",
                     code.contains("Lifecycle lastLifecycle"), "未接线");
-            ok("支B 结案按三态分派（ACTIVE/TERMINATED/默认）",
-                    code.contains("case ACTIVE:") && code.contains("case TERMINATED:"), "未分派");
+            // C3 契约更新：支B 不再自己写 switch —— 它把
+            // Evidence(WPALOG_B, NOT_CONNECTED, NONE) 交给统一 Adjudicator，
+            // 由 Adjudicator 按生命周期分派。断言随之改为「必须经统一入口」。
+            ok("支B 经统一裁决入口（不再自行分派）",
+                    code.contains("Evidence.Source.WPALOG_B"), "未接入");
+            ok("Adjudicator 负责生命周期分派",
+                    readOrEmpty(root, "app/src/main/java/io/github/wlmosv_png/"
+                            + "wpaforge/audit/Adjudicator.java").contains("case ACTIVE:"),
+                    "未分派");
         } catch (Throwable t) {
             fail++;
             System.out.println("  FAIL 源码守卫异常: " + t);

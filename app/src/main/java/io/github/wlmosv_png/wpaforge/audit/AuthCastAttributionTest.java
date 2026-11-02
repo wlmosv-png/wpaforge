@@ -23,14 +23,19 @@ import java.util.List;
  *   <li>{@code CrackEngine.setAuthWatchForTest(w)} —— 把实例装进测试构造的引擎。</li>
  * </ul>
  *
- * <h3>被钉死的行为（同 SSID 多配置的安全底线）</h3>
+ * <h3>被钉死的行为（C1 定论）</h3>
  * <pre>
- *   广播只带 SSID（AT-1）。
- *   要**永久排除**候选还需要 AT-3：本次命令确实建出了配置（targetNetId >= 0），
- *   证明失败来自本条候选建的那条配置，而不是同 SSID 的**旧配置**。
+ *   authcast **永远** AUTH_FAIL / INFERRED。
  *
- *   netId 拿得到  -> AUTH_FAIL / DIRECT    （写 triedSet、推 cursor）
- *   netId 拿不到  -> AUTH_FAIL / INFERRED  （本轮结论，但**不永久排除**）
+ *   为什么 targetNetId >= 0 不够：
+ *     ① 当前命令创建了配置      —— 可证
+ *     ② 当前配置获得了 netId    —— 可证
+ *     ③ 广播携带了 netId        —— **不可能**：系统广播只有
+ *          EXTRA_NEW_STATE 与 EXTRA_SUPPLICANT_ERROR
+ *          （EXTRA_SSID / EXTRA_BSSID / EXTRA_NETWORK_INFO 在 Android 12+ 已废弃）
+ *     ④ 广播与当前配置有关联    —— 无通道可证
+ *     ⑤ 广播与当前 Attempt 有关 —— 无通道可证
+ *   第 3 层就断了，所以「存在 netId」不构成关联证据。
  * </pre>
  * 两种情形都必须仍然是 AUTH_FAIL —— 判定能力不能因为收紧归属而丢掉。
  */
@@ -129,8 +134,15 @@ public final class AuthCastAttributionTest {
                     aA.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + aA.verdict);
             ok("A 确实由 authcast 判定", "authcast".equals(aA.confirmedBy),
                     "by=" + aA.confirmedBy);
-            ok("A 的 SSID 归属成立 + AT-3 成立 -> DIRECT（允许永久排除）",
-                    aA.grade == EvidenceGrade.Level.DIRECT, "grade=" + aA.grade);
+            // C1 契约更新（收紧，不是放宽）：
+            // `targetNetId >= 0` 只证明「本次建了配置并拿到 netId」，
+            // **不**证明这条广播属于它 —— 广播本身不带 netId/BSSID。
+            // 所以即使 netId 建出来了，也只能 INFERRED。
+            ok("A 即使 netId 建出来（613）**也不得** DIRECT（广播与配置无关联证据）",
+                    aA.grade == EvidenceGrade.Level.INFERRED, "grade=" + aA.grade);
+            ok("A 的判词说明「无法证明属于本次配置」",
+                    aA.detail != null && aA.detail.contains("无法证明属于本次配置"),
+                    "detail=" + aA.detail);
 
             // ---- 场景 B：netId 取不到（AT-3 不成立）----
             CrackEngine eB = attemptWith("");
@@ -147,6 +159,35 @@ public final class AuthCastAttributionTest {
             ok("B 的判词显式说明「仅本轮结论」",
                     aB.detail != null && aB.detail.contains("仅本轮结论"),
                     "detail=" + aB.detail);
+
+            // ---- 场景 C：同 SSID 多配置（系统里还有一条旧配置）----
+            // 这是 authcast 最危险的现场：旧配置（旧密码）重试失败也会广播同 SSID。
+            CrackEngine eC = attemptWith("613   " + SSID + "   WPA2\n"
+                    + "700   " + SSID + "   WPA2\n");
+            CrackEngine.Attempt aC = eC.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
+            info("C 同 SSID 两条配置 -> verdict=" + aC.verdict + " grade=" + aC.grade
+                    + " by=" + aC.confirmedBy);
+            ok("C 同 SSID 多配置仍然 INFERRED（不得永久排除：可能是旧配置在失败）",
+                    aC.grade == EvidenceGrade.Level.INFERRED, "grade=" + aC.grade);
+            ok("C 仍然是 AUTH_FAIL（判定能力保留）",
+                    aC.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + aC.verdict);
+
+            // ---- 场景 D：netId 复用（同一个 netId 属于别的配置）----
+            // 只证明「这个数字存在过」，不证明「这条广播属于它」。
+            CrackEngine eD = attemptWith("613   OTHER-NET   WPA2\n");
+            CrackEngine.Attempt aD = eD.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
+            info("D netId 613 属别的 SSID -> verdict=" + aD.verdict + " grade=" + aD.grade
+                    + " by=" + aD.confirmedBy);
+            ok("D netId 复用场景下仍然 INFERRED", 
+                    aD.grade == EvidenceGrade.Level.INFERRED, "grade=" + aD.grade);
+
+            // ---- 场景 E：配置创建失败（list-networks 一直空）----
+            CrackEngine eE = attemptWith("");
+            CrackEngine.Attempt aE = eE.tryOne(t, "WPA2", "WrongPass77", 3000L, aid);
+            info("E 配置创建失败 -> verdict=" + aE.verdict + " grade=" + aE.grade
+                    + " by=" + aE.confirmedBy);
+            ok("E 配置没建出来时也不得给 DIRECT", 
+                    aE.grade != EvidenceGrade.Level.DIRECT, "grade=" + aE.grade);
 
             // ---- 不变量：INFERRED 不写 triedSet、不推 cursor ----
             ok("AUTH_FAIL/INFERRED 不进永久集合（persistable=false）",

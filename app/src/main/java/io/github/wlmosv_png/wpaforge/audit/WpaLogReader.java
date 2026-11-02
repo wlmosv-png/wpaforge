@@ -293,30 +293,47 @@ public final class WpaLogReader {
 
         for (String line : logcatOutput.split("\n")) {
             if (line.isEmpty() || line.startsWith("---")) continue;
+            /*
+             * C5 / S1-1：事件时间戳。
+             *
+             * 旧实现把所有事件的 at 一律填 now（调用方通常传 0）—— 于是
+             * 「事件发生时间」恒为 0，既无法排序，也无法与任何时刻比较，
+             * 而 0 又是个**看起来合法的值**（比 null 更危险）。
+             *
+             * 现在：调用方给了 now 就用它（采集时刻），否则解析行首时间戳。
+             * 两种都拿不到 -> 0，并且调用方必须用 EventTime.parse(...).usable()
+             * 显式判断，不得把 0 当成有效时刻。
+             *
+             * **用途限制（写在代码里，防止将来被误用）**：
+             *   · 只能用于**同一份日志内**的相对排序与诊断；
+             *   · 不得与 clock().uptimeMillis() 直接比较（基准不同，见 EventTime）；
+             *   · 不得用「时间接近」把 AT1 证据升级为 AT3。
+             */
+            long at = now > 0 ? now : EventTime.parse(line).valueMs;
 
             Matcher m = P_ASSOC.matcher(line);
             if (m.find()) {
-                out.add(new LogEvent(now, m.group(1), KIND_ASSOCIATE, line));
+                out.add(new LogEvent(at, m.group(1), KIND_ASSOCIATE, line));
                 continue;
             }
             Matcher mn = P_NEGOTIATED.matcher(line);
             if (mn.find()) {
-                out.add(new LogEvent(now, null, mn.group(1), KIND_NEGOTIATED, line));
+                out.add(new LogEvent(at, null, mn.group(1), KIND_NEGOTIATED, line));
                 continue;
             }
             if (P_HANDSHAKE_FAIL.matcher(line).find()) {
                 // 这一行本身不带归属（wpa_supplicant 就是这么打的），
                 // 所以调用方必须结合「本次见过目标的关联」来判断 —— 见 sawFailureLikelyForTarget
-                out.add(new LogEvent(now, null, KIND_HANDSHAKE_FAILED, line));
+                out.add(new LogEvent(at, null, KIND_HANDSHAKE_FAILED, line));
                 continue;
             }
             if (P_ASSOC_REJECT.matcher(line).find()) {
-                out.add(new LogEvent(now, null, KIND_ASSOC_REJECT, line));
+                out.add(new LogEvent(at, null, KIND_ASSOC_REJECT, line));
                 continue;
             }
             Matcher mm1 = P_HANDSHAKE_M1.matcher(line);
             if (mm1.find()) {
-                out.add(new LogEvent(now, null, mm1.group(1), KIND_HANDSHAKE_M1, line));
+                out.add(new LogEvent(at, null, mm1.group(1), KIND_HANDSHAKE_M1, line));
                 continue;
             }
             Matcher mw = P_WRONG_KEY.matcher(line);
@@ -329,14 +346,14 @@ public final class WpaLogReader {
                     try { af = Integer.parseInt(mf.group(1)); }
                     catch (Throwable ignored) { af = LogEvent.AUTH_FAILURES_UNKNOWN; }
                 }
-                out.add(new LogEvent(now, mw.group(1), null, KIND_WRONG_KEY, line,
+                out.add(new LogEvent(at, mw.group(1), null, KIND_WRONG_KEY, line,
                         NETID_UNKNOWN, af));
                 continue;
             }
             Matcher mc2 = P_CONNECTED.matcher(line);
             if (mc2.find()) {
                 String connId = mc2.groupCount() >= 2 ? mc2.group(2) : null;
-                out.add(new LogEvent(now, null, mc2.group(1),
+                out.add(new LogEvent(at, null, mc2.group(1),
                         KIND_CONNECTED, line, parseNetId(connId)));
             }
         }

@@ -230,10 +230,16 @@ public final class R3AuditProbe {
                         && !engineSrc().contains("判定完全依赖系统回调"));
 
         // 已修复（R6 接线）：不再是「缺失」，而是「必须有」——接线被删即判红。
+        //
+        // 2026-11-02 修正（C5）：本断言此前查的是 AttemptId.of(currentRunId, **cursor**)，
+        // 那是**过时符号**。cursor 后来改成「安全续跑边界」（遇到非 DIRECT 会停在原地），
+        // 若仍拿它当序号，后续所有候选会共用同一个 seq -> attemptId 非法 ->
+        // 日志窗口全失效。生产早已改为 of(currentRunId, i + 1)。
+        // 于是这条断言长期在报假 VIOLATION —— 属于探针自身过时，不是生产缺陷。
         boolean wired = engineSrc().contains("AttemptId.newRunId(")
-                && engineSrc().contains("AttemptId.of(currentRunId, cursor)")
-                && engineSrc().contains("verdictTag(a.attemptId, cursor");
-        ok("S1-4", "尝试标识已接线（runId/attemptId 进判词；接线被删即红）", wired);
+                && engineSrc().contains("AttemptId.of(currentRunId, i + 1)")
+                && engineSrc().contains("verdictTag(");
+        ok("S1-4", "尝试标识已接线（runId -> attemptId -> 判词；接线被删即红）", wired);
     }
 
     // ================================================================ S2
@@ -320,9 +326,14 @@ public final class R3AuditProbe {
         // 已修复（R6+R3）：① 清理结果现在被检查（clearChecked）；② 归属不再建立
         // 在"缓冲已清空"这个假设上，而是建立在**起点标记的切片**上 —— 即使清空失败，
         // 标记之前的陈旧行也会被切片排除。这里钉住这两条。
-        ok("S3-1", "清理结果被检查，且归属改由标记切片承担（不再依赖清空假设）",
-                engineSrc().contains("WifiStateLog.clearChecked(")
-                        && !engineSrc().contains("WifiStateLog.clear(shell);")
+        // 2026-11-02 修正（C5）：本断言此前查 WifiStateLog.clearChecked(，
+        // 而 R11 已经**整体移除** logcat -c 清空机制（清空不可靠且会毁掉
+        // 别的窗口的证据）。归属改由「本候选起点标记之后的切片」承担，
+        // 因此 clearChecked 不存在才是正确状态 —— 旧断言把「已移除」
+        // 误读成「没检查」，长期报假 VIOLATION。
+        ok("S3-1", "归属由标记切片承担，且不再依赖不可靠的缓冲清空（clearChecked 已移除）",
+                !engineSrc().contains("WifiStateLog.clear(shell);")
+                        && !engineSrc().contains("WifiStateLog.clearChecked(")
                         && engineSrc().contains("AttemptMarker.sliceAfter("));
         // 已修复（R3）：日志判据只在「本候选起点标记之后」的切片上跑，
         // 标记之前（= 上一条候选残留）的失败行被结构性排除。

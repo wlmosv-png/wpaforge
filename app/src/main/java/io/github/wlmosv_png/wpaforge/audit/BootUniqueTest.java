@@ -20,6 +20,15 @@ import java.lang.reflect.Method;
  *   newRunId(t, ssid, n, bootA) != newRunId(t, ssid, n, bootB)   // 跨启动不同
  *   newRunId(t, ssid, n, null)  == newRunId(t, ssid, n)          // 向后兼容
  * </pre>
+ *
+ * <h3>C2：三层唯一性（都是可论证事实，不是概率）</h3>
+ * <pre>
+ *   ① 跨开机         : bootId 不同 -> 哈希段不同
+ *   ② 同开机跨进程   : 毫秒级时间戳不同（进程重启耗时远大于 1ms）
+ *   ③ 同进程多次创建 : runOrdinal 递增 -> 序号段不同
+ * </pre>
+ * 注意本设计**不依赖持久化序号**，因此天然免疫「持久化序号损坏或回滚」
+ * 这一故障模式（用户列出的七种情形之一）——不需要额外的自愈代码。
  */
 public final class BootUniqueTest {
 
@@ -31,6 +40,10 @@ public final class BootUniqueTest {
     }
 
     private static void info(String s) { System.out.println("  ·    " + s); }
+
+    private static void eq(String name, int expect, int actual) {
+        ok(name, expect == actual, "期望=" + expect + " 实际=" + actual);
+    }
 
     static final long T0 = 1_764_000_000_000L;
     static final String SSID = "LAB-BOOT";
@@ -89,6 +102,77 @@ public final class BootUniqueTest {
                 idA != null && AttemptId.seqOf(idA) == 11 && AttemptId.wellFormed(idA), "id=" + idA);
         ok("跨启动的两个 attemptId 不相等",
                 !String.valueOf(AttemptId.of(a1, 11)).equals(String.valueOf(AttemptId.of(b1, 11))), "");
+
+        // ------------------------------------------------ 1b) 七种碰撞情形逐条
+        System.out.println();
+        System.out.println("-- 七种情形逐条验证（C2）--");
+
+        // ① 同一秒内连续创建多个 run（秒级实现会碰撞，毫秒级不会）
+        String[] sameSecond = new String[6];
+        for (int k = 0; k < 6; k++) {
+            sameSecond[k] = AttemptId.newRunId(T0 + k * 100L, SSID, 0, BOOT_A);
+        }
+        int dup1 = 0;
+        for (int a = 0; a < sameSecond.length; a++) {
+            for (int b = a + 1; b < sameSecond.length; b++) {
+                if (sameSecond[a].equals(sameSecond[b])) dup1++;
+            }
+        }
+        info("同一秒内 6 个 run（间隔 100ms）= " + sameSecond[0] + " ... " + sameSecond[5]);
+        eq("① 同一秒内连续创建 6 个 run 互不相同", 0, dup1);
+
+        // ② 同一毫秒 + 不同进程序号（同进程快速连续）
+        String m0 = AttemptId.newRunId(T0, SSID, 0, BOOT_A);
+        String m1 = AttemptId.newRunId(T0, SSID, 1, BOOT_A);
+        ok("② 同一毫秒 + 不同序号 -> 不同", m0 != null && !m0.equals(m1), m0 + " vs " + m1);
+
+        // ③ 同一开机周期内进程重启（序号都从 0 起，时间戳不同）
+        String p1 = AttemptId.newRunId(T0, SSID, 0, BOOT_A);           // 重启前
+        String p2 = AttemptId.newRunId(T0 + 300L, SSID, 0, BOOT_A);    // 重启后（300ms 后）
+        ok("③ **同一开机内进程重启**（序号召回 0，时间 +300ms）-> 不同",
+                p1 != null && p2 != null && !p1.equals(p2), p1 + " vs " + p2);
+
+        // ④ 同一 SSID 是前提（下面所有用例都用同一个 SSID，故意的）
+        String q1 = AttemptId.newRunId(T0, SSID, 0, BOOT_A);
+        String q2 = AttemptId.newRunId(T0 + 1L, SSID, 0, BOOT_A);
+        ok("④ 同一 SSID 下仅时间差 1ms -> 不同", !q1.equals(q2), q1 + " vs " + q2);
+
+        // ⑤ 相同进程序号（重启后都是 0）+ 设备重启（bootId 变）
+        String r1 = AttemptId.newRunId(T0, SSID, 0, BOOT_A);
+        String r2 = AttemptId.newRunId(T0, SSID, 0, BOOT_B);
+        ok("⑤ 同 SSID 同时间同序号 + 设备重启（bootId 变）-> 不同",
+                !r1.equals(r2), r1 + " vs " + r2);
+
+        // ⑥ bootId 读取失败（null）：仍必须靠毫秒级区分跨进程
+        String n1 = AttemptId.newRunId(T0, SSID, 0, null);
+        String n2 = AttemptId.newRunId(T0 + 300L, SSID, 0, null);
+        ok("⑥ bootId 读不到时，跨进程（+300ms 同序号）仍不碰撞",
+                n1 != null && n2 != null && !n1.equals(n2), n1 + " vs " + n2);
+        ok("⑥ bootId 读不到 + 完全相同参数 -> 仍确定性（可复现，便于排查）",
+                n1.equals(AttemptId.newRunId(T0, SSID, 0, null)), "");
+
+        // ⑦ 持久化序号损坏/回滚 —— 本设计不依赖它，因此无该故障面；
+        //    用「连续 400 个不同毫秒」穷举，证明唯一性只由时间/序号/boot 决定。
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        int collide = 0;
+        for (int k = 0; k < 400; k++) {
+            String id = AttemptId.newRunId(T0 + k, SSID, 0, BOOT_A);
+            if (!seen.add(id)) collide++;
+        }
+        eq("⑦ 连续 400 个毫秒 400 个 runId 无碰撞（不依赖任何持久化状态）", 0, collide);
+
+        // 组合穷举：3 个 bootId × 3 个时间 × 3 个序号 = 27 组，必须全不同
+        java.util.HashSet<String> cross = new java.util.HashSet<>();
+        String[] boots = { BOOT_A, BOOT_B, null };
+        for (String bt : boots) {
+            for (int t = 0; t < 3; t++) {
+                for (int o = 0; o < 3; o++) {
+                    cross.add(AttemptId.newRunId(T0 + t, SSID, o, bt));
+                }
+            }
+        }
+        eq("组合穷举：3 bootId × 3 时间 × 3 序号 = 27 个 runId 全不同",
+                27, cross.size());
 
         // ---------------------------------------------------------- 2) 生产入口
         System.out.println();

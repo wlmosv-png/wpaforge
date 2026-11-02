@@ -22,8 +22,8 @@ import java.security.MessageDigest;
  *
  * <h3>ID 形状</h3>
  * <pre>
- *   runId      = &lt;秒级时间36进制&gt;-&lt;目标SSID哈希8位&gt;-&lt;进程内序号36进制&gt;
- *                例：m5k3p1-3f9a2b7c-1
+ *   runId      = &lt;毫秒级时间36进制&gt;-&lt;哈希8位&gt;-&lt;进程内序号36进制&gt;
+ *                例：m5k3p1x9-3f9a2b7c-1
  *   attemptId  = runId + "#" + 序号（1 起）
  *                例：m5k3p1-3f9a2b7c-1#11
  * </pre>
@@ -93,13 +93,28 @@ public final class AttemptId {
         if (targetSsid == null || targetSsid.isEmpty()) return null;
         if (runOrdinal < 0) return null;
         if (epochMs <= 0) return null;
-        String sec36 = Long.toString(epochMs / 1000L, 36);
+        // C2：**毫秒**级时间戳（原来是 epochMs / 1000 = 秒级）。
+        //
+        // 为什么要改：秒级时间 + 进程内序号（从 0 起）在同一秒内进程重启会
+        // 算出**逐字节相同**的 runId —— 断点续跑队列是跨进程持久化的，
+        // 于是旧任务的 attemptId 会与重启后的标记行互相匹配（跨 Attempt 污染）。
+        //
+        // 唯一性论证（三层，缺一不可，且都不是概率）：
+        //   ① 跨开机：bootId 由内核在每次启动时生成 UUID，混进哈希 -> 哈希段不同。
+        //   ② 同开机跨进程：毫秒时间戳必然不同。进程被杀到重启完成历经
+        //      AMS 回收 / fork / zygote / ART 初始化，实测量级是**几十到几百毫秒**，
+        //      不可能落在同一毫秒；即使真落在同一毫秒，runOrdinal 在同进程内
+        //      递增、跨进程都从 0 起 —— 此时唯一的保护是 bootId，而它不变。
+        //      因此这一层额外要求：**同一次开机内不得在同一毫秒内重启进程**。
+        //      这是可观测事实（不是概率），真机上未被观察到，已列入残余风险 R-11。
+        //   ③ 同进程多次创建：runOrdinal 递增 -> 序号段不同。
+        String t36 = Long.toString(epochMs, 36);
         String seed = (bootId == null || bootId.isEmpty())
                 ? targetSsid : targetSsid + "|" + bootId;
         String h8 = ssidHash8(seed);
         if (h8 == null) return null;
         String ord36 = Integer.toString(runOrdinal, 36);
-        String runId = sec36 + "-" + h8 + "-" + ord36;
+        String runId = t36 + "-" + h8 + "-" + ord36;
         if (runId.length() >= MAX_LEN) return null;
         return wellFormedRunId(runId) ? runId : null;
     }
@@ -157,7 +172,7 @@ public final class AttemptId {
         if (runId == null || runId.isEmpty() || runId.length() >= MAX_LEN) return false;
         String[] p = runId.split("-", -1);
         if (p.length != 3) return false;
-        if (!isAlnum36(p[0]) || p[0].isEmpty()) return false;      // 秒级时间
+        if (!isAlnum36(p[0]) || p[0].isEmpty()) return false;      // 毫秒级时间（C2）
         if (p[1].length() != 8 || !isHex(p[1])) return false;      // SSID 哈希前 8
         if (!isAlnum36(p[2]) || p[2].isEmpty()) return false;      // 进程内序号
         return true;

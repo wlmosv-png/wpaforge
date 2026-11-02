@@ -142,14 +142,27 @@ public class R10InvariantTest {
             // 剩余两条都必须具备**明确密钥不符证据**：
             //   · authcast = framework ERROR_AUTHENTICATING（系统「密码错误」广播）
             //   · 支A     = CTRL-EVENT-SSID-TEMP-DISABLED reason=WRONG_KEY
-            eq("全文件的 AUTH_FAIL 出口数 = 2（authcast + 支A，均为 AP-3 明确密钥不符证据）", 2, auth);
-            // B3b：authcast 原本无条件给 DIRECT（AT-1 只有 SSID）。
-            // 同 SSID 多配置时，旧配置的失败广播会把**正确**密码永久写进 triedSet。
-            // 现在 DIRECT 必须与 AT-3 同现（本次 netId 确实建出来了）。
-            ok("authcast 的 DIRECT 需 AT-3（本次 netId 建出来了）才成立",
-                    code.contains("ssidOwned && at3Owned"));
-            eq("除 authcast 外没有别的 AUTH_FAIL 出口给 DIRECT", 0,
+            // C3：五种证据源已全部接入统一 Adjudicator，
+            // CrackEngine 里**不再有任何直接构造的 AUTH_FAIL**。
+            // 这条从「数出口」升级为「出口必须为零」——更严格，不是放宽。
+            eq("**CrackEngine 内直接构造的 AUTH_FAIL 出口数 = 0**（全部经 Adjudicator）", 0, auth);
+            // C3：五种证据源；C4：再加两个成功出口 -> 共 7 处统一裁决入口
+            ok("全部证据源都调用统一裁决入口 judge(...)（7 处：5 失败源 + 2 成功源）",
+                    countOccurrences(code, "judge(password,") == 7);
+            // C1：authcast 也不得 DIRECT。
+            // 广播只有 SSID（AT-1），而 netId 存在**不构成关联证据**——
+            // 「本次建了配置」与「这条广播属于它」之间没有可验证的因果链。
+            eq("**没有任何 AUTH_FAIL 出口给 DIRECT**（永久排除路径已封闭）", 0,
                     countDirectAuthFail(code));
+            // C3：authcast 不再自己设 grade —— 它提交 Evidence(AUTHCAST, WRONG_KEY, AT1)，
+            // 由 Adjudicator 按 AT1 决定 INFERRED。
+            ok("authcast 提交 WRONG_KEY 证据，归属上限 AT1",
+                    code.contains("Evidence.Source.AUTHCAST, Evidence.Claim.WRONG_KEY")
+                            && !code.contains("at3Owned"));
+            // AT3 只允许出现在**成功**证据上（两处），
+            // 失败源一律 AT1/NONE —— 这就是「永久排除路径封闭」的可执行形式。
+            eq("AT3 只出现在两条成功证据上（失败源无一例外）", 2,
+                    countOccurrences(code, "Evidence.Attribution.AT3"));
             eq("每个 AUTH_FAIL 都带非空归因码（没有匿名失败）", 0, noCode);
             ok("命令前的「候选不合法」不再是 AUTH_FAIL（复核修正）",
                     code.contains("if (!isValidLength(password)) {")
@@ -166,7 +179,13 @@ public class R10InvariantTest {
             while ((at = code.indexOf("new Attempt(password, Verdict.SUCCESS", at)) >= 0) {
                 succ++; at++;
             }
-            eq("成功出口恰好 2 个（status 三条件同行 / 目标 BSSID 协商完成）", 2, succ);
+            // C4：两个成功出口也接到统一 Adjudicator（提交 CONNECTED + AT3 证据）。
+            eq("**CrackEngine 内直接构造的 SUCCESS 出口数 = 0**（全部经 Adjudicator）", 0, succ);
+            eq("两条成功证据都声明 CONNECTED + AT3", 2,
+                    countOccurrences(code, "Evidence.Claim.CONNECTED,"));
+            ok("成功证据来源覆盖 status 与 wpalog 两路",
+                    code.contains("Evidence.Source.SUCCESS_STATUS")
+                            && code.contains("Evidence.Source.SUCCESS_LOG"));
             ok("status 成功出口走纯逻辑入口 SuccessRule.assess",
                     code.contains("SuccessRule.assess("));
             ok("日志成功出口要求目标 BSSID 命中（不是「出现过协商完成」）",
@@ -378,6 +397,13 @@ public class R10InvariantTest {
      * AT-1 级（不可永久排除）。若哪次改动把 DIRECT 直接写在 AUTH_FAIL 出口上，
      * 候选就会被永久排除 —— 那正是本不变量要拦住的回归。
      */
+    private static int countOccurrences(String haystack, String needle) {
+        if (haystack == null || needle == null || needle.isEmpty()) return -1;
+        int n = 0, at = 0;
+        while ((at = haystack.indexOf(needle, at)) >= 0) { n++; at += needle.length(); }
+        return n;
+    }
+
     private static int countDirectAuthFail(String code) {
         if (code == null) return -1;
         int bad = 0, at = 0;
@@ -387,10 +413,7 @@ public class R10InvariantTest {
             int segEnd = nextAt < 0 ? Math.min(code.length(), at + 1200)
                                     : Math.min(nextAt, at + 1200);
             String seg = code.substring(at, segEnd);
-            if (seg.contains("EvidenceGrade.Level.DIRECT")
-                    && !seg.contains("at3Owned")) {   // authcast 的受控 DIRECT 不算
-                bad++;
-            }
+            if (seg.contains("EvidenceGrade.Level.DIRECT")) bad++;
             at++;
         }
         return bad;

@@ -55,7 +55,19 @@ public final class VerdictTally {
             // 推断失败单列，不得伪装成确定结论。
             if (EvidenceGrade.persistable(g)) confirmedFail++;
             else inferred++;
-        } else if (v == CrackEngine.Verdict.TIMEOUT || v == CrackEngine.Verdict.UNKNOWN) {
+        } else if (v == CrackEngine.Verdict.TIMEOUT || v == CrackEngine.Verdict.UNKNOWN
+                || v == CrackEngine.Verdict.INCOMPLETE
+                || v == CrackEngine.Verdict.TERMINATED_UNKNOWN
+                // B5：ERROR（通道出错）与 TARGET_GONE（目标不在扫描范围）也一直
+                // **不计入任何一类** —— 只把 executed 加一。界面上「通道出错」
+                // 是用户最需要看到的（那是环境问题，不是密码问题），
+                // 却凭空从统计里消失，数字闭合不上。统一归入「无结论」。
+                || v == CrackEngine.Verdict.ERROR
+                || v == CrackEngine.Verdict.TARGET_GONE) {
+            // B5：INCOMPLETE / TERMINATED_UNKNOWN 此前**不计入任何一类**，
+            // 只把 executed 加一。后果：界面「无结论 N 条」漏掉最该被看见的
+            // 那一类（连接还在跑 / 连接终止但无归因）—— 用户据此判断要不要重试，
+            // 数字对不上等于误导。
             inconclusive++;
         }
     }

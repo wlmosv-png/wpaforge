@@ -58,11 +58,45 @@ public final class AttemptId {
      * @return runId；输入不可用时返回 {@code null}
      */
     public static String newRunId(long epochMs, String targetSsid, int runOrdinal) {
+        return newRunId(epochMs, targetSsid, runOrdinal, null);
+    }
+
+    /**
+     * 生成 runId（**带启动标识**版本）—— 解决「跨重启重号」。
+     *
+     * <h3>要修的那个缺陷</h3>
+     * runId 由「秒级时间 + 目标 SSID 哈希 + 进程内序号」组成。断点续跑队列是
+     * **跨重启持久化**的，而重启后同一个秒、同一个 SSID、同一条候选会算出
+     * **完全相同的 runId** —— 于是队列里旧任务留下的 attemptId 会与重启后
+     * 新生成的标记行**互相匹配**：
+     * <pre>
+     *   重启前那条「第 11 条候选」的窗口标记还在缓冲/队列里
+     *   -> 重启后第 11 条候选读到它，把别人的日志证据算成自己的
+     * </pre>
+     *
+     * <h3>做法</h3>
+     * 把 {@code bootId}（{@code /proc/sys/kernel/random/boot_id}，每次启动唯一）
+     * 混进哈希输入，而不是拼进可见格式 —— <b>runId 形状完全不变</b>，
+     * 所有既有解析（{@link #runOf} / {@link #seqOf} / {@link #wellFormed}）
+     * 与标记匹配逻辑一行都不用改。
+     *
+     * <p>{@code bootId} 为 null / 空时行为与旧版**逐字节一致**（向后兼容，
+     * 也让所有既有测试与离线工具不受影响）。
+     *
+     * <p>边界（必读）：这只保证「不同启动生成的 id 不同」，**不**证明
+     * 「同一启动内的 id 一定不同」之外的东西；更不替代底层连接归属。
+     *
+     * @param bootId 启动标识；null/空 = 退回旧行为
+     */
+    public static String newRunId(long epochMs, String targetSsid, int runOrdinal,
+                                  String bootId) {
         if (targetSsid == null || targetSsid.isEmpty()) return null;
         if (runOrdinal < 0) return null;
         if (epochMs <= 0) return null;
         String sec36 = Long.toString(epochMs / 1000L, 36);
-        String h8 = ssidHash8(targetSsid);
+        String seed = (bootId == null || bootId.isEmpty())
+                ? targetSsid : targetSsid + "|" + bootId;
+        String h8 = ssidHash8(seed);
         if (h8 == null) return null;
         String ord36 = Integer.toString(runOrdinal, 36);
         String runId = sec36 + "-" + h8 + "-" + ord36;

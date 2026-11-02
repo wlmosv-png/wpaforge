@@ -394,6 +394,40 @@ public final class CrackEngine {
     }
 
     /**
+     * 本次启动的唯一标识（跨重启区分 attemptId）。
+     *
+     * <p>来源 {@code /proc/sys/kernel/random/boot_id}：内核在每次启动时生成，
+     * 本机实测形如 {@code d159099b-29b5-45f5-8c8f-da602993a032}。
+     *
+     * <p>读不到（无 root / 通道异常 / 非 Linux）时返回 {@code null} ——
+     * 此时 runId 退回旧算法（不含启动标识）。**这是有意的降级**：
+     * 不能因为拿不到 bootId 就不发判定，那会把整条判定链堵死；
+     * 代价仅仅是「跨重启可能重号」这个已知残余风险继续存在。
+     *
+     * <p>为什么缓存：一次判定跑几百条候选，每条都去 cat 一次文件没有意义。
+     */
+    private volatile String bootIdCache = null;
+    private volatile boolean bootIdTried = false;
+
+    String bootId() {
+        if (bootIdTried) return bootIdCache;
+        bootIdTried = true;
+        try {
+            String s = shell == null ? null
+                    : shell.exec("cat /proc/sys/kernel/random/boot_id 2>/dev/null", 3000);
+            if (s != null) {
+                s = s.trim();
+                // 形状校验：非空、无空白、长度合理 —— 不做格式假设（不同内核可能不同）
+                if (!s.isEmpty() && s.length() <= 64 && s.indexOf(' ') < 0
+                        && s.indexOf('\n') < 0) {
+                    bootIdCache = s;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return bootIdCache;
+    }
+
+    /**
      * **仅供测试**：给测试构造的引擎装一个认证失败监听器。
      *
      * <p>为什么不直接改 {@code CrackEngine(int)}：那条路径刻意把所有
@@ -569,6 +603,12 @@ public final class CrackEngine {
             case SUCCESS: return pw + "=✓" + (by == null || by.isEmpty() ? "hit" : by);
             case AUTH_FAIL: return pw + "=✗" + (by == null || by.isEmpty() ? "auth" : by);
             case TIMEOUT: return pw + "=超时";
+            // B5：B2 新增的两个 verdict 此前落到 default，一律显示「?不明」——
+            // 「连接还在跑、可以重新裁决」与「连接已终止但无归因」在界面上
+            // 和真正的未知混成一个符号，用户看不出该不该重试。三种必须分开。
+            case INCOMPLETE: return pw + "=…续";        // 未收敛，可重新裁决
+            case TERMINATED_UNKNOWN: return pw + "=…终"; // 已终止，无归因证据
+            case UNKNOWN: return pw + "=?未定";          // 归属/状态不明确
             case TARGET_GONE: return pw + "=目标不在";
             // 归因码优先：ERROR 类里既有"通道出错"，也有"候选不合法/未尝试"，
             // 只写"通道"会把后者说错。by 为空时保持原样（兼容既有断言）。
@@ -2564,7 +2604,8 @@ public final class CrackEngine {
         // R6：本次任务的运行标识。只含时间（36 进制）+ 目标 SSID 的哈希前 8 位，
         // 不含 SSID 明文、不含口令 —— 可以安全地写进任务日志。
         currentRunId = presetRunId != null ? presetRunId
-                : AttemptId.newRunId(System.currentTimeMillis(), target.ssid, runOrdinal++);
+                : AttemptId.newRunId(System.currentTimeMillis(), target.ssid, runOrdinal++,
+                        bootId());
         presetRunId = null;   // 一次预置只用一次
         l.onLog(L.s("运行标识: ", "run id: ")
                 + (currentRunId == null ? "<invalid>" : currentRunId)

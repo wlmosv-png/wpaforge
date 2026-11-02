@@ -77,6 +77,11 @@ public final class EvidenceGrade {
             case ERROR:
             case TARGET_GONE:
             case ABORTED:
+            // B5：显式列出，而不是靠 default 兜。这两个是 B2 新增的
+            // 「非失败终局」，任何情况下都不得升级成可永久排除的结论。
+            // 写出来的意义：将来有人改动 default 也不会悄悄改变它们的语义。
+            case INCOMPLETE:
+            case TERMINATED_UNKNOWN:
             default:
                 return Level.NONE;
         }

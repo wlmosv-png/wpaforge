@@ -299,7 +299,12 @@ public class CrackPageLayoutTest {
          *   运行中 = 正在尝试（主动语态，说明"现在在干什么"）
          *   结束后 = 最后尝试（陈述事实；**刻意不用"完成"** —— 没找到不算完成）
          * 旧词「当前候选」跑完还挂在那儿，会让人以为还在跑，所以这里一并钉住新词。 */
-        ok("新增文案都走 L.s 双语", theme != null && ma.contains("L.s(\"已完成\", \"TRIED\")")
+        // UI 第二轮：统计行从两列扩到四列，标签用 L.s 双语。
+        // 「已完成」→「已执行」（避免与任务完成混淆），新增「已证实错误 / 未确定」。
+        ok("新增文案都走 L.s 双语", theme != null
+                && ma.contains("L.s(\"已执行\", \"TRIED\")")
+                && ma.contains("L.s(\"已证实错误\", \"PROVEN WRONG\")")
+                && ma.contains("L.s(\"未确定\", \"UNCERTAIN\")")
                 && ma.contains("L.s(\"总数\", \"TOTAL\")")
                 && ma.contains("L.s(\"正在尝试\", \"TRYING\")")
                 && ma.contains("L.s(\"最后尝试\", \"LAST TRIED\")"));

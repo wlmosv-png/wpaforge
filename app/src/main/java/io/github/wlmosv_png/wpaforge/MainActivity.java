@@ -191,6 +191,10 @@ public class MainActivity extends Activity {
     private TextView netMetaView;        /** 网络卡第二层：信号 · 信道 · 频段 */
     private TextView netSecChip;         /** 安全类型胶囊 */
     private TextView statDoneView;       /** 已完成 */
+    /** 已证实错误（候选级 AUTH_FAIL/DIRECT）—— 与「未确定」严格分开。 */
+    private TextView statWrongView;
+    /** 未确定（无结论 + 网络级失败 + 推断失败）—— 绝不显示成「密码错误」。 */
+    private TextView statUnkView;
     private TextView statTotalView;      /** 总数 */
     private TextView statPctView;        /** 完成度（大数字） */
     private TextView statRateView;       /** 速率（条/分，来自同一次回调） */
@@ -273,6 +277,18 @@ public class MainActivity extends Activity {
     private TextView hitMeta;
     /** 日志全量（含被筛掉的）；streamBuffer 只是它的「可见视图」 */
     private final java.util.List<LogLine> streamLines = new java.util.ArrayList<>();
+    /**
+     * 上一次输出过「说明行」的结论键（P1b）。
+     *
+     * <p>逐条候选的说明（例如「本次没连上目标，但没有证据证明这条密码错了」）
+     * 在同一类结论连续出现时毫无新意，只重复刷屏。同一键只说明一次，
+     * 直到结论类型变化。
+     */
+    private String lastWhyKey = null;
+    /** 最近一次实时分布（来自 onTally，只用于显示）。 */
+    private int lastTallyConfirmed = 0;
+    private int lastTallyInconclusive = 0;
+    private int lastTallyNetAuthFail = 0;
     /** true = 只看关键（里程碑 + 失败原因），默认开 */
     /**
      * 日志级别：true = 只看关键，false = 全部。
@@ -307,7 +323,14 @@ public class MainActivity extends Activity {
     /** 日志区的「回到最新」浮标：用户上滑看历史时出现 */
     private TextView jumpLatestBtn;
     private LinearLayout.LayoutParams streamParams;
-    private boolean streamCollapsed = false;
+    /**
+     * 日志区是否折叠。**默认折叠**（UI 第二轮）。
+     *
+     * <p>用户反馈：日志区占的空间太多，核心状态反而不突出。默认只留
+     * 四五行最新事件，想看历史点标题展开 —— 原始证据一条都没删
+     * （{@code streamLines} 全量保留、文件日志逐条落盘）。
+     */
+    private boolean streamCollapsed = true;
     private RootProber rootProber;
     private volatile boolean rootProberRunning = false;
     private NetRecord targetNet;
@@ -4762,13 +4785,26 @@ public class MainActivity extends Activity {
         statRow.setOrientation(LinearLayout.HORIZONTAL);
         statDoneView = AmberTheme.stat(this);
         statTotalView = AmberTheme.stat(this);
+        statWrongView = AmberTheme.stat(this);
+        statUnkView = AmberTheme.stat(this);
         statDoneView.setText("—");
         statTotalView.setText("—");
+        statWrongView.setText("—");
+        statUnkView.setText("—");
         // 未知态一律用弱色：30sp 的亮琥珀「—」看起来像一根进度条，容易被当成数据
         statDoneView.setTextColor(AmberTheme.TEXT_FAINT);
         statTotalView.setTextColor(AmberTheme.TEXT_FAINT);
-        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已完成", "TRIED"), statDoneView),
+        statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
+        statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
+        // 四列：已执行 / 已证实错误 / 未确定 / 总数。
+        // 「已证实错误」用危险色、「未确定」用告警色 —— 两者视觉上必须不同：
+        // 前者说明这条密码被证明了是错的，后者只说明我们没拿到证据。
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已执行", "TRIED"), statDoneView),
                 weight());
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已证实错误", "PROVEN WRONG"),
+                statWrongView), weight());
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"),
+                statUnkView), weight());
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("总数", "TOTAL"), statTotalView),
                 weight());
         LinearLayout.LayoutParams srlp = new LinearLayout.LayoutParams(
@@ -5977,10 +6013,16 @@ public class MainActivity extends Activity {
                             .countsAsProvenWrong(v) ? DANGER
                             : io.github.wlmosv_png.wpaforge.ui.VerdictView
                                     .needsAttention(v) ? ACCENT : TEXT_DIM;
-                    appendStreamColored(sym + " " + lbl + "  " + pw
-                            + "  (" + ms + "ms)", color);
+                    // P1b：同结论连续出现时合并为一行并标 ×N，而不是刷几十行。
+                    // 合并键用 **Verdict 本身**：它是裁决层的唯一结论标识，
+                    // 与 UI 同源（不在这里二次推断）。具体判据来源在 detail 里
+                    // 逐条保留，文件日志也逐条落盘 —— 合并只影响视觉密度。
+                    String key = v.name();
+                    appendStreamDedup(sym + " " + lbl + "  " + pw
+                            + "  (" + ms + "ms)", color, key);
                     String why = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
-                    if (why != null && !why.isEmpty()) {
+                    if (why != null && !why.isEmpty() && !key.equals(lastWhyKey)) {
+                        lastWhyKey = key;
                         appendStreamDetail("     " + why, TEXT_DIM);
                     }
                 } else {
@@ -5990,6 +6032,37 @@ public class MainActivity extends Activity {
                 }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
                 updateConnectMode();
+            });
+        }
+
+        /**
+         * 实时结论分布（UI 第二轮）。
+         *
+         * <p>三个数都来自**引擎的唯一统计入口**（{@code VerdictTally}），
+         * 界面不重新推断任何一条：
+         * <ul>
+         *   <li>已证实错误 → 危险色（这条密码被证明了是错的）</li>
+         *   <li>未确定 → 告警色（我们没拿到证据，下次还会重试）</li>
+         * </ul>
+         * 网络级失败已包含在「未确定」里（口径见 CrackEngine.inconclusiveCount），
+         * 这里不再单独加一列，避免把「环境问题」摆成第五种结论。
+         */
+        @Override
+        public void onTally(int confirmed, int inconclusive, int networkAuthFail) {
+            ui.post(() -> {
+                if (statWrongView != null) {
+                    statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(confirmed));
+                    statWrongView.setTextColor(confirmed > 0 ? DANGER : AmberTheme.TEXT_FAINT);
+                }
+                if (statUnkView != null) {
+                    statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(inconclusive));
+                    statUnkView.setTextColor(inconclusive > 0 ? ACCENT : AmberTheme.TEXT_FAINT);
+                }
+                lastTallyConfirmed = confirmed;
+                lastTallyInconclusive = inconclusive;
+                lastTallyNetAuthFail = networkAuthFail;
             });
         }
 
@@ -6904,9 +6977,11 @@ public class MainActivity extends Activity {
             connectStreamView.setMaxLines(1);
             connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else if (streamCollapsed) {
-            streamParams.height = px(160);   // 折叠态也多给几行
+            // 折叠态：约 4 行（110dp）。旧值 160dp 在高 DPI 上接近 1/6 屏，
+            // 与「核心状态优先」冲突。
+            streamParams.height = px(110);
             streamParams.weight = 0f;
-            connectStreamView.setMaxLines(5);
+            connectStreamView.setMaxLines(4);
             connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else {
             streamParams.height = px(300);   // 展开态：一屏能看到更多历史
@@ -6995,11 +7070,30 @@ public class MainActivity extends Activity {
         final CharSequence text;
         final int color;
         final io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind;
+        /**
+         * 降噪合并键（P1b）。{@code null} 表示这一行不参与合并。
+         *
+         * <p>逐条候选结果里同一类结论会连续出现几十次（真机实测：错误密码下
+         * 系统不断回连其它网络 → 每条都是「未证实」）。旧实现每条追加两行
+         * （主行 + 说明），日志区被同一句话刷满，真正的信息反而看不见。
+         * 相同键的相邻行会合并成一行并显示 {@code ×N}。
+         */
+        final String dedupeKey;
+        /** 已合并的条数（1 = 只有本行）。 */
+        final int repeat;
 
         LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind) {
+            this(text, color, kind, null, 1);
+        }
+
+        LogLine(CharSequence text, int color,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+                String dedupeKey, int repeat) {
             this.text = text;
             this.color = color;
             this.kind = kind;
+            this.dedupeKey = dedupeKey;
+            this.repeat = repeat;
         }
     }
 
@@ -7016,6 +7110,34 @@ public class MainActivity extends Activity {
      */
     private void appendStreamDetail(String line, int color) {
         appendStreamColored(line, color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON);
+    }
+
+    /**
+     * 逐条候选结果的**降噪入口**（P1b）。
+     *
+     * <p>与上一行同 {@code dedupeKey} 时不追加新行，而是把那一行替换成
+     * 「原文本 ×N」—— 原始证据不丢（{@code streamLines} 仍逐条可回溯、
+     * 文件日志逐条写入），只是**界面**不再被同一句话刷屏。
+     *
+     * @param dedupeKey 合并键（null = 不合并）
+     */
+    private void appendStreamDedup(String line, int color, String dedupeKey) {
+        if (line == null) return;
+        int c = (color == 0) ? TEXT_DIM : color;
+        if (dedupeKey != null && !streamLines.isEmpty()) {
+            LogLine last = streamLines.get(streamLines.size() - 1);
+            if (dedupeKey.equals(last.dedupeKey)) {
+                streamLines.set(streamLines.size() - 1,
+                        new LogLine(last.text, last.color, last.kind, dedupeKey,
+                                last.repeat + 1));
+                renderStream();
+                return;
+            }
+        }
+        streamLines.add(new LogLine(line, c,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON, dedupeKey, 1));
+        while (streamLines.size() > MAX_LOG_LINES) streamLines.remove(0);
+        renderStream();
     }
 
     private void appendStreamColored(String line, int color,
@@ -7071,7 +7193,13 @@ public class MainActivity extends Activity {
         streamBuffer.clearSpans();
         for (LogLine l : streamLines) {
             if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly)) continue;
-            appendBuffer(l.text, l.color);
+            if (l.repeat > 1) {
+                // 合并显示：原文本 + ×N。原始逐条记录仍在 streamLines 的语义里
+                // （文件日志逐条落盘），这里只压缩**视觉噪声**。
+                appendBuffer(l.text + "   ×" + l.repeat, l.color);
+            } else {
+                appendBuffer(l.text, l.color);
+            }
         }
         if (connectStreamView != null) {
             connectStreamView.setText(streamBuffer, android.widget.TextView.BufferType.SPANNABLE);

@@ -80,6 +80,26 @@ public class CrackService extends Service {
                                      CrackEngine.Verdict verdict) {
             onAttemptResult(candidate, hit, ms, detail);
         }
+
+        /**
+         * 实时**结论分布**（UI 第二轮：让「已证实错误 / 未确定」在运行时就能看见）。
+         *
+         * <p>为什么需要单独一条回调：{@code onProgress} 只带 tested/total/rate/eta，
+         * 界面拿不到「有多少条是已证实错误、多少条是没结论」。任务结束后能从
+         * {@code task.miss*} 读到，但运行中是一片空白 —— 用户看着 43/335
+         * 却不知道这 43 条到底证伪了多少。
+         *
+         * <p>数字口径与 {@code VerdictTally} 完全一致：
+         * <ul>
+         *   <li>{@code confirmed}：AUTH_FAIL 且 grade=DIRECT（候选级证伪）；</li>
+         *   <li>{@code inconclusive}：TIMEOUT/UNKNOWN/INCOMPLETE/TERMINATED_UNKNOWN
+         *       /ERROR/TARGET_GONE + NETWORK_AUTH_FAIL + 推断失败。</li>
+         * </ul>
+         * <b>不含 SUCCESS / ABORTED</b>（前者单独显示，后者未结案）。
+         *
+         * <p>用 default 实现：老实现类不必改。
+         */
+        default void onTally(int confirmed, int inconclusive, int networkAuthFail) { }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
@@ -1137,6 +1157,17 @@ public class CrackService extends Service {
                 for (UiCallback cb : callbacks) {
                     cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail,
                             a.verdict);
+                }
+                // 实时结论分布（UI 第二轮）：口径与 VerdictTally 一致，
+                // 用引擎的累计值（它本来就是唯一统计入口）。
+                {
+                    CrackEngine eng = engineRef;
+                    if (eng != null) {
+                        for (UiCallback cb : callbacks) {
+                            cb.onTally(eng.confirmedFailCount(),
+                                    eng.inconclusiveCount(), eng.networkAuthFailCount());
+                        }
+                    }
                 }
             }
 

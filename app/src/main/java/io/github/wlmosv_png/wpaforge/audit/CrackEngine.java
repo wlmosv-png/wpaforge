@@ -345,6 +345,43 @@ public final class CrackEngine {
     private volatile String currentRunId;
     /** 同进程内第几次任务（保证同秒启动也不重号）。 */
     private int runOrdinal = 0;
+
+    /**
+     * 运行序号基线（D2）：本次进程内第一个 runId 使用的 ordinal。
+     *
+     * <h3>它修的退化</h3>
+     * runId 的唯一性靠三层：bootId（跨开机）· 毫秒时间戳（跨进程）· runOrdinal（跨调用）。
+     * 当 {@code /proc/sys/kernel/random/boot_id} **读不到**（无 root / 通道异常）且
+     * 两次进程恰好落在**同一毫秒**、同一 SSID、且 ordinal 都从 0 起时，
+     * 三层全失效 —— 旧 Attempt 的 attemptId 会与新 Attempt 逐字节相同，
+     * 日志窗口标记互相匹配，别人的证据被算到本条头上（D2 的「旧事件污染新 Attempt」）。
+     *
+     * <p>修复：ordinal 不再固定从 0 起，而是从**落盘的基线**（上次用到哪）之后继续。
+     * 这是「跨进程单调计数」，不依赖 bootId，也不依赖时钟精度。
+     *
+     * <p>默认 {@code 0}（无持久化时行为与旧版逐字节一致）。
+     */
+    private int runOrdinalBase = 0;
+
+    /**
+     * 设置本次进程的运行序号基线（D2）。
+     *
+     * @param base 上次进程落到磁盘的最大 ordinal；&lt; 0 视为 0
+     */
+    public void setRunOrdinalBase(int base) {
+        this.runOrdinalBase = Math.max(0, base);
+        this.runOrdinal = this.runOrdinalBase;
+    }
+
+    /** 当前生效的运行序号基线（用于跨进程续接；每次 run 结束可回写）。 */
+    public int runOrdinalBase() { return runOrdinalBase; }
+
+    /**
+     * 当前已用到的 ordinal（-1 表示还没跑过任何 run）。
+     *
+     * <p>调用方在 run 结束后把它 +1 落盘，下次启动 {@link #setRunOrdinalBase} 回灌。
+     */
+    public int runOrdinalNow() { return runOrdinal; }
     /**
      * 外部预设的 runId（R7 续跑用）。
      *

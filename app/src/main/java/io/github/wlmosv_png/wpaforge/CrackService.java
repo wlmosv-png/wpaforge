@@ -1002,6 +1002,9 @@ public class CrackService extends Service {
     private void runViaEngine(final TaskQueue.Task ft, int startOffset) {
         logFile = null;   // 每次任务新建一个日志文件
         final CrackEngine engine = new CrackEngine(this, ft.crackMode);
+        // D2：运行序号从落盘基线续接 —— bootId 读不到时，
+        // 「同毫秒跨进程」也不再可能算出相同 runId（旧证据串窗）。
+        engine.setRunOrdinalBase(Prefs.runOrdinalBase(this));
         engineRef = engine;
 
         {
@@ -1135,6 +1138,13 @@ public class CrackService extends Service {
                 // C1 修复：**先取快照，再清 engineRef**。
                 // 旧顺序（先 null 再读）让 missConfirmedFail/missInconclusive 恒为 0。
                 int[] miss = snapshotMissCounts(engineRef);
+                // D2：把本轮用到的最大 runOrdinal 落盘，供下次进程从 base+1 起。
+                // 必须在清 engineRef 之前读取；写失败也不影响判定（只是退化回 bootId 兜底）。
+                try {
+                    if (engineRef != null) {
+                        Prefs.bumpRunOrdinal(CrackService.this, engineRef.runOrdinalNow());
+                    }
+                } catch (Throwable ignored) { }
                 engineRef = null;
                 finishTask(ft, outcome, tested, offset, hitPassword, miss);
             }

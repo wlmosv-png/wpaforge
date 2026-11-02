@@ -309,9 +309,11 @@ public class CrackPageLayoutTest {
                 && ma.contains("L.s(\"总数\", \"TOTAL\")")
                 && ma.contains("L.s(\"正在尝试\", \"TRYING\")")
                 && ma.contains("L.s(\"最后尝试\", \"LAST TRIED\")"));
+        // 收口：状态文案加了前缀符号（▶ 运行中 / ‖ 已暂停 / … 准备中），
+        // 目的是让三种状态在色盲/低对比环境下也能靠符号区分。
         ok("状态文案区分 运行中/暂停/停止/命中/未命中/空闲",
-                ma.contains("L.s(\"运行中\", \"Running\")")
-                        && ma.contains("L.s(\"已暂停 · 进度已保留\", \"Paused · progress kept\")")
+                ma.contains("L.s(\"▶ 运行中\", \"▶ Running\")")
+                        && ma.contains("L.s(\"‖ 已暂停 · 进度已保留\", \"‖ Paused · progress kept\")")
                         && ma.contains("L.s(\"已停止\", \"Stopped\")")
                         && ma.contains("L.s(\"已命中\", \"Hit\")")
                         && ma.contains("L.s(\"已结束 · 未命中\", \"Finished · no match\")")

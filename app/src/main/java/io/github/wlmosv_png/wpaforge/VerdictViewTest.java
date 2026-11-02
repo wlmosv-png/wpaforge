@@ -80,8 +80,9 @@ public final class VerdictViewTest {
 
         // 说明文案必须明确否认「密码错误」
         String net = VerdictView.description(CrackEngine.Verdict.NETWORK_AUTH_FAIL);
-        ok("NETWORK_AUTH_FAIL 的说明明确写「不代表这条密码错了」",
-                net.contains("不代表这条密码错了"), net);
+        // 收口精简后措辞变了，**语义要求不放宽**：必须明确排除「这条密码错了」。
+        ok("NETWORK_AUTH_FAIL 的说明明确排除「这条密码错了」",
+                net.contains("不是这条密码的错") || net.contains("不代表这条密码错了"), net);
         String inc = VerdictView.description(CrackEngine.Verdict.INCOMPLETE);
         ok("INCOMPLETE 的说明明确写「稍后可能成功」",
                 inc.contains("稍后可能成功"), inc);
@@ -89,7 +90,7 @@ public final class VerdictViewTest {
         // P1b：文案改写后仍必须传达同一件事（这条结论**不是**密码错误），
         // 只是措辞从「不等于密码错误」换成用户更容易懂的说法。
         ok("TERMINATED_UNKNOWN 的说明明确排除「密码错误」",
-                term.contains("没有证据证明") || term.contains("不等于密码错误"), term);
+                term.contains("未证明密码错") || term.contains("不等于密码错误"), term);
         ok("TERMINATED_UNKNOWN 的说明给出下一步（会重试）",
                 term.contains("重试"), term);
 

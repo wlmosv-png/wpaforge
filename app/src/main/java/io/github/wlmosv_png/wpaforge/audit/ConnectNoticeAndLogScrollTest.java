@@ -102,7 +102,7 @@ public final class ConnectNoticeAndLogScrollTest {
         ok("④ 触控靠 padding 撑开（不是靠放大视觉）",
                 ma.contains("flowChevron.setPadding(px(10), px(10), px(12), px(10))"), "缺 padding");
         ok("④ 字号 15sp（比初版 11.5 清楚，又不像按钮）",
-                ma.contains("flowChevron.setTextSize(15f)"), "字号未改");
+                ma.contains("flowChevron.setTextSize(AmberTheme.FS_STATE)"), "字号未改");
         ok("④ 按钮自带点击（不依赖整行）",
                 ma.contains("flowChevron.setOnClickListener(v -> toggleStream())"), "缺失");
         ok("④ 有无障碍描述",

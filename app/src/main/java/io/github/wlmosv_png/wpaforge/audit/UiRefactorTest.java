@@ -84,7 +84,10 @@ public final class UiRefactorTest {
                 "缺失");
         ok("④ 合并键用 Verdict 本身（不二次推断）",
                 ma.contains("String key = v.name();"), "键来源不对");
-        ok("④ 合并显示带 ×N", ma.contains("\"   ×\" + l.repeat"), "未显示次数");
+        // 收口后合并行还带时间跨度，所以不再是简单字符串拼接。
+        ok("④ 合并显示带 ×N 与时间跨度",
+                ma.contains("sb.append(\"   ×\").append(l.repeat)")
+                        && ma.contains("clockHm(l.firstAtMs)"), "未显示次数/时间");
         ok("④ 说明行同键只出现一次", ma.contains("lastWhyKey"), "缺少说明去重");
 
         // ---- ⑤ 原始证据未被删 ----

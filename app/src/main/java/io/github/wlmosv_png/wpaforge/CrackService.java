@@ -1096,10 +1096,17 @@ public class CrackService extends Service {
 
             @Override
             public void onProgress(int tested, int total, double rate, long etaMs) {
-                // 断点续跑的关键：把「已试到哪」定期写盘。
-                // 引擎每条都会回调这里，tested 即当前游标位置。
-                saveProgress(ft, tested, false);
+                // tested = 已尝试数，只用于进度显示。
+                // **不要拿它写盘 offset** —— 那会让断点续跑跳过未排除的候选
+                // （正确密码判 INFERRED 后被跳过，2026-11-02 真机事故）。
                 for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
+            }
+
+            @Override
+            public void onCursor(int cursor) {
+                // 断点续跑的关键：把「安全续跑边界」写盘。cursor 只由 DIRECT 推进，
+                // 任何未定结论都钉住它，保证续跑不会漏掉未排除的候选。
+                saveProgress(ft, cursor, false);
             }
 
             @Override

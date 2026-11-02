@@ -193,6 +193,20 @@ public final class CrackEngine {
         void onAttemptStart(int index, int total, String candidate);
         void onAttemptResult(Attempt a);
         void onProgress(int tested, int total, double rate, long etaMs);
+        /**
+         * 续跑游标（安全边界）回调，每条候选后一次。
+         *
+         * <p><b>它和 {@link #onProgress} 是两个不同的量，绝不能混用：</b>
+         * <ul>
+         *   <li>{@code onProgress.tested} = <b>已尝试数</b>（进度显示用；含 INFERRED/NONE，
+         *       因为它们确实被尝试过了）。</li>
+         *   <li>{@code onCursor.cursor} = <b>安全续跑边界</b>（D5 语义：只由 DIRECT 推进，
+         *       有任何未定结论就钉住）。断点续跑必须用它 —— 用 tested 会**跳过
+         *       未被排除的候选**（真实事故：正确密码判 INFERRED 后被续跑跳过）。</li>
+         * </ul>
+         * 默认空实现：仅持久化方（CrackService）需要覆盖。
+         */
+        default void onCursor(int cursor) { }
         default void onLog(String line) { }
         void onFinished(int tested, int total, String hitPassword, String outcome);
         void onBlocked(String title, String detail);
@@ -2500,6 +2514,8 @@ public final class CrackEngine {
                 // 在起点，界面就会「已完成 0 / 0.0%」，磁盘 offset 也不涨，
                 // 直到任务结束一次性补写。tested 才是「实际试过几条」。
                 l.onProgress(start + tested, total, ratePerSec, eta);
+                // 续跑边界单独回调：进度显示用 tested，写盘必须用 cursor。
+                l.onCursor(cursor);
             }
 
             // ══════════════════════════════════════════════════════════════

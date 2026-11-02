@@ -91,9 +91,11 @@ public final class ConnectNoticeAndLogScrollTest {
         // ---- ④ 展开按钮重绘 ----
         // 第二次重绘：用户否掉了「黄色大圆钮」——要一个三角形。
         // 设计取舍：视觉上只有一枚小三角，可点性靠 padding 撑开触摸区。
-        ok("④ 视觉是三角形（▼/▲），不是圆形按钮",
-                ma.contains("flowChevron.setText(streamCollapsed ? \"▼\" : \"▲\")"),
-                "不是三角形");
+        // 第三版：折叠 ▶ / 展开 ▼（最通用的折叠语义）。
+        // 上一版用 ▼/▲，折叠态朝下容易被读成「已经展开了」——用户实测反馈。
+        ok("④ 折叠 ▶ / 展开 ▼（通用折叠语义）",
+                ma.contains("flowChevron.setText(streamCollapsed ? \"▶\" : \"▼\")"),
+                "箭头语义不对");
         ok("④ 不再有大圆底", !ma.contains("roundBg(ACCENT, chev / 2f)"), "圆底仍在");
         ok("④ 无背景（flowChevron.setBackground(null)）",
                 ma.contains("flowChevron.setBackground(null)"), "仍有背景");
@@ -122,6 +124,20 @@ public final class ConnectNoticeAndLogScrollTest {
         ok("⑤ 旧的「三个写入点」已收敛（renderRecords 里不再直接写文案）",
                 !ma.contains("暂时扫不到网络 · \", \"No networks yet · \")\n                    + scanner.scanGateLabel()"),
                 "旧写入点仍在");
+
+        // ---- ⑥ 空态收紧（没跑过就不摆占位数字）----
+        ok("⑥ 统计行 / 速率行提升为成员（便于整行收起）",
+                ma.contains("private LinearLayout statRowView;")
+                        && ma.contains("private LinearLayout footRowView;"), "未提升");
+        ok("⑥ 有空态判定 hasData",
+                ma.contains("boolean hasData = st == TaskQueue.State.RUNNING"), "缺失");
+        ok("⑥ 空态收起统计行", ma.contains("statRowView.setVisibility(hasData ? View.VISIBLE : View.GONE)"),
+                "未收起");
+        ok("⑥ 空态收起速率行", ma.contains("footRowView.setVisibility(hasData ? View.VISIBLE : View.GONE)"),
+                "未收起");
+        ok("⑥ 空态收起右上角完成度数字",
+                ma.contains("statPctView.setVisibility(hasData ? View.VISIBLE : View.GONE)"),
+                "未收起");
 
         System.out.println();
         System.out.println("=== 提示条/滚动/按钮: " + pass + " 通过, " + fail + " 失败 ===");

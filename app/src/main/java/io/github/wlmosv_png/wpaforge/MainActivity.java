@@ -215,6 +215,15 @@ public class MainActivity extends Activity {
     private TextView statUnkView;
     private TextView statTotalView;      /** 总数 */
     private TextView statPctView;        /** 完成度（大数字） */
+    /**
+     * 统计行 / 速率行。
+     *
+     * <p>提升为成员是为了**空闲时整行收起**（2026-11-02 用户截图）：
+     * 没跑过任何东西时，四列「—」和「速率 待测 / 剩余 待估」全是占位噪声，
+     * 卡片被撑得很高、中间大片留白，看着不精致。
+     */
+    private LinearLayout statRowView;
+    private LinearLayout footRowView;
     private TextView statRateView;       /** 速率（条/分，来自同一次回调） */
     private TextView statEtaView;        /** 剩余时间（来自同一次回调） */
     private TextView stateBig;           /** 当前状态（大字） */
@@ -4913,6 +4922,7 @@ public class MainActivity extends Activity {
         progressCard.addView(progTop);
 
         LinearLayout statRow = new LinearLayout(this);
+        statRowView = statRow;
         statRow.setOrientation(LinearLayout.HORIZONTAL);
         statDoneView = AmberTheme.stat(this);
         statTotalView = AmberTheme.stat(this);
@@ -4956,6 +4966,7 @@ public class MainActivity extends Activity {
         progressCard.addView(connectProgress, plp);
 
         LinearLayout footRow = new LinearLayout(this);
+        footRowView = footRow;
         footRow.setOrientation(LinearLayout.HORIZONTAL);
         statRateView = new TextView(this);
         statRateView.setTextSize(AmberTheme.FS_BODY);
@@ -5339,6 +5350,30 @@ public class MainActivity extends Activity {
         if (stateBig != null) {
             stateBig.setText(text);
             stateBig.setTextColor(color);
+        }
+        /*
+         * 空态收紧（2026-11-02 用户截图）。
+         *
+         * 「空闲 · 未开始」时，下面那两行（四列统计 + 速率/剩余）全是「—」，
+         * 既没有信息又把卡片撑得很空。设计上应该**没数据就不占位**：
+         * 有任务在跑、暂停中、或跑过至少一轮（有结论/有计数）时才显示。
+         */
+        boolean hasData = st == TaskQueue.State.RUNNING
+                || st == TaskQueue.State.PAUSED
+                || st == TaskQueue.State.PENDING
+                || lastTested > 0
+                || !lastOutcomeLabel.isEmpty()
+                || lastTallyConfirmed > 0
+                || lastTallyInconclusive > 0;
+        if (statRowView != null) {
+            statRowView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
+        if (footRowView != null) {
+            footRowView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
+        if (statPctView != null) {
+            // 右上角的大数字同理：没数据时不摆一个「—」在那儿
+            statPctView.setVisibility(hasData ? View.VISIBLE : View.GONE);
         }
         if (actionsHint != null) {
             /* 提示行必须和状态行说同一件事。
@@ -7227,9 +7262,11 @@ public class MainActivity extends Activity {
     /** 刷新头部箭头与行数 */
     private void updateFlowHeader() {
         if (flowChevron != null) {
-            // 实心三角（比 ▾/▴ 这种小三角更清楚，又不至于像按钮）。
-            // 折叠时朝下（点了往下展开），展开时朝上（点了收起）。
-            flowChevron.setText(streamCollapsed ? "▼" : "▲");
+            // 折叠指示沿用最通用的语义（文件管理器 / 设置页都这样）：
+            //   折叠 -> ▶ 朝右（"里面还有内容，点开"）
+            //   展开 -> ▼ 朝下（"已经展开到这里了"）
+            // 上一版用 ▼/▲ 朝上朝下，折叠态朝下很容易被读成"已经展开了"。
+            flowChevron.setText(streamCollapsed ? "▶" : "▼");
             // 无障碍：读屏用户也要知道这个按钮干什么
             flowChevron.setContentDescription(streamCollapsed
                     ? L.s("展开日志", "Expand log") : L.s("收起日志", "Collapse log"));

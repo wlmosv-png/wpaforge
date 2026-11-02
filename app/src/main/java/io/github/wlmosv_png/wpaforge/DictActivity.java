@@ -1842,6 +1842,33 @@ public class DictActivity extends Activity {
      */
     private void showEditDialog(final DictStore.Entry e, final List<String> lines) {
         final boolean fullEditable = lines.size() <= EDIT_INLINE_LIMIT;
+
+        /* 全量编辑走**带行号栏的编辑器**（2026-11-02 重构）。
+         *
+         * 旧实现把整个文件塞进一个裸 EditText：没有行号、没有光标位置、
+         * 改没改也看不出来。字典是按行使用的资产（「第 128 行那条要删掉」
+         * 是最常见的诉求），没有行号就只能用眼睛数两千多行。
+         *
+         * 大文件（> EDIT_INLINE_LIMIT）仍走原来的「只插入」流程 ——
+         * 那种规模下把全文摊进编辑框本身就不合适。
+         */
+        if (fullEditable) {
+            DictEditorDialog.show(this, e.name, lines, raw -> {
+                final List<String> out = splitClean(raw);      // 解析规则不变
+                new Thread(() -> {
+                    boolean ok = DictStore.save(e.file, out);
+                    final int n = out.size();
+                    ui.post(() -> {
+                        Toast.makeText(this, ok ? L.s("已保存 " + n + " 条", "saved " + n)
+                                        : L.s("保存失败", "Save failed"),
+                                Toast.LENGTH_SHORT).show();
+                        refresh();
+                    });
+                }).start();
+            });
+            return;
+        }
+
         final NetDialog dlg = new NetDialog(this, L.s("编辑 ", "Edit ") + e.name, null);
 
         final TextView countTv = new TextView(this);

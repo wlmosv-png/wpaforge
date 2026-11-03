@@ -1,0 +1,22 @@
+WPAForge is a Wi-Fi network auditing tool for Android. It verifies the WPA/WPA2 passphrase of a network you own or are authorised to test. Candidates are generated on the device from the target SSID, vendor and other hints, and every candidate is checked against a real association — a completed 4-way handshake is the only success criterion.
+
+Everything runs locally: nothing is uploaded, and matched passphrases are stored on the device in encrypted form.
+
+Features
+
+• Real verification instead of guessing — every candidate triggers an actual association and is reported as success, wrong password, or inconclusive
+• Candidates generated for the target from SSID, vendor, house number, names, birthdays and phone numbers
+• Use the built-in dictionary, or import / download your own
+• Dictionary page shows how each wordlist performs on your own targets
+• WPS PIN attacks including split-halving, with resumable progress
+• LAN reconnaissance: live hosts and common ports grouped by vendor, with an exportable report
+• Offline verification of .cap / .hc22000 captures (EAPOL and PMKID paths)
+• Spectrum radar and channel occupancy with recommendations
+• Your existing network configuration is left alone: the original profile is recorded before anything is touched and written back with a read-back confirmation; unresolved cases stay in the Recovery section for retry
+
+Requirements
+
+• Android 8.0 or newer
+• Root access. The verification path relies on a root shell plus `cmd wifi`. (Shizuku and no-root execution modes were removed in 1.9.24.)
+
+Use only on networks you own or have explicit authorisation to test.

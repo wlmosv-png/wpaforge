@@ -32,10 +32,11 @@
 - [Two ways to run](#two-ways-to-run)
 - [Multi-dictionary plan: line them up, let it run](#multi-dictionary-plan-line-them-up-let-it-run)
 - [Try each password only once per network: cross-dictionary filtering](#try-each-password-only-once-per-network-cross-dictionary-filtering)
-- [Dictionary management](#dictionary-management)
 - [How it finds passwords](#how-it-finds-passwords)
 - [Dictionaries: bring your own, or use the built-ins](#dictionaries-bring-your-own-or-use-the-built-ins)
 - [Verdicts: prefer "uncertain" over a false hit](#verdicts-prefer-uncertain-over-a-false-hit)
+- [Frequently Asked Questions](#frequently-asked-questions)
+- [Dictionary management](#dictionary-management)
 - [Observe: see which channel to use at a glance](#observe-see-which-channel-to-use-at-a-glance)
 - [Quick start](#quick-start)
 - [Screenshots](#screenshots)
@@ -118,16 +119,6 @@ router back-off or a manual stop, the correct password may be among them.
 Inconclusive results (timeout, weak signal, manual stop) are **never treated as a wrong password**
 and will be retried.
 
-## Dictionary management
-
-- Rows show entry count, run status and plan membership directly;
-- Multi-select to **add to / remove from a plan** in bulk; the plan card is collapsed by default;
-- **Deletion goes to a trash bin** - restorable, or permanently removable from there;
-- The editor has a **line-number gutter**, cursor line/column, go-to-line and find, so even a
-  few thousand lines can be located precisely;
-- **Dictionary resume by content**: after a dictionary is renamed, moved or re-imported it is
-  matched **by content** - identical content resumes from where it stopped; if the content really
-  changed the app says so and does **not** inherit the old position.
 
 ## How it finds passwords
 
@@ -203,6 +194,46 @@ sides report a valid non-zero netId and they disagree; missing or zero never vet
 This came out of a real failure: an early build showed a system dialog "could not connect to
 BTWIFL_0923" while the app reported "connected". It would rather miss a hit than report a
 false one.
+
+## Frequently Asked Questions
+
+### "The tool cannot guarantee a 100% correct verdict, so why use it?"
+
+Because a 100% certain verdict is **not achievable in the first place** — this is the
+nature of the problem, not a shortcoming specific to WPAForge:
+
+1. **Objective limits**: the Android network stack, vendor drivers, router firmware
+   behaviour and the way wireless events are reported are all outside the app's control.
+   Even the same router may report differently at different moments.
+2. **An issued connection request does not mean the system did what you expected**, and
+   **a failed connection does not necessarily mean a wrong password** — it can be a driver
+   timeout, router back-off, channel change or interference.
+3. WPAForge's design rule is: **only draw a definite conclusion when there is attributable
+   evidence; otherwise keep it "uncertain".**
+4. "Uncertain" is never presented as a confirmed failure, and never permanently excludes a
+   candidate — it will be retried. A definite failure must be attributable to **this**
+   attempt, not carried over from a previous round.
+
+So what you get is not "a 100% verdict", but:
+
+- **Fewer wrong attributions** — a correct password is not crossed off because of one round
+  of environmental noise;
+- **Fewer wrong exclusions** — uncertain candidates are not skipped forever;
+- **Less repeated work** — a password already proven wrong on this network does not come
+  back in another dictionary.
+
+**It is better to acknowledge uncertainty than to present an unsupported failure as a fact.**
+
+## Dictionary management
+
+- Rows show entry count, run status and plan membership directly;
+- Multi-select to **add to / remove from a plan** in bulk; the plan card is collapsed by default;
+- **Deletion goes to a trash bin** - restorable, or permanently removable from there;
+- The editor has a **line-number gutter**, cursor line/column, go-to-line and find, so even a
+  few thousand lines can be located precisely;
+- **Dictionary resume by content**: after a dictionary is renamed, moved or re-imported it is
+  matched **by content** - identical content resumes from where it stopped; if the content really
+  changed the app says so and does **not** inherit the old position.
 
 ## Observe: see which channel to use at a glance
 

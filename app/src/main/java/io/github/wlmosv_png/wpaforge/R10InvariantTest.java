@@ -60,7 +60,7 @@ public class R10InvariantTest {
     private static String mk(String id) { return AttemptMarker.line(id); }
 
     public static void main(String[] args) {
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         String code = eng == null ? null : stripComments(eng);
 
@@ -136,7 +136,40 @@ public class R10InvariantTest {
                 if (callArgs.contains("\"\"") || !callArgs.contains("\"")) noCode++;
                 at++;
             }
-            eq("全文件的 AUTH_FAIL 出口数 = 4（全部是证据路径）", 4, auth);
+            // B2 收紧（非降低断言）：出口从 5 收敛到 2。
+            // failover / m1retry / 支B 三条 AP-1 路径已改判非失败结论（
+            // 它们只证明「本次没连上」，不证明密钥不符）。
+            // 剩余两条都必须具备**明确密钥不符证据**：
+            //   · authcast = framework ERROR_AUTHENTICATING（系统「密码错误」广播）
+            //   · 支A     = CTRL-EVENT-SSID-TEMP-DISABLED reason=WRONG_KEY
+            // C3：五种证据源已全部接入统一 Adjudicator，
+            // CrackEngine 里**不再有任何直接构造的 AUTH_FAIL**。
+            // 这条从「数出口」升级为「出口必须为零」——更严格，不是放宽。
+            eq("**CrackEngine 内直接构造的 AUTH_FAIL 出口数 = 0**（全部经 Adjudicator）", 0, auth);
+            // C3：五种证据源；C4：两个成功出口；D5：支A 拆成 AT3/AT1 两处
+            // -> 共 8 处统一裁决入口
+            ok("全部证据源都调用统一裁决入口 judge(...)（8 处：6 失败源 + 2 成功源）",
+                    countOccurrences(code, "judge(password,") == 8);
+            // C1：authcast 也不得 DIRECT。
+            // 广播只有 SSID（AT-1），而 netId 存在**不构成关联证据**——
+            // 「本次建了配置」与「这条广播属于它」之间没有可验证的因果链。
+            eq("**没有任何 AUTH_FAIL 出口给 DIRECT**（永久排除路径已封闭）", 0,
+                    countDirectAuthFail(code));
+            // C3：authcast 不再自己设 grade —— 它提交 Evidence(AUTHCAST, WRONG_KEY, AT1)，
+            // 由 Adjudicator 按 AT1 决定 INFERRED。
+            ok("authcast 提交 WRONG_KEY 证据，归属上限 AT1",
+                    code.contains("Evidence.Source.AUTHCAST, Evidence.Claim.WRONG_KEY")
+                            && !code.contains("at3Owned"));
+            // D5 之后 AT3 有三处，且**每一处都有明确用途**：
+            //   · 2 处成功证据（status 四条件同行 / 日志协商完成）
+            //   · 1 处支A-AT3（TEMP-DISABLED 的 id= 绑定到本次新建配置）
+            // 其余失败源一律 AT1 / NONE —— 不能靠「反正对不上」蒙过去。
+            eq("AT3 恰好 3 处（2 成功 + 1 支A 配置绑定）", 3,
+                    countOccurrences(code, "Evidence.Attribution.AT3"));
+            ok("支A 的 AT3 只在 sawWrongKeyForConfig 分支里",
+                    code.contains("sawWrongKeyForConfig"));
+            ok("候选级 AUTH_FAIL 出口只有 judge（无直接构造）",
+                    countOccurrences(code, "new Attempt(password, Verdict.AUTH_FAIL") == 0);
             eq("每个 AUTH_FAIL 都带非空归因码（没有匿名失败）", 0, noCode);
             ok("命令前的「候选不合法」不再是 AUTH_FAIL（复核修正）",
                     code.contains("if (!isValidLength(password)) {")
@@ -153,7 +186,13 @@ public class R10InvariantTest {
             while ((at = code.indexOf("new Attempt(password, Verdict.SUCCESS", at)) >= 0) {
                 succ++; at++;
             }
-            eq("成功出口恰好 2 个（status 三条件同行 / 目标 BSSID 协商完成）", 2, succ);
+            // C4：两个成功出口也接到统一 Adjudicator（提交 CONNECTED + AT3 证据）。
+            eq("**CrackEngine 内直接构造的 SUCCESS 出口数 = 0**（全部经 Adjudicator）", 0, succ);
+            eq("两条成功证据都声明 CONNECTED + AT3", 2,
+                    countOccurrences(code, "Evidence.Claim.CONNECTED,"));
+            ok("成功证据来源覆盖 status 与 wpalog 两路",
+                    code.contains("Evidence.Source.SUCCESS_STATUS")
+                            && code.contains("Evidence.Source.SUCCESS_LOG"));
             ok("status 成功出口走纯逻辑入口 SuccessRule.assess",
                     code.contains("SuccessRule.assess("));
             ok("日志成功出口要求目标 BSSID 命中（不是「出现过协商完成」）",
@@ -175,9 +214,9 @@ public class R10InvariantTest {
         eq("五个非失败状态都不是 AUTH_FAIL，且都不计入退避样本", 0, leaked);
         if (code != null) {
             ok("任务只在命中口令非空时记为 DONE_HIT（非成功状态不会变成命中）",
-                    read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                    read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/CrackService.java") != null
-                            && read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                            && read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/CrackService.java").contains("hitPassword != null && !hitPassword.isEmpty()"));
         }
 
@@ -186,7 +225,12 @@ public class R10InvariantTest {
         if (code != null) {
             int assign = 0, at = 0;
             while ((at = code.indexOf("hit = c.password", at)) >= 0) { assign++; at++; }
-            eq("命中赋值点唯一（不可能被后续分支改写）", 1, assign);
+            // 契约修订（INFERRED 补充验证轮）：
+            // 现在有「主循环」与「补充验证轮」两处命中赋值，
+            // 但**两处都必须在 a.isSuccess() 守卫块内**（由下一条断言检查）。
+            // 数量上限收紧到 2，防止将来被继续扩散。
+            ok("命中赋值点受控（主循环 + 补充验证，最多 2 处；实际 "
+                    + assign + " 处）", assign >= 1 && assign <= 2);
             int hitIdx = code.indexOf("hit = c.password");
             // 用**括号配平**判定"是否在守卫块内"，不再用固定长度窗口 ——
             // 窗口法会因为块内新增几行而误报（复核时被自己的修复打破过一次）。
@@ -238,7 +282,7 @@ public class R10InvariantTest {
 
         // ─────────── I10（打包范围）───────────
         System.out.println("== I10 生产 dex 不得包含测试类与审计探针 ==");
-        String build = read("/workspace/promo-wpaforge/2-build-dex.sh");
+        String build = read(TestPaths.under("2-build-dex.sh"));
         if (build == null) {
             System.out.println("  N/RUN 打包守卫（脚本不可读）");
         } else {
@@ -249,7 +293,7 @@ public class R10InvariantTest {
             ok("没有用 \"*Probe.java\" 这种会误伤 LanProbe.java 的写法",
                     !build.contains("! -name \"*Probe.java\""));
             // 按同一规则模拟一遍：谁进 dex、谁不进
-            java.io.File dir = new java.io.File("/workspace/promo-wpaforge/app/src/main/java");
+            java.io.File dir = new java.io.File(TestPaths.javaSrcRoot());
             java.util.List<java.io.File> all = new java.util.ArrayList<>();
             collect(dir, all);
             int included = 0, excludedTest = 0, excludedProbe = 0, lanProbeIncluded = 0;
@@ -313,7 +357,7 @@ public class R10InvariantTest {
             if (productionContains(b)) wired++;
         }
         eq("生产代码里没有任何 RootProber 判定入口的调用", 0, wired);
-        String rp = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String rp = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/RootProber.java");
         if (rp != null) {
             // I8 强化（F4 同族清理）：原来这里只断言「没人调用」，但代码还在 ——
@@ -351,6 +395,35 @@ public class R10InvariantTest {
         System.out.println();
         System.out.println("=== R10 不变量测试: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);
+    }
+
+    /**
+     * 统计「AUTH_FAIL 出口 + 紧邻一行内被赋 DIRECT」的条数（B2 新不变量）。
+     *
+     * <p>为什么需要它：出口数从 5 收到 2 之后，剩下这两条**必须**是
+     * AT-1 级（不可永久排除）。若哪次改动把 DIRECT 直接写在 AUTH_FAIL 出口上，
+     * 候选就会被永久排除 —— 那正是本不变量要拦住的回归。
+     */
+    private static int countOccurrences(String haystack, String needle) {
+        if (haystack == null || needle == null || needle.isEmpty()) return -1;
+        int n = 0, at = 0;
+        while ((at = haystack.indexOf(needle, at)) >= 0) { n++; at += needle.length(); }
+        return n;
+    }
+
+    private static int countDirectAuthFail(String code) {
+        if (code == null) return -1;
+        int bad = 0, at = 0;
+        while ((at = code.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at)) >= 0) {
+            // 出口到下一个出口之间才是本出口的代码体
+            int nextAt = code.indexOf("new Attempt(password, Verdict.AUTH_FAIL", at + 1);
+            int segEnd = nextAt < 0 ? Math.min(code.length(), at + 1200)
+                                    : Math.min(nextAt, at + 1200);
+            String seg = code.substring(at, segEnd);
+            if (seg.contains("EvidenceGrade.Level.DIRECT")) bad++;
+            at++;
+        }
+        return bad;
     }
 
     private static String stripComments(String src) {
@@ -393,7 +466,7 @@ public class R10InvariantTest {
 
     /** 在生产源码里搜一个符号（排除测试类与探针本身）。 */
     private static boolean productionContains(String needle) {
-        java.io.File dir = new java.io.File("/workspace/promo-wpaforge/app/src/main/java");
+        java.io.File dir = new java.io.File(TestPaths.javaSrcRoot());
         java.util.List<java.io.File> all = new java.util.ArrayList<>();
         collect(dir, all);
         for (java.io.File f : all) {

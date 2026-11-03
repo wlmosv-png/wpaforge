@@ -206,20 +206,22 @@ public class RestorePlanTest {
         eq("null → wpa2（不猜）", "wpa2", ConfigRestorer.securityArg(null));
 
         System.out.println("== R11-7 每种终态都必须触发恢复（接线守卫） ==");
-        String svc = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String svc = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/CrackService.java");
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String eng = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/CrackEngine.java");
         if (svc == null || eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");
         } else {
-            String runner = read("/workspace/promo-wpaforge/app/src/main/java/"
+            String runner = read(TestPaths.javaSrcRoot()
                     + "io/github/wlmosv_png/wpaforge/audit/RestoreRunner.java");
             ok("破坏性动作之前先过 fail-closed 闸门（armRestore 在 executeTask 里）",
                     svc.contains("RestoreGuard.Decision gate = armRestore(task);"));
+            // 2026-11-02：闸门分支改为走统一收尾（finishTaskEarly），
+            // 终态仍是 PAUSED（不丢进度），但会一并完成落盘、计划上报与界面通知。
             ok("闸门不过就不进引擎（任务置 PAUSED，不丢进度）",
                     svc.contains("if (!gate.proceed)")
-                            && svc.contains("task.state = TaskQueue.State.PAUSED;"));
+                            && svc.contains("finishTaskEarly(task, TaskQueue.State.PAUSED"));
             ok("闸门位置在 runViaEngine 之前",
                     svc.indexOf("RestoreGuard.Decision gate = armRestore(task);") > 0
                             && svc.indexOf("RestoreGuard.Decision gate = armRestore(task);")
@@ -233,7 +235,7 @@ public class RestorePlanTest {
                     svc.contains("RestoreRunner.requestStartupRecovery(\"service-start\")")
                             && !svc.contains("recoverRestore();"));
             ok("Application 也发起补做（只开 App 也能补完）",
-                    read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                    read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/App.java").contains("requestStartupRecovery(\"app-start\")"));
             ok("失败写入 STAGE_FAILED 而不是丢掉",
                     runner != null && runner.contains("RestoreJournal.STAGE_FAILED"));
@@ -252,7 +254,7 @@ public class RestorePlanTest {
         }
 
         System.out.println("== R11-8 旧 UI 善后已停用（否则会把恢复好的配置再删一次） ==");
-        String ma = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String ma = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/MainActivity.java");
         if (ma == null) {
             System.out.println("  N/RUN UI 守卫（源码不可读）");

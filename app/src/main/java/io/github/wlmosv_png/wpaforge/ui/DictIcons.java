@@ -33,7 +33,8 @@ public final class DictIcons extends Drawable {
         PICK,      // 多选框：空心圆（未选）
         PICKED,    // 多选框：实心圆 + 勾（已选）
         MORE,      // 行内「⋯」：更多操作
-        HELP       // 「?」：说明入口（圆 + 问号）
+        HELP,      // 「?」：说明入口（圆 + 问号）
+        LIST       // 三行横线：多字典计划（列表/顺序）
     }
 
     private final Kind kind;
@@ -148,6 +149,15 @@ public final class DictIcons extends Drawable {
                 Paint f = new Paint(p);
                 f.setStyle(Paint.Style.FILL);
                 cv.drawCircle(cx, cy + u * 0.255f, u * 0.058f, f);
+                break;
+            }
+            case LIST: {
+                // 三行横线：自顶向下，间距均匀，一眼读出「一个有序列表」
+                float lw = u * 0.44f;
+                p.setStrokeWidth(Math.max(1.4f, u * 0.085f));
+                cv.drawLine(cx - lw, cy - u * 0.26f, cx + lw, cy - u * 0.26f, p);
+                cv.drawLine(cx - lw, cy, cx + lw, cy, p);
+                cv.drawLine(cx - lw, cy + u * 0.26f, cx + lw, cy + u * 0.26f, p);
                 break;
             }
             case MORE: {

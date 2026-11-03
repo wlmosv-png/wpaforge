@@ -62,7 +62,7 @@ public final class NetDialog {
         if (title != null && !title.isEmpty()) {
             TextView t = new TextView(ctx);
             t.setText(title);
-            t.setTextSize(17);
+            t.setTextSize(AmberTheme.FS_TITLE);
             t.setTextColor(TEXT);
             t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
             root.addView(t);
@@ -126,7 +126,7 @@ public final class NetDialog {
         NetDialog d = new NetDialog(ctx, title, null);
         TextView tv = new TextView(ctx);
         tv.setText(body);
-        tv.setTextSize(12);
+        tv.setTextSize(AmberTheme.FS_BODY);
         tv.setTextColor(TEXT);
         tv.setTypeface(Typeface.MONOSPACE);
         tv.setTextIsSelectable(true);
@@ -148,7 +148,7 @@ public final class NetDialog {
     private TextView textBlock(String msg) {
         TextView tv = new TextView(ctx);
         tv.setText(msg);
-        tv.setTextSize(13);
+        tv.setTextSize(AmberTheme.FS_MONO);
         tv.setTextColor(TEXT_DIM);
         tv.setLineSpacing(px(5), 1f);
         return tv;
@@ -161,7 +161,7 @@ public final class NetDialog {
         if (defaultValue != null) et.setText(defaultValue);
         et.setTextColor(TEXT);
         et.setHintTextColor(TEXT_DIM);
-        et.setTextSize(13.5f);
+        et.setTextSize(AmberTheme.FS_ACTION);
         et.setSingleLine(true);
         et.setBackground(round(FIELD_BG, AmberTheme.RADIUS_CHIP));
         et.setPadding(px(14), px(13), px(14), px(13));
@@ -179,7 +179,7 @@ public final class NetDialog {
         if (defaultValue != null) et.setText(defaultValue);
         et.setTextColor(TEXT);
         et.setHintTextColor(TEXT_DIM);
-        et.setTextSize(12.5f);
+        et.setTextSize(AmberTheme.FS_BODY);
         et.setTypeface(Typeface.MONOSPACE);
         et.setGravity(Gravity.TOP | Gravity.START);
         et.setMinLines(minLines);
@@ -201,7 +201,7 @@ public final class NetDialog {
     public void addHint(String text) {
         TextView tv = new TextView(ctx);
         tv.setText(text);
-        tv.setTextSize(11);
+        tv.setTextSize(AmberTheme.FS_SMALL);
         tv.setTextColor(TEXT_DIM);
         tv.setLineSpacing(px(4), 1f);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -272,7 +272,7 @@ public final class NetDialog {
     public TextView addItem(String text, OnClick cb) {
         TextView t = new TextView(ctx);
         t.setText(text);
-        t.setTextSize(13.5f);
+        t.setTextSize(AmberTheme.FS_ACTION);
         t.setTextColor(TEXT);
         t.setPadding(px(16), px(15), px(16), px(15));
         t.setBackground(round(FIELD_BG, AmberTheme.RADIUS_CHIP));
@@ -331,11 +331,11 @@ public final class NetDialog {
         LinearLayout col = new LinearLayout(ctx);
         col.setOrientation(LinearLayout.VERTICAL);
         TextView t = new TextView(ctx);
-        t.setTextSize(14f);
+        t.setTextSize(AmberTheme.FS_ACTION);
         t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         col.addView(t);
         TextView sub = new TextView(ctx);
-        sub.setTextSize(11.5f);
+        sub.setTextSize(AmberTheme.FS_SMALL);
         sub.setLineSpacing(px(3), 1f);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);

@@ -96,13 +96,13 @@ public class LanProbeActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText("网络侦察");
-        title.setTextSize(17);
+        title.setTextSize(AmberTheme.FS_TITLE);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         statusChip = new TextView(this);
-        statusChip.setTextSize(11);
+        statusChip.setTextSize(AmberTheme.FS_SMALL);
         statusChip.setTextColor(TEXT_DIM);
         statusChip.setPadding(dp(10), dp(4), dp(10), dp(4));
         statusChip.setBackground(round(SURFACE_2, 10));
@@ -134,13 +134,13 @@ public class LanProbeActivity extends Activity {
 
         TextView chev = new TextView(this);
         chev.setText("▸");
-        chev.setTextSize(12);
+        chev.setTextSize(AmberTheme.FS_BODY);
         chev.setTextColor(ACCENT);
         termHeader.addView(chev);
 
         TextView lbl = new TextView(this);
         lbl.setText(L.s("  扫描日志", "  SCAN LOG"));
-        lbl.setTextSize(11.5f);
+        lbl.setTextSize(AmberTheme.FS_SMALL);
         lbl.setTextColor(TEXT_DIM);
         lbl.setLetterSpacing(0.08f);
         termHeader.addView(lbl, new LinearLayout.LayoutParams(0,
@@ -148,7 +148,7 @@ public class LanProbeActivity extends Activity {
 
         TextView clear = new TextView(this);
         clear.setText(L.s("清空", "Clear"));
-        clear.setTextSize(11);
+        clear.setTextSize(AmberTheme.FS_SMALL);
         clear.setTextColor(TEXT_DIM);
         clear.setPadding(dp(10), dp(4), dp(10), dp(4));
         clear.setBackground(round(SURFACE_2, 8));
@@ -169,7 +169,7 @@ public class LanProbeActivity extends Activity {
         termScroll.setVerticalScrollBarEnabled(true);
         termScroll.setScrollbarFadingEnabled(false);
         termView = new TextView(this);
-        termView.setTextSize(11.5f);
+        termView.setTextSize(AmberTheme.FS_SMALL);
         termView.setTextColor(TERM_FG);
         termView.setTypeface(Typeface.MONOSPACE);
         termView.setLineSpacing(dp(2), 1f);
@@ -193,7 +193,7 @@ public class LanProbeActivity extends Activity {
 
         scanBtn = new TextView(this);
         scanBtn.setText(L.s("▶  开始扫描", "▶  SCAN"));
-        scanBtn.setTextSize(14);
+        scanBtn.setTextSize(AmberTheme.FS_ACTION);
         scanBtn.setTextColor(AmberTheme.ON_ACCENT);
         scanBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         scanBtn.setGravity(Gravity.CENTER);
@@ -204,7 +204,7 @@ public class LanProbeActivity extends Activity {
 
         TextView back = new TextView(this);
         back.setText(L.s("返回", "Back"));
-        back.setTextSize(14);
+        back.setTextSize(AmberTheme.FS_ACTION);
         back.setTextColor(TEXT);
         back.setGravity(Gravity.CENTER);
         back.setPadding(0, dp(14), 0, dp(14));
@@ -242,14 +242,14 @@ public class LanProbeActivity extends Activity {
 
         TextView icon = new TextView(this);
         icon.setText("◈");
-        icon.setTextSize(34);
+        icon.setTextSize(AmberTheme.FS_HERO);
         icon.setTextColor(ACCENT_DIM);
         icon.setGravity(Gravity.CENTER);
         card.addView(icon);
 
         TextView t = new TextView(this);
         t.setText(L.s("点下方开始扫描", "Tap SCAN to begin"));
-        t.setTextSize(14);
+        t.setTextSize(AmberTheme.FS_ACTION);
         t.setTextColor(TEXT);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, dp(12), 0, dp(6));
@@ -258,7 +258,7 @@ public class LanProbeActivity extends Activity {
         TextView d = new TextView(this);
         d.setText(L.s("将探测当前网段的设备、厂商与开放端口，\n并与上次结果对比标出新出现的设备。",
                       "Probes devices, vendors and open ports on this subnet,\nand highlights devices new since the last scan."));
-        d.setTextSize(11.5f);
+        d.setTextSize(AmberTheme.FS_SMALL);
         d.setTextColor(TEXT_DIM);
         d.setGravity(Gravity.CENTER);
         d.setLineSpacing(dp(4), 1f);
@@ -430,7 +430,7 @@ public class LanProbeActivity extends Activity {
                             + "Common cause: a local proxy/VPN (e.g. Clash TUN) answers SYN-ACK"
                             + " for every target, so what you scanned is the proxy, not the device.\n"
                             + "Turn the proxy off and rescan. Some networks may behave the same."));
-            nt.setTextSize(11.5f);
+            nt.setTextSize(AmberTheme.FS_SMALL);
             nt.setTextColor(WARN);
             nt.setLineSpacing(dp(3), 1f);
             nt.setPadding(0, dp(10), 0, 0);
@@ -441,7 +441,7 @@ public class LanProbeActivity extends Activity {
             TextView warn = new TextView(this);
             warn.setText(L.s("⚠ 检测到新设备，请确认是否熟悉",
                     "⚠ New device(s) detected — do you recognise them?"));
-            warn.setTextSize(11.5f);
+            warn.setTextSize(AmberTheme.FS_SMALL);
             warn.setTextColor(DANGER);
             warn.setPadding(0, dp(10), 0, 0);
             sum.addView(warn);
@@ -496,14 +496,14 @@ public class LanProbeActivity extends Activity {
         b.setGravity(Gravity.CENTER);
         TextView n = new TextView(this);
         n.setText(num);
-        n.setTextSize(24);
+        n.setTextSize(AmberTheme.FS_DISPLAY);
         n.setTextColor(color);
         n.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         n.setGravity(Gravity.CENTER);
         b.addView(n);
         TextView l = new TextView(this);
         l.setText(label);
-        l.setTextSize(10.5f);
+        l.setTextSize(AmberTheme.FS_LABEL);
         l.setTextColor(TEXT_DIM);
         l.setGravity(Gravity.CENTER);
         b.addView(l);
@@ -514,7 +514,7 @@ public class LanProbeActivity extends Activity {
     private View sectionHeader(String text, int color) {
         TextView t = new TextView(this);
         t.setText(text);
-        t.setTextSize(10.5f);
+        t.setTextSize(AmberTheme.FS_LABEL);
         t.setTextColor(color);
         t.setLetterSpacing(0.12f);
         t.setPadding(dp(4), dp(14), 0, dp(8));
@@ -572,7 +572,7 @@ public class LanProbeActivity extends Activity {
 
         TextView ip = new TextView(this);
         ip.setText(h.ip);
-        ip.setTextSize(15);
+        ip.setTextSize(AmberTheme.FS_STATE);
         ip.setTextColor(isNew ? DANGER : TEXT);
         ip.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         head.addView(ip);
@@ -594,7 +594,7 @@ public class LanProbeActivity extends Activity {
         if (line2.length() > 0) {
             TextView v = new TextView(this);
             v.setText(line2.toString());
-            v.setTextSize(11.5f);
+            v.setTextSize(AmberTheme.FS_SMALL);
             v.setTextColor(TEXT_DIM);
             v.setPadding(0, dp(4), 0, 0);
             v.setSingleLine(true);
@@ -610,7 +610,7 @@ public class LanProbeActivity extends Activity {
             pr.setPadding(0, dp(10), 0, 0);
             TextView ph = new TextView(this);
             ph.setText(L.s("开放端口", "OPEN PORTS") + "  " + ports.size());
-            ph.setTextSize(10);
+            ph.setTextSize(AmberTheme.FS_MICRO);
             ph.setTextColor(ACCENT);
             ph.setLetterSpacing(0.1f);
             pr.addView(ph);
@@ -622,7 +622,7 @@ public class LanProbeActivity extends Activity {
 
                 TextView pn = new TextView(this);
                 pn.setText(String.valueOf(p.port));
-                pn.setTextSize(11.5f);
+                pn.setTextSize(AmberTheme.FS_SMALL);
                 pn.setTextColor(TEXT);
                 pn.setTypeface(Typeface.MONOSPACE);
                 pn.setMinWidth(dp(42));
@@ -630,7 +630,7 @@ public class LanProbeActivity extends Activity {
 
                 TextView sv = new TextView(this);
                 sv.setText(p.service);
-                sv.setTextSize(11);
+                sv.setTextSize(AmberTheme.FS_SMALL);
                 sv.setTextColor(TEXT_DIM);
                 sv.setMinWidth(dp(80));
                 row.addView(sv);
@@ -639,7 +639,7 @@ public class LanProbeActivity extends Activity {
                 if (banner != null && !banner.isEmpty()) {
                     TextView bv = new TextView(this);
                     bv.setText(banner);
-                    bv.setTextSize(10.5f);
+                    bv.setTextSize(AmberTheme.FS_LABEL);
                     bv.setTextColor(ACCENT_DIM);
                     bv.setTypeface(Typeface.MONOSPACE);
                     bv.setSingleLine(true);
@@ -655,7 +655,7 @@ public class LanProbeActivity extends Activity {
         // 依据入口：这一台的结论怎么来的，点开可看
         TextView why = new TextView(this);
         why.setText(L.s("查看判断依据 ▸", "Why this verdict ▸"));
-        why.setTextSize(11f);
+        why.setTextSize(AmberTheme.FS_SMALL);
         why.setTextColor(ACCENT_DIM);
         why.setPadding(0, dp(10), 0, 0);
         why.setOnClickListener(v -> showEvidence(h));
@@ -677,7 +677,7 @@ public class LanProbeActivity extends Activity {
 
         TextView ip = new TextView(this);
         ip.setText(d.ip);
-        ip.setTextSize(13.5f);
+        ip.setTextSize(AmberTheme.FS_ACTION);
         ip.setTextColor(AmberTheme.TEXT_FAINT);
         ip.setPaintFlags(ip.getPaintFlags() | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
         card.addView(ip);
@@ -691,7 +691,7 @@ public class LanProbeActivity extends Activity {
         if (sb.length() > 0) {
             TextView v = new TextView(this);
             v.setText(sb.toString());
-            v.setTextSize(10.5f);
+            v.setTextSize(AmberTheme.FS_LABEL);
             v.setTextColor(AmberTheme.TEXT_FAINT);
             v.setPadding(0, dp(3), 0, 0);
             card.addView(v);
@@ -702,7 +702,7 @@ public class LanProbeActivity extends Activity {
     private TextView chip(String text, int color) {
         TextView c = new TextView(this);
         c.setText(text);
-        c.setTextSize(9.5f);
+        c.setTextSize(AmberTheme.FS_MICRO);
         c.setTextColor(color);
         c.setPadding(dp(7), dp(2), dp(7), dp(2));
         c.setBackground(roundStroke(Color.TRANSPARENT, 6,

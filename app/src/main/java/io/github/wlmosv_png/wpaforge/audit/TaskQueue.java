@@ -72,6 +72,21 @@ public final class TaskQueue {
         /** 这条任务是不是从**旧格式（明文 hit）**读出来的 —— 迁移用，不落盘。 */
         public transient boolean legacyHitPlain = false;
         public State state = State.PENDING;
+        /**
+         * 这条任务是否由**多字典计划**派生。
+         *
+         * <p>它是「任务来源」的唯一标记，把计划任务与用户显式入队的普通任务分开。
+         * 执行侧据此决定要不要让计划接管 —— 计划只接管「计划自己派生」的待办；
+         * 用户普通任务永远按单字典语义执行，不被计划终态阻塞（P0 修复）。
+         */
+        public boolean fromPlan = false;
+        /**
+         * 字典文件**内容身份**（SHA-256，小写十六进制；拿不到为空串）。
+         *
+         * <p>用途：字典续命。路径会变、内容不会 —— 靠它判断「这本字典上次跑到哪」
+         * 能不能继承，而不是靠路径字符串。空串表示入队时没算（旧数据/内置生成器）。
+         */
+        public String dictSha = "";
         public long createdAt;
         public long elapsedMs;
         /** 本次实际试过多少条（不算续跑前的） */
@@ -116,6 +131,21 @@ public final class TaskQueue {
          * 旧数据没有这个字段 → 默认空串。
          */
         public String lastRunId = "";
+        /**
+         * 跨字典去重档位（1.9.39）：0=保守（默认）/ 1=省时。
+         *
+         * <p>存在**任务**上而不是全局读一次，是为了让「同一次任务的过滤口径」
+         * 在整轮执行里保持一致 —— 中途去设置页改档位不会让前一半候选按旧档、
+         * 后一半按新档过滤。旧数据没有这个字段 → 0（与 1.9.38 行为一致）。
+         */
+        public int skipPolicyId = 0;
+        /**
+         * 本条任务是否要求**强制重跑**：绕过本次的历史过滤。
+         *
+         * <p>它**只影响读**，不清空、不改写任何历史记录 —— 想真正丢掉历史，
+         * 要用字典页的「清空本目标已试记录」。旧数据没有这个字段 → false。
+         */
+        public boolean forceRerun = false;
 
         public Task() {}
 
@@ -226,6 +256,10 @@ public final class TaskQueue {
                 o.put("crackMode", crackMode);
                 o.put("interrupted", interrupted);
                 o.put("lastRunId", lastRunId == null ? "" : lastRunId);
+                o.put("skipPolicyId", skipPolicyId);
+                o.put("forceRerun", forceRerun);
+                o.put("fromPlan", fromPlan);
+                o.put("dictSha", dictSha == null ? "" : dictSha);
             } catch (Exception ignored) {}
             return o;
         }
@@ -272,6 +306,11 @@ public final class TaskQueue {
             // 旧版本数据没有这两个字段 → 取默认值，不抛异常、不伪造
             t.interrupted = o.optBoolean("interrupted", false);
             t.lastRunId = o.optString("lastRunId", "");
+            // 1.9.39：旧数据缺这两个字段 → 保守档 + 不强制重跑（= 旧行为，不猜）
+            t.skipPolicyId = o.optInt("skipPolicyId", 0);
+            t.forceRerun = o.optBoolean("forceRerun", false);
+            t.fromPlan = o.optBoolean("fromPlan", false);
+            t.dictSha = o.optString("dictSha", "");
             return t;
         }
     }
@@ -318,6 +357,32 @@ public final class TaskQueue {
         return new File(ctx.getFilesDir(), FILE);
     }
 
+    // ------------------------------------------------------------------ 存储接缝（P0-0）
+
+    /**
+     * 测试注入的存储实现；{@code null} = 使用生产实现。
+     *
+     * <p>包级可见，生产代码在包内也没有调用者（只有本类与测试会用）。
+     * 默认 null 时行为与改造前完全一致。
+     */
+    private static volatile StoreIo testStore;
+
+    /**
+     * **仅供测试**：注入存储实现。传 {@code null} 恢复生产实现。
+     *
+     * <p>它只替换「字节怎么进出」，不改变 {@link #load}/{@link #save} 的任何判断逻辑。
+     */
+    static void setStoreForTest(StoreIo io) {
+        testStore = io;
+    }
+
+    /** 当前生效的存储实现（注入优先）。 */
+    private static StoreIo store(Context ctx) {
+        StoreIo injected = testStore;
+        if (injected != null) return injected;
+        return new StoreIo.FileImpl(ctx.getFilesDir());
+    }
+
     // 上一次 load 是不是**读失败**（而不是队列真的空）
     //
     // 2026-10-23 真事：队列里 16 个任务（含 5 条已爆破出的口令）被写成了 `[]`。
@@ -331,6 +396,14 @@ public final class TaskQueue {
 
     /** 上一次 load 是否读失败 */
     public static boolean lastLoadFailed() { return loadFailedFlag; }
+
+    /**
+     * **仅供测试**：复位读取失败标志。
+     *
+     * <p>生产代码没有任何调用者；它只是让测试能在同一进程内构造
+     * 「先失败、再成功」的序列。默认值本来就是 false，因此复位不改变生产语义。
+     */
+    static void resetLoadFailedForTest() { loadFailedFlag = false; }
 
     /**
      * 纯逻辑：这次写盘要不要拒绝。
@@ -362,71 +435,613 @@ public final class TaskQueue {
         return false;
     }
 
-    /** 读取整个队列 */
-    public static List<Task> load(Context ctx) {
-        List<Task> out = new ArrayList<>();
-        File f = file(ctx);
-        // 文件不存在 = 真空队列，合法
-        if (!f.isFile()) { loadFailedFlag = false; return out; }
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(
-                new FileInputStream(f), StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line);
-            JSONArray arr = new JSONArray(sb.toString());
-            for (int i = 0; i < arr.length(); i++) {
-                out.add(Task.fromJson(arr.getJSONObject(i)));
-            }
-            loadFailedFlag = false;
-        } catch (Exception e) {
-            // **绝不能静默返回空**：调用方拿着空列表去 save，
-            // 就等于把用户整个队列删了。
-            loadFailedFlag = true;
-            android.util.Log.e("WPAForge", "队列读取失败（不当作空队列）: " + f + " → " + e);
-        }
-        return out;
+    // ------------------------------------------------------------------ 四态读取（P0-2a）
+
+    /**
+     * 一次读取的**完整状态**。
+     *
+     * <h3>为什么必须区分这四种</h3>
+     * 旧实现只有「读到 / 没读到」两种表现，且都返回空列表 ——
+     * 于是「文件本来就不存在」「文件坏了」「读不到（权限/IO）」在调用方眼里
+     * **完全一样**，任何一次读失败后紧跟的写入都会把原文件覆盖掉。
+     *
+     * <ul>
+     *   <li>{@link #COMPLETE} —— 存在、读全、解析全成功。**唯一允许据此写回的「有数据」状态。**</li>
+     *   <li>{@link #ABSENT}   —— 确认文件不存在。写空是合法的（初始化新队列）。</li>
+     *   <li>{@link #CORRUPT}  —— 存在但内容为空/非法/截断/部分元素损坏。**禁止覆盖。**</li>
+     *   <li>{@link #IO_ERROR} —— 读的过程中发生真实 IO 异常。**禁止覆盖。**</li>
+     * </ul>
+     */
+    public enum ReadState {
+        COMPLETE, ABSENT, CORRUPT, IO_ERROR,
+        /**
+         * 已隔离（P0-2d）：base 与 .bak 同时存在，无法判断哪份可信。
+         *
+         * <p>两份原始文件**原样保留**，禁止任何写入，直到用户显式选择恢复来源。
+         * 该状态由磁盘上的隔离标记持久化，**进程重启后仍然有效**。
+         */
+        QUARANTINED
     }
 
-    /** 写回整个队列 */
-    public static boolean save(Context ctx, List<Task> tasks) {
+    /** 一次读取的结果（状态 + 数据 + 诊断）。 */
+    public static final class ReadResult {
+        public final ReadState state;
+        /** COMPLETE 时是全部任务；其余状态一律为空列表（绝不给「部分结果」）。 */
+        public final List<Task> tasks;
+        /** 诊断串（不含敏感数据，不进任何判定）。 */
+        public final String detail;
+
+        ReadResult(ReadState state, List<Task> tasks, String detail) {
+            this.state = state;
+            this.tasks = tasks;
+            this.detail = detail == null ? "" : detail;
+        }
+
+        public boolean usable() { return state == ReadState.COMPLETE; }
+    }
+
+    /** 最近一次读取的状态。**生产判定用它，不再依赖裸 boolean。** */
+    private static volatile ReadState lastReadState = ReadState.ABSENT;
+
+    /** 最近一次读取的状态（排查与测试用）。 */
+    public static ReadState lastReadState() { return lastReadState; }
+
+    private static ReadResult corrupt(String detail) {
+        return new ReadResult(ReadState.CORRUPT, new ArrayList<Task>(), detail);
+    }
+
+    private static ReadResult ioError(String detail) {
+        return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(), detail);
+    }
+
+    // ------------------------------------------------------------------ 隔离（P0-2d）
+
+    /** 隔离标记文件名。 */
+    static final String QUARANTINE = FILE + ".quarantine";
+    /** AtomicFile 会优先使用的事务备份名；与应用层冲突，正是隔离的触发条件。 */
+    static final String LEGACY_BAK = FILE + ".bak";
+
+    /** 是否已被隔离（只看标记，不碰数据文件）。 */
+    static boolean isQuarantined(StoreIo io) {
+        return io.isFile(QUARANTINE);
+    }
+
+    /**
+     * 是否需要进入隔离。
+     *
+     * <p><b>修复（P0-2e）</b>：不再「base + .bak 同时存在就无条件隔离」。
+     * 应用层自 P0-3 起改用 {@code .snapshot-<ts>} 备份，**不会再写 {@code .bak}**；
+     * 因此当前出现的 {@code .bak} 只可能是「旧版代码残留」或「AtomicFile 事务残留」。
+     * 把它无条件当作「两份都可能是权威」会让健康主文件被历史残留永久阻塞。
+     *
+     * <p>新判据：
+     * <ul>
+     *   <li>base 能完整解析 → **不需要隔离**（.bak 是历史残留，归档保留后继续读 base）。</li>
+     *   <li>base 损坏/不可解析 → **需要隔离**（base 坏了，.bak 可能是唯一可救数据）。</li>
+     * </ul>
+     *
+     * <p>不变式保持：base + .bak 同时存在时，仍**不调用 AtomicFile.openRead**
+     * （它会优先读 .bak），读取 base 走的是本类的流式读取，不受 AtomicFile 干扰。
+     */
+    static boolean needsQuarantine(StoreIo io) {
+        if (!io.isFile(FILE) || !io.isFile(LEGACY_BAK)) return false;
+        // base 能完整解析 → 健康主文件，历史 .bak 不阻塞它
+        return tryCountTasks(io, FILE) < 0;
+    }
+
+    /**
+     * 把历史遗留的 .bak 归档为 .notchosen-<ts>（保留，不删除），
+     * 让健康的 base 恢复正常读取。归档失败则保持原状（返回 false），
+     * 由调用方决定后续（宁可下次再归档，也不强行覆盖）。
+     */
+    static boolean archiveLegacyBak(StoreIo io) {
+        if (!io.isFile(LEGACY_BAK)) return true; // 已经没有了，幂等成功
+        String dst = LEGACY_BAK + ".notchosen-" + System.currentTimeMillis();
+        return io.rename(LEGACY_BAK, dst);
+    }
+
+    /** 读全部字节并算 SHA-256；失败返回 null。 */
+    static String sha256Of(StoreIo io, String name) {
+        try (java.io.InputStream in = io.openRead(name)) {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : md.digest()) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 建立隔离标记。**必须先于任何文件移动/隔离动作**。
+     *
+     * @return null = 成功；否则为失败原因
+     */
+    static String tryQuarantine(StoreIo io) {
+        String baseSha = sha256Of(io, FILE);
+        String bakSha = sha256Of(io, LEGACY_BAK);
+        if (baseSha == null || bakSha == null) {
+            return "无法读取原始文件以计算校验值（base=" + baseSha + " bak=" + bakSha + "）";
+        }
+        org.json.JSONObject o = new org.json.JSONObject();
         try {
+            o.put("store", FILE);
+            o.put("reason", "BASE_AND_BAK");
+            o.put("since", System.currentTimeMillis());
+            org.json.JSONArray arr = new org.json.JSONArray();
+            org.json.JSONObject b1 = new org.json.JSONObject();
+            b1.put("role", "base");
+            b1.put("name", FILE);
+            b1.put("size", io.length(FILE));
+            b1.put("sha256", baseSha);
+            arr.put(b1);
+            org.json.JSONObject b2 = new org.json.JSONObject();
+            b2.put("role", "bak");
+            b2.put("name", LEGACY_BAK);
+            b2.put("size", io.length(LEGACY_BAK));
+            b2.put("sha256", bakSha);
+            arr.put(b2);
+            o.put("entries", arr);
+        } catch (Throwable t) {
+            return "构造标记失败: " + t;
+        }
+        String payload = o.toString();
+        try (java.io.OutputStream os = io.openWrite(QUARANTINE)) {
+            os.write(payload.getBytes(StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            return "写标记失败: " + t;
+        }
+        // 回读校验：写不进去等于没隔离，绝不能当作成功
+        String back = null;
+        try (java.io.InputStream in = io.openRead(QUARANTINE)) {
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            back = new String(bo.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return "回读标记失败: " + t;
+        }
+        if (!payload.equals(back)) return "标记回读不一致（写入不完整）";
+        return null;
+    }
+
+    // ------------------------------------------------------------------ 隔离恢复（P0-2e）
+
+    /**
+     * 用户选择的恢复来源。**没有默认值、没有无参重载** ——
+     * 恢复只能由用户显式指定「恢复哪一份」，杜绝任何自动猜测。
+     */
+    public enum Role { BASE, BAK }
+
+    /**
+     * 隔离标记里记录的、可用于恢复决策的完整信息。
+     *
+     * <p>UI 必须据此展示「两份各是什么状态」，让用户决定恢复哪一份。
+     * 字段只含 size/sha256/mtime，不含任何口令内容。
+     */
+    public static final class QuarantineInfo {
+        public final String reason;
+        public final long since;
+        public final String baseSha256;
+        public final long baseSize;
+        public final long baseMtime;
+        public final boolean baseParsable;
+        public final int baseTaskCount;
+        public final String bakSha256;
+        public final long bakSize;
+        public final long bakMtime;
+        public final boolean bakParsable;
+        public final int bakTaskCount;
+
+        QuarantineInfo(String reason, long since,
+                       String baseSha256, long baseSize, long baseMtime,
+                       boolean baseParsable, int baseTaskCount,
+                       String bakSha256, long bakSize, long bakMtime,
+                       boolean bakParsable, int bakTaskCount) {
+            this.reason = reason;
+            this.since = since;
+            this.baseSha256 = baseSha256;
+            this.baseSize = baseSize;
+            this.baseMtime = baseMtime;
+            this.baseParsable = baseParsable;
+            this.baseTaskCount = baseTaskCount;
+            this.bakSha256 = bakSha256;
+            this.bakSize = bakSize;
+            this.bakMtime = bakMtime;
+            this.bakParsable = bakParsable;
+            this.bakTaskCount = bakTaskCount;
+        }
+    }
+
+    /** 用 StoreIo 直接拿某个文件的 mtime（毫秒）；失败返回 -1。 */
+    private static long mtimeOf(StoreIo io, String name) {
+        try {
+            java.io.File f = new java.io.File(io.describe().substring("file:".length()), name);
+            return f.lastModified();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 只读尝试解析某份文件，返回任务数；解析失败返回 -1。 */
+    private static int tryCountTasks(StoreIo io, String name) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(name), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            JSONArray arr = new JSONArray(sb.toString());
+            for (int i = 0; i < arr.length(); i++) Task.fromJson(arr.getJSONObject(i));
+            return arr.length();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * 读取隔离标记，返回可展示的结构化信息；无标记或标记损坏返回 null。
+     *
+     * <p>只读，不修改任何文件。UI 用它在「恢复状态」里正确展示队列隔离态，
+     * 而不是继续显示「没有待处理的恢复记录」。
+     */
+    public static QuarantineInfo quarantineInfo(Context ctx) {
+        StoreIo io = store(ctx);
+        if (!isQuarantined(io)) return null;
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(QUARANTINE), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            JSONObject o = new JSONObject(sb.toString());
+            String reason = o.optString("reason", "");
+            long since = o.optLong("since", -1);
+            JSONArray arr = o.optJSONArray("entries");
+            String baseSha = "", bakSha = "";
+            long baseSize = -1, bakSize = -1;
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                JSONObject e = arr.optJSONObject(i);
+                if (e == null) continue;
+                String role = e.optString("role", "");
+                if ("base".equals(role)) {
+                    baseSha = e.optString("sha256", "");
+                    baseSize = e.optLong("size", -1);
+                } else if ("bak".equals(role)) {
+                    bakSha = e.optString("sha256", "");
+                    bakSize = e.optLong("size", -1);
+                }
+            }
+            long baseMtime = mtimeOf(io, FILE);
+            long bakMtime = mtimeOf(io, LEGACY_BAK);
+            int baseCount = tryCountTasks(io, FILE);
+            int bakCount = tryCountTasks(io, LEGACY_BAK);
+            return new QuarantineInfo(reason, since,
+                    baseSha, baseSize, baseMtime, baseCount >= 0, baseCount,
+                    bakSha, bakSize, bakMtime, bakCount >= 0, bakCount);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 解除隔离：用户显式选择恢复 base 或 bak。
+     *
+     * <p>流程（对应设计文档 §5.2，不变式 I5/I6/I7）：
+     * <ol>
+     *   <li>校验隔离标记存在（无标记 = 不在隔离态，直接失败）。</li>
+     *   <li>校验所选那份的当前 SHA-256 与隔离标记里记录的一致（防隔离期间被篡改）。</li>
+     *   <li>校验所选那份可完整解析成任务数组（防「恢复一份坏数据」）。</li>
+     *   <li>把未选中的那份改名为 {@code .notchosen-<ts>}（**保留，不删除**）。</li>
+     *   <li>删除隔离标记（原子性：先改名未选份、再删标记）。</li>
+     *   <li>重新读取并验证队列，返回结果。</li>
+     * </ol>
+     *
+     * <p><b>原子性保证</b>：未选份改名失败 → 中止，标记不动，两份都保留；
+     * 标记删除失败 → 下次启动仍识别 QUARANTINED（幂等，可重试），不丢数据。
+     *
+     * @param chosen 用户显式选择的恢复来源（不允许为 null）
+     * @return 恢复后的读取结果；state==COMPLETE 表示恢复成功且队列可读
+     */
+    public static ReadResult resolveQuarantine(Context ctx, Role chosen) {
+        if (chosen == null) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "恢复来源未指定（必须用户显式选择 base 或 bak）");
+        }
+        StoreIo io = store(ctx);
+        if (!isQuarantined(io)) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "当前不在隔离态，无需恢复");
+        }
+
+        // 1. 读隔离标记，取所选份的 sha256
+        String chosenName = (chosen == Role.BASE) ? FILE : LEGACY_BAK;
+        String chosenSha = null;
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(QUARANTINE), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            JSONObject o = new JSONObject(sb.toString());
+            JSONArray arr = o.optJSONArray("entries");
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                JSONObject e = arr.optJSONObject(i);
+                if (e != null && chosenName.equals(e.optString("name", ""))) {
+                    chosenSha = e.optString("sha256", "");
+                }
+            }
+        } catch (Throwable t) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "隔离标记损坏，无法恢复: " + t);
+        }
+        if (chosenSha == null || chosenSha.isEmpty()) {
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "隔离标记里找不到所选份（" + chosenName + "）的记录");
+        }
+
+        // 2. 校验所选份 SHA-256（I6：防隔离期间被篡改）
+        String nowSha = sha256Of(io, chosenName);
+        if (nowSha == null || !nowSha.equals(chosenSha)) {
+            return new ReadResult(ReadState.QUARANTINED, new ArrayList<Task>(),
+                    "完整性校验失败：所选份 SHA-256 与隔离记录不一致（" + chosenName + "）");
+        }
+
+        // 3. 校验所选份可完整解析（防恢复坏数据）
+        if (tryCountTasks(io, chosenName) < 0) {
+            return new ReadResult(ReadState.QUARANTINED, new ArrayList<Task>(),
+                    "所选份无法完整解析，拒绝恢复（" + chosenName + "）");
+        }
+
+        // 4. 未选中的那份 → .notchosen-<ts>（I7：保留，不删除）
+        String otherName = (chosen == Role.BASE) ? LEGACY_BAK : FILE;
+        if (io.isFile(otherName)) {
+            String notChosen = otherName + ".notchosen-" + System.currentTimeMillis();
+            if (!io.rename(otherName, notChosen)) {
+                return new ReadResult(ReadState.QUARANTINED, new ArrayList<Task>(),
+                        "未选中份改名失败，中止恢复（两份都保留）: " + otherName);
+            }
+        }
+
+        // 5. 删除隔离标记（原子性：未选份已安全改名后才删标记）
+        if (!io.delete(QUARANTINE)) {
+            // 标记删不掉 → 下次仍识别 QUARANTINED，但未选份已被改名。
+            // 此时 base 已就位、.bak 已改名，下次 needsQuarantine 不会再触发，
+            // 只剩 isQuarantined 会命中。为幂等起见，尝试直接返回可读状态。
+            // 实际上标记删除失败应视为恢复未完成，但数据已安全（base 在位）。
+            return new ReadResult(ReadState.IO_ERROR, new ArrayList<Task>(),
+                    "隔离标记删除失败（数据已安全，可重试恢复）: " + QUARANTINE);
+        }
+
+        // 6. 重新读取验证
+        ReadResult r = read(io);
+        lastReadState = r.state;
+        return r;
+    }
+
+    /**
+     * 读取队列的**唯一实现**：状态判定 + 全量解析。
+     *
+     * <p><b>部分解析必须整体失败</b>：任何一个元素坏掉，整个文件判 CORRUPT，
+     * 不返回「前缀」。因为调用方拿到前缀后会原样写回，等于把尾部任务永久删除。
+     */
+    static ReadResult read(StoreIo io) {
+        // ---- 0. 隔离检查（先于一切读取）
+        if (isQuarantined(io)) {
+            return new ReadResult(ReadState.QUARANTINED,
+                    new ArrayList<Task>(), "已隔离，等待用户选择恢复来源");
+        }
+        // 健康 base + 历史 .bak：不隔离，归档 .bak 后继续读 base
+        if (io.isFile(FILE) && io.isFile(LEGACY_BAK) && !needsQuarantine(io)) {
+            if (!archiveLegacyBak(io)) {
+                // 归档失败：保持原状，但 base 是健康的，仍可继续读。
+                // 下次启动会再尝试归档；不因此阻塞队列读取。
+                android.util.Log.w("WPAForge",
+                        "历史 .bak 归档失败（base 仍健康，继续读取）: " + LEGACY_BAK);
+            } else {
+                android.util.Log.w("WPAForge",
+                        "历史 .bak 已归档为 .notchosen（base 健康，不隔离）");
+            }
+        }
+        if (needsQuarantine(io)) {
+            String err = tryQuarantine(io);
+            if (err == null) {
+                return new ReadResult(ReadState.QUARANTINED,
+                        new ArrayList<Task>(), "base 损坏且 .bak 存在，已隔离（两份原样保留）");
+            }
+            // 隔离失败 = 无法保证原文件安全 → 一律按 IO_ERROR 处理，禁止后续写入
+            return ioError("隔离失败，拒绝继续: " + err);
+        }
+
+        // ---- 1. 存在性
+        if (!io.isFile(FILE)) {
+            // 存在但不是普通文件（目录/特殊文件）→ 内容不可信
+            if (io.exists(FILE)) {
+                return corrupt(FILE + " 存在但不是普通文件");
+            }
+            return new ReadResult(ReadState.ABSENT, new ArrayList<Task>(), "文件不存在");
+        }
+
+        // ---- 2. 读字节
+        String text;
+        try {
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    io.openRead(FILE), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            text = sb.toString();
+        } catch (java.io.FileNotFoundException e) {
+            // FNFE **不能无条件当 ABSENT**：文件明明在，却报找不到 = 访问受限
+            if (io.exists(FILE)) {
+                return ioError("存在但打开时报 FileNotFound: " + e.getMessage());
+            }
+            return new ReadResult(ReadState.ABSENT, new ArrayList<Task>(), "读取时文件已不存在");
+        } catch (java.io.IOException e) {
+            return ioError("IO 异常: " + e);
+        } catch (Throwable t) {
+            return ioError("读取异常: " + t);
+        }
+
+        // ---- 3. 内容判定
+        if (text.trim().isEmpty()) {
+            // 空文件 / 纯空白：与「合法的空数组 []」必须区分
+            return corrupt("内容为空（区别于合法的空数组）");
+        }
+        JSONArray arr;
+        try {
+            arr = new JSONArray(text);
+        } catch (Throwable t) {
+            return corrupt("JSON 非法: " + t);
+        }
+        List<Task> out = new ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            try {
+                out.add(Task.fromJson(arr.getJSONObject(i)));
+            } catch (Throwable t) {
+                // 任一元素坏 → 整体 CORRUPT，**不返回前缀**
+                return corrupt("第 " + i + " 个元素非法: " + t);
+            }
+        }
+        return new ReadResult(ReadState.COMPLETE, out, "ok");
+    }
+
+    /** 读取整个队列（对外兼容入口：返回列表，状态经 {@link #lastReadState()} 查询）。 */
+    public static List<Task> load(Context ctx) {
+        ReadResult r = read(store(ctx));
+        lastReadState = r.state;
+        // 兼容旧语义：只有 COMPLETE/ABSENT 不算「读失败」
+        loadFailedFlag = (r.state != ReadState.COMPLETE && r.state != ReadState.ABSENT);
+        if (r.state != ReadState.COMPLETE && r.state != ReadState.ABSENT) {
+            android.util.Log.e("WPAForge",
+                    "队列读取失败（不当作空队列）: state=" + r.state
+                            + " " + ctx(store(ctx)) + "/" + FILE + " → " + r.detail);
+        }
+        return r.tasks;
+    }
+
+    private static String ctx(StoreIo io) { return io == null ? "?" : io.describe(); }
+
+    /**
+     * 写回整个队列。
+     *
+     * <h3>写回前安全闸门（P0-2b）</h3>
+     * <b>闸门判断依据是「本次写入前自己读到的状态」，不是调用方先前的 load 结果。</b>
+     * 这样才能挡住「读失败 → 调用方拿空列表 → 写回」这条覆盖链，
+     * 也不会被调用方之间的时序差异绕过。
+     *
+     * <pre>
+     *   COMPLETE  → 允许写
+     *   ABSENT    → 允许写（初始化新队列）
+     *   CORRUPT   → 拒绝（原文件可能还有救，绝不覆盖）
+     *   IO_ERROR  → 拒绝（读都读不到，写入等于赌命）
+     * </pre>
+     */
+    public static boolean save(Context ctx, List<Task> tasks) {
+        if (tasks == null) return false;
+        try {
+            StoreIo io = store(ctx);
+
+            // ---- 闸门：以本次读取的真实状态为准
+            ReadResult gate = read(io);
+            lastReadState = gate.state;
+            loadFailedFlag = (gate.state == ReadState.CORRUPT
+                    || gate.state == ReadState.IO_ERROR);
+            // 白名单：只有 COMPLETE / ABSENT 允许写。
+            // 新增状态（QUARANTINED 等）默认拒绝 —— 宁可拒绝一次合法写入，
+            // 也不能在无法证明原始数据安全的情况下覆盖用户数据。
+            if (gate.state != ReadState.COMPLETE && gate.state != ReadState.ABSENT) {
+                android.util.Log.e("WPAForge",
+                        "拒绝写回：队列状态 " + gate.state + "（" + gate.detail + "）");
+                return false;
+            }
+
             JSONArray arr = new JSONArray();
             for (Task t : tasks) arr.put(t.toJson());
-            File f = file(ctx);
-            // 读失败过还要写空？直接拒绝。
-            // 否则一次临时的读失败（SELinux 标签、损坏、写到一半被杀）
-            // 就会在用户点一下「删除」时把整个队列永久淹掉。
+            // 二次防线（保留旧语义，QueueGuardTest 覆盖）
             if (refuseSave(tasks, loadFailedFlag)) {
                 android.util.Log.e("WPAForge", "队列读取失败过，拒绝用空列表覆盖，避免误删");
                 return false;
             }
-            // 写空之前先备一份：即便真是用户清空，也还能把口令找回来。
-            if (tasks.isEmpty() && f.isFile() && f.length() > 4) {
-                try {
-                    File bak = new File(ctx.getFilesDir(), FILE + ".bak");
-                    java.io.InputStream in = new FileInputStream(f);
-                    try {
-                        java.io.OutputStream os = new FileOutputStream(bak);
-                        try {
-                            byte[] buf = new byte[8192];
-                            int n;
-                            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-                        } finally { os.close(); }
-                    } finally { in.close(); }
-                    android.util.Log.w("WPAForge", "队列被清空，已备份为 " + bak);
-                } catch (Exception ignored) {}
+            // ---- 写空之前先备一份（P0-3：**不再使用 <base>.bak**）
+            //
+            // 为什么改名：android.util.AtomicFile 把 `<base>.bak` 当作它自己的
+            // 事务备份，并在 openRead 时**优先用它覆盖 base**。应用层若继续写
+            // 同名文件，两套机制会互相吞掉对方的数据（已实测，见设计文档 §0.2）。
+            // 因此应用层快照改用 `.snapshot-<ts>`，与 AtomicFile 的文件空间完全隔离。
+            if (tasks.isEmpty() && io.isFile(FILE) && io.length(FILE) > 4) {
+                String snapName = snapshotName(io);
+                if (!copyFile(io, FILE, snapName)) {
+                    // 备份失败必须明确处理：宁可拒绝这次清空，也不静默丢保护能力
+                    android.util.Log.e("WPAForge", "清空前快照失败，拒绝本次清空: " + snapName);
+                    return false;
+                }
+                android.util.Log.w("WPAForge", "队列被清空，已快照为 " + snapName);
             }
-            // 先写临时文件再改名，避免写一半崩溃导致队列损坏
-            File tmp = new File(ctx.getFilesDir(), FILE + ".tmp");
-            try (OutputStreamWriter w = new OutputStreamWriter(
-                    new FileOutputStream(tmp), StandardCharsets.UTF_8)) {
+
+            // ---- 事务写（P0-3）：startWrite → 写 → finishWrite / failWrite
+            java.io.OutputStream handle = null;
+            try {
+                handle = io.beginWrite(FILE);
+                java.io.OutputStreamWriter w =
+                        new java.io.OutputStreamWriter(handle, StandardCharsets.UTF_8);
                 w.write(arr.toString());
+                w.flush();
+                // 注意：**不能 close**，句柄要交给 finishWrite 处理
+            } catch (Throwable t) {
+                if (handle != null) io.abortWrite(FILE, handle);
+                android.util.Log.e("WPAForge", "写入事务失败（已回滚）: " + t);
+                return false;
             }
-            if (f.exists() && !f.delete()) {
-                // 删不掉就直接覆盖
+            if (!io.finishWrite(FILE, handle)) {
+                io.abortWrite(FILE, handle);
+                android.util.Log.e("WPAForge", "提交事务失败（已回滚），原文件保持不变");
+                return false;
             }
-            return tmp.renameTo(f) || f.exists();
+            return true;
         } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 快照文件名：`.snapshot-<毫秒>`，并保证不与已有文件重名（防时间戳碰撞）。 */
+    static String snapshotName() {
+        long ts = System.currentTimeMillis();
+        for (int i = 0; i < 1000; i++) {
+            String name = FILE + ".snapshot-" + ts + (i == 0 ? "" : "-" + i);
+            // 冲突检查交给调用方（需要 io），这里只给出候选；实际由 snapshotName(io) 保证
+            return name;
+        }
+        return FILE + ".snapshot-" + ts;
+    }
+
+    /** 带冲突检测的快照命名（供 save 使用）。 */
+    static String snapshotName(StoreIo io) {
+        long ts = System.currentTimeMillis();
+        for (int i = 0; i < 1000; i++) {
+            String name = FILE + ".snapshot-" + ts + (i == 0 ? "" : "-" + i);
+            if (!io.exists(name) && !io.isFile(name)) return name;
+        }
+        return FILE + ".snapshot-" + ts + "-overflow";
+    }
+
+    /** 复制文件（用流，保证跨实现可用）；失败返回 false。 */
+    static boolean copyFile(StoreIo io, String from, String to) {
+        try (java.io.InputStream in = io.openRead(from);
+             java.io.OutputStream os = io.openWrite(to)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            return true;
+        } catch (Throwable t) {
             return false;
         }
     }
@@ -466,6 +1081,168 @@ public final class TaskQueue {
         list.add(t);
         save(ctx, list);
         return t;
+    }
+
+    /**
+     * 由**计划**派生下一本字典的任务。
+     *
+     * <h3>为什么不用 {@link #enqueue}</h3>
+     * {@code enqueue} 带「同目标 + 同字典且仍在进行中 → 直接返回已有任务」的
+     * 幂等逻辑，那是给用户手动排队用的。计划的派生需要两件 enqueue 不能保证的事：
+     * <ul>
+     *   <li>**offset 由计划说了算**（计划是唯一真相源，队列只是派生物）；</li>
+     *   <li>档位与「强制重跑」必须跟着计划走，而不是读全局设置。</li>
+     * </ul>
+     *
+     * <p>只继承目标与线索相关的字段（SSID / BSSID / 加密方式 / 派生开关 /
+     * 智能排序 / 线索），**不继承**命中与统计字段 —— 那些是本字典自己的战果。
+     */
+    public static Task deriveForPlan(Context ctx, Task from, String dictPath, String dictName,
+                                     int skipPolicyId, boolean forceRerun, int offset) {
+        if (ctx == null || from == null) return null;
+        List<Task> list = load(ctx);
+        Task t = Task.from(from.toNetRecord(), dictPath, dictName,
+                from.useTargetDict, from.useSmartSort, from.crackMode, from.seedsJson);
+        t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
+        t.forceRerun = forceRerun;
+        t.offset = Math.max(0, offset);
+        t.dictSize = 0;
+        t.fromPlan = true;          // 来源标记：计划派生
+        list.add(t);
+        // 2026-11-02 审计修复：原来忽略 save 的返回值、无条件返回 t，
+        // 于是调用方的「派生失败」分支成了死代码，写盘失败时静默丢一本。
+        return save(ctx, list) ? t : null;
+    }
+
+    /**
+     * **幂等**地保证「计划当前那一本」在队列里有可执行任务。
+     *
+     * <h3>它与 {@link #deriveForPlan} 的区别</h3>
+     * {@code deriveForPlan} 每次都新建（给「刚跑完一本、要开下一本」用）；
+     * 本方法给**恢复**用：同一本可能已经被补建过（重复启动、连续恢复），
+     * 所以先找同字典且仍在进行中的任务 —— 找到就复用并只校正由计划说了算的
+     * 字段（档位 / 强制重跑 / offset），找不到才新建。
+     *
+     * <h3>PAUSED 的处理</h3>
+     * 计划模式下，计划已经把状态置为 RUNNING 并**明确指向这一本**，
+     * 那么这条 PAUSED 就是「计划要跑的那一本」，恢复为 PENDING。
+     * 普通队列模式不走这里，原暂停语义不受影响。
+     *
+     * @return 可执行的任务；{@code null} = 落盘失败（**不假装成功**）
+     */
+    public static Task ensurePlanTask(Context ctx, io.github.wlmosv_png.wpaforge.core.NetRecord target,
+                                     String dictPath, String dictName,
+                                     int skipPolicyId, boolean forceRerun, int offset,
+                                     boolean useTargetDict, boolean useSmartSort,
+                                     int crackMode, String seedsJson) {
+        if (ctx == null || target == null) return null;
+        List<Task> list = load(ctx);
+        for (Task t : list) {
+            if (t == null) continue;
+            String tp = t.dictPath == null ? "" : t.dictPath;
+            if (dictPath != null && !dictPath.isEmpty() && dictPath.equals(tp)
+                    && (t.state == State.PENDING || t.state == State.PAUSED
+                        || t.state == State.RUNNING)) {
+                t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
+                t.forceRerun = forceRerun;
+                t.offset = Math.max(0, offset);
+                if (t.state == State.PAUSED) t.state = State.PENDING;
+                return save(ctx, list) ? t : null;
+            }
+        }
+        Task t = Task.from(target, dictPath, dictName, useTargetDict, useSmartSort,
+                crackMode, seedsJson);
+        t.skipPolicyId = skipPolicyId == 1 ? 1 : 0;
+        t.forceRerun = forceRerun;
+        t.offset = Math.max(0, offset);
+        t.fromPlan = true;          // 来源标记：计划派生
+        list.add(t);
+        return save(ctx, list) ? t : null;
+    }
+
+    /**
+     * 计划模式显式入队：把「用户点了开始计划」这条种子任务标成计划派生。
+     *
+     * <p>与 {@link #enqueue} 的差别只有来源标记 —— 去重、字段填充完全一致。
+     * 有了这个标记，执行侧才能区分「用户单字典任务」与「计划任务」。
+     */
+    public static Task enqueuePlan(Context ctx, NetRecord target, String dictPath,
+                                   String dictName) {
+        return enqueuePlan(ctx, target, dictPath, dictName, 0);
+    }
+
+    public static Task enqueuePlan(Context ctx, NetRecord target, String dictPath,
+                                   String dictName, int crackMode) {
+        Task t = enqueue(ctx, target, dictPath, dictName, false, false, crackMode, "");
+        if (t == null) return null;
+        if (!t.fromPlan) {
+            List<Task> list = load(ctx);
+            boolean changed = false;
+            for (Task x : list) {
+                if (x != null && t.id.equals(x.id) && !x.fromPlan) {
+                    x.fromPlan = true;
+                    changed = true;
+                }
+            }
+            if (changed) save(ctx, list);
+            t.fromPlan = true;
+        }
+        return t;
+    }
+
+    /** 队列里是否有「计划派生」的待办任务（用于执行侧判断该不该让计划接管）。 */
+    public static boolean hasPlanWork(Context ctx) {
+        for (Task t : load(ctx)) {
+            if (t != null && t.fromPlan
+                    && (t.state == State.PENDING || t.state == State.RUNNING
+                        || t.state == State.PAUSED)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 作废「计划派生」的**待到任务**（PENDING → STOPPED）。
+     *
+     * <p>计划结束/被取消时调用：让残留的计划任务不再可能被执行，
+     * 也不会挡住用户后续的普通任务。**只动 fromPlan 任务**，
+     * 不碰用户普通任务、不碰字典文件、不碰 triedSet / 账本。
+     *
+     * @return 被改动的任务数
+     */
+    public static int stopPlanTasks(Context ctx) {
+        List<Task> list = load(ctx);
+        int n = 0;
+        for (Task t : list) {
+            if (t != null && t.fromPlan && t.state == State.PENDING) {
+                t.state = State.STOPPED;
+                n++;
+            }
+        }
+        if (n > 0) save(ctx, list);
+        return n;
+    }
+
+    /**
+     * **移除**「计划派生」的任务（彻底清理）。
+     *
+     * <p>与 {@link #stopPlanTasks} 的区别：本方法把条目从队列里删掉，
+     * 适合「删除计划」时一并清干净。同样只动 fromPlan 任务。
+     *
+     * @return 被移除的任务数
+     */
+    public static int removePlanTasks(Context ctx) {
+        List<Task> list = load(ctx);
+        int before = list.size();
+        List<Task> keep = new java.util.ArrayList<>(list.size());
+        for (Task t : list) {
+            if (t != null && t.fromPlan) continue;
+            keep.add(t);
+        }
+        int removed = before - keep.size();
+        if (removed > 0) save(ctx, keep);
+        return removed;
     }
 
     /** 取下一个待处理任务（跳过已完成的） */

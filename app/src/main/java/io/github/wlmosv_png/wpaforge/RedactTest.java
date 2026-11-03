@@ -90,7 +90,7 @@ public class RedactTest {
         String eng = null;
         try {
             eng = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(
-                    "/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+                    TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                             + "wpaforge/audit/CrackEngine.java")),
                     java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable ignored) {}

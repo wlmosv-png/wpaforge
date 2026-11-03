@@ -51,7 +51,7 @@ public class CandidateRoll extends FrameLayout {
 
     private TextView makeText() {
         TextView t = new TextView(getContext());
-        t.setTextSize(22f);
+        t.setTextSize(AmberTheme.FS_DISPLAY);
         t.setTextColor(AmberTheme.TEXT);
         t.setTypeface(Typeface.MONOSPACE);
         t.setSingleLine(true);

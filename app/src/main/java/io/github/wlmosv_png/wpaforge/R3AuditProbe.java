@@ -143,7 +143,7 @@ public final class R3AuditProbe {
     // ================================================================ main
     public static void main(String[] args) throws Exception {
         boolean strict = false;
-        String projectRoot = "/workspace/promo-wpaforge";
+        String projectRoot = TestPaths.root();
         for (String a : args) {
             if ("--strict".equals(a)) strict = true;
             else if (!a.startsWith("--")) projectRoot = a;
@@ -230,10 +230,16 @@ public final class R3AuditProbe {
                         && !engineSrc().contains("判定完全依赖系统回调"));
 
         // 已修复（R6 接线）：不再是「缺失」，而是「必须有」——接线被删即判红。
+        //
+        // 2026-11-02 修正（C5）：本断言此前查的是 AttemptId.of(currentRunId, **cursor**)，
+        // 那是**过时符号**。cursor 后来改成「安全续跑边界」（遇到非 DIRECT 会停在原地），
+        // 若仍拿它当序号，后续所有候选会共用同一个 seq -> attemptId 非法 ->
+        // 日志窗口全失效。生产早已改为 of(currentRunId, i + 1)。
+        // 于是这条断言长期在报假 VIOLATION —— 属于探针自身过时，不是生产缺陷。
         boolean wired = engineSrc().contains("AttemptId.newRunId(")
-                && engineSrc().contains("AttemptId.of(currentRunId, cursor)")
-                && engineSrc().contains("verdictTag(a.attemptId, cursor");
-        ok("S1-4", "尝试标识已接线（runId/attemptId 进判词；接线被删即红）", wired);
+                && engineSrc().contains("AttemptId.of(currentRunId, i + 1)")
+                && engineSrc().contains("verdictTag(");
+        ok("S1-4", "尝试标识已接线（runId -> attemptId -> 判词；接线被删即红）", wired);
     }
 
     // ================================================================ S2
@@ -320,9 +326,14 @@ public final class R3AuditProbe {
         // 已修复（R6+R3）：① 清理结果现在被检查（clearChecked）；② 归属不再建立
         // 在"缓冲已清空"这个假设上，而是建立在**起点标记的切片**上 —— 即使清空失败，
         // 标记之前的陈旧行也会被切片排除。这里钉住这两条。
-        ok("S3-1", "清理结果被检查，且归属改由标记切片承担（不再依赖清空假设）",
-                engineSrc().contains("WifiStateLog.clearChecked(")
-                        && !engineSrc().contains("WifiStateLog.clear(shell);")
+        // 2026-11-02 修正（C5）：本断言此前查 WifiStateLog.clearChecked(，
+        // 而 R11 已经**整体移除** logcat -c 清空机制（清空不可靠且会毁掉
+        // 别的窗口的证据）。归属改由「本候选起点标记之后的切片」承担，
+        // 因此 clearChecked 不存在才是正确状态 —— 旧断言把「已移除」
+        // 误读成「没检查」，长期报假 VIOLATION。
+        ok("S3-1", "归属由标记切片承担，且不再依赖不可靠的缓冲清空（clearChecked 已移除）",
+                !engineSrc().contains("WifiStateLog.clear(shell);")
+                        && !engineSrc().contains("WifiStateLog.clearChecked(")
                         && engineSrc().contains("AttemptMarker.sliceAfter("));
         // 已修复（R3）：日志判据只在「本候选起点标记之后」的切片上跑，
         // 标记之前（= 上一条候选残留）的失败行被结构性排除。
@@ -376,9 +387,13 @@ public final class R3AuditProbe {
                 Round.w(400, ST_TARGET_ASSOC, assoc() + m1(1)),
                 Round.w(1500, ST_TARGET_ASSOC, assoc() + m1(1) + m1(2)),
                 Round.w(1700, ST_TARGET_ASSOC, assoc() + m1(1) + m1(2)));
-        note("M1 被重发（协议层失败证据）的判定", retryFast);
-        ok("S4-1b", "M1 重发仍是可结案的失败证据（加速保留）",
-                retryFast.verdict == CrackEngine.Verdict.AUTH_FAIL
+        note("M1 被重发（协议层观察）的判定", retryFast);
+        // B3 契约更新：m1retry 是 **AP-1** —— 它只证明「握手没进展」，
+        // 不证明密钥不符。生产已不给 AUTH_FAIL；探针必须同语义，
+        // 否则报告里的「生产会这样判」是错的。
+        // 本例 status 一直是「目标的 ASSOCIATING」→ 连接仍在进行 → INCOMPLETE。
+        ok("S4-1b", "M1 重发是 AP-1：不判密码错，按生命周期给 INCOMPLETE（连接仍在进行）",
+                retryFast.verdict == CrackEngine.Verdict.INCOMPLETE
                         && "m1retry".equals(retryFast.by));
 
         // negotiated 的护栏在 bssid 为空时恒为假
@@ -590,7 +605,7 @@ public final class R3AuditProbe {
     }
 
     // ================================================================ 工具
-    private static String root = "/workspace/promo-wpaforge";
+    private static String root = TestPaths.root();
 
     private static String projectRootOfThisRun() { return root; }
 
@@ -723,6 +738,25 @@ public final class R3AuditProbe {
         }
     }
 
+    /**
+     * AP-1（只证明「本次没连上」）的结论映射 —— **与生产同一份判据**。
+     *
+     * <p>为什么探针必须调生产的 {@link CrackEngine#lifecycleOfStatus}：
+     * 探针的 {@link Loop} 是判定顺序的人工转写。一旦它在结论上与生产分叉，
+     * 报告里的「生产会这样判」就是错的 —— 那比没有探针更危险。
+     *
+     * @param rawStatus 最近一轮可用 status 输出（空 = 从未读到）
+     * @param target    目标 SSID
+     */
+    static CrackEngine.Verdict nonFailure(String rawStatus, String target) {
+        CrackEngine.Lifecycle lc = CrackEngine.lifecycleOfStatus(rawStatus, target);
+        switch (lc) {
+            case ACTIVE:     return CrackEngine.Verdict.INCOMPLETE;
+            case TERMINATED: return CrackEngine.Verdict.TERMINATED_UNKNOWN;
+            default:         return CrackEngine.Verdict.UNKNOWN;
+        }
+    }
+
     static final class Loop {
         /**
          * @param targetNetId 源码：命令后前 4 轮探测目标配置的 netId（-1 = 没建出来）
@@ -737,6 +771,11 @@ public final class R3AuditProbe {
             boolean leftBaseline = false;          // CrackEngine:937
             boolean sawAttempt = false;            // CrackEngine:946
             long targetNetId = targetNetIdMade;    // 源码：前 4 轮探测「本条命令有没有建出配置」
+            /**
+             * 最近一轮**可用**的 status 原始输出（B3）——生命周期三态由它判定。
+             * 与生产 {@code tryOneShell} 的 {@code lastStatusRaw} 同一口径。
+             */
+            String lastStatusRaw = "";
             int r = 0;
             for (Round round : rounds) {
                 r++;
@@ -754,6 +793,7 @@ public final class R3AuditProbe {
                 SupplicantParser.Info info = SupplicantParser.parse(
                         round.status == null ? "" : round.status);
                 boolean channelAlive = round.status != null && !round.status.trim().isEmpty();
+                if (channelAlive) lastStatusRaw = round.status;
 
                 if (!sawAttempt && info.ssid != null && target.equals(info.ssid)
                         && info.state != null && !info.state.isEmpty()) {
@@ -778,8 +818,11 @@ public final class R3AuditProbe {
                         sawAttempt || targetNetId >= 0,
                         // R3：本轮已有目标的成功证据 → 失败判据不得抢答
                         !slice.isEmpty() && WpaLogReader.sawNegotiatedFor(slice, targetBssid))) {
-                    return new Result(CrackEngine.Verdict.AUTH_FAIL, "failover",
-                            round.tMs, "回连判据（已证明本条被尝试过，且本轮无目标成功证据）");
+                    // B3：与生产对齐 —— failover 是 **AP-1**（只证明「本次没连上」），
+                    // 不产 AUTH_FAIL。否则探针会给出一份与生产相反的「真值」，
+                    // 审计结论直接反了。
+                    return new Result(nonFailure(lastStatusRaw, target), "failover",
+                            round.tMs, "回连判据（AP-1：本次结束但无归因证据，不判密码错）");
                 }
 
                 // ---- 日志段（CrackEngine:1310-1450）----
@@ -808,15 +851,19 @@ public final class R3AuditProbe {
                     if (CrackEngine.m1RetryImpliesWrongKey(m1Count, succ)) {
                         if (!m1RetryArmed) { m1RetryArmed = true; m1RetryArmedAt = round.tMs; }
                         else if (round.tMs - m1RetryArmedAt >= 120L) {
-                            return new Result(CrackEngine.Verdict.AUTH_FAIL, "m1retry",
-                                    round.tMs, "M1 重发 " + m1Count + " 次");
+                            // B3：m1retry 也是 AP-1（握手没进展 != 密钥不符）
+                            return new Result(nonFailure(lastStatusRaw, target), "m1retry",
+                                    round.tMs, "M1 重发 " + m1Count + " 次（AP-1，不判密码错）");
                         }
                     }
                     if (WpaLogReader.sawWrongKeyFor(wlog, target)
                             || (tried && (WpaLogReader.sawHandshakeFailure(wlog)
                                     || WpaLogReader.sawAssocReject(wlog)))) {
-                        return new Result(CrackEngine.Verdict.AUTH_FAIL, "wpalog",
-                                round.tMs, "带/不带归属的失败行");
+                        // B3：支B（零字段/无归属失败行）是 AP-1，不产 AUTH_FAIL。
+                        // 带归属的直接否认（TEMP-DISABLED reason=WRONG_KEY）才是 AP-3，
+                        // 但本探针不区分，统一按 AP-1 保守处理。
+                        return new Result(nonFailure(lastStatusRaw, target), "wpalog",
+                                round.tMs, "失败行（AP-1：无归属证据，不判密码错）");
                     }
                 }
             }

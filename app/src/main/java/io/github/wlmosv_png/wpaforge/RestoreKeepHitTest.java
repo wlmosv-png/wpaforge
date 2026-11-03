@@ -30,7 +30,7 @@ public class RestoreKeepHitTest {
 
     private static int pass = 0, fail = 0;
     private static final String SRC =
-            "/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/wpaforge/";
+            TestPaths.javaPkgDir();
 
     private static void ok(String name, boolean cond) {
         if (cond) { pass++; System.out.println("  OK   " + name); }

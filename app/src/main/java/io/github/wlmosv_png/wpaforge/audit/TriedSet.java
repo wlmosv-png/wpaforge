@@ -204,9 +204,13 @@ public final class TriedSet {
                 if (rest > 0) out.write(chunk, 0, rest * 8);
                 out.flush();
             }
-            if (f.exists() && !f.delete()) return false;
+            // 原子替换：**绝不先删目标**。失败时原记录必须完好（AtomicFileOp 统一实现）。
+            if (!AtomicFileOp.moveAtomic(tmp, f)) {
+                tmp.delete();
+                return false;
+            }
             dirty = false;
-            return tmp.renameTo(f) || f.exists();
+            return true;
         } catch (Exception e) {
             warn("已试集合写入失败: " + e);
             return false;
@@ -239,15 +243,48 @@ public final class TriedSet {
         return new File(ctx.getFilesDir(), "tried");
     }
 
+    /**
+     * 删除某个目标的已试记录文件（清空「这个网试过哪些密码」）。
+     *
+     * <p>用于「忘记 WiFi 后从头重跑」：用户主动清空本目标的已试集合。
+     * 只删文件，不做别的；文件不存在时返回 true（幂等）。
+     *
+     * @return true = 文件已不存在（删掉或本来就没有）
+     */
+    public static boolean deleteFor(Context ctx, String key) {
+        if (key == null || key.isEmpty()) return false;
+        return deleteFile(fileFor(ctx, key));
+    }
+
+    /**
+     * 删除已试记录文件的纯逻辑核心（可离线单测）。
+     *
+     * <p>语义：文件不存在或删除成功都算「已清空」（幂等）；删除失败返回 false。
+     */
+    public static boolean deleteFile(File f) {
+        if (f == null) return false;
+        try {
+            return !f.exists() || f.delete();
+        } catch (Throwable e) {
+            warn("删除已试记录失败: " + e);
+            return false;
+        }
+    }
+
     /** 指纹：FNV-1a 64。不需要密码学强度 —— 只要"同串同值、不同串基本不同值"。 */
     public static long hash(String pw) {
-        long h = 0xcbf29ce484222325L;
-        byte[] b = pw.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        for (byte x : b) {
-            h ^= (x & 0xff);
-            h *= 0x100000001b3L;
-        }
-        return h;
+        /* 2026-11-02 审计：与 {@link AttemptLedger} 统一到**同一个身份函数**
+         * （{@link CandidateId}：SHA-256 前 8 字节，完整 64 位）。
+         *
+         * 此前这里用 FNV-1a 64 位，而账本用它的 55 位截断值 —— 两套账本对
+         * 「同一条候选」有两套身份规则，审计判定不可接受。
+         *
+         * 副作用（预期且安全）：旧 {@code .tried} 文件里存的是 FNV-1a 值，
+         * 现在查不到了 → 那些「已证实错误」记录**全部失效** → 对应候选会
+         * 重新执行一次。方向是「宁可重跑，不要靠陈旧身份规则误认」，
+         * 与审计要求一致；不会因此漏判或误跳过。
+         */
+        return CandidateId.of(pw);
     }
 
     /**

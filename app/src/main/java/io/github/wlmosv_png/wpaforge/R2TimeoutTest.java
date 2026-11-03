@@ -88,7 +88,7 @@ public class R2TimeoutTest {
                 !CrackEngine.m1SilentImpliesWrongKey(true, false, S - 1, S));
         ok("正好到窗口 → 成立（边界）",
                 CrackEngine.m1SilentImpliesWrongKey(true, false, S, S));
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = read(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 引擎守卫（源码不可读）");
@@ -121,8 +121,10 @@ public class R2TimeoutTest {
         System.out.println("== R2-5 到期无证据：TIMEOUT 而不是失败（不变量）==");
         CrackEngine.DeadlineOutcome none =
                 CrackEngine.classifyDeadline(false, false, false, false, false);
-        eq("全无证据 → TIMEOUT", CrackEngine.Verdict.TIMEOUT, none.verdict);
-        eq("理由码 = no-evidence", "no-evidence", none.reason);
+        // 2026-11-02 审计：生命周期读不到 ≠ 请求已终止 → 结论为 INCOMPLETE
+        eq("全无证据（生命周期读不到）→ INCOMPLETE",
+                CrackEngine.Verdict.INCOMPLETE, none.verdict);
+        eq("理由码 = no-evidence-state-unknown", "no-evidence-state-unknown", none.reason);
         ok("TIMEOUT 不是 AUTH_FAIL", none.verdict != CrackEngine.Verdict.AUTH_FAIL);
         ok("TIMEOUT 不计入退避样本（不是 AP 的响应）",
                 !io.github.wlmosv_png.wpaforge.audit.BackoffPolicy.countable(
@@ -135,11 +137,13 @@ public class R2TimeoutTest {
         if (eng != null) {
             String code = stripComments(eng);
             int success = code.indexOf("sawNegotiatedFor(wlogSlice, target.bssid)");
-            int failure = code.indexOf("sawWrongKeyFor(wlogSlice, target.ssid)");
+            // 判据 4 归属收紧后调用点改为 sawWrongKeyForAttempt(...)；
+            // 断言意图不变：**成功证据必须先求值**，失败判据不能抢答。
+            int failure = code.indexOf("sawWrongKeyForAttempt(");
             ok("成功证据的求值点排在日志失败判据之前",
                     success > 0 && failure > 0 && success < failure);
             int b = code.indexOf("if (tried && WpaLogReader.sawNegotiatedFor");
-            int f = code.indexOf("if (logWinUsable\n                            && (WpaLogReader.sawWrongKeyFor");
+            int f = code.indexOf("if (logWinUsable\n                            && (WpaLogReader.sawWrongKeyForAttempt(");
             ok("判据 B（成功）在失败判据之前 return",
                     b > 0 && (f < 0 || b < f));
         }
@@ -150,14 +154,19 @@ public class R2TimeoutTest {
             int wall = 0, uptime = 0;
             for (String l : code.split("\n")) {
                 if (l.contains("System.currentTimeMillis")) wall++;
+                // B1（2026-10-31）：单调时钟统一走 EngineClock，原写法
+                // `SystemClock.uptimeMillis()` 变成 `clock().uptimeMillis()`。
+                // 断言意图不变：**判定路径必须全部用单调时钟**，
+                // 且读数仍然大量出现在判定路径里。
                 if (l.contains("SystemClock.uptimeMillis")) uptime++;
+                if (l.contains("clock().uptimeMillis()")) uptime++;
             }
             eq("判定路径全部用单调时钟（uptimeMillis 大量使用）", true, uptime > 30);
             // R11 起墙钟多了一处合法用途：**日志窗口起点**（`-t <时间>` 需要墙钟时刻，
             // 单调时钟没法喂给 logcat）。除这两处外，判定路径必须全部用 uptimeMillis。
             eq("墙钟只用在 runId 与日志窗口起点（2 处）", 2, wall);
             ok("其中一处是 runId 生成",
-                    code.contains("AttemptId.newRunId(System.currentTimeMillis()"));
+                    code.contains("AttemptId.newRunId(System.currentTimeMillis(), target.ssid"));
             ok("另一处是日志窗口起点（且只用于读日志，不参与时间比较）",
                     code.contains("final long windowFromMs = System.currentTimeMillis();")
                             && code.contains("WpaLogReader.readEx(shell, 400, windowFromMs)"));

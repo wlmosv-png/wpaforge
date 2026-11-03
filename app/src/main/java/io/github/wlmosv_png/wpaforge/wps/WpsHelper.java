@@ -852,7 +852,7 @@ public final class WpsHelper {
             }
 
             int curId = parseInt(field(s, "id"), -1);
-            if (curId != baseId && "COMPLETED".equals(state) && !"WPS".equals(km)) {
+            if (isWpsHit(baseId, curId, state, km)) {
                 // 命中。这一环是本机唯一没法提前验证的（手上没有已知正确 PIN 的 AP），
                 // 所以多留些证据：SSID、IP、以及 600ms 后的二次确认。
                 st.result = "SUCCESS";
@@ -996,6 +996,42 @@ public final class WpsHelper {
             }
         }
         return "";
+    }
+
+    /**
+     * WPS 命中判定（纯函数，可离线穷举）。
+     *
+     * <h3>D3：为什么必须校验 id 的有效性</h3>
+     * {@code id} 来自 wpa_supplicant 的 {@code STATUS} 文本。解析失败时
+     * {@link #parseInt} 返回 {@code -1}（哨兵）。原判定写作
+     * <pre>
+     *   curId != baseId && COMPLETED && !WPS
+     * </pre>
+     * 这在**任一侧解析失败**时都会无条件成立：
+     * <ul>
+     *   <li>{@code baseId = -1}（STATUS 读失败/超时）而 {@code curId = 0}
+     *       → {@code 0 != -1} 成立 → 误报命中；</li>
+     *   <li>{@code curId = -1}（这一帧读失败）而 {@code baseId = 3}
+     *       → {@code -1 != 3} 成立 → 误报命中。</li>
+     * </ul>
+     * 换言之：「读不到」被当成了「状态变了」。
+     *
+     * <h3>修正后的语义</h3>
+     * 只有两侧都拿到**有效 id**（{@code >= 0}）且**确实不同**，才算状态变化。
+     * 任一侧无效 → 不可判定 → 返回 {@code false}（绝不产生成功结论）。
+     *
+     * @param baseId  下发 PIN 前的 network id；{@code < 0} = 读失败
+     * @param curId   轮询中读到的 network id；{@code < 0} = 读失败
+     * @param state   wpa_state
+     * @param keyMgmt key_mgmt
+     */
+    static boolean isWpsHit(int baseId, int curId, String state, String keyMgmt) {
+        // D3 修复：任一侧 id 无效（< 0 = 解析失败）时一律视为**不可判定**。
+        // 旧实现直接比较 curId != baseId，于是「读不到」会被当成「状态变了」：
+        //   baseId=-1 且 curId=0 -> 0 != -1 成立 -> 误报命中（错误 PIN 也可能中招）。
+        // 宁可漏判一次（等待后续轮次重新读），也不能把读失败做成成功证据。
+        if (baseId < 0 || curId < 0) return false;
+        return curId != baseId && "COMPLETED".equals(state) && !"WPS".equals(keyMgmt);
     }
 
     static int parseInt(String s, int def) {

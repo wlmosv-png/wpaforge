@@ -125,6 +125,23 @@ public class MainActivity extends Activity {
     private int savedWifiTotal = -1;
     private int savedWifiWeak = -1;
     private TextView observeNotice;
+    /** 扫描器最近一次报上来的原因（只作参考，显示与否由真实状态决定）。 */
+    private String lastScanNotice = null;
+    private boolean lastScanNoticeIsError = false;
+    /**
+     * 破解页自己的提示条（WiFi 未开等）。
+     *
+     * <h3>为什么要与 observeNotice 分开</h3>
+     * 原来两页**共用同一个字段**：观测页构造一次、破解页又构造一次并覆盖字段，
+     * 各自 addView 到自己的页面。后果有两条（2026-11-02 用户截图）：
+     * <ul>
+     *   <li>字段最终指向破解页那个 → 观测页的提示条**永远不显示**
+     *       （扫描不到网时用户看不到任何原因）；</li>
+     *   <li>Scanner 写的「WiFi 未开启」被投到**破解页**上，而且用户后来
+     *       打开 WiFi 也**不会消失** —— 变成一条残留的假状态。</li>
+     * </ul>
+     * 现在拆成两个独立控件，各管各的。
+     */
     /** 信道建议卡（观测页，信道占用图下方） */
     private TextView adviceCard;
     private List<NetRecord> lastRecords = new ArrayList<>();
@@ -163,6 +180,27 @@ public class MainActivity extends Activity {
     private int currentDictSkipped = -1;
     private AuditEngine engine;
 
+    /**
+     * 破解页的执行模式（第一批补齐：单本 vs 多字典计划）。
+     *
+     * <p>{@code usePlanMode == false} 是既有单字典模式：从字典来源里挑一本，
+     * 跑完即停。{@code usePlanMode == true} 是多字典计划模式：不逐本选字典，
+     * 而是直接用字典管理页建好的计划，启动后按顺序自动接力。
+     *
+     * <p>这是**纯界面状态**，不进判定链、不改任何账本/游标语义。真正执行时，
+     * 服务端仍由既有的 {@code CrackService.loadPlanForRun} 按计划文件接管 ——
+     * 这里只负责「让用户能明确选到计划、并把目标对齐到计划」。
+     */
+    private boolean usePlanMode = false;
+    /** 当前选中的计划快照（仅用于界面显示与启动对齐，不参与判定）。 */
+    private io.github.wlmosv_png.wpaforge.audit.DictPlan selectedPlan = null;
+    /** 结算卡当前对应哪条任务（多字典接力切换时用它判断卡是否已过期）。 */
+    private String resultCardTaskId = "";
+    /** 字典续命：本次要继承的起始 offset（0 = 从头跑）。 */
+    private int pendingResumeOffset = 0;
+    /** 本次字典的内容 SHA-256（入队时写进任务，供下次续命识别）。 */
+    private String pendingDictSha = "";
+
     // 试连页组件
 /** 明文备份清理行（只在备份存在时创建）。 */
     private Button plainBakBtn;
@@ -191,8 +229,23 @@ public class MainActivity extends Activity {
     private TextView netMetaView;        /** 网络卡第二层：信号 · 信道 · 频段 */
     private TextView netSecChip;         /** 安全类型胶囊 */
     private TextView statDoneView;       /** 已完成 */
+    /** 已证实错误（候选级 AUTH_FAIL/DIRECT）—— 与「未确定」严格分开。 */
+    private TextView statWrongView;
+    /** 未确定（无结论 + 网络级失败 + 推断失败）—— 绝不显示成「密码错误」。 */
+    private TextView statUnkView;
+    /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
+    private TextView planLineView;
     private TextView statTotalView;      /** 总数 */
     private TextView statPctView;        /** 完成度（大数字） */
+    /**
+     * 统计行 / 速率行。
+     *
+     * <p>提升为成员是为了**空闲时整行收起**（2026-11-02 用户截图）：
+     * 没跑过任何东西时，四列「—」和「速率 待测 / 剩余 待估」全是占位噪声，
+     * 卡片被撑得很高、中间大片留白，看着不精致。
+     */
+    private LinearLayout statRowView;
+    private LinearLayout footRowView;
     private TextView statRateView;       /** 速率（条/分，来自同一次回调） */
     private TextView statEtaView;        /** 剩余时间（来自同一次回调） */
     private TextView stateBig;           /** 当前状态（大字） */
@@ -273,6 +326,18 @@ public class MainActivity extends Activity {
     private TextView hitMeta;
     /** 日志全量（含被筛掉的）；streamBuffer 只是它的「可见视图」 */
     private final java.util.List<LogLine> streamLines = new java.util.ArrayList<>();
+    /**
+     * 上一次输出过「说明行」的结论键（P1b）。
+     *
+     * <p>逐条候选的说明（例如「本次没连上目标，但没有证据证明这条密码错了」）
+     * 在同一类结论连续出现时毫无新意，只重复刷屏。同一键只说明一次，
+     * 直到结论类型变化。
+     */
+    private String lastWhyKey = null;
+    /** 最近一次实时分布（来自 onTally，只用于显示）。 */
+    private int lastTallyConfirmed = 0;
+    private int lastTallyInconclusive = 0;
+    private int lastTallyNetAuthFail = 0;
     /** true = 只看关键（里程碑 + 失败原因），默认开 */
     /**
      * 日志级别：true = 只看关键，false = 全部。
@@ -307,7 +372,18 @@ public class MainActivity extends Activity {
     /** 日志区的「回到最新」浮标：用户上滑看历史时出现 */
     private TextView jumpLatestBtn;
     private LinearLayout.LayoutParams streamParams;
-    private boolean streamCollapsed = false;
+    /**
+     * 日志区是否折叠。**默认折叠**（UI 第二轮）。
+     *
+     * <p>用户反馈：日志区占的空间太多，核心状态反而不突出。默认只留
+     * 四五行最新事件，想看历史点标题展开 —— 原始证据一条都没删
+     * （{@code streamLines} 全量保留、文件日志逐条落盘）。
+     */
+    private boolean streamCollapsed = true;
+    /** 折叠态日志窗高度（dp）。约 4~5 行，且**可内部滚动**。 */
+    private static final int STREAM_COLLAPSED_DP = 132;
+    /** 展开态日志窗高度（dp）。 */
+    private static final int STREAM_EXPANDED_DP = 320;
     private RootProber rootProber;
     private volatile boolean rootProberRunning = false;
     private NetRecord targetNet;
@@ -351,6 +427,10 @@ public class MainActivity extends Activity {
         L.init(this);
         dp = getResources().getDisplayMetrics().density;
         buildUi();
+        // 旧版单一计划文件 → 按目标分文件（一次性，幂等，不删旧文件）。
+        // 放在这里是为了：只开破解页（没进字典管理）时也能看到迁移后的计划。
+        try { io.github.wlmosv_png.wpaforge.audit.DictPlan.migrateLegacy(this); }
+        catch (Throwable ignored) {}
         requestPermsIfNeeded();
         scanner = new Scanner(this, scanListener);
         bindCrackService();
@@ -383,7 +463,7 @@ public class MainActivity extends Activity {
         android.widget.TextView t = new android.widget.TextView(this);
         t.setText(L.s("WPAForge 已锁定\n输入 PIN 解锁",
                 "WPAForge locked\nEnter PIN to unlock"));
-        t.setTextSize(16);
+        t.setTextSize(AmberTheme.FS_TITLE);
         t.setTextColor(0xFFFFFFFF);
         t.setGravity(android.view.Gravity.CENTER);
         t.setPadding(0, 0, 0, px(20));
@@ -393,7 +473,7 @@ public class MainActivity extends Activity {
         pin.setHint(L.s("PIN", "PIN"));
         pin.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
                 | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
-        pin.setTextSize(18);
+        pin.setTextSize(AmberTheme.FS_STAT);
         pin.setGravity(android.view.Gravity.CENTER);
         box.addView(pin);
 
@@ -544,14 +624,14 @@ public class MainActivity extends Activity {
         header.setPadding(px(22), px(34), px(22), px(2));
         TextView title = new TextView(this);
         title.setText("WPAForge");
-        title.setTextSize(20);
+        title.setTextSize(AmberTheme.FS_DISPLAY);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         title.setLetterSpacing(0.04f);
         header.addView(title);
         TextView sub = new TextView(this);
         sub.setText(L.s("WPA 密码破解工具 · 仅限自有网络", "WPA password cracker · authorised networks only"));
-        sub.setTextSize(10.5f);
+        sub.setTextSize(AmberTheme.FS_LABEL);
         sub.setTextColor(TEXT_DIM);
         header.addView(sub);
         root.addView(header);
@@ -643,6 +723,50 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * 计划模式下「当前字典」的**唯一权威来源**。
+     *
+     * <p>优先取服务端**活计划**（{@code planForDisplay}）——接力过程中计划 index
+     * 随 {@code apply(MISS)} 前进，只有它能反映「此刻真的在第几本」。
+     * 服务没起来\/拿不到活计划时退回 {@link #selectedPlan} 快照（启动前选计划时用）。
+     *
+     * <p>不能用 {@link #currentDict} 或 {@link #currentDictName}：那两个是单本模式的
+     * 字段，接力时仍停在第一本，用了就是「界面显示 A、后台在跑 B」的错位。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.DictPlan livePlan() {
+        CrackService svc = liveService();
+        if (svc != null) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp = svc.planForDisplay();
+            if (lp != null && !lp.items.isEmpty()) return lp;
+        }
+        // 不回落陈旧快照（那是「界面显示上一版、后台已变」的根源）：
+        // 直接读盘上当前目标的计划，永远新鲜。
+        return filePlan();
+    }
+
+    /** 盘上当前目标的计划（没选目标时是 unbound 计划）；没有则返回 null。 */
+    private io.github.wlmosv_png.wpaforge.audit.DictPlan filePlan() {
+        io.github.wlmosv_png.wpaforge.audit.DictPlan p =
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+        return (p == null || p.items.isEmpty()) ? null : p;
+    }
+
+    /**
+     * 当前执行来源（互斥）：{@code MULTI} = 多字典计划；{@code SINGLE} = 用户单字典；
+     * {@code NONE} = 还没选。同一时刻只会有一个值 —— 不存在「两种模式同时激活」。
+     */
+    private String currentMode() {
+        if (usePlanMode && filePlan() != null) return "MULTI";
+        return (currentDict != null && !currentDict.isEmpty()) ? "SINGLE" : "NONE";
+    }
+
+    /** 退出计划模式（回到单字典语义）。 */
+    private void leavePlanMode() {
+        usePlanMode = false;
+        selectedPlan = null;
+    }
+
+    /**
      * 刷新按钮状态。
      *
      * 唯一真相是「队列里有没有进行中的任务」，不是服务实例上的标志 ——
@@ -708,7 +832,7 @@ public class MainActivity extends Activity {
     private TextView makeTab(String label, int index) {
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextSize(13.5f);
+        t.setTextSize(AmberTheme.FS_ACTION);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, px(9), 0, px(9));
         t.setTextColor(AmberTheme.TEXT_FAINT);
@@ -880,7 +1004,7 @@ public class MainActivity extends Activity {
         wpsTargetCard.addView(wpsVulnBtn, topGap(8));
 
         wpsVulnDiag = new TextView(this);
-        wpsVulnDiag.setTextSize(11f);
+        wpsVulnDiag.setTextSize(AmberTheme.FS_SMALL);
         wpsVulnDiag.setTextColor(AmberTheme.TEXT_DIM);
         wpsVulnDiag.setPadding(px(4), px(2), px(4), px(2));
         wpsTargetCard.addView(wpsVulnDiag, topGap(4));
@@ -909,7 +1033,7 @@ public class MainActivity extends Activity {
         wpsTargetCard.addView(wpsTargetList);
 
         wpsPickedLine = new TextView(this);
-        wpsPickedLine.setTextSize(12f);
+        wpsPickedLine.setTextSize(AmberTheme.FS_BODY);
         wpsPickedLine.setTextColor(TEXT_DIM);
         wpsPickedLine.setPadding(px(4), px(8), px(4), px(8));
         wpsPickedLine.setText(L.s("未选择目标", "No target selected"));
@@ -952,7 +1076,7 @@ public class MainActivity extends Activity {
         wpsModeCard.addView(wpsImportRow);
 
         wpsImportLine = new TextView(this);
-        wpsImportLine.setTextSize(11.5f);
+        wpsImportLine.setTextSize(AmberTheme.FS_SMALL);
         wpsImportLine.setTextColor(TEXT_DIM);
         wpsImportLine.setPadding(px(4), px(6), px(4), px(2));
         wpsModeCard.addView(wpsImportLine);
@@ -972,7 +1096,7 @@ public class MainActivity extends Activity {
         wpsProgressCard.addView(wpsStatusLine);
 
         wpsProgressLine = new TextView(this);
-        wpsProgressLine.setTextSize(12f);
+        wpsProgressLine.setTextSize(AmberTheme.FS_BODY);
         wpsProgressLine.setTextColor(TEXT_DIM);
         wpsProgressLine.setPadding(px(2), px(2), px(2), px(8));
         wpsProgressCard.addView(wpsProgressLine);
@@ -1002,7 +1126,7 @@ public class MainActivity extends Activity {
         pageWps.addView(sectionLabel(L.s("日志", "Log")));
 
         wpsLogView = new TextView(this);
-        wpsLogView.setTextSize(11f);
+        wpsLogView.setTextSize(AmberTheme.FS_SMALL);
         wpsLogView.setTextColor(TEXT_DIM);
         wpsLogView.setTypeface(android.graphics.Typeface.MONOSPACE);
         wpsLogView.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
@@ -1317,7 +1441,7 @@ public class MainActivity extends Activity {
             TextView run = new TextView(this);
             run.setText(L.s("任务运行中 —— 按「暂停」后可更换目标",
                     "Task running - press Pause to change target"));
-            run.setTextSize(11.5f);
+            run.setTextSize(AmberTheme.FS_SMALL);
             run.setTextColor(ACCENT);
             run.setPadding(px(4), 0, px(4), px(8));
             wpsTargetList.addView(run);
@@ -1325,7 +1449,7 @@ public class MainActivity extends Activity {
         if (wpsTargets.isEmpty()) {
             TextView t = new TextView(this);
             t.setText(L.s("没有扫到支持 WPS 的 AP", "No WPS-capable AP found"));
-            t.setTextSize(12f);
+            t.setTextSize(AmberTheme.FS_BODY);
             t.setTextColor(TEXT_DIM);
             t.setPadding(px(4), px(10), px(4), px(10));
             wpsTargetList.addView(t);
@@ -1406,7 +1530,7 @@ public class MainActivity extends Activity {
 
             TextView dbm = new TextView(this);
             dbm.setText(tg.rssi + " dBm");
-            dbm.setTextSize(12f);
+            dbm.setTextSize(AmberTheme.FS_BODY);
             dbm.setTextColor(AmberTheme.signalColor(levelOfRssi(tg.rssi)));
             dbm.setTypeface(Typeface.MONOSPACE);
             dbm.setGravity(Gravity.END);
@@ -2188,7 +2312,7 @@ public class MainActivity extends Activity {
         int[] colors = RadarSweep.ringColors();
         TextView cap = new TextView(this);
         cap.setText(L.s("由内到外：", "Inner to outer: "));
-        cap.setTextSize(10.5f);
+        cap.setTextSize(AmberTheme.FS_LABEL);
         cap.setTextColor(AmberTheme.TEXT_FAINT);
         row.addView(cap);
         // ringLabels() 是按「由外到内」排的（下标 0 = 最外环 = 最弱），
@@ -2201,7 +2325,7 @@ public class MainActivity extends Activity {
         TextView band = new TextView(this);
         band.setText(L.s("● 实心 = 2.4G    ○ 空心 = 5G    圆心 = 信号最强",
                 "● filled = 2.4G    ○ hollow = 5G    centre = strongest"));
-        band.setTextSize(10.5f);
+        band.setTextSize(AmberTheme.FS_LABEL);
         band.setTextColor(AmberTheme.TEXT_FAINT);
         band.setPadding(0, px(5), 0, 0);
         box.addView(band);
@@ -2227,7 +2351,7 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextSize(10.5f);
+        t.setTextSize(AmberTheme.FS_LABEL);
         t.setTextColor(AmberTheme.TEXT_DIM);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -2289,11 +2413,11 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView l = new TextView(this);
         l.setText(label);
-        l.setTextSize(10f);
+        l.setTextSize(AmberTheme.FS_MICRO);
         l.setTextColor(AmberTheme.TEXT_FAINT);
         TextView v = new TextView(this);
         v.setText(value);
-        v.setTextSize(13f);
+        v.setTextSize(AmberTheme.FS_MONO);
         v.setTextColor(AmberTheme.TEXT);
         v.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         v.setSingleLine(true);
@@ -2311,7 +2435,7 @@ public class MainActivity extends Activity {
         // 系统对 startScan 有约 30 秒的频率限制，按钮必须**如实反映**能不能按，
         // 否则用户点了没反应，只会以为软件坏了。
         radarStatus = new TextView(this);
-        radarStatus.setTextSize(11.5f);
+        radarStatus.setTextSize(AmberTheme.FS_SMALL);
         radarStatus.setTextColor(AmberTheme.TEXT_DIM);
         radarStatus.setSingleLine(true);
         radarStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -2568,9 +2692,118 @@ public class MainActivity extends Activity {
      * <p>每条记录给三件事：它是什么（目标 / 阶段 / 重试次数）、为什么失败、
      * 以及三个动作（重试恢复 / 清理记录 / 查看详情）。
      */
+    /**
+     * 队列隔离恢复：二次确认后执行 resolveQuarantine，并刷新界面。
+     * 恢复完成（或失败）都以弹窗明确报告结果 —— 绝不静默。
+     */
+    private void confirmResolveQuarantine(
+            final io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role role) {
+        String what = role == io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role.BASE
+                ? L.s("主文件（较新的一份）", "the base file")
+                : L.s("备份文件", "the backup file");
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("确认恢复队列", "Restore queue"))
+                .setMessage(L.s("确定用 " + what + " 恢复队列吗？\n"
+                                + "另一份会保留为 .notchosen-<时间>，不会删除。",
+                        "Restore the queue from " + what + "?\n"
+                                + "The other copy is kept as .notchosen-<ts>, not deleted."))
+                .setPositiveButton(L.s("恢复", "Restore"),
+                        (d, w) -> new Thread(() -> {
+                            final io.github.wlmosv_png.wpaforge.audit.TaskQueue.ReadResult r =
+                                    io.github.wlmosv_png.wpaforge.audit.TaskQueue
+                                            .resolveQuarantine(this, role);
+                            runOnUiThread(() -> {
+                                if (r.state == io.github.wlmosv_png.wpaforge.audit
+                                        .TaskQueue.ReadState.COMPLETE) {
+                                    android.widget.Toast.makeText(this,
+                                            L.s("队列已恢复，共 " + r.tasks.size() + " 条任务",
+                                                    "Queue restored, " + r.tasks.size() + " tasks"),
+                                            android.widget.Toast.LENGTH_LONG).show();
+                                } else {
+                                    new android.app.AlertDialog.Builder(this)
+                                            .setTitle(L.s("恢复失败", "Restore failed"))
+                                            .setMessage(r.detail)
+                                            .setPositiveButton(L.s("知道了", "OK"), null)
+                                            .show();
+                                }
+                                refreshRestoreCard();
+                            });
+                        }, "wpaforge-resolve-quarantine").start())
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
+    }
+
     private void refreshRestoreCard() {
         if (restoreList == null || restoreSummary == null) return;
         restoreList.removeAllViews();
+
+        // ---- 队列隔离态（P0-2e）：必须先于 WiFi 配置恢复展示 ----
+        // 此前队列被隔离时，这里只显示「没有待处理的恢复记录」，用户完全看不到
+        // 队列已拒绝读写、任务永不消费的真相。隔离信息来自 TaskQueue.quarantineInfo。
+        io.github.wlmosv_png.wpaforge.audit.TaskQueue.QuarantineInfo qi =
+                io.github.wlmosv_png.wpaforge.audit.TaskQueue.quarantineInfo(this);
+        if (qi != null) {
+            TextView qTitle = new TextView(this);
+            qTitle.setText(L.s("⚠ 队列数据待恢复 —— 破解任务已暂停消费",
+                    "⚠ Queue data needs recovery - task consumption paused"));
+            qTitle.setTextSize(AmberTheme.FS_TITLE);
+            qTitle.setTextColor(0xFFFFB300);
+            restoreList.addView(qTitle);
+
+            StringBuilder qs = new StringBuilder();
+            qs.append(L.s("队列文件存在两份数据（主文件与备份），无法自动判断哪份可信。",
+                    "Both queue.json and its backup exist; which one is authoritative cannot be decided automatically."))
+              .append('\n')
+              .append(L.s("主文件 ", "base "))
+              .append(qi.baseSize < 0 ? "?" : String.valueOf(qi.baseSize))
+              .append("B")
+              .append(qi.baseParsable
+                      ? L.s(" · 可解析 " + qi.baseTaskCount + " 条任务",
+                            " · parses " + qi.baseTaskCount + " tasks")
+                      : L.s(" · 无法解析", " · unparsable"))
+              .append('\n')
+              .append(L.s("备份文件 ", "bak "))
+              .append(qi.bakSize < 0 ? "?" : String.valueOf(qi.bakSize))
+              .append("B")
+              .append(qi.bakParsable
+                      ? L.s(" · 可解析 " + qi.bakTaskCount + " 条任务",
+                            " · parses " + qi.bakTaskCount + " tasks")
+                      : L.s(" · 无法解析", " · unparsable"))
+              .append('\n')
+              .append(L.s("请选择要恢复的一份。未被选中的会保留为 .notchosen-<时间>。",
+                    "Pick one to restore; the other is kept as .notchosen-<ts>."));
+
+            TextView qDetail = new TextView(this);
+            qDetail.setText(qs.toString());
+            qDetail.setTextSize(AmberTheme.FS_BODY);
+            qDetail.setTextColor(TEXT_DIM);
+            qDetail.setLineSpacing(px(4), 1f);
+            restoreList.addView(qDetail);
+
+            // 恢复按钮：主文件 / 备份
+            LinearLayout qBtns = new LinearLayout(this);
+            qBtns.setOrientation(LinearLayout.HORIZONTAL);
+            android.widget.Button qBase = new android.widget.Button(this);
+            qBase.setText(L.s("恢复主文件", "Restore base"));
+            qBase.setOnClickListener(v -> confirmResolveQuarantine(
+                    io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role.BASE));
+            android.widget.Button qBak = new android.widget.Button(this);
+            qBak.setText(L.s("恢复备份", "Restore backup"));
+            qBak.setOnClickListener(v -> confirmResolveQuarantine(
+                    io.github.wlmosv_png.wpaforge.audit.TaskQueue.Role.BAK));
+            qBtns.addView(qBase);
+            qBtns.addView(qBak);
+            restoreList.addView(qBtns);
+            // 有隔离态时仍继续渲染 WiFi 配置恢复记录，但不显示「没有待处理」的误导文案
+            restoreSummary.setText(L.s("⚠ 队列数据待恢复（见上方）",
+                    "⚠ Queue data needs recovery (see above)"));
+            for (io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row r :
+                    io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.rows()) {
+                restoreList.addView(restoreRow(r));
+            }
+            return;
+        }
+
         restoreSummary.setText(io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.summary());
         java.util.List<io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.Row> rows =
                 io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.rows();
@@ -2781,16 +3014,129 @@ public class MainActivity extends Activity {
             }
         }
 
+        /**
+         * 扫描器报上来的**原因**（只记录，不直接画到屏幕上）。
+         *
+         * <h3>为什么改成只记录（2026-11-02 用户截图）</h3>
+         * 原来这里直接写文案 + 显示。而破解过程中引擎会不停断开／重连 WiFi，
+         * 扫描结果时有时无 —— 于是这条提示**一闪一闪**地出现，
+         * 用户看到的就是「破解时一下下显示 WiFi 未连接」。
+         *
+         * <p>更糟的是没人清它：WiFi 恢复、38 个热点就在雷达上转，
+         * 红字还挂在下面（观测页那条「WiFi 未开启」就是上一轮留下的）。
+         *
+         * <p>现在统一由 {@link #refreshObserveNotice} 在每次渲染时**按真实状态**
+         * 重新决定显示什么 —— 状态好了就消失，不需要谁来"记得清"。
+         */
         @Override
         public void onNotice(String message, boolean isError) {
-            ui.post(() -> {
-                if (observeNotice == null) return;
-                observeNotice.setText(message);
-                observeNotice.setTextColor(isError ? DANGER : TEXT_DIM);
-                observeNotice.setVisibility(View.VISIBLE);
-            });
+            lastScanNotice = message;
+            lastScanNoticeIsError = isError;
+            ui.post(() -> refreshObserveNotice(lastRecords));
         }
     };
+
+    /**
+     * 观测页提示条的**唯一决策点**。
+     *
+     * <h3>它替掉了三个各写各的写入点</h3>
+     * 旧实现有三处直接写 observeNotice（Scanner 的 onNotice、renderRecords 里
+     * 「暂时扫不到网络」、切页时清），互相不知道对方写过什么 —— 于是出现
+     * 「WiFi 明明开着、38 个热点在雷达上，下面还挂着『WiFi 未开启』」，
+     * 以及「破解时提示一闪一闪」。现在只有一个地方决定显示什么，
+     * 而且**每次都按真实状态重算**，不需要谁来记得清除。
+     *
+     * <h3>优先级（自高到低）</h3>
+     * <ol>
+     *   <li><b>需要用户行动</b>（权限缺失 / 定位关闭 / WiFi 开关关闭）→ 红字。
+     *       这三条都是「不处理就永远扫不到」，必须显眼。</li>
+     *   <li><b>破解运行中</b> → 直接隐藏。引擎正在反复断开／重连 WiFi，
+     *       这段时间扫不到网是**预期行为**，报警只会制造假故障。</li>
+     *   <li><b>已有结果</b> → 隐藏（能扫到就说明前面的问题都过去了）。</li>
+     *   <li><b>暂无结果</b> → 弱色一行说明原因（灰字，不用红）。</li>
+     * </ol>
+     */
+    private void refreshObserveNotice(List<io.github.wlmosv_png.wpaforge.core.NetRecord> records) {
+        if (observeNotice == null) return;
+
+        String blocker = observeBlocker();
+        if (blocker != null) {
+            if (!blocker.contentEquals(observeNotice.getText())) observeNotice.setText(blocker);
+            observeNotice.setTextColor(DANGER);
+            if (observeNotice.getVisibility() != View.VISIBLE) {
+                observeNotice.setVisibility(View.VISIBLE);
+            }
+            return;
+        }
+
+        // 破解中：不报「扫不到」——那是引擎在切网，不是故障
+        if (io.github.wlmosv_png.wpaforge.CrackService.isRunning()) {
+            observeNotice.setVisibility(View.GONE);
+            return;
+        }
+
+        boolean hasRecords = records != null && !records.isEmpty();
+        if (hasRecords) {
+            observeNotice.setVisibility(View.GONE);
+            return;
+        }
+
+        // 暂无结果：给一行弱提示，说清是「还在扫」还是「系统限流」
+        String soft = (scanner != null && !scanner.lastScanAccepted())
+                ? L.s("暂时扫不到网络 · ", "No networks yet · ") + scanner.scanGateLabel()
+                : L.s("正在扫描…", "Scanning…");
+        if (!soft.contentEquals(observeNotice.getText())) observeNotice.setText(soft);
+        observeNotice.setTextColor(TEXT_DIM);
+        if (observeNotice.getVisibility() != View.VISIBLE) {
+            observeNotice.setVisibility(View.VISIBLE);
+        }
+    }
+
+    /**
+     * 当前**需要用户行动**的阻塞项；没有则返回 {@code null}。
+     *
+     * <p>关键是「按真实状态判断」而不是「信上一次的报错」—— 用户开了 WiFi，
+     * 这里立刻就不再返回它，提示自然消失。
+     */
+    private String observeBlocker() {
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wm == null) {
+                return L.s("此设备无法访问 WiFi 服务", "This device cannot access the Wi-Fi service");
+            }
+            if (!wm.isWifiEnabled()) {
+                return L.s("WiFi 未开启，请先打开 WiFi 开关",
+                        "Wi-Fi is off — turn it on first");
+            }
+        } catch (Throwable ignored) { }
+
+        // 定位开关：Android 10 起关着时系统不返回任何扫描结果
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                android.location.LocationManager lm = (android.location.LocationManager)
+                        getSystemService(LOCATION_SERVICE);
+                if (lm != null && !lm.isLocationEnabled()) {
+                    return L.s("系统定位开关没打开：Android 10 起定位关着时系统不返回任何扫描结果。"
+                                    + "请下拉通知栏打开「定位」再试。",
+                            "Location is off: since Android 10 the system returns no scan "
+                                    + "results while location is off. Turn Location on and retry.");
+                }
+            }
+        } catch (Throwable ignored) { }
+
+        // 定位权限（Android 12+ 需要 NEARBY_WIFI_DEVICES，运行时权限已由设置页申请）
+        try {
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return L.s("缺少定位权限：没有它系统不会返回扫描结果。",
+                        "Missing location permission: without it the system returns "
+                                + "no scan results.");
+            }
+        } catch (Throwable ignored) { }
+
+        return null;
+    }
 
     private void renderRecords(List<NetRecord> records) {
         if (radar == null || signalBoard == null || netList == null) return;
@@ -2805,12 +3151,7 @@ public class MainActivity extends Activity {
         // 横向铺得太宽，会和内环的点/汇聚标撞在一起（截图里正压着）
         // 一个网络都扫不到时，把「为什么没有」说清楚：权限/Wi-Fi 关/系统限流
         // （有结果时不提限流 —— 那是噪音，用户也不该操心系统那 30 秒）
-        if (records.isEmpty() && scanner != null && !scanner.lastScanAccepted()) {
-            observeNotice.setText(L.s("暂时扫不到网络 · ", "No networks yet · ")
-                    + scanner.scanGateLabel());
-            observeNotice.setTextColor(DANGER);
-            observeNotice.setVisibility(View.VISIBLE);
-        }
+        refreshObserveNotice(records);
 
         radar.setCenterText(String.valueOf(visible.size()), L.s("个网络", "networks"));
 
@@ -3221,7 +3562,7 @@ public class MainActivity extends Activity {
 
         TextView dbm = new TextView(this);
         dbm.setText(r.rssi + " dBm");
-        dbm.setTextSize(12.5f);
+        dbm.setTextSize(AmberTheme.FS_BODY);
         dbm.setTextColor(AmberTheme.signalColor(r.signalLevel()));
         dbm.setTypeface(Typeface.MONOSPACE);
         dbm.setGravity(Gravity.END);
@@ -3475,7 +3816,7 @@ public class MainActivity extends Activity {
         LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
         auditLog = new TextView(this);
-        auditLog.setTextSize(11f);
+        auditLog.setTextSize(AmberTheme.FS_SMALL);
         auditLog.setTextColor(AmberTheme.TERM_FG);
         auditLog.setTypeface(Typeface.MONOSPACE);
         auditLog.setLineSpacing(px(4), 1f);
@@ -3687,6 +4028,20 @@ public class MainActivity extends Activity {
 
     private void updateDictStatus() {
         if (dictStatus == null) return;
+        if (usePlanMode) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp = livePlan();
+            if (lp != null && !lp.items.isEmpty()) {
+                if (lp.state.isTerminal()) {
+                    dictStatus.setText(L.s("多字典计划: 已结束（可清理或改回单字典）",
+                            "Plan: finished (clear it or switch to single)"));
+                } else {
+                    dictStatus.setText(L.f("多字典计划: %d 本 · 当前第 %d 本",
+                            "Plan: %d dictionaries · now #%d",
+                            lp.items.size(), lp.displayIndex()));
+                }
+                return;
+            }
+        }
         int n = dictCount();
         if (n == 0) {
             dictStatus.setText(L.s("当前字典: 未选择", "Current dictionary: none"));
@@ -3783,6 +4138,24 @@ public class MainActivity extends Activity {
                         + Prefs.estimate(this, generic),
                 SRC_GENERIC.equals(currentDictSource),
                 dd -> buildGenericDict());
+
+        // ── 多字典计划（第一批补齐：与上面四种「单本字典」并列的第二种模式）──
+        {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan plan =
+                    io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                            io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+            String planSub = plan.items.isEmpty()
+                    ? L.s("还没建。可在字典管理页把几本字典排成一个顺序", "Not built. Order several dictionaries in dictionary management")
+                    : L.f("已建 %d 本 · 按顺序自动接力 · %s",
+                          "%d dictionaries · auto-relay in order · %s",
+                          plan.items.size(),
+                          plan.autoAdvance ? L.s("自动连跑", "auto-advance") : L.s("单本停", "stop each"));
+            d.addIconItem(DictIcons.Kind.LIST,
+                    L.s("多字典计划（按顺序接力）", "Multi-dictionary plan (relay)"),
+                    planSub,
+                    usePlanMode,
+                    dd -> showPlanPicker());
+        }
 
         d.addItem(L.s("怎么选？看说明", "Which one? Read this"), dd -> showDictGuide());
         d.setNegative(L.s("关闭", "Close"), null);
@@ -3911,6 +4284,7 @@ public class MainActivity extends Activity {
      * 只存本机私有 SP，日志与界面一律走掩码。
      */
     private void showSeedDialog() {
+        usePlanMode = false; selectedPlan = null;
         final String key = currentTargetKey();
         final io.github.wlmosv_png.wpaforge.audit.ProfileStore.Pick pick = profileForCurrentTarget();
         final io.github.wlmosv_png.wpaforge.audit.SeedModel cur = pick.seeds;
@@ -4069,6 +4443,7 @@ public class MainActivity extends Activity {
      * 不落地会出现「候选显示正常但一跑就秒结束」。
      */
     private void deriveFromTarget() {
+        usePlanMode = false; selectedPlan = null;
         if (targetNet == null) {
             Toast.makeText(this, L.s("请先选择目标网络",
                     "Select a target network first"), Toast.LENGTH_SHORT).show();
@@ -4122,6 +4497,7 @@ public class MainActivity extends Activity {
 
     /** 内置生成器（通用词法），同样先落盘 */
     private void buildGenericDict() {
+        usePlanMode = false; selectedPlan = null;
         appendStream(L.s("正在编排通用载荷...", "Building built-in dictionary..."));
         new Thread(() -> {
             io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
@@ -4273,7 +4649,247 @@ public class MainActivity extends Activity {
      */
     private static final int DICT_LOAD_LIMIT = 120000;
 
+    /**
+     * 选择多字典计划（破解页第二种模式）。
+     *
+     * <p>没有计划时明确提示「先去字典管理页建立」，并给一个直达入口；
+     * 有计划时列出成员与顺序，用户点「用这个计划」即切换到计划模式 ——
+     * 之后启动不再逐本选字典。
+     */
+    private void showPlanPicker() {
+        io.github.wlmosv_png.wpaforge.audit.DictPlan plan =
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+
+        if (plan.items.isEmpty()) {
+            NetDialog d = new NetDialog(this, L.s("还没有多字典计划", "No plan yet"),
+                    L.s("多字典计划需要在「字典管理」页里建立：\n把几本字典按顺序加进去、调好顺序，再回来这里选它。\n\n现在去建立吗？",
+                            "A multi-dictionary plan is built in \"Dictionary management\": add several dictionaries in order, then come back to pick it here.\n\nOpen it now?"));
+            d.setNegative(L.s("取消", "Cancel"), null);
+            d.setPositive(L.s("去字典管理", "Open dictionary management"), dd -> {
+                startActivity(new android.content.Intent(this, DictActivity.class));
+            });
+            d.show();
+            return;
+        }
+
+        NetDialog d = new NetDialog(this, L.s("多字典计划", "Multi-dictionary plan"),
+                L.f("共 %d 本 · %s · 当前第 %d 本",
+                        "%d dictionaries · %s · now #%d",
+                        plan.items.size(),
+                        plan.autoAdvance ? L.s("自动连跑", "auto-advance") : L.s("单本停", "stop each"),
+                        plan.displayIndex()));
+        StringBuilder members = new StringBuilder();
+        for (int i = 0; i < plan.items.size(); i++) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item it = plan.items.get(i);
+            members.append(i + 1).append(". ").append(it.name);
+            if (i == plan.index) members.append(L.s("  ← 当前", "  ← now"));
+            if (i < plan.items.size() - 1) members.append("\n");
+        }
+        d.addHint(members.toString());
+        d.addHint(L.s("计划模式：启动后按这个顺序一本接一本跑，命中即停。\n不再需要逐本选字典。",
+                "Plan mode: runs these in order, one after another, stopping on a hit. No per-dictionary selection needed."));
+        d.setNegative(L.s("取消", "Cancel"), null);
+        if (plan.state.isTerminal()) {
+            d.addHint(L.s("这个计划已经结束（" + io.github.wlmosv_png.wpaforge.audit.DictPlan
+                            .stateLabel(plan.state) + "）。点「用这个计划」会重置进度重新开始；"
+                            + "或在下面清理它。",
+                    "This plan already finished. \"Use this plan\" resets and restarts it; "
+                            + "or clear it below."));
+        }
+        d.setPositive(L.s("用这个计划", "Use this plan"), dd -> {
+            usePlanMode = true;
+            // 终态计划：用之前先重置进度（成员与顺序保留），否则 startConnect 会被终态拦住。
+            if (plan.state.isTerminal()) {
+                plan.resetProgress();
+                plan.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                TaskQueue.stopPlanTasks(this);
+            }
+            selectedPlan = plan;
+            // 计划自带目标快照时，把破解页目标对齐到计划目标 —— 这样 triedSet 键、
+            // 服务端 loadPlanForRun 的目标一致性检查都自然对齐，不靠用户手动再选。
+            if (plan.targetBssid != null && !plan.targetBssid.isEmpty()) {
+                targetNet = plan.toNetRecord();
+                Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
+                updateTargetLabel();
+                refreshSkippedForCurrentDict();
+            }
+            updateDictStatus();
+            updateConnectDict();
+            Toast.makeText(this, L.f("已选多字典计划（%d 本）", "%d-dictionary plan selected",
+                    plan.items.size()), Toast.LENGTH_SHORT).show();
+        });
+        d.show();
+    }
+
+    /**
+     * 破解页的轻量计划管理（管理顺序 / 移出计划）。
+     *
+     * <p>与字典管理页共用**同一份权威计划数据**（按目标键的 plan 文件），
+     * 不另造一套、不复制状态。调整直接 {@code DictPlan.move/removeAt} + 落盘，
+     * 保存后立即刷新破解页计划展示。
+     *
+     * <p>运行保护：计划正在执行（RUNNING）时禁改，避免任务错位；
+     * 暂停/空闲时可改，已完成字典的进度随条目一起移动（不被清掉）。
+     */
+    private void showPlanManager() {
+        io.github.wlmosv_png.wpaforge.audit.DictPlan p =
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                        io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+        if (p.items.isEmpty()) {
+            showPlanPicker();
+            return;
+        }
+        final io.github.wlmosv_png.wpaforge.audit.DictPlan running = livePlan();
+        final boolean executing = running != null
+                && running.state == io.github.wlmosv_png.wpaforge.audit.DictPlan.State.RUNNING;
+
+        final boolean terminal = p.state.isTerminal();
+        final String modeTag = "MULTI".equals(currentMode())
+                ? L.s("当前执行方式：多字典计划", "Mode: multi-dictionary plan")
+                : L.s("当前执行方式：单字典（本目标暂无有效计划）",
+                        "Mode: single dictionary (no active plan for this target)");
+        String mgrSub;
+        if (executing) {
+            mgrSub = L.s("计划正在执行，暂不能调整顺序。\n先暂停或停止，再回来调整。",
+                    "Plan is running — pause or stop it first, then reorder.");
+        } else if (terminal) {
+            mgrSub = L.s("本目标的计划已结束（" + io.github.wlmosv_png.wpaforge.audit.DictPlan
+                            .stateLabel(p.state) + "）。\n"
+                            + "可调顺序后重新开始，或底部「清理本目标的计划」。",
+                    "This target's plan already finished.\nReorder and restart, or clear it below.");
+        } else {
+            mgrSub = L.s("点 ↑/↓ 调顺序，× 移出本计划。改动立即保存。",
+                    "Tap ↑/↓ to reorder, × to remove. Changes save immediately.");
+        }
+        NetDialog d = new NetDialog(this, L.s("管理计划顺序", "Manage plan order"),
+                modeTag + "\n" + mgrSub);
+
+        for (int i = 0; i < p.items.size(); i++) {
+            final int idx = i;
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item it = p.items.get(i);
+            final String name = it.name;
+            final String status = io.github.wlmosv_png.wpaforge.audit.DictPlan.stateLabel(it.local);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(px(4), px(6), px(4), px(6));
+
+            TextView nm = new TextView(this);
+            nm.setText((i + 1) + ". " + name + "   " + status);
+            nm.setTextSize(AmberTheme.FS_ACTION);
+            nm.setTextColor(TEXT);
+            nm.setSingleLine(true);
+            nm.setEllipsize(TextUtils.TruncateAt.END);
+            row.addView(nm, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            // 上移 / 下移 / 移出：直接改同一份 plan 并落盘，再重画本弹窗
+            Button up = smallChip(L.s("↑", "↑"), ACCENT, v -> {
+                if (executing) { Toast.makeText(this, L.s("计划执行中，暂不能调整", "Plan running — cannot reorder"), Toast.LENGTH_SHORT).show(); return; }
+                io.github.wlmosv_png.wpaforge.audit.DictPlan q = io.github.wlmosv_png.wpaforge.audit.DictPlan.load(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                if (q.move(idx, -1)) { q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey())); }
+                refreshPlanLine(); updateConnectDict(); updateDictStatus();
+                d.dismiss(); showPlanManager();
+            });
+            Button down = smallChip(L.s("↓", "↓"), ACCENT, v -> {
+                if (executing) { Toast.makeText(this, L.s("计划执行中，暂不能调整", "Plan running — cannot reorder"), Toast.LENGTH_SHORT).show(); return; }
+                io.github.wlmosv_png.wpaforge.audit.DictPlan q = io.github.wlmosv_png.wpaforge.audit.DictPlan.load(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                if (q.move(idx, +1)) { q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey())); }
+                refreshPlanLine(); updateConnectDict(); updateDictStatus();
+                d.dismiss(); showPlanManager();
+            });
+            Button rm = smallChip(L.s("×", "×"), AmberTheme.DANGER, v -> {
+                if (executing) { Toast.makeText(this, L.s("计划执行中，暂不能调整", "Plan running — cannot reorder"), Toast.LENGTH_SHORT).show(); return; }
+                io.github.wlmosv_png.wpaforge.audit.DictPlan q = io.github.wlmosv_png.wpaforge.audit.DictPlan.load(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                if (q.removeAt(idx)) { q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey())); }
+                refreshPlanLine(); updateConnectDict(); updateDictStatus();
+                d.dismiss(); showPlanManager();
+            });
+            row.addView(up);
+            row.addView(down);
+            row.addView(rm);
+            d.addView(row);
+        }
+
+        d.addItem(L.s("管理字典（完整）", "Manage dictionaries (full)"), dd -> {
+            startActivity(new android.content.Intent(this, DictActivity.class));
+        });
+        // 清理：删除本目标的计划 + 作废其残留任务。**不删字典文件、不碰 triedSet/账本。**
+        d.addItem(L.s("清理本目标的计划（不动字典文件与历史）",
+                        "Clear this target's plan (keeps dict files & history)"),
+                dd -> confirmClearPlan());
+        // 重置进度：保留成员与顺序，只把「跑到哪 / 什么结论」清零（与删除不同）。
+        d.addItem(L.s("重置进度（保留字典与顺序）",
+                        "Reset progress (keep dictionaries & order)"),
+                dd -> {
+                    if (executing) {
+                        Toast.makeText(this, L.s("计划执行中，先暂停或停止",
+                                "Plan is running — pause or stop first"), Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    io.github.wlmosv_png.wpaforge.audit.DictPlan q =
+                            io.github.wlmosv_png.wpaforge.audit.DictPlan.load(
+                                    io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                    q.resetProgress();
+                    q.save(io.github.wlmosv_png.wpaforge.audit.DictPlan.fileFor(this, currentTargetKey()));
+                    TaskQueue.stopPlanTasks(this);
+                    refreshPlanLine();
+                    updateConnectDict();
+                    updateDictStatus();
+                    Toast.makeText(this, L.s("已重置进度，可重新开始",
+                            "Progress reset; ready to start"), Toast.LENGTH_SHORT).show();
+                });
+        // 改回单字典：退出计划模式，字典选择通道立即可用。
+        d.addItem(L.s("改回单字典模式", "Switch back to single dictionary"),
+                dd -> {
+                    leavePlanMode();
+                    updateDictStatus();
+                    updateConnectDict();
+                    Toast.makeText(this, L.s("已切回单字典模式，点字典可重新选择",
+                            "Back to single-dictionary mode; tap the dictionary to pick"),
+                            Toast.LENGTH_SHORT).show();
+                });
+        d.setNegative(L.s("关闭", "Close"), null);
+        d.show();
+    }
+
+    /**
+     * 清理本目标的计划：删计划文件 + 作废该计划派生的残留任务。
+     *
+     * <p>严格边界：**不删任何字典原文件**，**不删 TriedSet / AttemptLedger**，
+     * 也不影响其它 Wi-Fi 目标的计划。删完立即回到单字典模式。
+     */
+    private void confirmClearPlan() {
+        NetDialog c = new NetDialog(this, L.s("清理本目标的计划", "Clear this target's plan"),
+                L.s("将删除本目标的多字典计划与它的残留任务。\n\n"
+                        + "不会删除：字典文件、已试记录、执行账本、其它 Wi-Fi 的计划。",
+                        "Deletes this target's plan and its leftover tasks.\n\n"
+                                + "Kept: dictionary files, tried records, attempt ledger, other targets' plans."));
+        c.setNegative(L.s("取消", "Cancel"), null);
+        c.setDanger(L.s("清理", "Clear"), dd -> {
+            String key = currentTargetKey();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.delete(this, key);
+            int killed = TaskQueue.stopPlanTasks(this);
+            int removed = TaskQueue.removePlanTasks(this);
+            leavePlanMode();
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
+            renderQueue();
+            updateDictStatus();
+            updateConnectDict();
+            refreshPlanLine();
+            Toast.makeText(this, L.f("已清理计划（作废 %d 条，移除 %d 条残留任务）",
+                            "Plan cleared (%d invalidated, %d removed)",
+                            killed + removed, removed),
+                    Toast.LENGTH_LONG).show();
+        });
+        c.show();
+    }
+
+
     private void loadDictFile(io.github.wlmosv_png.wpaforge.audit.DictStore.Entry e) {
+        usePlanMode = false; selectedPlan = null;
         appendLog(L.f("正在读取 %s ...", "Reading %s ...", e.name));
         new Thread(() -> {
             java.util.List<Candidate> list = null;
@@ -4521,20 +5137,25 @@ public class MainActivity extends Activity {
         connectDictView.setTextColor(TEXT_DIM);
         connectDictView.setSingleLine(true);
         connectDictView.setEllipsize(TextUtils.TruncateAt.END);
-        connectDictView.setOnClickListener(v -> showDictSource());
+        connectDictView.setOnClickListener(v -> {
+            if (usePlanMode) showPlanManager();
+            else showDictSource();
+        });
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         dlp.topMargin = px(5);
         dictCard.addView(connectDictView, dlp);
         pageConnect.addView(dictCard, cardLp(AmberTheme.GAP_CARD));
 
-        // 提示条（权限、通道错误等）—— 内容与显示时机完全由原逻辑控制
-        observeNotice = new TextView(this);
-        observeNotice.setTextSize(12);
-        observeNotice.setTextColor(DANGER);
-        observeNotice.setPadding(px(4), px(10), px(4), 0);
-        observeNotice.setVisibility(View.GONE);
-        pageConnect.addView(observeNotice);
+        /* 破解页**不再展示任何 Wi-Fi 开关状态**（2026-11-03）。
+         *
+         * 曾经这里有一条"请先打开 Wi-Fi 开关"的红字提示。问题是：执行链为了
+         * 强制重新关联，会短暂关/开 Wi-Fi，系统开关查询在这个窗口里读到 false
+         * —— 于是**手机明明开着 Wi-Fi，破解页却闪一下红字**（用户实测到过，
+         * 会让人怀疑设备或软件执行条件）。
+         *
+         * 破解页的职责不是报系统开关状态；真正的环境安全检查在 RootProber
+         * （开跑前）与执行引擎（关联失败即判失败/阻塞）里，一条都没动。 */
 
         // ================= ③ 命中卡（命中时才显示） =================
         hitCard = new LinearLayout(this);
@@ -4548,14 +5169,14 @@ public class MainActivity extends Activity {
         hitTop.setOrientation(LinearLayout.HORIZONTAL);
         hitTop.setGravity(Gravity.CENTER_VERTICAL);
         TextView hitTitle = new TextView(this);
-        hitTitle.setTextSize(13);
+        hitTitle.setTextSize(AmberTheme.FS_MONO);
         hitTitle.setTextColor(OK_GREEN);
         hitTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         hitTop.addView(hitTitle, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView hitCopy = new TextView(this);
         hitCopy.setText(L.s("复制", "Copy"));
-        hitCopy.setTextSize(11.5f);
+        hitCopy.setTextSize(AmberTheme.FS_SMALL);
         hitCopy.setTextColor(ACCENT);
         hitCopy.setPadding(px(10), px(4), px(10), px(4));
         hitCopy.setBackground(roundBg(AmberTheme.ACCENT_BG, AmberTheme.RADIUS_CHIP));
@@ -4577,7 +5198,7 @@ public class MainActivity extends Activity {
         hitCard.setTag(hitTitle);      // 标题文字在命中时才填（带 SSID）
 
         hitPw = new TextView(this);
-        hitPw.setTextSize(26);
+        hitPw.setTextSize(AmberTheme.FS_DISPLAY);
         hitPw.setTextColor(TEXT);
         hitPw.setTypeface(Typeface.MONOSPACE);
         hitPw.setPadding(0, px(6), 0, px(2));
@@ -4585,7 +5206,7 @@ public class MainActivity extends Activity {
         hitCard.addView(hitPw);
 
         hitMeta = new TextView(this);
-        hitMeta.setTextSize(11.5f);
+        hitMeta.setTextSize(AmberTheme.FS_SMALL);
         hitMeta.setTextColor(TEXT_DIM);
         hitCard.addView(hitMeta);
 
@@ -4610,7 +5231,7 @@ public class MainActivity extends Activity {
         resultCard.addView(resultSub, rslp);
 
         resultWhy = new TextView(this);
-        resultWhy.setTextSize(12.5f);
+        resultWhy.setTextSize(AmberTheme.FS_BODY);
         resultWhy.setTextColor(AmberTheme.TEXT_DIM);
         resultWhy.setLineSpacing(px(4), 1f);
         LinearLayout.LayoutParams rwlp = new LinearLayout.LayoutParams(
@@ -4635,8 +5256,17 @@ public class MainActivity extends Activity {
         stateBig.setTextSize(AmberTheme.FS_STATE);
         stateBig.setTextColor(AmberTheme.TEXT_DIM);
         stateBig.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        stateBig.setSingleLine(true);
-        stateBig.setEllipsize(TextUtils.TruncateAt.END);
+        /*
+         * 状态行**允许折两行**（2026-11-02 收口）。
+         *
+         * 原来 setSingleLine(true) + ellipsize=END：字体放大到 1.3× 时，
+         * 「‖ 已暂停 · 进度已保留」这种长状态会被截成「‖ 已暂停 · 进度…」——
+         * 偏巧截掉的正是「进度已保留」这句用户最需要看到的。
+         * 现在最多两行，宁可占一行高度也不丢信息。
+         */
+        stateBig.setSingleLine(false);
+        stateBig.setMaxLines(2);
+        stateBig.setEllipsize(null);
         progTop.addView(stateBig, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -4650,16 +5280,30 @@ public class MainActivity extends Activity {
         progressCard.addView(progTop);
 
         LinearLayout statRow = new LinearLayout(this);
+        statRowView = statRow;
         statRow.setOrientation(LinearLayout.HORIZONTAL);
         statDoneView = AmberTheme.stat(this);
         statTotalView = AmberTheme.stat(this);
+        statWrongView = AmberTheme.stat(this);
+        statUnkView = AmberTheme.stat(this);
         statDoneView.setText("—");
         statTotalView.setText("—");
+        statWrongView.setText("—");
+        statUnkView.setText("—");
         // 未知态一律用弱色：30sp 的亮琥珀「—」看起来像一根进度条，容易被当成数据
         statDoneView.setTextColor(AmberTheme.TEXT_FAINT);
         statTotalView.setTextColor(AmberTheme.TEXT_FAINT);
-        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已完成", "TRIED"), statDoneView),
+        statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
+        statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
+        // 四列：已执行 / 已证实错误 / 未确定 / 总数。
+        // 「已证实错误」用危险色、「未确定」用告警色 —— 两者视觉上必须不同：
+        // 前者说明这条密码被证明了是错的，后者只说明我们没拿到证据。
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已执行", "TRIED"), statDoneView),
                 weight());
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已证实错误", "PROVEN WRONG"),
+                statWrongView), weight());
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"),
+                statUnkView), weight());
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("总数", "TOTAL"), statTotalView),
                 weight());
         LinearLayout.LayoutParams srlp = new LinearLayout.LayoutParams(
@@ -4680,6 +5324,7 @@ public class MainActivity extends Activity {
         progressCard.addView(connectProgress, plp);
 
         LinearLayout footRow = new LinearLayout(this);
+        footRowView = footRow;
         footRow.setOrientation(LinearLayout.HORIZONTAL);
         statRateView = new TextView(this);
         statRateView.setTextSize(AmberTheme.FS_BODY);
@@ -4699,8 +5344,20 @@ public class MainActivity extends Activity {
         frlp.topMargin = px(10);
         progressCard.addView(footRow, frlp);
 
+        // ── 多字典计划 / 本次跳过 ────────────────────────────────────────
+        // 「跳过」必须拆成「已证实错误」与「没跑出结果」两半显示：
+        // 只写「跳过 120 条」，用户没法判断里面有没有可能包含正确密码。
+        planLineView = new TextView(this);
+        planLineView.setTextSize(AmberTheme.FS_SMALL);
+        planLineView.setTextColor(AmberTheme.TEXT_DIM);
+        planLineView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams pllp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pllp.topMargin = px(8);
+        progressCard.addView(planLineView, pllp);
+
         finishNote = new TextView(this);
-        finishNote.setTextSize(11.5f);
+        finishNote.setTextSize(AmberTheme.FS_SMALL);
         finishNote.setTextColor(ACCENT);
         finishNote.setLineSpacing(px(3), 1f);
         finishNote.setVisibility(View.GONE);
@@ -4726,7 +5383,7 @@ public class MainActivity extends Activity {
         candLp.topMargin = px(5);
         candRoll.setLayoutParams(candLp);
         candPrev = new TextView(this);
-        candPrev.setTextSize(11.5f);
+        candPrev.setTextSize(AmberTheme.FS_SMALL);
         candPrev.setTextColor(AmberTheme.TEXT_FAINT);
         candPrev.setTypeface(Typeface.MONOSPACE);
         candPrev.setLineSpacing(px(3), 1f);
@@ -4746,9 +5403,28 @@ public class MainActivity extends Activity {
         flowHeader.setGravity(Gravity.CENTER_VERTICAL);
         flowHeader.setPadding(0, px(12), 0, px(6));
 
+        /*
+         * 展开/收起指示（2026-11-02 第二次重绘）。
+         *
+         * 演变：11.5sp 裸三角（太小、看不出可点）-> 32dp 黄色圆钮（太大、太抢眼）
+         * -> 现在这样：三角形保留，但用**触摸区**而不是**视觉块**来保证可点。
+         *
+         * 用户要的是「一个三角形」，不是一颗按钮。所以：
+         *   · 视觉：只有一个 15sp 的实心三角，无背景、无描边；
+         *   · 触控：左右 10dp 内边距撑到 ~46dp 宽 —— 拇指能点中，
+         *     但屏幕上看到的仍然只是一枚小三角；
+         *   · 整行标题依旧可点，双保险。
+         */
         flowChevron = new TextView(this);
-        flowChevron.setTextSize(11.5f);
+        flowChevron.setTextSize(AmberTheme.FS_STATE);
         flowChevron.setTextColor(ACCENT);
+        flowChevron.setGravity(Gravity.CENTER);
+        // 视觉是三角，触控靠 padding 撑开（不用固定 LayoutParams，避免又变回大块）
+        flowChevron.setPadding(px(10), px(10), px(12), px(10));
+        flowChevron.setBackground(null);
+        flowChevron.setClickable(true);
+        flowChevron.setFocusable(true);
+        flowChevron.setOnClickListener(v -> toggleStream());
         flowHeader.addView(flowChevron);
 
         flowLabel = new TextView(this);
@@ -4762,7 +5438,7 @@ public class MainActivity extends Activity {
         flowHeader.addView(flowLabel, flp);
 
         flowCount = new TextView(this);
-        flowCount.setTextSize(11);
+        flowCount.setTextSize(AmberTheme.FS_SMALL);
         flowCount.setTextColor(AmberTheme.TEXT_FAINT);
         LinearLayout.LayoutParams fcp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -4771,7 +5447,7 @@ public class MainActivity extends Activity {
 
         chipKey = new TextView(this);
         chipKey.setText(L.s("关键", "Key"));
-        chipKey.setTextSize(11);
+        chipKey.setTextSize(AmberTheme.FS_SMALL);
         chipKey.setPadding(px(9), px(4), px(9), px(4));
         chipKey.setClickable(true);
         chipKey.setFocusable(true);
@@ -4787,7 +5463,7 @@ public class MainActivity extends Activity {
 
         chipAll = new TextView(this);
         chipAll.setText(L.s("全部", "All"));
-        chipAll.setTextSize(11);
+        chipAll.setTextSize(AmberTheme.FS_SMALL);
         chipAll.setPadding(px(9), px(4), px(9), px(4));
         chipAll.setClickable(true);
         chipAll.setFocusable(true);
@@ -4804,7 +5480,7 @@ public class MainActivity extends Activity {
 
         flowClear = new TextView(this);
         flowClear.setText(L.s("清空", "Clear"));
-        flowClear.setTextSize(11);
+        flowClear.setTextSize(AmberTheme.FS_SMALL);
         flowClear.setTextColor(DANGER);
         flowClear.setPadding(px(10), px(4), px(10), px(4));
         flowClear.setBackground(roundBg(AmberTheme.DANGER_BG, AmberTheme.RADIUS_CHIP));
@@ -4828,7 +5504,7 @@ public class MainActivity extends Activity {
         eventCard.addView(flowHeader);
 
         connectStreamView = new TextView(this);
-        connectStreamView.setTextSize(12);
+        connectStreamView.setTextSize(AmberTheme.FS_LOG);
         connectStreamView.setTextColor(TEXT_DIM);
         connectStreamView.setTypeface(Typeface.MONOSPACE);
         connectStreamView.setPadding(px(14), px(12), px(14), px(12));
@@ -4880,7 +5556,7 @@ public class MainActivity extends Activity {
 
         jumpLatestBtn = new TextView(this);
         jumpLatestBtn.setText(L.s("↓ 最新", "↓ Latest"));
-        jumpLatestBtn.setTextSize(11f);
+        jumpLatestBtn.setTextSize(AmberTheme.FS_SMALL);
         jumpLatestBtn.setTextColor(ON_ACCENT);
         jumpLatestBtn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         jumpLatestBtn.setPadding(px(12), px(6), px(12), px(6));
@@ -4983,6 +5659,33 @@ public class MainActivity extends Activity {
      * 最近一次任务的真实 outcome。这里不新增状态位、不推断「成功/失败」，
      * 也不把「未知」写成「正常」。
      */
+    /**
+     * **当前队列的聚合状态 —— 唯一的运行状态来源**（U2）。
+     *
+     * <h3>为什么必须抽出来</h3>
+     * 真机实测（2026-11-02）：破解页顶部显示「已暂停 · 进度已保留」，
+     * 同一屏的攻击流空状态却写着「准备就绪 · 点下面的「▶ 开始」」——
+     * 一个是「有暂停的任务」，一个是「什么都没有」。用户完全不知道该点开始还是继续。
+     *
+     * <p>根因：两个地方各自推断状态 ——
+     * {@code renderProgressCardState()} 看 {@code queueCache} 的任务状态，
+     * 空状态提示只看「有没有选目标和字典」。它们不共享任何模型。
+     *
+     * <p>现在两处都调本方法。
+     */
+    private TaskQueue.State currentQueueState() {
+        // 运行/待处理优先（有任务在动就不是"暂停"）
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
+                return t.state;
+            }
+        }
+        for (TaskQueue.Task t : queueCache) {
+            if (t.state == TaskQueue.State.PAUSED) return TaskQueue.State.PAUSED;
+        }
+        return null;
+    }
+
     private void renderProgressCardState() {
         String text;
         int color;
@@ -4994,30 +5697,29 @@ public class MainActivity extends Activity {
          * 结果就是——跑完了、去看别的字典、返回，界面又变回「运行中 100%」，
          * 用户在等一个永远不会来的结果。**跑完了是什么就该显示什么。** */
         boolean serviceRunning = CrackService.isRunning();
-        TaskQueue.State st = null;
-        for (TaskQueue.Task t : queueCache) {
-            if (t.state == TaskQueue.State.RUNNING || t.state == TaskQueue.State.PENDING) {
-                st = t.state;
-                break;
-            }
-        }
-        if (st == null) {
-            for (TaskQueue.Task t : queueCache) {
-                if (t.state == TaskQueue.State.PAUSED) { st = t.state; break; }
-            }
-        }
+        TaskQueue.State st = currentQueueState();   // U2：唯一来源
+        /*
+         * 状态视觉统一（2026-11-02 收口）。
+         *
+         * 收口前 RUNNING / PAUSED / PENDING **共用同一个 ACCENT 色** ——
+         * 扫一眼分不出「在跑」「停了」「还没开始」。现在按语义分三色 + 前缀符号：
+         *   ▶ 运行中   ACCENT（主色，活跃）
+         *   ‖ 已暂停   WARN  （琥珀偏暗，停住了但不是错）
+         *   … 准备中   TEXT_DIM（过渡态，刻意弱化）
+         * 结束态沿用 outcome 的颜色（命中绿 / 停止红 / 未命中灰）。
+         */
         if (st == TaskQueue.State.PAUSED) {
-            text = L.s("已暂停 · 进度已保留", "Paused · progress kept");
-            color = ACCENT;
+            text = L.s("‖ 已暂停 · 进度已保留", "‖ Paused · progress kept");
+            color = AmberTheme.WARN;
         } else if (st == TaskQueue.State.RUNNING) {
             // 只有"队列里真有任务在跑"才叫运行中/收尾中
             text = finishingNow
-                    ? L.s("收尾中", "Finishing up")
-                    : L.s("运行中", "Running");
+                    ? L.s("▶ 收尾中", "▶ Finishing up")
+                    : L.s("▶ 运行中", "▶ Running");
             color = ACCENT;
         } else if (st == TaskQueue.State.PENDING) {
-            text = L.s("准备中", "Preparing");
-            color = ACCENT;
+            text = L.s("… 准备中", "… Preparing");
+            color = AmberTheme.TEXT_DIM;
         } else if (!lastOutcomeLabel.isEmpty()) {
             text = lastOutcomeLabel;
             color = lastOutcomeColor;
@@ -5028,6 +5730,30 @@ public class MainActivity extends Activity {
         if (stateBig != null) {
             stateBig.setText(text);
             stateBig.setTextColor(color);
+        }
+        /*
+         * 空态收紧（2026-11-02 用户截图）。
+         *
+         * 「空闲 · 未开始」时，下面那两行（四列统计 + 速率/剩余）全是「—」，
+         * 既没有信息又把卡片撑得很空。设计上应该**没数据就不占位**：
+         * 有任务在跑、暂停中、或跑过至少一轮（有结论/有计数）时才显示。
+         */
+        boolean hasData = st == TaskQueue.State.RUNNING
+                || st == TaskQueue.State.PAUSED
+                || st == TaskQueue.State.PENDING
+                || lastTested > 0
+                || !lastOutcomeLabel.isEmpty()
+                || lastTallyConfirmed > 0
+                || lastTallyInconclusive > 0;
+        if (statRowView != null) {
+            statRowView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
+        if (footRowView != null) {
+            footRowView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
+        if (statPctView != null) {
+            // 右上角的大数字同理：没数据时不摆一个「—」在那儿
+            statPctView.setVisibility(hasData ? View.VISIBLE : View.GONE);
         }
         if (actionsHint != null) {
             /* 提示行必须和状态行说同一件事。
@@ -5073,6 +5799,19 @@ public class MainActivity extends Activity {
             final String o = outcome;
             ui.post(() -> showResultCard(t, o));
             return;
+        }
+        /* 多字典接力：文案必须由**真实计划状态**决定，不能让单字典的
+         * 「换一本字典」覆盖正在进行的接力。
+         *
+         * 判据是 livePlan()（服务端活计划）的 state/index，不是"页面上有没有计划"——
+         * 单字典模式下也可能存在别的目标的计划文件，那不该影响本卡。
+         */
+        {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp0 = livePlan();
+            if (lp0 != null && !lp0.items.isEmpty()) {
+                showPlanResultCard(task, outcome, lp0);
+                return;
+            }
         }
         if ("DONE_HIT".equals(outcome)) {
             resultCard.setVisibility(View.GONE);   // 命中已经有专门的命中卡
@@ -5166,11 +5905,86 @@ public class MainActivity extends Activity {
         resultActions.addView(actionButton(L.s("先算了", "Leave it"),
                 AmberTheme.BTN_NEUTRAL, 8, v -> hideResultCard()));
 
+        resultCardTaskId = task.id;
         resultCard.setVisibility(View.VISIBLE);
         // 候选区还留着最后一条 —— 标题换成陈述事实的词，明确告诉用户已经结束。
         // 刻意不用「完成」：没找到不算完成，用「最后尝试」只说发生过什么。
         if (candLabel != null) {
             candLabel.setText(L.s("最后尝试", "LAST TRIED"));
+        }
+    }
+
+    /**
+     * 多字典接力的结算卡：**每一句都由真实计划/任务状态推出**。
+     *
+     * <p>状态映射（调用时机：本本任务已结束、计划已 apply 完成）：
+     * <ul>
+     *   <li>{@code RUNNING} → 计划已前进到下一本 → 「当前字典已完成，正在准备下一本」
+     *       （**明确不说"正在执行"**：此刻下一本还没接管）。</li>
+     *   <li>{@code PAUSED} → 「计划已暂停」+ 继续入口。</li>
+     *   <li>{@code BLOCKED}/{@code ERROR} → 如实说被阻塞/出错，**不伪装成完成**。</li>
+     *   <li>终态（{@code DONE_HIT}/{@code DONE_MISS}/{@code STOPPED}）→ 「多字典计划已完成」+ 最终统计。</li>
+     * </ul>
+     */
+    private void showPlanResultCard(TaskQueue.Task task, String outcome,
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp) {
+        final int total = lp.items.size();
+        final int idx = Math.max(1, Math.min(lp.displayIndex(), total));
+        final String nextName = (lp.index + 1 < lp.items.size())
+                ? lp.items.get(lp.index + 1).name : "";
+        final String justName = task.dictName == null ? "" : task.dictName;
+
+        // 状态 → 语义 → 文案：全部在 PlanResultHint（纯函数）里，界面只填空。
+        final io.github.wlmosv_png.wpaforge.audit.PlanResultHint.Kind kind =
+                io.github.wlmosv_png.wpaforge.audit.PlanResultHint.kindOf(lp);
+
+        resultTitle.setText(io.github.wlmosv_png.wpaforge.audit.PlanResultHint.title(kind));
+        int titleColor;
+        switch (kind) {
+            case DONE_HIT:  titleColor = OK_GREEN; break;
+            case PAUSED:    titleColor = AmberTheme.WARN; break;
+            case BLOCKED:
+            case ERROR:     titleColor = DANGER; break;
+            case PREPARING_NEXT: titleColor = ACCENT; break;
+            default:        titleColor = AmberTheme.TEXT; break;
+        }
+        resultTitle.setTextColor(titleColor);
+        resultSub.setText("");
+
+        resultWhy.setText(io.github.wlmosv_png.wpaforge.audit.PlanResultHint.why(
+                kind, idx, total, nextName,
+                CrackService.lastSkippedConfirmed(), CrackService.lastSkippedUndetermined()));
+
+        resultActions.removeAllViews();
+        if (io.github.wlmosv_png.wpaforge.audit.PlanResultHint.isTerminalKind(kind)) {
+            resultActions.addView(actionButton(L.s("\u77e5\u9053\u4e86", "Got it"),
+                    AmberTheme.BTN_PRIMARY, 0, v -> hideResultCard()));
+        } else {
+            if (io.github.wlmosv_png.wpaforge.audit.PlanResultHint.isAbnormalKind(kind)
+                    || kind == io.github.wlmosv_png.wpaforge.audit.PlanResultHint.Kind.PAUSED) {
+                resultActions.addView(actionButton(L.s("\u7ee7\u7eed", "Resume"),
+                        AmberTheme.BTN_PRIMARY, 0, v -> {
+                            hideResultCard();
+                            CrackService.start(MainActivity.this);
+                        }));
+            } else {
+                resultActions.addView(actionButton(L.s("\u6682\u505c", "Pause"),
+                        AmberTheme.BTN_SECONDARY, 0, v -> {
+                            hideResultCard();
+                            if (crackService != null) crackService.pause();
+                        }));
+            }
+            resultActions.addView(actionButton(L.s("\u505c\u6b62\u8ba1\u5212", "Stop plan"),
+                    AmberTheme.BTN_NEUTRAL, 8, v -> {
+                        hideResultCard();
+                        onStopClicked();
+                    }));
+        }
+
+        resultCardTaskId = task.id;
+        resultCard.setVisibility(View.VISIBLE);
+        if (candLabel != null) {
+            candLabel.setText(L.s("\u6700\u540e\u5c1d\u8bd5", "LAST TRIED"));
         }
     }
 
@@ -5400,7 +6214,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(14.5f);
+        b.setTextSize(AmberTheme.FS_ACTION);
         b.setTextColor(fg);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinWidth(0); b.setMinimumWidth(0);
@@ -5545,6 +6359,23 @@ public class MainActivity extends Activity {
             }
         }
 
+        // ①½ 计划模式恢复：进程被杀/重进页面后，若服务端正在跑多字典计划
+        // （planForDisplay 非空且未终态），把界面切回计划模式，别让用户误以为还是单本。
+        //
+        // P0：终态计划（已命中/全部跑完/已停止）**不再抢占**模式与字典通道 ——
+        // 否则用户永远回不到普通单字典选择。终态只做提示，由用户显式清理或重选。
+        if (!usePlanMode) {
+            CrackService svc0 = liveService();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan livePlan =
+                    svc0 == null ? null : svc0.planForDisplay();
+            if (livePlan != null && !livePlan.items.isEmpty() && !livePlan.state.isTerminal()) {
+                usePlanMode = true;
+                selectedPlan = livePlan;
+                updateDictStatus();
+                updateConnectDict();
+            }
+        }
+
         // ② 字典
         if ((currentDict == null || currentDict.isEmpty()) && !dictReloading) {
             CrackService svc = liveService();
@@ -5640,12 +6471,27 @@ public class MainActivity extends Activity {
                                 + " lines · tap “All” to view"));
             } else {
                 boolean ready = targetNet != null && currentDict != null && !currentDict.isEmpty();
+                // U2：这里**必须**看队列状态，不能只看「有没有选目标」。
+                // 否则会出现「顶部：已暂停」+「日志区：准备就绪，点开始」同屏矛盾
+                // （真机 2026-11-02 实测）。
+                TaskQueue.State qs = currentQueueState();
+                String hint;
+                if (qs == TaskQueue.State.PAUSED) {
+                    hint = L.s("已暂停 · 进度已保留\n点下面的「▶ 继续」接着跑",
+                            "Paused · progress kept\nTap “▶ Resume” below to continue");
+                } else if (qs == TaskQueue.State.PENDING) {
+                    hint = L.s("正在准备…", "Preparing…");
+                } else if (qs == TaskQueue.State.RUNNING) {
+                    hint = L.s("正在跑，结果会出现在这里", "Running - results appear here");
+                } else if (ready) {
+                    hint = L.s("准备就绪\n点下面的「▶ 开始」",
+                            "Ready\nTap “▶ Start” below");
+                } else {
+                    hint = L.s("先选目标和字典\n（点上面两行可以更换）",
+                            "Pick a target and a dictionary first\n(tap the lines above to change)");
+                }
                 // 空状态里带一句「看原理」—— 还没跑过的人最需要它
-                connectEmptyHint.setText((ready
-                        ? L.s("准备就绪\n点下面的「▶ 开始」",
-                                "Ready\nTap “▶ Start” below")
-                        : L.s("先选目标和字典\n（点上面两行可以更换）",
-                                "Pick a target and a dictionary first\n(tap the lines above to change)"))
+                connectEmptyHint.setText(hint
                         + L.s("\n\n右上角「?」看它是怎么破解的",
                                 "\n\nTap “?” at the top right to see how it works"));
             }
@@ -5694,6 +6540,7 @@ public class MainActivity extends Activity {
      * 这里只报「用什么通道 + 实测多快」。
      */
     private void updateConnectMode() {
+        // 破解页不再展示 Wi-Fi 开关状态（见 buildUi 里的说明）。
         if (connectModeView == null) return;
         // 用「每条约 X 秒」而不是「X 条/秒」。
         // 0.1 条/秒看着像「没在动」，换算成「每条约 10 秒」
@@ -5724,6 +6571,24 @@ public class MainActivity extends Activity {
     /** 破解页显示当前选中的字典 */
     private void updateConnectDict() {
         if (connectDictView == null) return;
+        if (usePlanMode) {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp = livePlan();
+            if (lp != null && !lp.items.isEmpty()) {
+                if (lp.state.isTerminal()) {
+                    connectDictView.setText(L.s("多字典计划 · 已结束（点此清理或重选）",
+                            "Plan · finished (tap to clear or re-pick)"));
+                    connectDictView.setTextColor(AmberTheme.WARN);
+                } else {
+                    io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = lp.current();
+                    connectDictView.setText(L.f("多字典计划 · %d 本 · 当前「%s」",
+                            "Plan · %d dictionaries · now \"%s\"",
+                            lp.items.size(), cur == null ? "-" : cur.name));
+                    connectDictView.setTextColor(ACCENT);
+                }
+                updateEmptyHint();
+                return;
+            }
+        }
         int n = dictCount();
         if (n <= 0) {
             connectDictView.setText(L.s("未选择字典 —— 点这里选择",
@@ -5759,6 +6624,22 @@ public class MainActivity extends Activity {
                 renderProgressCardState();   // 同上：队列变了就重画状态行
                 // 队列是持久化权威：界面被重建后靠它把「目标/字典」的显示补回来
                 restoreSelectionFromAuthority();
+                // 接力切换字典时，队列变了、计划 index 也变了 —— 必须同步刷新
+                // 「当前字典」卡与「计划/第几本」行，否则 A 切 B 后还显示 A。
+                updateDictStatus();
+                updateConnectDict();
+                refreshPlanLine();
+                // 下一本**真正接管**（出现新的 RUNNING 任务）后，收掉上一本的结算卡：
+                // 否则「正在准备下一本」会一直挂着，与新字典的运行状态打架。
+                if (!resultCardTaskId.isEmpty()) {
+                    for (TaskQueue.Task t : queueCache) {
+                        if (t.state == TaskQueue.State.RUNNING && !t.id.equals(resultCardTaskId)) {
+                            hideResultCard();
+                            resultCardTaskId = "";
+                            break;
+                        }
+                    }
+                }
             });
         }
 
@@ -5804,19 +6685,106 @@ public class MainActivity extends Activity {
 
         @Override
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail) {
+            // 兼容入口：没有 Verdict 时按「不确定」展示，绝不冒充「密码错误」。
+            onAttemptResult(candidate, hit, ms, detail, null);
+        }
+
+        /**
+         * 带 Verdict 的展示入口（U1）。
+         *
+         * <p><b>关键改动</b>：非成功不再一律打 ✗。旧代码的 {@code else} 分支
+         * 把 AUTH_FAIL / NETWORK_AUTH_FAIL / TIMEOUT / INCOMPLETE /
+         * TERMINATED_UNKNOWN / ERROR 全部显示成同一个 ✗ —— 用户会认为
+         * 「这批密码都错了」，而其中三种其实「可能马上就成功」或「与密码无关」。
+         *
+         * <p>现在符号、标签、说明、颜色全部来自
+         * {@link io.github.wlmosv_png.wpaforge.ui.VerdictView} 这一处定义，
+         * 页面不再自行解释 Verdict。
+         */
+        @Override
+        public void onAttemptResult(String candidate, boolean hit, long ms, String detail,
+                                    io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v) {
             ui.post(() -> {
+                String pw = io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate);
                 if (hit) {
-                    appendStreamColored("✓ 成功  "
-                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate)
-                            + "  (" + ms + "ms " + detail + ")", OK_GREEN);
+                    appendStreamColored(io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v)
+                            + " 成功  " + pw + "  (" + ms + "ms " + detail + ")", OK_GREEN);
                     showHitCard(candidate, ms, detail);
+                } else if (v != null) {
+                    String sym = io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v);
+                    String lbl = io.github.wlmosv_png.wpaforge.ui.VerdictView.label(v);
+                    // 网络级/通道级用告警色；候选级失败用危险色；其余用暗色
+                    int color = io.github.wlmosv_png.wpaforge.ui.VerdictView
+                            .countsAsProvenWrong(v) ? DANGER
+                            : io.github.wlmosv_png.wpaforge.ui.VerdictView
+                                    .needsAttention(v) ? ACCENT : TEXT_DIM;
+                    // P1b：同结论连续出现时合并为一行并标 ×N，而不是刷几十行。
+                    // 合并键用 **Verdict 本身**：它是裁决层的唯一结论标识，
+                    // 与 UI 同源（不在这里二次推断）。具体判据来源在 detail 里
+                    // 逐条保留，文件日志也逐条落盘 —— 合并只影响视觉密度。
+                    String key = v.name();
+                    /*
+                     * 两层文本（2026-11-02 收口）。
+                     *
+                     * 普通视图给人看：结论 + **第几条** + 秒数。
+                     *   · 不再出现 `#130548(len=9)` 这种哈希串 —— 那是技术标识，
+                     *     普通用户既读不懂也记不住，只觉得软件很乱。
+                     *   · 耗时用秒（0.1s）而不是毫秒（123ms），人脑对秒更有直觉。
+                     *
+                     * 技术视图给排查用：保留 attemptId、候选哈希与归属来源，
+                     * 切到「全部」就能看到，**原始证据一条没少**。
+                     */
+                    String plainLine = sym + "  " + lbl
+                            + "  ·  " + L.s("第 " + curCandIndex + " 条", "#" + curCandIndex)
+                            + "  ·  " + fmtSeconds(ms);
+                    String techLine = sym + "  " + lbl + "  " + pw
+                            + "  (" + ms + "ms" + (detail == null || detail.isEmpty()
+                                    ? "" : " " + detail) + ")";
+                    appendStreamDedup(plainLine, color, key, techLine);
+                    String why = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
+                    if (why != null && !why.isEmpty() && !key.equals(lastWhyKey)) {
+                        lastWhyKey = key;
+                        appendStreamDetail("     " + why, TEXT_DIM);
+                    }
                 } else {
-                    appendStreamDetail("✗  "
-                            + io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate)
-                            + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
+                    // 没有 Verdict（旧路径）：保持中性，不冒充失败
+                    appendStreamDetail("·  "
+                            + pw + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
                 }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
                 updateConnectMode();
+            });
+        }
+
+        /**
+         * 实时结论分布（UI 第二轮）。
+         *
+         * <p>三个数都来自**引擎的唯一统计入口**（{@code VerdictTally}），
+         * 界面不重新推断任何一条：
+         * <ul>
+         *   <li>已证实错误 → 危险色（这条密码被证明了是错的）</li>
+         *   <li>未确定 → 告警色（我们没拿到证据，下次还会重试）</li>
+         * </ul>
+         * 网络级失败已包含在「未确定」里（口径见 CrackEngine.inconclusiveCount），
+         * 这里不再单独加一列，避免把「环境问题」摆成第五种结论。
+         */
+        @Override
+        public void onTally(int confirmed, int inconclusive, int networkAuthFail) {
+            ui.post(() -> {
+                if (statWrongView != null) {
+                    statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(confirmed));
+                    statWrongView.setTextColor(confirmed > 0 ? DANGER : AmberTheme.TEXT_FAINT);
+                }
+                if (statUnkView != null) {
+                    statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(inconclusive));
+                    statUnkView.setTextColor(inconclusive > 0 ? ACCENT : AmberTheme.TEXT_FAINT);
+                }
+                lastTallyConfirmed = confirmed;
+                lastTallyInconclusive = inconclusive;
+                lastTallyNetAuthFail = networkAuthFail;
+                refreshPlanLine();
             });
         }
 
@@ -5927,6 +6895,20 @@ public class MainActivity extends Activity {
                 lastOutcomeColor = "DONE_HIT".equals(outcome) ? OK_GREEN
                         : "STOPPED".equals(outcome) ? DANGER : io.github.wlmosv_png
                                 .wpaforge.ui.AmberTheme.TEXT_DIM;
+                // P3 修复：**任务结束时必须把「正在尝试」标签改掉**。
+                //
+                // 旧实现只在 startConnect() 里把标签设成「正在尝试」，结束后
+                // 再没有任何地方改它 —— 于是命中后界面仍显示「正在尝试 <密码>」，
+                // 与同一屏的「已命中」并存（真机 2026-11-02 亲眼所见）。
+                // 这里按 outcome 换成陈述语态，并且**不冒充成功**：
+                // 命中就说「已命中」，其余一律「最后尝试」（试过，不代表成功）。
+                if (candLabel != null) {
+                    candLabel.setText("DONE_HIT".equals(outcome)
+                            ? L.s("已命中 · 该候选", "MATCHED · this candidate")
+                            : L.s("最后尝试", "LAST TRIED"));
+                    candLabel.setTextColor("DONE_HIT".equals(outcome)
+                            ? OK_GREEN : io.github.wlmosv_png.wpaforge.ui.AmberTheme.TEXT_DIM);
+                }
                 histSummary = null;      // 有新记录，让统计缓存失效
                 if ("DONE_HIT".equals(outcome)) {
                     appendStreamColored(L.s("⚡ 密钥命中 ", "★ HIT!") + task.ssid + " = "
@@ -6087,7 +7069,7 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(sb.toString().trim());
-        t.setTextSize(12);
+        t.setTextSize(AmberTheme.FS_BODY);
         t.setTextColor(running > 0 ? OK_GREEN : (paused > 0 ? AMBER : TEXT_DIM));
         t.setBackground(roundBgStroked(AmberTheme.CARD_2, AmberTheme.EDGE, AmberTheme.RADIUS_CHIP, 0.8f));
         t.setPadding(px(14), px(10), px(14), px(10));
@@ -6126,7 +7108,7 @@ public class MainActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText(task.ssid);
-        title.setTextSize(15);
+        title.setTextSize(AmberTheme.FS_STATE);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setSingleLine(true);
@@ -6136,7 +7118,7 @@ public class MainActivity extends Activity {
 
         TextView badge = new TextView(this);
         badge.setText(badgeText(task.state));
-        badge.setTextSize(11);
+        badge.setTextSize(AmberTheme.FS_SMALL);
         badge.setTextColor(badgeFgFor(task));
         badge.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         badge.setBackground(roundBg(badgeBgFor(task), AmberTheme.RADIUS_CHIP));
@@ -6148,7 +7130,7 @@ public class MainActivity extends Activity {
         // 第二行：BSSID 与信号
         TextView sub = new TextView(this);
         sub.setText(task.bssid + "   " + task.rssi + "dBm");
-        sub.setTextSize(10.5f);
+        sub.setTextSize(AmberTheme.FS_LABEL);
         sub.setTextColor(TEXT_DIM);
         sub.setPadding(0, px(5), 0, 0);
         item.addView(sub);
@@ -6168,7 +7150,7 @@ public class MainActivity extends Activity {
                     ? L.f("   本轮试了 %d 条", "   %d tried this run", task.testedThisRun) : "",
                 hit,
                 missCaveat(task)));
-        meta.setTextSize(11.5f);
+        meta.setTextSize(AmberTheme.FS_SMALL);
         meta.setTextColor(TaskQueue.State.DONE_HIT == task.state ? OK_GREEN : TEXT_DIM);
         meta.setLineSpacing(px(4), 1f);
         meta.setPadding(0, px(8), 0, 0);
@@ -6197,7 +7179,7 @@ public class MainActivity extends Activity {
             tip.setText(L.f("已暂停在 %d / %d，点「继续」从这里接着跑",
                     "Paused at %d / %d — tap Resume to continue from here",
                     task.offset, task.dictSize));
-            tip.setTextSize(11);
+            tip.setTextSize(AmberTheme.FS_SMALL);
             tip.setTextColor(AMBER);
             tip.setPadding(0, px(10), 0, 0);
             item.addView(tip);
@@ -6252,6 +7234,65 @@ public class MainActivity extends Activity {
         g.setBounds(0, 0, (int) (getResources().getDisplayMetrics().widthPixels * p
                 - px(64)), px(3));
         return g;
+    }
+
+    /**
+     * 刷新「计划 / 本次跳过」那一行。
+     *
+     * <p>数据来自 {@code CrackService} 的只读静态快照（条数 + 一行摘要），
+     * 不含候选、口令或任何内部标识。两项都为空时整行隐藏 ——
+     * 单字典、无历史时不该多出一行噪音。
+     */
+    private void refreshPlanLine() {
+        if (planLineView == null) return;
+        String plan = CrackService.planSummary();
+        int sc = CrackService.lastSkippedConfirmed();
+        int su = CrackService.lastSkippedUndetermined();
+        StringBuilder sb = new StringBuilder();
+        if (plan != null && !plan.isEmpty()) sb.append(plan);
+        // 透明化（第七节）：当前目标 / 模式 / 过滤档位 / 待执行条数。
+        {
+            String mode = usePlanMode ? L.s("计划", "Plan") : L.s("单字典", "Single");
+            String pol = CrackService.lastSkipPolicyId() == 1
+                    ? L.s("省时", "save-time") : L.s("保守", "conservative");
+            int work = CrackService.lastWorkTotal();
+            if (work > 0 || sc + su > 0) {
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(L.s("目标 ", "Target ")).append(currentTargetKey().isEmpty()
+                                ? L.s("(未选)", "(none)") : Prefs.targetLabel(this))
+                        .append(L.s(" · 模式 ", " · mode ")).append(mode)
+                        .append(L.s(" · 过滤 ", " · filter ")).append(pol);
+                if (work > 0) {
+                    sb.append(L.s(" · 本次待执行 ", " · to run ")).append(work);
+                }
+            }
+        }
+        // 计划模式下补一行「第几本 / 当前 / 下一本 / 整体进度」，数据来自服务端活计划。
+        // 计划终态（命中/全部跑完/停止）时**不显示**「当前/下一本」——那会让人以为还在跑。
+        if (usePlanMode) {
+            CrackService svc = liveService();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan live = svc == null ? null : svc.planForDisplay();
+            if (live != null && !live.items.isEmpty() && !live.state.isTerminal()) {
+                io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = live.current();
+                String next = (live.index + 1 < live.items.size())
+                        ? live.items.get(live.index + 1).name : L.s("（最后一本）", "(last)");
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(L.f("第 %d/%d 本 · 当前「%s」%s · 下一本「%s」 · 整体 %d%%",
+                        "#%d of %d · now \"%s\" %s · next \"%s\" · %d%% overall",
+                        live.displayIndex(), live.items.size(),
+                        cur == null ? "-" : cur.name,
+                        cur == null ? "" : (cur.offset + "/" + cur.dictSize),
+                        next, Math.round(live.progress() * 100)));
+            }
+        }
+        if (sc + su > 0) {
+            if (sb.length() > 0) sb.append("   ·   ");
+            sb.append(L.s("跳过 " + (sc + su) + " 条（已证实错误 " + sc
+                            + " · 没跑出结果 " + su + "）",
+                    "skipped " + (sc + su) + " (" + sc + " proven · " + su + " no result)"));
+        }
+        planLineView.setText(sb.toString());
+        planLineView.setVisibility(sb.length() == 0 ? View.GONE : View.VISIBLE);
     }
 
     /**
@@ -6326,7 +7367,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(11.5f);
+        b.setTextSize(AmberTheme.FS_SMALL);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
@@ -6516,11 +7557,117 @@ public class MainActivity extends Activity {
             Toast.makeText(this, L.s("请先选择目标网络", "Select a target network first"), Toast.LENGTH_SHORT).show();
             return;
         }
-        if (currentDict == null || currentDict.isEmpty()) {
-            Toast.makeText(this, L.s("字典为空，请先到审计页加载或生成", "Dictionary is empty — load or generate one in the Audit tab"), Toast.LENGTH_SHORT).show();
-            return;
+        // 多字典计划模式：字典来自计划，不要求「当前已加载单本字典」。
+        // 计划的目标快照在入队时对齐，无需用户再逐本选字典。
+        if (!usePlanMode) {
+            if (currentDict == null || currentDict.isEmpty()) {
+                Toast.makeText(this, L.s("字典为空，请先到审计页加载或生成", "Dictionary is empty — load or generate one in the Audit tab"), Toast.LENGTH_SHORT).show();
+                return;
+            }
+        } else {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan p = filePlan();
+            if (p == null) {
+                Toast.makeText(this, L.s("计划为空，请先到字典管理页建立计划",
+                        "Plan is empty — build one in dictionary management first"),
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (p.state.isTerminal()) {
+                Toast.makeText(this, L.s("该目标的计划已结束，请先清理或重选执行方式",
+                        "This target's plan already finished — clear it or pick another mode"),
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
         }
 
+        // B 方案：目标被 forget 过（不在系统已保存列表）且本网络有已试记录时，
+        // 先提示是否清空已试记录从头开始；确认（或无需处理）后再走真正入队流程。
+        // 计划模式的目标来自计划快照，不走这套「单字典目标 forget」提示。
+        if (usePlanMode) {
+            startConnectAfterGuards();
+        } else {
+            // 字典续命：先按内容 SHA 找历史进度（异步算 SHA，避免大字典卡主线程）。
+            maybeOfferResumeThenStart();
+        }
+    }
+
+    /**
+     * 字典续命检查：按**内容身份**（SHA-256）找同一目标上的历史进度。
+     *
+     * <ul>
+     *   <li>内容相同（无论路径是否变）→ 提示「可续命继续」，用户可选续命或从头；</li>
+     *   <li>同路径但内容变了 → 明确提示「不继承旧进度」，从第 1 条重跑；</li>
+     *   <li>没有历史 → 直接开始。</li>
+     * </ul>
+     * 续命只影响**本次任务的起始 offset**；过滤账本按目标自动沿用（同一套语义）。
+     */
+    private void maybeOfferResumeThenStart() {
+        pendingResumeOffset = 0;
+        pendingDictSha = "";
+        final String path = currentDictPath == null ? "" : currentDictPath;
+        final String targetKey = currentTargetKey();
+        if (path.isEmpty()) {
+            maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+            return;
+        }
+        new Thread(() -> {
+            String sha = "";
+            try {
+                sha = io.github.wlmosv_png.wpaforge.audit.DictPlan.sha256Of(new java.io.File(path));
+            } catch (Throwable ignored) {}
+            final String fsha = sha;
+            final int curSize = currentDict == null ? 0 : currentDict.size();
+            io.github.wlmosv_png.wpaforge.audit.DictResume.Info info =
+                    io.github.wlmosv_png.wpaforge.audit.DictResume.find(
+                            TaskQueue.load(this), filePlan(), targetKey, fsha, path);
+            final int off = io.github.wlmosv_png.wpaforge.audit.DictResume.offsetFor(info, curSize);
+            ui.post(() -> {
+                pendingDictSha = fsha;
+                if (info.contentChanged) {
+                    // 内容变了 —— 不继承，且必须明确告诉用户
+                    NetDialog d = new NetDialog(this,
+                            L.s("字典内容已变化", "Dictionary content changed"),
+                            L.s("这本字典的内容和上次不同（路径相同）。\n"
+                                    + "为避免把旧进度套到新内容上，这次从第 1 条重新开始。",
+                                    "This dictionary's content differs from last time (same path).\n"
+                                            + "To avoid applying old progress to new content, "
+                                            + "it restarts from entry 1."));
+                    d.setNegative(L.s("知道了", "Got it"), null);
+                    d.setPositive(L.s("开始", "Start"),
+                            dd -> maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards));
+                    d.show();
+                    return;
+                }
+                if (off > 0) {
+                    NetDialog d = new NetDialog(this,
+                            L.s("可以续命继续", "Resume available"),
+                            io.github.wlmosv_png.wpaforge.audit.DictResume.describe(info, curSize)
+                                    + L.s("。\n\n续命会沿用原目标的过滤记录（不会重复跑已验证过的候选）。",
+                                    ".\n\nResuming reuses this target's filter history "
+                                            + "(verified candidates are not retried)."));
+                    d.setNegative(L.s("从头开始", "Start over"), dd -> {
+                        pendingResumeOffset = 0;
+                        maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+                    });
+                    d.setPositive(L.s("续命继续", "Resume"), dd -> {
+                        pendingResumeOffset = off;
+                        maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+                    });
+                    d.show();
+                    return;
+                }
+                maybeOfferClearTriedIfForgotten(this::startConnectAfterGuards);
+            });
+        }, "wpaforge-resume-probe").start();
+    }
+
+    /**
+     * startConnect 的入队后半段：守卫全部通过后执行。
+     *
+     * <p>从 startConnect 拆出来，是为了让「检测目标是否被 forget」这个异步步骤
+     * 能在入队前完成——否则检测结果还没回来，任务就已经入队开跑了。
+     */
+    private void startConnectAfterGuards() {
         // 只有 Root 一条通道
         final int mode = Prefs.mode(this);
         RootProber.CheckResult chk = RootProber.check(this);
@@ -6535,7 +7682,8 @@ public class MainActivity extends Activity {
 
         // 耗时预估：按实测速度算，比固定假设准
         {
-            int planned = currentDict.size();
+            int planned = (currentDict == null || currentDict.isEmpty())
+                    ? 0 : currentDict.size();
             String est = Prefs.estimate(this, planned);
             String rate = Prefs.avgRateLabel(this);
             boolean sampled = Prefs.hasRateSample(this);
@@ -6569,16 +7717,70 @@ public class MainActivity extends Activity {
 
         // 入队。crackService 可能还没绑定好（bindService 是异步的），
         // 所以先直接写持久化队列，不依赖服务实例 —— 避免 NPE。
-        final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
-                currentDictPath, currentDictName,
-                targetDictEnabled, smartSortEnabled, Prefs.mode(this),
-                profileForCurrentTarget().seeds.encode());
-        queueCache.clear();
-        queueCache.addAll(TaskQueue.load(this));
-        renderQueue();
+        //
+        // 多字典计划模式：不逐本选字典。入队的任务用**计划的目标快照**与
+        // **计划当前指向的那本字典**，让服务端既有的 loadPlanForRun 干净接管
+        // （目标一致 + 计划未终态 + 计划有成员），之后按计划顺序自动接力。
+        final io.github.wlmosv_png.wpaforge.audit.DictPlan planForStart =
+                usePlanMode ? filePlan() : null;
+        if (planForStart != null && !planForStart.items.isEmpty()
+                && !planForStart.state.isTerminal()) {
+            final io.github.wlmosv_png.wpaforge.audit.DictPlan sp = planForStart;
+            selectedPlan = sp;
+            // 计划自带目标快照时用它（bssid/ssid 与计划 targetKey 同源，服务端
+            // loadPlanForRun 的目标一致性检查自然通过）；计划还没绑定目标时退回
+            // 破解页当前选中的目标 —— 第一次跑计划就是这种情况。
+            final io.github.wlmosv_png.wpaforge.core.NetRecord planTarget =
+                    (sp.targetBssid != null && !sp.targetBssid.isEmpty())
+                            ? sp.toNetRecord() : targetNet;
+            io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = sp.current();
+            final String planDictPath = cur == null || cur.path.isEmpty() ? "" : cur.path;
+            final String planDictName = cur == null || cur.name.isEmpty() ? L.s("计划字典", "Plan dictionary") : cur.name;
+            // 用 enqueuePlan 标记「来源=计划」：执行侧据此让计划接管，
+            // 而不是把这条当成用户单字典任务。
+            final TaskQueue.Task t = TaskQueue.enqueuePlan(this, planTarget,
+                    planDictPath, planDictName, Prefs.mode(this));
+            if (t != null && cur != null && cur.sha256 != null && !cur.sha256.isEmpty()
+                    && !cur.sha256.equals(t.dictSha)) {
+                t.dictSha = cur.sha256;
+                TaskQueue.update(this, t);
+            }
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
+            renderQueue();
 
-        appendStream(L.s("已加入队列: ", "Added to queue: ") + targetNet.displayName()
-                + L.s("   字典 ", "   dictionary ") + currentDictName + "（" + currentDict.size() + L.s(" 条）", " entries)"));
+            appendStream(L.s("已加入队列: ", "Added to queue: ") + planTarget.displayName()
+                    + L.s("   多字典计划 ", "   plan ") + sp.items.size()
+                    + L.s(" 本 · 从「", " dictionaries · from \"") + planDictName
+                    + L.s("」开始自动接力", "\" auto-relaying"));
+        } else {
+            final TaskQueue.Task t = TaskQueue.enqueue(this, targetNet,
+                    currentDictPath, currentDictName,
+                    targetDictEnabled, smartSortEnabled, Prefs.mode(this),
+                    profileForCurrentTarget().seeds.encode());
+            // 续命：继承内容身份与历史 offset（若用户选择续命）
+            boolean touched = false;
+            if (pendingDictSha != null && !pendingDictSha.isEmpty()
+                    && !pendingDictSha.equals(t.dictSha)) {
+                t.dictSha = pendingDictSha; touched = true;
+            }
+            if (pendingResumeOffset > 0 && t.offset < pendingResumeOffset) {
+                t.offset = pendingResumeOffset; touched = true;
+            }
+            if (touched) TaskQueue.update(this, t);
+            if (pendingResumeOffset > 0) {
+                appendStream(L.s("续命：从第 ", "Resume: from entry ") + pendingResumeOffset
+                        + L.s(" 条继续（沿用原目标过滤记录）",
+                              " (reusing this target's filter history)"));
+            }
+            pendingResumeOffset = 0;
+            queueCache.clear();
+            queueCache.addAll(TaskQueue.load(this));
+            renderQueue();
+
+            appendStream(L.s("已加入队列: ", "Added to queue: ") + targetNet.displayName()
+                    + L.s("   字典 ", "   dictionary ") + currentDictName + "（" + currentDict.size() + L.s(" 条）", " entries)"));
+        }
         if (smartSortEnabled) appendStream(L.s("智能排序: 开", "Smart ranking: on"));
         if (targetDictEnabled) appendStream(L.s("目标派生: 开", "Target derivation: on"));
         appendStream(L.s("破解在后台进行，可以切走或锁屏。通知栏能看到进度。", "Cracking runs in the background — you can switch away or lock the screen. Progress shows in the notification."));
@@ -6596,6 +7798,79 @@ public class MainActivity extends Activity {
                 }
             }, delay);
         }
+    }
+
+    /**
+     * B 方案：目标被 forget（不在系统已保存列表）且本网络有已试记录时，
+     * 提示是否清空已试记录从头开始。
+     *
+     * <p>背景：已试记录（TriedSet）按目标分开、永久保存，与「系统 forget 网络」
+     * 完全解耦。用户 forget WiFi 后想重测，已试记录还在，续跑会跳过之前跑过的
+     * 密码——若历史版本把正确密码误判成「密码错误」，它已被记进已试集合，
+     * 续跑就永久跳过它。这里在入队前主动检测：目标若已不在系统已保存列表，
+     * 说明用户大概率 forget 过，给一次「从头重跑」的选择。
+     *
+     * <p>只在「目标确实 forget 且已试记录非空」时弹；不静默清，也绝不误清
+     * （目标还在已保存列表 = 正常续跑，不弹）。
+     *
+     * @param proceed 检测完成、无需处理（或用户已处理）后继续入队的回调
+     */
+    private void maybeOfferClearTriedIfForgotten(final Runnable proceed) {
+        if (targetNet == null) { proceed.run(); return; }
+        final io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
+        // 没有已试记录，无所谓清不清，直接继续
+        if (tried == null || tried.size() == 0) { proceed.run(); return; }
+
+        new Thread(() -> {
+            try {
+                // 只读检测：目标是否还在系统「已保存网络」列表里
+                io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel sh =
+                        new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
+                            @Override public String exec(String cmd, long timeoutMs) {
+                                return io.github.wlmosv_png.wpaforge.audit.RootProber
+                                        .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                            }
+                            @Override public String name() { return "Root"; }
+                        };
+                String out = sh.exec("cmd wifi list-networks", 5000);
+                long id = io.github.wlmosv_png.wpaforge.audit.ListNetworksParser
+                        .findNetId(out, targetNet.ssid);
+                if (id >= 0) {
+                    // 目标还在已保存列表 → 正常续跑，不打扰
+                    ui.post(proceed);
+                    return;
+                }
+                // 目标已被 forget，但本网络仍有已试记录 → 询问是否清空
+                ui.post(() -> {
+                    NetDialog d = new NetDialog(this,
+                            L.s("这个网络似乎已被删除/忘记", "This network looks forgotten"),
+                            L.s("本网络还记着 ", "This network still has ")
+                                    + tried.size()
+                                    + L.s(" 条已试记录。\n\n系统里已经找不到这个网络的配置，"
+                                          + "可能你已经忘记（删除）了它。\n\n"
+                                          + "要继续的话，是否先清空已试记录、从头重新跑？\n"
+                                          + "（不清空：之前跑过的密码会被自动跳过）",
+                                    " tried records.\n\nIts config is no longer in the system "
+                                          + "saved list — you may have forgotten it.\n\n"
+                                          + "Clear the tried record and restart from scratch?\n"
+                                          + "(if not: already-tried passwords stay skipped)"));
+                    d.setDanger(L.s("清空并重新跑", "Clear and restart"), dd -> {
+                        boolean ok = io.github.wlmosv_png.wpaforge.audit.TriedSet
+                                .deleteFor(this, currentTargetKey());
+                        Toast.makeText(this,
+                                ok ? L.s("已清空，从头开始", "Cleared, starting fresh")
+                                   : L.s("清空失败，仍按原记录继续", "Clear failed, continuing as-is"),
+                                Toast.LENGTH_SHORT).show();
+                        proceed.run();
+                    });
+                    d.setNegative(L.s("不清空，继续", "Keep and continue"), dd -> proceed.run());
+                    d.show();
+                });
+            } catch (Throwable t) {
+                // 检测失败（shell 不可用等）→ 不阻塞，按原逻辑继续
+                ui.post(proceed);
+            }
+        }, "wpaforge-forgot-check").start();
     }
 
     /** 秒数转成人话 */
@@ -6619,6 +7894,13 @@ public class MainActivity extends Activity {
         streamCollapsed = !streamCollapsed;
         applyStreamHeight();
         updateFlowHeader();
+        // 切换后**回到最新**：折叠态只有几行高度，若停在中间会看到一段
+        // 与当下无关的旧内容（用户报的「文字残留」观感来源之一）。
+        streamAutoScroll = true;
+        if (streamScroll != null) {
+            streamScroll.post(() -> streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+        }
+        updateJumpLatest();
     }
 
     /** 折叠时只留几行；展开时约 240dp。高度作用在 ScrollView 上。 */
@@ -6629,16 +7911,26 @@ public class MainActivity extends Activity {
         if (empty) {
             streamParams.height = 0;
             streamParams.weight = 0f;
-            connectStreamView.setMaxLines(1);
-            connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
-        } else if (streamCollapsed) {
-            streamParams.height = px(160);   // 折叠态也多给几行
-            streamParams.weight = 0f;
-            connectStreamView.setMaxLines(5);
-            connectStreamView.setEllipsize(TextUtils.TruncateAt.END);
         } else {
-            streamParams.height = px(300);   // 展开态：一屏能看到更多历史
+            streamParams.height = px(streamCollapsed ? STREAM_COLLAPSED_DP : STREAM_EXPANDED_DP);
             streamParams.weight = 0f;
+        }
+        /*
+         * **不再给 TextView 设 maxLines / ellipsize。**
+         *
+         * 用户实测（2026-11-02）两件事都由它引起：
+         *   ① 「小窗里滚不动」—— maxLines=4 + ellipsize=END 把 TextView 压成
+         *      恰好 4 行高，ScrollView 里没有可滚内容，手势等于白滑；
+         *   ② 「文字残留」—— 被裁掉的是**尾部**，所以小窗永远显示日志开头的
+         *      几行（任务启动时的保活提示），后面的判定结论一条都看不到。
+         *
+         * 现在高度只由**容器**决定，TextView 完整渲染；由 ScrollView 负责滚动、
+         * 由 streamAutoScroll 负责自动跟到底部。于是：
+         *   · 小窗能看到**最新**几行；
+         *   · 手指在小窗里可以往上滑看历史；
+         *   · 原始证据一条都没裁掉。
+         */
+        if (connectStreamView != null) {
             connectStreamView.setMaxLines(Integer.MAX_VALUE);
             connectStreamView.setEllipsize(null);
         }
@@ -6676,7 +7968,14 @@ public class MainActivity extends Activity {
     /** 刷新头部箭头与行数 */
     private void updateFlowHeader() {
         if (flowChevron != null) {
-            flowChevron.setText(streamCollapsed ? "▸" : "▾");
+            // 折叠指示沿用最通用的语义（文件管理器 / 设置页都这样）：
+            //   折叠 -> ▶ 朝右（"里面还有内容，点开"）
+            //   展开 -> ▼ 朝下（"已经展开到这里了"）
+            // 上一版用 ▼/▲ 朝上朝下，折叠态朝下很容易被读成"已经展开了"。
+            flowChevron.setText(streamCollapsed ? "▶" : "▼");
+            // 无障碍：读屏用户也要知道这个按钮干什么
+            flowChevron.setContentDescription(streamCollapsed
+                    ? L.s("展开日志", "Expand log") : L.s("收起日志", "Collapse log"));
         }
         if (flowCount != null) {
             int shown = 0;
@@ -6723,11 +8022,56 @@ public class MainActivity extends Activity {
         final CharSequence text;
         final int color;
         final io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind;
+        /**
+         * 降噪合并键（P1b）。{@code null} 表示这一行不参与合并。
+         *
+         * <p>逐条候选结果里同一类结论会连续出现几十次（真机实测：错误密码下
+         * 系统不断回连其它网络 → 每条都是「未证实」）。旧实现每条追加两行
+         * （主行 + 说明），日志区被同一句话刷满，真正的信息反而看不见。
+         * 相同键的相邻行会合并成一行并显示 {@code ×N}。
+         */
+        final String dedupeKey;
+        /** 已合并的条数（1 = 只有本行）。 */
+        final int repeat;
+        /**
+         * **技术详情版文本**（2026-11-02 收口：日志分两层）。
+         *
+         * <p>普通视图（「关键」）显示人能读的：结论 + 第几条 + 耗时；
+         * 技术视图（「全部」）显示可追溯的：attemptId、候选哈希、归属来源。
+         * 两个版本同时存在，切换筛选时只是换一段文本，**原始证据不丢**。
+         */
+        final CharSequence textTech;
+        /** 合并行的时间跨度（毫秒，墙钟）；0 表示未记录。 */
+        final long firstAtMs;
+        final long lastAtMs;
 
         LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind) {
+            this(text, color, kind, null, 1, null, 0L, 0L);
+        }
+
+        LogLine(CharSequence text, int color,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+                String dedupeKey, int repeat) {
+            this(text, color, kind, dedupeKey, repeat, null, 0L, 0L);
+        }
+
+        LogLine(CharSequence text, int color,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+                String dedupeKey, int repeat,
+                CharSequence textTech, long firstAtMs, long lastAtMs) {
             this.text = text;
             this.color = color;
             this.kind = kind;
+            this.dedupeKey = dedupeKey;
+            this.repeat = repeat;
+            this.textTech = textTech;
+            this.firstAtMs = firstAtMs;
+            this.lastAtMs = lastAtMs;
+        }
+
+        /** 按当前视图取文本。 */
+        CharSequence shown(boolean tech) {
+            return (tech && textTech != null) ? textTech : text;
         }
     }
 
@@ -6744,6 +8088,64 @@ public class MainActivity extends Activity {
      */
     private void appendStreamDetail(String line, int color) {
         appendStreamColored(line, color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON);
+    }
+
+    /**
+     * 逐条候选结果的**降噪入口**（P1b）。
+     *
+     * <p>与上一行同 {@code dedupeKey} 时不追加新行，而是把那一行替换成
+     * 「原文本 ×N」—— 原始证据不丢（{@code streamLines} 仍逐条可回溯、
+     * 文件日志逐条写入），只是**界面**不再被同一句话刷屏。
+     *
+     * @param dedupeKey 合并键（null = 不合并）
+     */
+    private void appendStreamDedup(String line, int color, String dedupeKey) {
+        appendStreamDedup(line, color, dedupeKey, null);
+    }
+
+    /**
+     * 逐条候选结果的**降噪入口**（含两层文本）。
+     *
+     * @param line     普通视图文本（人能读的）
+     * @param textTech 技术详情版文本（含 attemptId / 哈希 / 归属来源），可为 null
+     * @param dedupeKey 合并键（null = 不合并）；同键相邻行合并并累计 ×N 与时间跨度
+     */
+    private void appendStreamDedup(String line, int color, String dedupeKey,
+                                   CharSequence textTech) {
+        if (line == null) return;
+        int c = (color == 0) ? TEXT_DIM : color;
+        long now = System.currentTimeMillis();
+        if (dedupeKey != null && !streamLines.isEmpty()) {
+            LogLine last = streamLines.get(streamLines.size() - 1);
+            if (dedupeKey.equals(last.dedupeKey)) {
+                streamLines.set(streamLines.size() - 1, new LogLine(
+                        last.text, last.color, last.kind, dedupeKey, last.repeat + 1,
+                        last.textTech != null ? last.textTech : textTech,
+                        last.firstAtMs > 0 ? last.firstAtMs : now, now));
+                renderStream();
+                return;
+            }
+        }
+        streamLines.add(new LogLine(line, c,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON, dedupeKey, 1,
+                textTech, now, now));
+        while (streamLines.size() > MAX_LOG_LINES) streamLines.remove(0);
+        renderStream();
+    }
+
+    /** 秒数格式化：<1s 用 0.1s 精度，>=1s 保留一位小数，>=10s 取整。 */
+    private static String fmtSeconds(long ms) {
+        if (ms < 0) return "—";
+        if (ms < 950) return "0." + Math.max(1, ms / 100) + "s";
+        double sec = ms / 1000.0;
+        if (sec < 10) return String.format(java.util.Locale.US, "%.1fs", sec);
+        return Math.round(sec) + "s";
+    }
+
+    /** 墙钟 HH:mm（合并行的时间跨度用）。 */
+    private static String clockHm(long ms) {
+        return new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                .format(new java.util.Date(ms));
     }
 
     private void appendStreamColored(String line, int color,
@@ -6799,7 +8201,21 @@ public class MainActivity extends Activity {
         streamBuffer.clearSpans();
         for (LogLine l : streamLines) {
             if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly)) continue;
-            appendBuffer(l.text, l.color);
+            CharSequence body = l.shown(streamKeyOnly);
+            if (l.repeat > 1) {
+                // 合并显示：文本 + ×N + 时间跨度。
+                // 「最近什么时候发生的」比「第几条」更常被问到 —— 用户想知道的是
+                // 「这是刚才那批，还是十分钟前的」。
+                StringBuilder sb = new StringBuilder(body);
+                sb.append("   ×").append(l.repeat);
+                if (l.firstAtMs > 0) {
+                    sb.append("  ").append(clockHm(l.firstAtMs));
+                    if (l.lastAtMs > l.firstAtMs) sb.append("–").append(clockHm(l.lastAtMs));
+                }
+                appendBuffer(sb, l.color);
+            } else {
+                appendBuffer(body, l.color);
+            }
         }
         if (connectStreamView != null) {
             connectStreamView.setText(streamBuffer, android.widget.TextView.BufferType.SPANNABLE);
@@ -7668,7 +9084,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(15);
+        b.setTextSize(AmberTheme.FS_STATE);
         b.setTextColor(isLight(color) ? AmberTheme.ON_ACCENT : Color.WHITE);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setPadding(px(20), px(14), px(20), px(14));
@@ -7733,13 +9149,13 @@ public class MainActivity extends Activity {
 
         TextView t = new TextView(this);
         t.setText(title);
-        t.setTextSize(13);
+        t.setTextSize(AmberTheme.FS_MONO);
         t.setTextColor(ACCENT);
         box.addView(t);
 
         TextView b = new TextView(this);
         b.setText(body);
-        b.setTextSize(12);
+        b.setTextSize(AmberTheme.FS_BODY);
         b.setTextColor(TEXT_DIM);
         b.setLineSpacing(px(4), 1f);
         b.setPadding(0, px(6), 0, 0);
@@ -7752,7 +9168,7 @@ public class MainActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(14);
+        b.setTextSize(AmberTheme.FS_ACTION);
         b.setTextColor(color);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
@@ -8124,7 +9540,7 @@ public class MainActivity extends Activity {
             pw.setTextColor(AmberTheme.TEXT_FAINT);
         } else {
             pw.setText(sw.password);
-            pw.setTextSize(13.5f);
+            pw.setTextSize(AmberTheme.FS_ACTION);
             pw.setTextColor(TEXT);
             pw.setTypeface(Typeface.MONOSPACE);
         }

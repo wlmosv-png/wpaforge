@@ -50,6 +50,10 @@ public final class Prefs {
     private static final String K_TARGET_LABEL = "target_label";
     /** 老版本的单槽线索是否已迁到"默认模板" */
     private static final String K_PROFILE_MIGRATED = "profile_migrated";
+    /** 跨字典去重档位（0=保守 / 1=省时）—— 新建任务时的默认值 */
+    private static final String K_SKIP_POLICY = "skip_policy_id";
+    /** 是否自动连续执行下一本字典（计划模式） */
+    private static final String K_PLAN_AUTO = "plan_auto_advance";
 
     private Prefs() {}
 
@@ -111,6 +115,25 @@ public final class Prefs {
         sp(ctx).edit().putBoolean(K_PROFILE_MIGRATED, true).apply();
     }
 
+    /** 跨字典去重档位（0=保守 1=省时）。默认 0 = 绝不跳过未确定候选。 */
+    public static int skipPolicyId(Context ctx) {
+        int v = sp(ctx).getInt(K_SKIP_POLICY, 0);
+        return v == 1 ? 1 : 0;
+    }
+
+    public static void setSkipPolicyId(Context ctx, int id) {
+        sp(ctx).edit().putInt(K_SKIP_POLICY, id == 1 ? 1 : 0).apply();
+    }
+
+    /** 多字典自动连续执行。默认关 = 与单字典模式行为一致。 */
+    public static boolean planAutoAdvance(Context ctx) {
+        return sp(ctx).getBoolean(K_PLAN_AUTO, false);
+    }
+
+    public static void setPlanAutoAdvance(Context ctx, boolean on) {
+        sp(ctx).edit().putBoolean(K_PLAN_AUTO, on).apply();
+    }
+
     public static boolean dictGuideSeen(Context ctx) {
         return sp(ctx).getBoolean(K_DICT_GUIDE, false);
     }
@@ -143,6 +166,35 @@ public final class Prefs {
 
     public static long lastBeat(Context ctx) {
         return sp(ctx).getLong(K_LAST_BEAT, 0L);
+    }
+
+    // ---------------- 运行序号基线（D2） ----------------
+
+    private static final String K_RUN_ORDINAL = "run_ordinal_max";
+
+    /**
+     * 上次进程用到的最大 runOrdinal（D2）。
+     *
+     * <h3>为什么必须落盘</h3>
+     * runId 的三层唯一性里，bootId 读不到时会失效；而断点续跑队列是
+     * **跨进程持久化**的。若每次进程都从 ordinal 0 起，同一毫秒的两次启动
+     * 会算出逐字节相同的 runId，旧 Attempt 的日志窗口标记就会与新 Attempt
+     * 互相匹配（证据串窗）。
+     *
+     * <p>把「已用到哪」落盘后，新进程从 base+1 起，唯一性不再依赖
+     * bootId 可读性，也不再依赖时钟精度。读不到时返回 0（行为同旧版）。
+     */
+    public static int runOrdinalBase(Context ctx) {
+        return (int) Math.max(0L, sp(ctx).getLong(K_RUN_ORDINAL, 0L));
+    }
+
+    /** 记录「已用到哪」：单调递增，绝不回退。 */
+    public static void bumpRunOrdinal(Context ctx, int used) {
+        if (used <= 0) return;
+        SharedPreferences p = sp(ctx);
+        if (used > p.getLong(K_RUN_ORDINAL, 0L)) {
+            p.edit().putLong(K_RUN_ORDINAL, used).apply();
+        }
     }
 
     // ---------------- 在线连接选项 ----------------

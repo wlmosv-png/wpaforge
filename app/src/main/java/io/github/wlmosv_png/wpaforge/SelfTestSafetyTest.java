@@ -54,7 +54,7 @@ public class SelfTestSafetyTest {
         }
     }
 
-    private static final String MA = "/workspace/promo-wpaforge/app/src/main/java/io/github/"
+    private static final String MA = TestPaths.under("app/src/main/java/io/github") + "/"
             + "wlmosv_png/wpaforge/MainActivity.java";
 
     public static void main(String[] args) {

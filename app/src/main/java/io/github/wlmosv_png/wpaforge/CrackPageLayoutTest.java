@@ -37,7 +37,7 @@ public class CrackPageLayoutTest {
         ok(name, c);
     }
 
-    private static final String ROOT = "/workspace/promo-wpaforge/app/src/main/java/"
+    private static final String ROOT = TestPaths.javaSrcRoot()
             + "io/github/wlmosv_png/wpaforge/";
 
     /** 取某个方法的方法体（从签名到下一个同级方法签名为止）。 */
@@ -94,12 +94,13 @@ public class CrackPageLayoutTest {
         System.out.println("== 2. 破解页展示位：一个都不能漏赋值 ==");
         String[] views = {"connectTargetView", "connectDictView", "connectModeView",
                 "connectProgress", "candBox", "candLabel", "candRoll", "candPrev",
-                "hitCard", "hitPw", "hitMeta", "observeNotice", "flowHeader", "flowChevron",
+                "hitCard", "hitPw", "hitMeta", "flowHeader", "flowChevron",
                 "flowLabel", "flowCount", "chipKey", "chipAll", "flowClear",
                 "connectStreamView", "streamScroll", "streamParams", "jumpLatestBtn",
                 "connectEmptyHint", "startBtn", "pauseBtn", "stopBtn", "queueBox",
                 "netMetaView", "netSecChip", "statDoneView", "statTotalView", "statPctView",
                 "statRateView", "statEtaView", "stateBig", "actionsHint",
+                "statWrongView", "statUnkView",
                 "progressCard", "eventCard", "actionsCard"};
         int missing = 0;
         StringBuilder miss = new StringBuilder();
@@ -150,7 +151,7 @@ public class CrackPageLayoutTest {
                 && eng.contains("liveRecentAvgMs = rate.avgMs();"));
         ok("进度回调的 rate/eta 用滑窗值", eng != null
                 && eng.contains("long winPerItem = rate.avgMs();")
-                && eng.contains("long eta = winPerItem > 0 ? (total - cursor) * winPerItem : -1L;"));
+                && eng.contains("long eta = winPerItem > 0 ? (total - start - tested) * winPerItem : -1L;"));
         ok("滑窗类存在且可离线测", read(ROOT + "audit/RateWindow.java") != null
                 && read(ROOT + "RateWindowTest.java") != null);
 
@@ -191,7 +192,9 @@ public class CrackPageLayoutTest {
         ok("选目标 → showTargetPicker()",
                 ma.contains("connectTargetView.setOnClickListener(v -> showTargetPicker());"));
         ok("选字典 → showDictSource()",
-                ma.contains("connectDictView.setOnClickListener(v -> showDictSource());"));
+                ma.contains("connectDictView.setOnClickListener(v -> {")
+                        && ma.contains("if (usePlanMode) showPlanManager();")
+                        && ma.contains("else showDictSource();"));
         ok("日志折叠 → toggleStream()",
                 ma.contains("flowHeader.setOnClickListener(v -> toggleStream());"));
         ok("「关键」筛选语义不变",
@@ -299,13 +302,20 @@ public class CrackPageLayoutTest {
          *   运行中 = 正在尝试（主动语态，说明"现在在干什么"）
          *   结束后 = 最后尝试（陈述事实；**刻意不用"完成"** —— 没找到不算完成）
          * 旧词「当前候选」跑完还挂在那儿，会让人以为还在跑，所以这里一并钉住新词。 */
-        ok("新增文案都走 L.s 双语", theme != null && ma.contains("L.s(\"已完成\", \"TRIED\")")
+        // UI 第二轮：统计行从两列扩到四列，标签用 L.s 双语。
+        // 「已完成」→「已执行」（避免与任务完成混淆），新增「已证实错误 / 未确定」。
+        ok("新增文案都走 L.s 双语", theme != null
+                && ma.contains("L.s(\"已执行\", \"TRIED\")")
+                && ma.contains("L.s(\"已证实错误\", \"PROVEN WRONG\")")
+                && ma.contains("L.s(\"未确定\", \"UNCERTAIN\")")
                 && ma.contains("L.s(\"总数\", \"TOTAL\")")
                 && ma.contains("L.s(\"正在尝试\", \"TRYING\")")
                 && ma.contains("L.s(\"最后尝试\", \"LAST TRIED\")"));
+        // 收口：状态文案加了前缀符号（▶ 运行中 / ‖ 已暂停 / … 准备中），
+        // 目的是让三种状态在色盲/低对比环境下也能靠符号区分。
         ok("状态文案区分 运行中/暂停/停止/命中/未命中/空闲",
-                ma.contains("L.s(\"运行中\", \"Running\")")
-                        && ma.contains("L.s(\"已暂停 · 进度已保留\", \"Paused · progress kept\")")
+                ma.contains("L.s(\"▶ 运行中\", \"▶ Running\")")
+                        && ma.contains("L.s(\"‖ 已暂停 · 进度已保留\", \"‖ Paused · progress kept\")")
                         && ma.contains("L.s(\"已停止\", \"Stopped\")")
                         && ma.contains("L.s(\"已命中\", \"Hit\")")
                         && ma.contains("L.s(\"已结束 · 未命中\", \"Finished · no match\")")

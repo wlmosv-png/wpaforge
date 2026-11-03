@@ -15,11 +15,15 @@ import android.content.pm.ServiceInfo;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.github.wlmosv_png.wpaforge.audit.AttemptLedger;
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.CnHot;
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
+import io.github.wlmosv_png.wpaforge.audit.DictPlan;
+import io.github.wlmosv_png.wpaforge.audit.PlanRecovery;
 import io.github.wlmosv_png.wpaforge.audit.DictGenerator;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
+import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
 import io.github.wlmosv_png.wpaforge.audit.RootProber;
 import io.github.wlmosv_png.wpaforge.audit.SeedModel;
 import io.github.wlmosv_png.wpaforge.audit.ShellSession;
@@ -64,6 +68,41 @@ public class CrackService extends Service {
         void onQueueChanged(List<TaskQueue.Task> queue);
         void onAttempt(int index, int total, String candidate);
         void onAttemptResult(String candidate, boolean hit, long ms, String detail);
+
+        /**
+         * 带 **Verdict** 的版本（U1）。
+         *
+         * <p>为什么必须加：旧签名只给一个 {@code boolean hit}，界面无从区分
+         * AUTH_FAIL / NETWORK_AUTH_FAIL / TIMEOUT / INCOMPLETE /
+         * TERMINATED_UNKNOWN / ERROR —— 六种情况在列表里长得一模一样（都是 ✗）。
+         * 用户会据此认为「这批密码都错了」，那是错的结论。
+         *
+         * <p>用 default 实现：老实现类不必改，服务侧已保证新方法总被调用。
+         */
+        default void onAttemptResult(String candidate, boolean hit, long ms, String detail,
+                                     CrackEngine.Verdict verdict) {
+            onAttemptResult(candidate, hit, ms, detail);
+        }
+
+        /**
+         * 实时**结论分布**（UI 第二轮：让「已证实错误 / 未确定」在运行时就能看见）。
+         *
+         * <p>为什么需要单独一条回调：{@code onProgress} 只带 tested/total/rate/eta，
+         * 界面拿不到「有多少条是已证实错误、多少条是没结论」。任务结束后能从
+         * {@code task.miss*} 读到，但运行中是一片空白 —— 用户看着 43/335
+         * 却不知道这 43 条到底证伪了多少。
+         *
+         * <p>数字口径与 {@code VerdictTally} 完全一致：
+         * <ul>
+         *   <li>{@code confirmed}：AUTH_FAIL 且 grade=DIRECT（候选级证伪）；</li>
+         *   <li>{@code inconclusive}：TIMEOUT/UNKNOWN/INCOMPLETE/TERMINATED_UNKNOWN
+         *       /ERROR/TARGET_GONE + NETWORK_AUTH_FAIL + 推断失败。</li>
+         * </ul>
+         * <b>不含 SUCCESS / ABORTED</b>（前者单独显示，后者未结案）。
+         *
+         * <p>用 default 实现：老实现类不必改。
+         */
+        default void onTally(int confirmed, int inconclusive, int networkAuthFail) { }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
@@ -381,6 +420,8 @@ public class CrackService extends Service {
 
     /** 本目标的"已试候选"集合（跑的时候往里记，下次不重复） */
     private volatile TriedSet triedSet;
+    /** P0：过滤**之前**的候选列表快照（仅用于换算等效续跑位置）。 */
+    private java.util.List<Candidate> workBeforeFilter = null;
     /**
      * 载入 triedSet 时用的目标键。
      *
@@ -391,6 +432,56 @@ public class CrackService extends Service {
     private volatile String triedKey;
     private int triedSinceFlush = 0;
 
+    /**
+     * 本目标的**候选执行历史账本**（跨字典去重的依据）。
+     *
+     * <h3>与 triedSet 的分工（不要混）</h3>
+     * <ul>
+     *   <li>{@link #triedSet} 只收 {@code DIRECT} 结论 —— 它是**永久排除**，
+     *       进了就不再来。</li>
+     *   <li>账本收所有「已执行完成」的结论，**不参与永久排除**；
+     *       默认档除了 CONFIRMED_WRONG 一条都不跳。它的价值是：换字典时
+     *       能跳过「上轮已经跑过、但没有候选级证据」的候选，并把这两类
+     *       跳过的条数分别报给界面。</li>
+     * </ul>
+     * 两者的目标隔离口径完全一致（同一个 targetKey），绝不跨网络共享。
+     */
+    private volatile AttemptLedger ledger;
+    /** 账本用的目标键 —— 与 {@link #triedKey} 同源，由 executeTask 一并赋值。 */
+    private volatile String ledgerKey;
+    private int ledgerSinceFlush = 0;
+    /**
+     * 本轮的跨字典去重档位（任务入队时定，执行期不变）。
+     *
+     * <p>默认 {@link AttemptLedger.SkipPolicy#CONSERVATIVE} —— 绝不静默跳过
+     * 任何未确定候选，行为与 1.9.38 一致。
+     */
+    private volatile AttemptLedger.SkipPolicy skipPolicy = AttemptLedger.SkipPolicy.CONSERVATIVE;
+    /** 本轮是否强制重跑：绕过历史过滤，但**不删除、不篡改**任何历史记录。 */
+    private volatile boolean forceRerun = false;
+
+    /**
+     * 多字典执行计划（计划模式下非 null）。
+     *
+     * <p><b>计划是唯一真相源</b>：顺序、每本进度、档位、强制重跑都从它读；
+     * {@code queue.json} 里的任务只是**派生物**。这样就不存在「两个文件各写一半」
+     * 的中间态 —— 任意时刻被杀，盘上要么是新计划要么是旧计划。
+     */
+    private volatile DictPlan plan;
+    /** 当前计划文件的目标键（加载时定下，落盘时用同一份，避免跨目标串写）。 */
+    private volatile String planFileKey = "";
+    /** 本轮是否处于计划模式（计划文件可用，且目标与当前队列一致）。 */
+    private volatile boolean planMode = false;
+    /** 本轮是否发生过通道级阻塞（要把计划标成 BLOCKED，而不是伪装成未命中）。 */
+    private volatile boolean planBlockedThisRun = false;
+    /**
+     * 本轮用户是否**主动暂停过**。
+     *
+     * <p>计划模式需要区分两种 PAUSED：<b>上一轮遗留</b>（应恢复，否则「继续」
+     * 永远点不动）与<b>本轮用户刚按的</b>（必须真的停下来）。只靠盘上的状态
+     * 分不出来，所以在内存里记一笔：{@link #pause()} 置真，每轮 runQueue 开头清零。
+     */
+    private volatile boolean userPausedThisRun = false;
     /**
      * 服务**正在使用**的那份候选列表（只读用途：界面回前台后重建显示）。
      *
@@ -433,6 +524,20 @@ public class CrackService extends Service {
             }
             return;
         }
+        /* 计划优先于队列（2026-11-02 审计修复；同日 P0 再修）。
+         *
+         * 旧实现在这里直接用 hasWork() 判「有没有 PENDING 任务」—— 但
+         * 「计划已推进、派生任务之前进程被杀」时队列里**恰好没有** PENDING，
+         * 于是计划根本没被读到就收工了，下一本字典永久丢失（真机复现）。
+         *
+         * P0 再修：计划**只接管「计划派生」的待办**。用户显式入队的普通任务
+         * (fromPlan=false) 永远不被计划终态阻塞 —— 旧实现无条件调
+         * recoverPlanForRun()，一个已结束的残留计划会让普通任务也永远跑不起来。
+         * 队列为空时仍走计划恢复（崩溃窗口：计划已推进、派生任务之前进程被杀）。 */
+        TaskQueue.Task nextPending = TaskQueue.nextPending(this);
+        boolean planRelevant = PlanRecovery.planRelevant(nextPending);
+        if (planRelevant && recoverPlanForRun()) return;
+
         if (!TaskQueue.hasWork(this)) {
             log(L.s("队列里没有待办任务", "No pending tasks in the queue"));
             stopSelfSafe();
@@ -446,6 +551,7 @@ public class CrackService extends Service {
 
     /** 暂停：当前任务保留进度，队列原地等待 */
     public void pause() {
+        userPausedThisRun = true;      // 见字段注释：区分「遗留暂停」与「本轮暂停」
         flushTried();   // 暂停时把"已试"落盘，避免被系统回收后重跑一截
         // ★ 最关键的一步：把「暂停」真正送到引擎。
         //
@@ -476,10 +582,21 @@ public class CrackService extends Service {
      * 不动 running 标志 —— 那会和线程状态打架。
      */
     public void stopAll() {
+        // P3：这个标志只表示「本轮的停止意图」。
+        // 它不再永久否决之后的「继续」—— 收尾逻辑改看队列里是否真有 PENDING
+        // （见 runQueue 的 finally）。否则「停止 → 立刻继续」会卡死在 PENDING。
         stopRequested = true;
 
         CrackEngine eng = engineRef;
         if (eng != null) eng.cancel();
+
+        /* 计划必须一起落 STOPPED（2026-11-02 审计修复）。
+         *
+         * 旧实现只动任务：worker 已经退出时 currentTask 为 null、队列里也没有
+         * PENDING，于是 stopAll() 什么都没写 —— 真机上表现为「点了停止，
+         * 队列仍是 PAUSED、计划仍是 RUNNING」，下次启动还会自动继续。
+         * 用户明确要求：停止必须持久化，且不得被错误恢复成自动继续。 */
+        planStop();
 
         // 当前任务立刻标为已停止
         TaskQueue.Task cur = currentTask;
@@ -744,36 +861,139 @@ public class CrackService extends Service {
         }, "wpaforge-whitelist").start();
     }
 
+    // ---------------------------------------------------------------- 界面快照
+    // 静态只读快照：界面不必持有 Service 引用，也不会因为服务被回收而拿到空值。
+    // 里面只有「条数」与「计划摘要」—— 不含任何候选、口令或内部标识。
+
+    private static volatile int LAST_SKIPPED_CONFIRMED = 0;
+    private static volatile int LAST_SKIPPED_UNDETERMINED = 0;
+    private static volatile String LAST_PLAN_SUMMARY = "";
+
+    /** 本次因「已证实错误」被跳过的候选条数（界面用）。 */
+    public static int lastSkippedConfirmed() { return LAST_SKIPPED_CONFIRMED; }
+
+    /** 本次因「没跑出结果」被跳过的候选条数（界面用；默认档恒为 0）。 */
+    public static int lastSkippedUndetermined() { return LAST_SKIPPED_UNDETERMINED; }
+
+    /** 多字典计划的一行摘要；空串 = 本次没启用计划。 */
+    public static String planSummary() { return LAST_PLAN_SUMMARY; }
+
+    /** 上次运行的过滤档位（0=保守 / 1=省时）；界面显示用。 */
+    private static volatile int LAST_SKIP_POLICY_ID = 0;
+    /** 上次运行的可执行候选总数（过滤后）；界面显示用。 */
+    private static volatile int LAST_WORK_TOTAL = 0;
+    /** 上次运行是否为计划模式。 */
+    private static volatile boolean LAST_PLAN_MODE = false;
+
+    public static int lastSkipPolicyId() { return LAST_SKIP_POLICY_ID; }
+    public static int lastWorkTotal() { return LAST_WORK_TOTAL; }
+    public static boolean lastPlanMode() { return LAST_PLAN_MODE; }
+
+    /**
+     * 跑完一个任务之后，**整条队列**是否应当就此停下来。
+     *
+     * <h3>为什么要抽成一个纯函数</h3>
+     * {@link #runQueue()} 是 Android Service 的私有方法，桌面 JVM 起不来，
+     * 所以「命中之后到底停不停」这条判定如果只写在循环里，就只能靠肉眼审读。
+     * 抽出来之后它是可穷举、可断言的生产代码 —— {@code QueueTerminationTest}
+     * 直接调用它，不是复制一份模拟逻辑。
+     *
+     * <p>目前只有命中会终止整条队列：
+     * <ul>
+     *   <li>{@code DONE_HIT} → **停**（命中，再跑下去只会破坏已连上的配置）；</li>
+     *   <li>{@code DONE_MISS} → 继续（未命中就是继续试下一本的意思）；</li>
+     *   <li>{@code PAUSED} / {@code STOPPED} → 交给外层既有逻辑（暂停/停止各自有出口）。</li>
+     * </ul>
+     */
+    public static boolean queueStopsAfter(TaskQueue.State st) {
+        return st == TaskQueue.State.DONE_HIT;
+    }
+
     private void runQueue() {
         acquireLocks();
         ensureSystemWhitelist();
         showKeepAliveOverlay();
+        planMode = loadPlanForRun();
+        planBlockedThisRun = false;
+        userPausedThisRun = false;
         try {
             while (!stopRequested) {
                 if (Thread.currentThread().isInterrupted()) break;
+                // 计划模式下：计划一旦不在「运行中」，本轮就不再取新任务。
+                // 这条防的是「用户点了停止/计划已终态，队列里还躺着别的待办」——
+                // 那些待办不该被这次运行顺手牵走。
+                if (planMode && plan != null && plan.state != DictPlan.State.RUNNING) {
+                    log(L.f("计划状态为 %s：本轮不再取新任务",
+                            "plan state is %s: not taking new tasks", plan.state.name()));
+                    break;
+                }
                 TaskQueue.Task task = TaskQueue.nextPending(this);
                 if (task == null) break;
                 if (task.state == TaskQueue.State.PAUSED) {
-                    log(L.f("任务「%s」处于暂停，跳过", "Task “%s” is paused, skipping", task.ssid));
-                    break;
+                    /* 计划模式下，计划已经明确指向这一本 —— 那条 PAUSED 就是
+                     * 「计划要跑的那一本」，应当恢复执行而不是中断整条队列。
+                     * （2026-11-02 真机确证：这里 break 会让「继续」与
+                     *  「进程被杀后恢复」双双失效。）
+                     *
+                     * 但**本轮用户刚按的暂停**必须尊重：用 userPausedThisRun
+                     * 区分，否则「暂停」会被自己立刻撤销。 */
+                    if (planMode && plan != null && !userPausedThisRun
+                            && plan.state == DictPlan.State.RUNNING
+                            && PlanRecovery.sameDict(task, plan.current())) {
+                        task.state = TaskQueue.State.PENDING;
+                        TaskQueue.update(this, task);
+                        log(L.f("计划模式：接管当前字典「%s」的暂停状态，继续执行",
+                                "plan mode: taking over the paused dictionary \"%s\"",
+                                task.ssid));
+                    } else {
+                        log(L.f("任务「%s」处于暂停，跳过",
+                                "Task “%s” is paused, skipping", task.ssid));
+                        break;
+                    }
                 }
                 executeTask(task);
                 if (stopRequested) break;
+                // 命中即终止**整条队列**。
+                //
+                // 旧实现只把命中的那条任务标成 DONE_HIT，循环照旧往下取下一个
+                // PENDING 任务 —— 于是「第一本命中，第二本接着跑」。那不只是
+                // 浪费时间：后一本会 forget 掉刚刚连上的配置，把已经拿到的
+                // 正确口令从系统里抹掉（restoreAfterRun 之外的一次覆盖）。
+                // 多字典计划最硬的一条要求就是命中不继续，所以这一步放在循环里，
+                // 而不是只在新计划模块里绕过。
+                if (queueStopsAfter(task.state)) {
+                    log(L.f("任务「%s」已命中：终止整个队列，不再执行后续任务",
+                            "task \"%s\" hit: stopping the whole queue", task.ssid));
+                    break;
+                }
             }
         } catch (Exception e) {
             log(L.f("队列执行异常: %s", "Queue error: %s", String.valueOf(e)));
         } finally {
             releaseLocks();
             currentTask = null;
+            planMode = false;          // 每次运行重新评估，不把上一轮的结论带进来
             notifyQueue();
             // 收尾前补一次：用户在 worker 还活着时点过「继续」，
             // 那一次 startQueue 被上面的分支挡下了。不补这一下，
             // 任务会永远停在 PENDING（用户看到「点了继续没反应」）。
             boolean wantRestart = restartWanted;
             restartWanted = false;   // 一次性：判定过就清，免得日后误触发
-            if (!stopRequested && wantRestart && TaskQueue.hasPending(this)) {
+            // P3 修复：判据从「!stopRequested」改成「队列里真的有 PENDING」。
+            //
+            // 旧实现要求 !stopRequested —— 但 stopAll() 把 stopRequested 置 true 后
+            // **没有任何地方会清它**（除了下次 startQueue）。于是：
+            //   停止 → 收尾窗口内点「继续」→ startQueue 被「worker 还活着」挡回，
+            //   只记 restartWanted；收尾时 stopRequested 仍为 true → 不重启。
+            //   任务停在 PENDING，没有线程会跑它 = 用户看到「点继续没反应」，
+            //   必须再点一次才生效（第二次 worker 已退出，走正常 startQueue）。
+            //
+            // 「有没有待办」是队列自己说了算的事实；stopRequested 只是上一轮的
+            // 遗留意图，不该否决用户新下的「继续」。
+            if (wantRestart && TaskQueue.hasPending(this)) {
                 log(L.s("接上「继续」请求，重新开始队列",
                         "Picking up the resume request, restarting the queue"));
+                stopRequested = false;   // 用户已明确要继续，清掉上一轮的停止意图
                 worker = new Thread(this::runQueue, "wpaforge-crack");
                 worker.start();
                 return;
@@ -786,6 +1006,8 @@ public class CrackService extends Service {
 
     private void executeTask(TaskQueue.Task task) {
         currentTask = task;
+        // 计划模式下先按计划校正档位 / 强制重跑 / 续跑位置 —— 队列是派生物。
+        applyPlanOverrides(task);
         task.state = TaskQueue.State.RUNNING;
         TaskQueue.update(this, task);
         notifyQueue();
@@ -801,9 +1023,9 @@ public class CrackService extends Service {
                     + io.github.wlmosv_png.wpaforge.audit.RestoreGuard.describe(gate));
             // P1：把「阻塞原因 + 下一步」写给用户 —— 不把定向拦截伪装成普通暂停。
             log(io.github.wlmosv_png.wpaforge.audit.RestoreRunner.blockHelp(gate));
-            task.state = TaskQueue.State.PAUSED;
-            TaskQueue.update(this, task);
-            notifyQueue();
+            // 环境不可用 ≠ 用户暂停：标成阻塞，计划不得把它当成正常未命中。
+            planBlockedThisRun = true;
+            finishTaskEarly(task, TaskQueue.State.PAUSED, L.s("环境闸门未通过", "gate blocked"));
             return;
         }
 
@@ -835,6 +1057,10 @@ public class CrackService extends Service {
                     "failed to create a run id (verdicts unaffected, but this run "
                             + "has no traceable id)") + ": " + t);
         }
+
+        // 本次是否因「本目标试过」过滤而缩短了候选列表。
+        // 必须在下面那个候选准备块**之外**声明：块内赋值、块外决定续跑位置。
+        boolean filteredBeforeRun = false;
 
         // 准备候选。按任务入队时记录的开关决定，不再无条件叠加。
         // 续跑时必须用完全相同的规则重建列表，否则 offset 会对不上。
@@ -912,20 +1138,39 @@ public class CrackService extends Service {
                 triedKey = TriedSet.targetKey(task.bssid, task.ssid);
                 triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
                 triedSinceFlush = 0;
-                if (triedSet.size() > 0) {
-                    List<Candidate> keep = new ArrayList<>(work.size());
-                    int skipped = 0;
-                    for (Candidate c : work) {
-                        if (triedSet.contains(c.password)) { skipped++; continue; }
-                        keep.add(c);
-                    }
-                    if (skipped > 0) {
-                        log(L.f("已跳过 %d 条本目标试过的候选（本目标累计 %d 条）",
-                                "Skipped %d already-tried candidates on this target (%d total)",
-                                skipped, triedSet.size()));
-                    }
-                    work = keep;
+
+                /* ── 跨字典去重：账本（与 triedSet 同源目标键，语义不同）───────
+                 * triedSet = 已证实候选级错误 → 永久排除；
+                 * 账本     = 执行历史       → 默认档不排除任何未确定候选。
+                 * 档位与「强制重跑」都来自任务本身（入队时定），执行期不变 ——
+                 * 中途改全局设置不会让同一次任务的过滤口径前后不一致。 */
+                ledgerKey = triedKey;
+                ledger = AttemptLedger.load(AttemptLedger.fileFor(this, ledgerKey));
+                ledgerSinceFlush = 0;
+                skipPolicy = AttemptLedger.SkipPolicy.of(task.skipPolicyId);
+                forceRerun = task.forceRerun;
+
+                // P0：换算等效续跑位置需要「过滤前的原列表」——
+                // 过滤只保持相对顺序，位置可由「前 o 条里被删了几条」精确得出。
+                workBeforeFilter = work;
+                FilterOutcome f = filterCandidates(work, triedSet, ledger, skipPolicy, forceRerun);
+                if (f.totalSkipped() > 0) {
+                    log(L.f("已跳过 %d 条本目标试过的候选（%d 条已确定错误、%d 条未确定）",
+                            "Skipped %d candidates already tried on this target "
+                                    + "(%d proven wrong, %d undetermined)",
+                            f.totalSkipped(), f.skippedConfirmed, f.skippedUndetermined));
                 }
+                if (forceRerun) {
+                    log(L.s("本次强制重跑：不套用历史过滤（已有历史记录保持不动）",
+                            "force re-run: history filtering is off (existing history kept)"));
+                }
+                work = f.kept;
+                filteredBeforeRun = (f.totalSkipped() > 0);
+                LAST_SKIPPED_CONFIRMED = f.skippedConfirmed;
+                LAST_SKIPPED_UNDETERMINED = f.skippedUndetermined;
+                LAST_SKIP_POLICY_ID = skipPolicy == null ? 0 : skipPolicy.id;
+                LAST_WORK_TOTAL = work.size();
+                LAST_PLAN_MODE = planMode;
                 if (triedSet.isOverflow()) {
                     log(L.s("提示: 本目标的已试记录已达上限，更早的记录不再计入。",
                             "Note: tried-record limit reached for this target."));
@@ -947,17 +1192,36 @@ public class CrackService extends Service {
             } else {
                 log(L.s("候选为空，跳过", "Empty candidate set, skipping"));
             }
-            task.state = TaskQueue.State.DONE_MISS;
-            TaskQueue.update(this, task);
-            notifyQueue();
+            // 这一本确实没有可跑的候选 —— 属于「正常跑完但未命中」，
+            // 必须走统一收尾，否则计划收不到结论（真机复现的缺陷）。
+            // P0（多字典接力）：候选为空时本任务**从未真正改动过配置**，
+            // 但 armRestore 已经登记了一条恢复记录。必须把它**收尾**，
+            // 否则同一目标上的下一本字典会被 RestoreGuard 的 OTHER_PENDING
+            // 闸门挡住（真机实测：A 全被过滤 → B 直接被 BLOCKED，接力中断）。
+            restoreAfterRun(task.id, TaskQueue.State.DONE_MISS.name(), false);
+            finishTaskEarly(task, TaskQueue.State.DONE_MISS,
+                    L.s("候选为空", "no candidates"));
             return;
         }
 
         taskStartAt = System.currentTimeMillis();
         lastOffsetSaveAt = 0L;
         lastSavedOffset = -1;
-        final int startOffset = task.offset;
-        if (startOffset > 0) {
+        // P0：**不再因为「有过过滤」就把位置归零**。
+        //
+        // 旧实现走 effectiveStartOffset(offset, filtered)，过滤时无条件返回 0，
+        // 续跑会把 offset 之前的未试候选全部重跑一遍 —— 真机表现就是「从零开始」。
+        // 现在按「原列表前 o 条里被删掉几条」精确换算（过滤保持顺序，位置可算）。
+        final int startOffset = workBeforeFilter != null
+                ? resumeIndexAfterFilter(workBeforeFilter, triedSet, ledger, skipPolicy,
+                        task.offset, forceRerun)
+                : effectiveStartOffset(task.offset, filteredBeforeRun);
+        if (startOffset != task.offset) {
+            log(L.s("续跑位置按「已试过滤」换算：第 " + task.offset + " 条 -> 第 "
+                            + startOffset + " 条（过滤后列表内）",
+                    "resume offset remapped after tried-filtering: "
+                            + task.offset + " -> " + startOffset));
+        } else if (startOffset > 0) {
             log(L.s("从第 ", "Resuming from ") + startOffset + L.s(" 条继续", " entries"));
         }
 
@@ -981,6 +1245,9 @@ public class CrackService extends Service {
     private void runViaEngine(final TaskQueue.Task ft, int startOffset) {
         logFile = null;   // 每次任务新建一个日志文件
         final CrackEngine engine = new CrackEngine(this, ft.crackMode);
+        // D2：运行序号从落盘基线续接 —— bootId 读不到时，
+        // 「同毫秒跨进程」也不再可能算出相同 runId（旧证据串窗）。
+        engine.setRunOrdinalBase(Prefs.runOrdinalBase(this));
         engineRef = engine;
 
         {
@@ -1063,11 +1330,42 @@ public class CrackService extends Service {
                  * 超时、无结论、通道出错都不记：那些下次还应该再试一次，
                  * 记进去等于把没真正验证过的候选当成"已排除"。 */
                 if (triedSet != null && a.password != null && !a.password.isEmpty()) {
-                    boolean definite = a.isSuccess()
-                            || a.verdict == CrackEngine.Verdict.AUTH_FAIL;
-                    if (definite && triedSet.add(a.password) && ++triedSinceFlush >= 32) {
-                        triedSinceFlush = 0;
-                        flushTried();
+                    // 证据模型分流：只有 DIRECT 进永久集合；INFERRED 只进本轮内存。
+                    //
+                    // **命中（SUCCESS）永远不写 triedSet**（2026-11-02 审计修复）：
+                    // triedSet 的语义是「这条密码已证实是错的」，而命中恰恰证明
+                    // 它是对的。旧实现把 SUCCESS 也当成 persistable 写进去，
+                    // 于是正确口令长期占着「已排除」的名额 —— 换个目标再用同一份
+                    // 字典时，它会因为是「已试过的错误密码」而被跳过。
+                    if (a.verdict == CrackEngine.Verdict.SUCCESS) {
+                        // 明确不写：命中属于结果，不属于「已试错误」。
+                    } else if (EvidenceGrade.persistable(a.grade)) {
+                        if (triedSet.add(a.password) && ++triedSinceFlush >= 32) {
+                            triedSinceFlush = 0;
+                            flushTried();
+                        }
+                    }
+                    // 非 DIRECT（含 INFERRED / NONE）只记录日志，不进任何排除集合：
+                    // 它们既不能写永久记录，也不能代表「这条候选已经被排除」。
+
+                    /* ── 账本：只记「执行过什么」，不参与永久排除 ──────────────
+                     * 分类由 AttemptLedger.Level.classify 单点决定：
+                     *   AUTH_FAIL+DIRECT              → CONFIRMED_WRONG
+                     *   NETWORK_AUTH_FAIL             → NETWORK_TERMINATED
+                     *   TERMINATED_UNKNOWN            → TERMINATED_UNKNOWN
+                     *   TIMEOUT                       → TIMEOUT
+                     *   UNKNOWN（还连着目标）          → UNKNOWN_ON_TARGET
+                     *   INCOMPLETE / ABORTED / ERROR  → 不记（任何档位都不会因此跳过）
+                     * 强制重跑时同样如实记录 —— 它是真实执行结果，不是污染。 */
+                    AttemptLedger lg = ledger;
+                    if (lg != null) {
+                        AttemptLedger.Level lv =
+                                AttemptLedger.Level.classify(a.verdict, a.grade);
+                        if (lv != null && lg.record(a.password, lv)
+                                && ++ledgerSinceFlush >= 32) {
+                            ledgerSinceFlush = 0;
+                            flushLedger();
+                        }
                     }
                 }
                 // 不要再覆盖引擎给出的 detail。
@@ -1081,16 +1379,35 @@ public class CrackService extends Service {
                     detail = L.s(detail + "（依据: ", detail + " (via: ") + a.confirmedBy + "）";
                 }
                 for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail);
+                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail,
+                            a.verdict);
+                }
+                // 实时结论分布（UI 第二轮）：口径与 VerdictTally 一致，
+                // 用引擎的累计值（它本来就是唯一统计入口）。
+                {
+                    CrackEngine eng = engineRef;
+                    if (eng != null) {
+                        for (UiCallback cb : callbacks) {
+                            cb.onTally(eng.confirmedFailCount(),
+                                    eng.inconclusiveCount(), eng.networkAuthFailCount());
+                        }
+                    }
                 }
             }
 
             @Override
             public void onProgress(int tested, int total, double rate, long etaMs) {
-                // 断点续跑的关键：把「已试到哪」定期写盘。
-                // 引擎每条都会回调这里，tested 即当前游标位置。
-                saveProgress(ft, tested, false);
+                // tested = 已尝试数，只用于进度显示。
+                // **不要拿它写盘 offset** —— 那会让断点续跑跳过未排除的候选
+                // （正确密码判 INFERRED 后被跳过，2026-11-02 真机事故）。
                 for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
+            }
+
+            @Override
+            public void onCursor(int cursor) {
+                // 断点续跑的关键：把「安全续跑边界」写盘。cursor 只由 DIRECT 推进，
+                // 任何未定结论都钉住它，保证续跑不会漏掉未排除的候选。
+                saveProgress(ft, cursor, false);
             }
 
             @Override
@@ -1098,8 +1415,20 @@ public class CrackService extends Service {
 
             @Override
             public void onFinished(int tested, int offset, String hitPassword, String outcome) {
+                // C1 修复：先把本轮结论分布取出来，再清 engineRef。
+                // 旧顺序（先 null 再读）让 missConfirmedFail/missInconclusive 恒为 0。
+                // C1 修复：**先取快照，再清 engineRef**。
+                // 旧顺序（先 null 再读）让 missConfirmedFail/missInconclusive 恒为 0。
+                int[] miss = snapshotMissCounts(engineRef);
+                // D2：把本轮用到的最大 runOrdinal 落盘，供下次进程从 base+1 起。
+                // 必须在清 engineRef 之前读取；写失败也不影响判定（只是退化回 bootId 兜底）。
+                try {
+                    if (engineRef != null) {
+                        Prefs.bumpRunOrdinal(CrackService.this, engineRef.runOrdinalNow());
+                    }
+                } catch (Throwable ignored) { }
                 engineRef = null;
-                finishTask(ft, outcome, tested, offset, hitPassword);
+                finishTask(ft, outcome, tested, offset, hitPassword, miss);
             }
 
             @Override
@@ -1107,6 +1436,10 @@ public class CrackService extends Service {
                 log(L.f("无法开始: %s", "Cannot start: %s", title));
                 for (UiCallback cb : callbacks) cb.onLog(title + "\n" + detail);
                 engineRef = null;
+                // 通道/环境阻塞与「用户主动停止」是两回事：
+                // 前者是环境不行（计划要标 BLOCKED），后者是用户不想跑了（STOPPED）。
+                // 混在一起会让计划把「跑不动」显示成「未命中」—— 那是在说谎。
+                planBlockedThisRun = true;
                 ft.state = TaskQueue.State.STOPPED;
                 TaskQueue.update(CrackService.this, ft);
                 restoreAfterRun(ft.id, "BLOCKED", false);
@@ -1178,6 +1511,420 @@ public class CrackService extends Service {
         t.save(TriedSet.fileFor(this, key));
     }
 
+    /**
+     * 把**候选执行历史账本**落盘。节奏与 triedSet 相同（每 32 条 + 任务收尾）。
+     *
+     * <p>失败只记一行日志。账本与 triedSet 的失败代价完全不同：
+     * triedSet 丢了会让已证实的错误被重试；账本丢了只是「换字典时多跑几条」。
+     * 两者都不会把未验证的候选当成已排除 —— 那条线由
+     * {@link EvidenceGrade#persistable} 独自守住。
+     */
+    private void flushLedger() {
+        AttemptLedger l = ledger;
+        String key = ledgerKey;
+        if (l == null || key == null || key.isEmpty()) return;
+        if (!l.isDirty()) return;          // 无新记录 → 不做整表落盘
+        if (!l.save(AttemptLedger.fileFor(this, key))) {
+            log(L.s("账本落盘失败（不影响判定，下次可能多跑几条）",
+                    "failed to persist the attempt ledger (verdicts unaffected)"));
+        }
+        ledgerSinceFlush = 0;
+    }
+
+    // ================================================================ 多字典计划
+
+    /**
+     * 本轮是否启用多字典计划。
+     *
+     * <p>三条准入条件，缺一不接管（不接管就退回既有的单字典队列行为，
+     * 也就是「与单字典模式保持一致」）：
+     * <ol>
+     *   <li>计划文件可用且里面有字典；</li>
+     *   <li>计划未处于终态（命中/停止/全部跑完都不该再自动跑）；</li>
+     *   <li>计划的**目标**与队列里第一个待办任务的目标一致 ——
+     *       换了目标却沿用旧计划，等于把别的网络的进度套上来。</li>
+     * </ol>
+     *
+     * <p>用户点「继续」时，计划从可继续态（PAUSED / BLOCKED / ERROR / IDLE）
+     * 转入 RUNNING；这是唯一让它重新动起来的方式（阻塞与出错都需要人显式确认）。
+     */
+    private boolean loadPlanForRun() {
+        try {
+            LAST_PLAN_SUMMARY = "";
+            LAST_SKIPPED_CONFIRMED = 0;
+            LAST_SKIPPED_UNDETERMINED = 0;
+            planFileKey = "";
+            // 目标键来自队列里第一个待办任务 —— 与 triedSet/账本同源，
+            // 计划按这个键隔离（每个 Wi-Fi 目标一份计划）。
+            TaskQueue.Task t0 = TaskQueue.nextPending(this);
+            if (t0 == null) { plan = null; return false; }
+            String key = TriedSet.targetKey(t0.bssid, t0.ssid);
+            DictPlan p = DictPlan.load(DictPlan.fileFor(this, key));
+            if (p.items.isEmpty()) { plan = null; return false; }
+            if (p.state.isTerminal()) {
+                // 终态计划**不退回普通队列**：退回就意味着命中之后残留的 PENDING
+                // 会在下次「开始」时被当普通任务执行（审计点名场景）。
+                log(L.f("多字典计划已结束（%s）：不自动执行任何残留计划任务"
+                                + "（普通单字典任务不受影响；如需再跑计划，请清理或重建）",
+                        "plan already finished (%s): leftover plan tasks will not auto-run "
+                                + "(plain single-dictionary tasks are unaffected; clear or rebuild to run the plan again)",
+                        p.state.name()));
+                plan = null;
+                planFileKey = "";
+                LAST_PLAN_SUMMARY = p.summary();
+                return false;
+            }
+            // 上个进程死在执行中（盘上 RUNNING）→ 归一为可解释的中断状态
+            p.state = DictPlan.recover(p.state);
+            // 计划自身 targetKey 若为空（旧计划/未绑定），在此绑定到当前目标并落盘
+            if (p.targetKey == null || p.targetKey.isEmpty()) {
+                p.targetKey = key;
+            }
+            if (!p.targetKey.equals(key)) {
+                log(L.f("计划目标与队列目标不一致（计划 %s / 队列 %s）：不接管",
+                        "plan target differs from queue target (%s vs %s): not taking over",
+                        p.targetKey, key));
+                plan = null;
+                planFileKey = "";
+                return false;
+            }
+            planFileKey = key;
+            if (p.state.isResumable()) {
+                p.state = DictPlan.State.RUNNING;
+                p.save(DictPlan.fileFor(this, planFileKey));
+                log(L.f("多字典计划继续运行（%s）", "resuming multi-dictionary plan (%s)",
+                        p.state.name()));
+            }
+            plan = p;
+            LAST_PLAN_SUMMARY = p.summary();
+            DictPlan.Item cur = p.current();
+            log(L.f("多字典计划已启用：共 %d 本，自动连跑 %s，当前第 %d 本「%s」",
+                    "plan enabled: %d dictionaries, auto-advance %s, now #%d \"%s\"",
+                    p.items.size(), p.autoAdvance ? "开" : "关",
+                    p.displayIndex(), cur == null ? "-" : cur.name));
+            return true;
+        } catch (Throwable e) {
+            log(L.f("读取多字典计划失败（按普通队列执行）: %s",
+                    "failed to read the plan (falling back to a plain queue): %s",
+                    String.valueOf(e)));
+            plan = null;
+            planFileKey = "";
+            return false;
+        }
+    }
+
+    /**
+     * 计划模式下用计划校正任务字段：**计划是唯一真相源**。
+     *
+     * <p>要校正三样：续跑位置、去重档位、强制重跑。不校正它们，就会出现
+     * 「计划说从第 500 条继续、队列却从 0 开始」这类对不上的情况。
+     */
+    void applyPlanOverrides(TaskQueue.Task task) {
+        DictPlan p = plan;
+        if (!planMode || p == null || task == null) return;
+        task.skipPolicyId = p.skipPolicyId;
+        task.forceRerun = p.forceRerun;
+        DictPlan.Item cur = p.current();
+        if (cur == null) return;
+        if (cur.path != null && !cur.path.isEmpty() && !cur.path.equals(task.dictPath)) {
+            task.dictPath = cur.path;
+            task.dictName = cur.name;
+            task.dictSize = 0;
+            log(L.f("按计划换用字典「%s」（第 %d/%d 本）",
+                    "switching to plan dictionary \"%s\" (#%d of %d)",
+                    cur.name, p.displayIndex(), p.items.size()));
+        }
+        task.offset = Math.max(0, cur.offset);
+        planBlockedThisRun = false;
+    }
+
+    /**
+     * 任务终态 → 计划结论（纯函数，可穷举）。
+     *
+     * <p>优先级：命中 &gt; 阻塞 &gt; 停止 &gt; 暂停 &gt; 未命中 &gt; 其它（未跑完）。
+     * 「阻塞」必须排在「停止」前面 —— 两者最终都会把任务标成 STOPPED，
+     * 分不清就会把「通道跑不动」显示成「用户不想跑了」。
+     */
+    public static DictPlan.Outcome planOutcomeOf(TaskQueue.State st, boolean blocked, boolean hit) {
+        if (hit) return DictPlan.Outcome.HIT;
+        if (blocked) return DictPlan.Outcome.BLOCKED;
+        if (st == TaskQueue.State.STOPPED) return DictPlan.Outcome.STOPPED;
+        if (st == TaskQueue.State.PAUSED) return DictPlan.Outcome.PAUSED;
+        if (st == TaskQueue.State.DONE_MISS) return DictPlan.Outcome.MISS;
+        return DictPlan.Outcome.INCOMPLETE;
+    }
+
+    /**
+     * 把本本结论上报给计划，并按状态机规则决定要不要派出下一本。
+     *
+     * <p>这是「多字典连续执行」的落点。所有前进/停止的判断都在
+     * {@link DictPlan#next} 里（纯函数、已穷举测试），这里只负责搬运 ——
+     * 不在这里写任何规则，避免规则出现第二份实现。
+     */
+    void reportToPlan(TaskQueue.Task ft, boolean hit) {
+        DictPlan p = plan;
+        if (!planMode || p == null || ft == null) return;
+
+        DictPlan.Item cur = p.current();
+        if (cur != null) {
+            cur.offset = Math.max(0, ft.offset);
+            if (ft.dictSize > 0) cur.dictSize = ft.dictSize;
+        }
+        // 目标快照：崩溃后队列可能被清空，计划要能**独立**重建任务
+        // （见 DictPlan.targetSsid 的说明）。每次上报刷新，代价可忽略。
+        if (ft.ssid != null && !ft.ssid.isEmpty()) {
+            p.targetSsid = ft.ssid;
+            p.targetBssid = ft.bssid == null ? "" : ft.bssid;
+            p.targetRssi = ft.rssi;
+            p.targetFreq = ft.frequencyMhz;
+            p.targetSec = ft.securityOrdinal;
+            if (p.targetKey == null || p.targetKey.isEmpty()) {
+                p.targetKey = TriedSet.targetKey(ft.bssid, ft.ssid);
+            }
+        }
+
+        DictPlan.Outcome o = planOutcomeOf(ft.state, planBlockedThisRun, hit);
+        DictPlan.Step st = p.apply(o);
+        if (!p.save(DictPlan.fileFor(this, planFileKey))) {
+            log(L.s("计划落盘失败：本轮计划的进度可能不被保留（已给出的判定不受影响）",
+                    "failed to persist the plan (verdicts are unaffected)"));
+        }
+        planBlockedThisRun = false;
+        LAST_PLAN_SUMMARY = p.summary();
+        log(L.f("多字典计划：%s → %s（第 %d/%d 本）",
+                "plan: %s -> %s (#%d of %d)",
+                o.name(), p.state.name(), p.displayIndex(), p.items.size()));
+
+        if (st.advanced) {
+            DictPlan.Item nx = p.current();
+            if (nx != null) {
+                TaskQueue.Task nt = TaskQueue.deriveForPlan(this, ft, nx.path, nx.name,
+                        p.skipPolicyId, p.forceRerun, nx.offset);
+                // 把这一本的**内容身份**一起写到派生任务上：续命/去重靠它，
+                // 不是靠路径（路径会变）。缺失会导致下一本无法按内容识别历史。
+                if (nt != null && nx.sha256 != null && !nx.sha256.isEmpty()
+                        && !nx.sha256.equals(nt.dictSha)) {
+                    nt.dictSha = nx.sha256;
+                    TaskQueue.update(this, nt);
+                }
+                log(L.f("自动继续下一本「%s」（第 %d/%d 本）",
+                        "auto-advancing to \"%s\" (#%d of %d)",
+                        nx.name, p.displayIndex(), p.items.size()));
+                if (nt == null) {
+                    log(L.s("派生下一本失败 —— 计划停在这里，可手动继续",
+                            "failed to derive the next task; the plan stays here"));
+                }
+            }
+        } else if (p.state.isTerminal()) {
+            log(L.f("多字典计划结束：%s", "plan finished: %s", p.state.name()));
+            // P0：计划终态 -> 作废该计划派生的残留待办，避免被当普通任务误跑、
+            // 也避免下一次启动被终态计划挡住。不碰用户普通任务 / 账本 / 字典文件。
+            int killed = TaskQueue.stopPlanTasks(this);
+            if (killed > 0) {
+                log(L.f("计划结束：已作废 %d 条残留计划任务",
+                        "plan ended: %d leftover plan task(s) invalidated", killed));
+            }
+        }
+    }
+
+    /** 给界面用：引擎当前正在使用的计划（未启用计划模式时为 null）。 */
+    public DictPlan planForDisplay() { return plan; }
+
+    // ---------------------------------------------------------------- 计划恢复
+
+    /**
+     * 启动前的**计划恢复**（2026-11-02 审计新增）。
+     *
+     * <h3>它修的是什么</h3>
+     * 旧流程是「先看队列有没有 PENDING → 没有就收工」。但进程可能死在
+     * 「计划已推进、派生任务之前」这个窗口里，那时队列恰好没有 PENDING，
+     * 于是计划根本没被读到，下一本字典**永久丢失**（真机复现日志：
+     * {@code 队列里没有待办任务}）。
+     *
+     * <p>现在改为：计划优先。<b>幂等</b> —— 重复调用只会复用已有任务，
+     * 不会重复建；连续启动两次、三次结果一致。
+     *
+     * @return true = 已经处理完（调用方不要再走普通队列流程）
+     */
+    private boolean recoverPlanForRun() {
+        DictPlan p;
+        try {
+            // 目标键来自队列第一个任务（恢复时队列里可能只有残留任务，也可能空）。
+            String key = "";
+            for (TaskQueue.Task t : TaskQueue.load(this)) {
+                key = TriedSet.targetKey(t.bssid, t.ssid);
+                break;
+            }
+            planFileKey = key;
+            p = DictPlan.load(DictPlan.fileFor(this, key));
+        } catch (Throwable t) {
+            return false;
+        }
+        if (p.items.isEmpty()) return false;
+
+        PlanRecovery.Decision d = PlanRecovery.decide(p, TaskQueue.load(this), planTargetKey(p));
+        switch (d.action) {
+            case NONE:
+                return false;
+
+            case BLOCK:
+                log(L.s("多字典计划：", "plan: ") + d.reason);
+                if (d.planState != null) {
+                    p.state = d.planState;
+                    p.save(DictPlan.fileFor(this, planFileKey));
+                }
+                LAST_PLAN_SUMMARY = p.summary();
+                // P0：作废该计划派生的残留待办 —— 它们既不该被误跑，也不该挡住普通任务。
+                int killedBlk = TaskQueue.stopPlanTasks(this);
+                if (killedBlk > 0) {
+                    log(L.f("已作废 %d 条计划残留任务（不影响普通任务）",
+                            "invalidated %d leftover plan task(s) (plain tasks unaffected)",
+                            killedBlk));
+                }
+                // 队列里还有**用户普通任务** -> 放行，让单字典流程继续跑（旧实现一律 stopSelf）。
+                if (PlanRecovery.hasPlainWork(TaskQueue.load(this))) {
+                    log(L.s("检测到普通任务：计划不接管，按单字典流程继续",
+                            "plain task present: plan not taking over"));
+                    return false;
+                }
+                stopSelfSafe();
+                return true;
+
+            case ADVANCE_THEN_CREATE:
+                // 崩溃窗口：这一本已完成、计划没跟上 → 先推进，再补建下一本
+                p.state = DictPlan.recover(p.state);
+                p.apply(d.advanceWith);
+                if (!p.save(DictPlan.fileFor(this, planFileKey))) {
+                    log(L.s("计划推进落盘失败：本次不启动（避免丢字典）",
+                            "failed to persist the advanced plan; not starting"));
+                    stopSelfSafe();
+                    return true;
+                }
+                log(L.f("计划推进：%s", "plan advanced: %s", d.reason));
+                return createPlanTask(p, d.dictPath, d.dictName, d.offset);
+
+            case CREATE_NEXT:
+                return createPlanTask(p, d.dictPath, d.dictName, d.offset);
+
+            case RUN_EXISTING:
+                p.state = DictPlan.State.RUNNING;
+                p.save(DictPlan.fileFor(this, planFileKey));
+                if (d.revivePaused) revivePlanTask(d.taskId);
+                LAST_PLAN_SUMMARY = p.summary();
+                log(L.s("多字典计划：", "plan: ") + d.reason);
+                return false;
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * 任务在**真正开跑之前**就结束时的统一收尾。
+     *
+     * <h3>它修的是什么</h3>
+     * 2026-11-02 控制流审计：{@code executeTask} 里有两处提前 {@code return}
+     * （环境闸门未通过、候选为空）各自改了状态就返回，**绕过 {@code finishTask}**
+     * —— 于是多字典计划永远收不到本本结论，停在第 N 本不动，后面的字典不跑
+     * （真机复现：{@code 候选为空，跳过} → {@code 队列已结束}，计划仍是 RUNNING）。
+     *
+     * <p>现在所有终结路径都经过这里：落盘任务状态 → 上报计划 → 通知界面。
+     * 与 {@code finishTask} 的差别只有「没有引擎统计」，因此不写
+     * missConfirmedFail / missInconclusive（那两项描述的是候选执行结果）。
+     *
+     * @param st  终态。**调用方必须选对**：环境不可用/通道异常走 PAUSED + planBlocked，
+     *            候选为空走 DONE_MISS；不得把错误伪装成「未命中」。
+     */
+    private void finishTaskEarly(TaskQueue.Task task, TaskQueue.State st, String why) {
+        task.state = st;
+        TaskQueue.update(this, task);
+        log(L.s("任务结束（未开跑）：", "task ended before running: ") + why);
+        reportToPlan(task, st == TaskQueue.State.DONE_HIT);
+        for (UiCallback cb : callbacks) cb.onTaskDone(task, null, st.name());
+        notifyQueue();
+    }
+
+    /** 幂等补建当前字典的任务；返回 false = 让正常流程继续跑它。 */
+    private boolean createPlanTask(DictPlan p, String dictPath, String dictName, int offset) {
+        TaskQueue.Task seed = null;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            if (t.dictPath != null && !t.dictPath.isEmpty() && t.dictPath.equals(dictPath)) {
+                seed = t;
+                break;
+            }
+        }
+        TaskQueue.Task nt = TaskQueue.ensurePlanTask(this, p.toNetRecord(), dictPath, dictName,
+                p.skipPolicyId, p.forceRerun, offset,
+                seed != null && seed.useTargetDict,
+                seed != null && seed.useSmartSort,
+                seed != null ? seed.crackMode : 0,
+                seed != null ? seed.seedsJson : "");
+        if (nt == null) {
+            // 写盘失败**不假装成功**：宁可这次不启动，也不留下「计划说在跑、
+            // 实际没有任务」的假状态。
+            log(L.s("计划恢复失败：无法写回队列，本次不启动（避免丢字典）",
+                    "plan recovery failed: cannot persist the queue; not starting"));
+            stopSelfSafe();
+            return true;
+        }
+        // 恢复补建时同样补内容身份（与派生路径一致）
+        DictPlan.Item cur = p.current();
+        if (cur != null && cur.sha256 != null && !cur.sha256.isEmpty()
+                && !cur.sha256.equals(nt.dictSha)) {
+            nt.dictSha = cur.sha256;
+            TaskQueue.update(this, nt);
+        }
+        log(L.f("计划恢复：已就绪第 %d/%d 本「%s」（自第 %d 条）",
+                "plan recovery: ready #%d of %d \"%s\" (from #%d)",
+                p.displayIndex(), p.items.size(), dictName, offset));
+        LAST_PLAN_SUMMARY = p.summary();
+        return false;
+    }
+
+    /** 计划模式下把「计划指向的那一本」从暂停恢复为待执行。 */
+    private void revivePlanTask(String taskId) {
+        if (taskId == null) return;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            if (taskId.equals(t.id) && t.state == TaskQueue.State.PAUSED) {
+                t.state = TaskQueue.State.PENDING;
+                TaskQueue.update(this, t);
+                log(L.s("计划模式：已把当前字典的任务从暂停恢复为待执行",
+                        "plan mode: current dictionary revived to pending"));
+                return;
+            }
+        }
+    }
+
+    /**
+     * 用户点停止时**同步把计划落成 STOPPED**。
+     *
+     * <p>不这么做就会出现「worker 已退出、计划仍 RUNNING」的假状态，
+     * 下次启动还会自动继续 —— 真机审计确证过。
+     */
+    private void planStop() {
+        DictPlan p = plan;
+        String key = planFileKey;
+        if (p == null) {
+            try { p = DictPlan.load(DictPlan.fileFor(this, key)); } catch (Throwable t) { return; }
+        }
+        if (p == null || p.items.isEmpty() || p.state.isTerminal()) return;
+        p.apply(DictPlan.Outcome.STOPPED);
+        p.save(DictPlan.fileFor(this, key));
+        planBlockedThisRun = false;
+        LAST_PLAN_SUMMARY = p.summary();
+        log(L.s("多字典计划：已随停止一同落盘（STOPPED）",
+                "plan: persisted as STOPPED together with the user stop"));
+    }
+
+    /** 计划的目标键；计划里没有就退化为队列第一个任务的目标。 */
+    private String planTargetKey(DictPlan p) {
+        if (p != null && p.targetKey != null && !p.targetKey.isEmpty()) return p.targetKey;
+        for (TaskQueue.Task t : TaskQueue.load(this)) {
+            return TriedSet.targetKey(t.bssid, t.ssid);
+        }
+        return "";
+    }
+
     private void saveProgress(TaskQueue.Task ft, int offset, boolean force) {
         if (ft == null || offset <= 0) return;
         long now = System.currentTimeMillis();
@@ -1185,6 +1932,15 @@ public class CrackService extends Service {
         boolean due = (now - lastOffsetSaveAt >= 2000L)
                 || (offset - lastSavedOffset >= 20);
         if (!force && (!changed || !due)) return;
+        // 写前日志（write-ahead）：先把「已试集合 + 账本」落盘，再推 offset。
+        //
+        // 为什么顺序不能反：offset 是**跳过依据**的一部分（续跑时按它定位），
+        // 若 offset 先落盘而账本没记，崩溃后 offset 之前的候选既没记录也不会重跑
+        // —— 同一个口令换到别的字典里就不会被过滤（漏过滤 / 重复尝试）。
+        // 反过来（账本先落、offset 后落）最坏只是「多几条可从账本识别」，
+        // 有账本兜底，不会重复执行、也不会漏判。
+        flushTried();
+        flushLedger();
         ft.offset = offset;
         ft.elapsedMs = now - taskStartAt;
         // 只写进度字段：盘上的 state 才是用户最新的操作。
@@ -1195,9 +1951,300 @@ public class CrackService extends Service {
         lastSavedOffset = offset;
     }
 
+    /**
+     * 把「本轮结论分布」写到任务上（包级可见，便于纯逻辑单测）。
+     *
+     * <p>从 {@code finishTask} 里原样抽出，**行为完全一致**：
+     * {@code eng == null} 一律记 0。抽出的唯一目的是让这段赋值
+     * 能在没有 Android Context 的环境下被真实执行与断言。
+     *
+     * @param ft  目标任务（直接写字段）
+     * @param eng 本轮引擎；{@code null} 表示拿不到
+     */
+    /**
+     * 候选过滤结果。
+     */
+    public static final class TriedFilter {
+        public final List<Candidate> kept;
+        public final int skipped;
+        public TriedFilter(List<Candidate> kept, int skipped) {
+            this.kept = kept;
+            this.skipped = skipped;
+        }
+    }
+
+    /**
+     * 按**永久已试记录**过滤候选（纯函数）。
+     *
+     * <p>只认 {@code triedSet}（其中只有 DIRECT 结论）。
+     * 「本轮推断失败」（INFERRED）不参与排除 ——
+     * 证据不足以排除的候选，必须在续跑/重跑时还有机会。
+     */
+    public static TriedFilter filterTried(List<Candidate> work, TriedSet triedSet) {
+        java.util.List<Candidate> keep = new java.util.ArrayList<>(work.size());
+        int skipped = 0;
+        for (Candidate c : work) {
+            if (triedSet.contains(c.password)) { skipped++; continue; }
+            keep.add(c);
+        }
+        return new TriedFilter(keep, skipped);
+    }
+
+    /**
+     * 候选过滤的统一出口（跨字典去重）。
+     *
+     * <h3>为什么要收敛成一个入口</h3>
+     * 过滤规则一旦分散，「triedSet 怎么算」和「ledger 怎么算」就会各写一份，
+     * 两处迟早不一致 —— 那正是历史上 B1~B5 那一批不一致的成因。
+     * 现在跳过判定只有 {@link #isSkipped} 一个实现，过滤与位置换算共用它。
+     */
+    public static final class FilterOutcome {
+        /** 过滤后仍要执行的候选（顺序保持）。 */
+        public final java.util.List<Candidate> kept;
+        /** 因「已确定错误」被跳过的条数（triedSet 或账本 CONFIRMED_WRONG）。 */
+        public final int skippedConfirmed;
+        /** 因「已执行但未确定」被跳过的条数（**只在省时档会发生**）。 */
+        public final int skippedUndetermined;
+
+        FilterOutcome(java.util.List<Candidate> k, int sc, int su) {
+            kept = k; skippedConfirmed = sc; skippedUndetermined = su;
+        }
+
+        public int totalSkipped() { return skippedConfirmed + skippedUndetermined; }
+    }
+
+    /**
+     * 这条候选是否应被跳过。
+     *
+     * <p>**唯一的跳过判定**，过滤与位置换算都调它，保证口径一致。
+     *
+     * @param forceRerun 本次强制重跑 → 一律不跳（不修改任何历史记录）
+     */
+    public static boolean isSkipped(String pw, TriedSet tried,
+                                    AttemptLedger ledger, AttemptLedger.SkipPolicy policy,
+                                    boolean forceRerun) {
+        return isSkipped(pw, tried, ledger, policy, forceRerun, null);
+    }
+
+    /**
+     * 这条候选是否应被跳过（含**身份冲突保护**）。
+     *
+     * <p>需求（第三节第 9 条）：**使用完整密码文本作为最终去重依据，不能只依赖短哈希**。
+     * 账本/已试集合只存 64 位身份（见 {@link io.github.wlmosv_png.wpaforge.audit.CandidateId}）。
+     * 当**本轮候选列表内**出现两个不同口令映射到同一身份（哈希碰撞，概率极低但非零）
+     * 时，无法安全地把「已记录」归因到具体某一条 —— 这时**一律不跳过**（保守保留），
+     * 宁可多跑一条，也不赌碰撞。
+     *
+     * @param ambiguous 本轮内身份冲突的 id 集合；{@code null}/空 = 无冲突
+     */
+    public static boolean isSkipped(String pw, TriedSet tried,
+                                    AttemptLedger ledger, AttemptLedger.SkipPolicy policy,
+                                    boolean forceRerun, java.util.Set<Long> ambiguous) {
+        if (forceRerun || pw == null) return false;
+        if (ambiguous != null && !ambiguous.isEmpty()
+                && ambiguous.contains(io.github.wlmosv_png.wpaforge.audit.CandidateId.of(pw))) {
+            return false;      // 身份在本轮内冲突 → 不凭短哈希排除
+        }
+        if (tried != null && tried.contains(pw)) return true;      // 已确定错误（永久）
+        if (ledger == null) return false;
+        // 账本口径只此一处：档位规则全部在 SkipPolicy.skips()（纯函数，可穷举）。
+        // NOT_EXECUTED（没跑过）与 UNKNOWN_ON_TARGET（当时还连着目标）任何档都不跳。
+        return policy != null && policy.skips(ledger.level(pw));
+    }
+
+    /**
+     * 本轮候选里**身份冲突**的 id（≥2 个不同口令映射到同一 CandidateId）。
+     *
+     * <p>纯函数；{@link #filterCandidates} 与 {@link #resumeIndexAfterFilter}
+     * 都基于**同一份原列表**调用它，保证「过滤」与「位置换算」口径一致。
+     */
+    public static java.util.Set<Long> ambiguousIds(java.util.List<Candidate> work) {
+        if (work == null || work.size() < 2) return java.util.Collections.emptySet();
+        java.util.HashMap<Long, String> firstSeen = new java.util.HashMap<>();
+        java.util.HashSet<Long> amb = null;
+        for (Candidate c : work) {
+            if (c == null || c.password == null) continue;
+            long id = io.github.wlmosv_png.wpaforge.audit.CandidateId.of(c.password);
+            String prev = firstSeen.get(id);
+            if (prev == null) {
+                firstSeen.put(id, c.password);
+            } else if (!prev.equals(c.password)) {
+                if (amb == null) amb = new java.util.HashSet<>();
+                amb.add(id);
+            }
+        }
+        return amb == null ? java.util.Collections.emptySet() : amb;
+    }
+
+    /** 过滤候选（默认档，不强制重跑）。 */
+    public static FilterOutcome filterCandidates(java.util.List<Candidate> work,
+                                                 TriedSet tried, AttemptLedger ledger,
+                                                 AttemptLedger.SkipPolicy policy) {
+        return filterCandidates(work, tried, ledger, policy, false);
+    }
+
+    /** 过滤候选：保留顺序，分开统计「已确定错误」与「未确定」两类跳过。 */
+    public static FilterOutcome filterCandidates(java.util.List<Candidate> work,
+                                                 TriedSet tried, AttemptLedger ledger,
+                                                 AttemptLedger.SkipPolicy policy,
+                                                 boolean forceRerun) {
+        java.util.List<Candidate> keep = new java.util.ArrayList<>(
+                work == null ? 0 : work.size());
+        java.util.Set<Long> ambiguous = ambiguousIds(work);   // 身份冲突保护
+        int sc = 0, su = 0;
+        if (work != null) {
+            for (Candidate c : work) {
+                if (isSkipped(c.password, tried, ledger, policy, forceRerun, ambiguous)) {
+                    boolean byTried = tried != null && tried.contains(c.password);
+                    AttemptLedger.Level lv = ledger == null
+                            ? AttemptLedger.Level.NOT_EXECUTED : ledger.level(c.password);
+                    if (!byTried && lv.executed && lv != AttemptLedger.Level.CONFIRMED_WRONG) {
+                        su++;   // 已执行完，但没有候选级证据 → 计入「未确定」
+                    } else {
+                        sc++;   // 已确定错误（triedSet 或账本 CONFIRMED_WRONG）
+                    }
+                    continue;
+                }
+                keep.add(c);
+            }
+        }
+        return new FilterOutcome(keep, sc, su);
+    }
+
+    /**
+     * 过滤之后**实际可用的续跑位置**（纯函数）。
+     *
+     * <h3>要修的缺陷</h3>
+     * {@code task.offset} 是「上一轮在同一份列表里跑到第几条」。
+     * 但本轮候选列表**已被本目标试过的记录过滤掉一部分**，长度与内容都变了：
+     * <pre>
+     *   字典 [A,B,C,D,E]，试过 {A,C}，上轮 offset=3
+     *   -> 过滤后列表 = [B,D,E]（长度 3）
+     *   -> 若仍从 offset=3 开始，等于**一条都不跑**（越界），
+     *      而 B、D、E 从未在该目标上验证过 —— 直接被漏掉。
+     * </pre>
+     * 过滤后的列表里已经不含已试候选，从头跑不会产生重复劳动，
+     * 因此正确的语义是：**一旦发生过滤，续跑位置回到列表开头**。
+     *
+     * @param savedOffset   任务里保存的 offset
+     * @param filtered      本次是否发生过过滤
+     */
+    public static int effectiveStartOffset(int savedOffset, boolean filtered) {
+        if (filtered) return 0;
+        return savedOffset < 0 ? 0 : savedOffset;
+    }
+
+    /**
+     * **过滤之后的等效续跑位置**（P0 修复，纯函数）。
+     *
+     * <h3>它修的是什么</h3>
+     * 旧规则 {@link #effectiveStartOffset}：只要发生过「已试过滤」就返回 {@code 0}。
+     * 那条规则的前提是「过滤可能删掉任意条目，位置不可换算」，但实际过滤
+     * <b>保持顺序</b>，所以位置是可精确换算的：
+     * <pre>
+     *   原列表 P[0..n)，已试集合 T，过滤后 K = P 去掉 T 的成员（保序）
+     *   原 offset = o
+     *   d = 「P[0..o) 中被删掉的条数」
+     *   等效位置 = o - d
+     * </pre>
+     *
+     * <h3>为什么归零是错的</h3>
+     * 归零会让续跑重试 <b>offset 之前的全部未试候选</b>，
+     * 且 {@code tested} 从 0 重新计 —— 用户看到的就是「从零开始」。
+     * 真机现象（2026-11-02）：跑 23 条后停止，继续时界面从第 1 条附近重来。
+     *
+     * <h3>边界</h3>
+     * <ul>
+     *   <li>{@code offset <= 0} → 0</li>
+     *   <li>{@code offset >= n} → 过滤后列表长度（越界收敛，不越界访问）</li>
+     *   <li>{@code d > o} 不可能发生（d 统计的就是 P[0..o) 的子集）</li>
+     * </ul>
+     *
+     * @param original 过滤前的候选列表（顺序即字典顺序）
+     * @param tried    已试集合（决定哪些条目会被删掉）
+     * @param offset   任务里保存的 offset
+     * @return 过滤后列表中的等效起跑下标
+     */
+    public static int resumeIndexAfterFilter(List<Candidate> original,
+                                             java.util.Set<String> tried, int offset) {
+        return resumeIndexAfterFilterInternal(original,
+                tried == null ? null : (String pw) -> tried.contains(pw), offset);
+    }
+
+    /**
+     * 过滤后的等效续跑位置（含账本与去重档）。
+     *
+     * <p>与 {@link #filterCandidates} 共用 {@link #isSkipped} ——
+     * 「过滤时怎么算」与「位置换算时怎么算」必须是同一个答案，
+     * 否则会出现「跳过了 5 条，但位置只前移了 3 格」这种错位。
+     */
+    public static int resumeIndexAfterFilter(List<Candidate> original, TriedSet tried,
+                                             AttemptLedger ledger,
+                                             AttemptLedger.SkipPolicy policy,
+                                             int offset) {
+        return resumeIndexAfterFilter(original, tried, ledger, policy, offset, false);
+    }
+
+    /** 同上，可指定强制重跑（强制重跑时位置不换算）。 */
+    public static int resumeIndexAfterFilter(List<Candidate> original, TriedSet tried,
+                                             AttemptLedger ledger,
+                                             AttemptLedger.SkipPolicy policy,
+                                             int offset, boolean forceRerun) {
+        // 与 filterCandidates 用**同一份原列表**算身份冲突，保证口径完全一致。
+        final java.util.Set<Long> ambiguous = ambiguousIds(original);
+        return resumeIndexAfterFilterInternal(original,
+                (String pw) -> isSkipped(pw, tried, ledger, policy, forceRerun, ambiguous), offset);
+    }
+
+    /** 重载：直接吃 {@link TriedSet}（生产路径用这个，避免构造中间 Set）。 */
+    public static int resumeIndexAfterFilter(List<Candidate> original,
+                                             TriedSet tried, int offset) {
+        return resumeIndexAfterFilterInternal(original,
+                tried == null ? null : tried::contains, offset);
+    }
+
+    private interface PwMatch { boolean test(String pw); }
+
+    private static int resumeIndexAfterFilterInternal(List<Candidate> original,
+                                                      PwMatch tried, int offset) {
+        if (original == null || original.isEmpty()) return 0;
+        if (offset <= 0) return 0;
+        int o = Math.min(offset, original.size());
+        int d = 0;
+        for (int i = 0; i < o; i++) {
+            String pw = original.get(i).password;
+            if (tried != null && pw != null && tried.test(pw)) d++;
+        }
+        return Math.max(0, o - d);
+    }
+
+    static void applyMissCounts(TaskQueue.Task ft,
+                                io.github.wlmosv_png.wpaforge.audit.CrackEngine eng) {
+        ft.missConfirmedFail = eng == null ? 0 : eng.confirmedFailCount();
+        ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();
+    }
+
+    /**
+     * 取「本轮结论分布」的快照：{@code [已证实失败数, 无结论数]}。
+     *
+     * <p><b>必须在清 {@code engineRef} 之前调用</b>。这条不变式就是 C1 的修复本体：
+     * 旧代码在 {@code onFinished} 第一行把 {@code engineRef} 置空，之后才去读它，
+     * 于是两个计数恒为 0，「未命中」与「无结论」在持久化层永远无法区分。
+     *
+     * @param eng 本轮引擎；{@code null} 表示拿不到（记 0/0）
+     */
+    static int[] snapshotMissCounts(io.github.wlmosv_png.wpaforge.audit.CrackEngine eng) {
+        return new int[]{
+                eng == null ? 0 : eng.confirmedFailCount(),
+                eng == null ? 0 : eng.inconclusiveCount()
+        };
+    }
+
     private void finishTask(TaskQueue.Task ft, String outcomeName,
-                            int tested, int offset, String hitPassword) {
+                            int tested, int offset, String hitPassword,
+                            int[] missCounts) {
         flushTried();
+        flushLedger();
         ft.offset = offset;
         ft.testedThisRun += tested;
         ft.elapsedMs += System.currentTimeMillis() - taskStartAt;
@@ -1237,9 +2284,8 @@ public class CrackService extends Service {
             ft.state = TaskQueue.State.DONE_MISS;
             // 把本轮结论分布记到任务上：**「未命中」只有在其余条目都有失败证据时才成立**。
             // 无结论（TIMEOUT/UNKNOWN）条目并不证明密码错 —— 它们只是没拿到证据。
-            io.github.wlmosv_png.wpaforge.audit.CrackEngine eng = engineRef;
-            ft.missConfirmedFail = eng == null ? 0 : eng.confirmedFailCount();
-            ft.missInconclusive = eng == null ? 0 : eng.inconclusiveCount();
+            ft.missConfirmedFail = missCounts == null ? 0 : missCounts[0];
+            ft.missInconclusive = missCounts == null ? 0 : missCounts[1];
             if (ft.missInconclusive > 0) {
                 log(L.f("任务完成：未命中，但其中 %d 条无结论（未能证实密码错；建议核对环境后重跑）",
                         "Task complete: no match, but %d attempts were inconclusive "
@@ -1255,6 +2301,12 @@ public class CrackService extends Service {
         }
 
         TaskQueue.update(this, ft);
+
+        // ── 多字典计划：上报本本结论，并按状态机派出下一本 ──────────────────
+        // 必须在 update(ft) 之后：下一本任务由这里派生，runQueue 的下一轮
+        // 会从盘上取到它（顺序与状态都已经落稳）。
+        reportToPlan(ft, hitPassword != null && !hitPassword.isEmpty());
+
         // R11：**所有终态**（命中 / 未命中 / 暂停 / 取消）都要走收尾。
         // 命中时系统里留下的就是**正确口令** —— 保留它（不删），手机保持连着、
         // 以后自动重连；其余情况则把候选留下的错误口令换成用户原来的配置。

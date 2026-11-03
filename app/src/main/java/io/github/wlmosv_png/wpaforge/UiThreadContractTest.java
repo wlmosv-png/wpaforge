@@ -128,9 +128,13 @@ public class UiThreadContractTest {
     // ---------------------------------------------------------------- 文件定位
 
     private static File findSource() {
+        // 2026-10-31（A 阶段迁移）：改为经 TestPaths 解析，不再依赖 user.dir 向上回溯，
+        // 也不再把旧工作副本目录名当作候选（那会让测试扫到另一份源码）。
+        File direct = new File(TestPaths.root()
+                + "/app/src/main/java/io/github/wlmosv_png/wpaforge/MainActivity.java");
+        if (direct.isFile()) return direct;
         List<String> rel = Arrays.asList(
-                "app/src/main/java/io/github/wlmosv_png/wpaforge/MainActivity.java",
-                "promo-wpaforge/app/src/main/java/io/github/wlmosv_png/wpaforge/MainActivity.java");
+                "app/src/main/java/io/github/wlmosv_png/wpaforge/MainActivity.java");
         File cur = new File(System.getProperty("user.dir", ".")).getAbsoluteFile();
         for (int depth = 0; depth < 4 && cur != null; depth++) {
             for (String r : rel) {

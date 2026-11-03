@@ -84,6 +84,13 @@ public class WpaFilterTest {
         registry.put("P_CONNECTED", "1");
         // P_TS 作用于**已经过过滤的**文本（M1 去重取时间戳），不经 SHELL_FILTER：
         registry.put("P_TS", "0");
+        // P_AUTH_FAILURES 是「在同一条已放行的 TEMP-DISABLED 行内」做的二次提取，
+        // 不参与服务端 grep 过滤 —— 显式登记为 "0" 并说明原因，不是漏登记。
+        registry.put("P_AUTH_FAILURES", "0");
+        // P_WRONG_KEY_ID（D5）是「在同一条已放行的 TEMP-DISABLED 行内」提取 id=N，
+        // 与 P_AUTH_FAILURES 同理：行本身必须被 SHELL_FILTER 放行（由 P_WRONG_KEY 负责），
+        // 这条只做字段级二次提取，不参与服务端 grep。
+        registry.put("P_WRONG_KEY_ID", "0");
         check("源码里的 Pattern 字段全部已登记（漏登记即判红）",
                 src != null && declared.equals(registry.keySet()));
         if (src != null) {
@@ -159,7 +166,7 @@ public class WpaFilterTest {
     private static String readSource(String rel) {
         try {
             return new String(java.nio.file.Files.readAllBytes(
-                    java.nio.file.Paths.get("/workspace/promo-wpaforge/" + rel)),
+                    java.nio.file.Paths.get(TestPaths.root() + "/" + rel)),
                     java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             return null;

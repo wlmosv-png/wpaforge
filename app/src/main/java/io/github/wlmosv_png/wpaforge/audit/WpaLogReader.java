@@ -67,17 +67,80 @@ public final class WpaLogReader {
         public final String kind;
         public final String raw;
 
+        /**
+         * 该事件自带的配置编号（{@code CTRL-EVENT-CONNECTED ... [id=N]} 里的 N）。
+         *
+         * <p><b>R1（2026-10-31）</b>：真机的 CONNECTED 行本来就带 {@code [id=N]}，
+         * 而此前解析器把它丢掉了。本字段只是**把证据完整保存下来**，用于
+         * 日志展示与后续分析。
+         *
+         * <p><b>它到底是什么（2026-10-31 真机实测更正）</b>：
+         * 它是 <b>wpa_supplicant 事件自带的 network ID</b>（supplicant 内部的
+         * 网络条目索引），<b>不是</b> Android framework 的
+         * {@code WifiConfigManager} Net ID。
+         *
+         * <p>真机证据（PJX110 / ColorOS 15 / Android 15，B212）：
+         * <pre>
+         *   CTRL-EVENT-CONNECTED ... [id=0 id_str={"configKey":"\"B212\"WPA_PSK",...}]
+         *   cmd wifi status        →  Net ID: 36
+         * </pre>
+         * 同一时刻两者数值完全不同；且三种场景（候选连接 / 系统自动回连 /
+         * 手动连接）中该字段**恒为 0 不变**，而 Android Net ID 恒为 36。
+         * 也就是说它**不反映连接来源，也不随连接变化**。
+         *
+         * <p><b>使用边界（写死在这里，防止被误用）</b>：
+         * <ul>
+         *   <li>它**不等同于** {@code cmd wifi status} 里的 {@code Net ID}，
+         *       <b>禁止直接比较两者</b>。</li>
+         *   <li>它**不是**归属证明：相同或不同都不能说明连接由当前候选建立。</li>
+         *   <li>它**不得**进入 {@code SuccessRule}、{@code classifyDeadline}
+         *       或任何 SUCCESS/UNKNOWN 判定。</li>
+         *   <li>取不到时为 {@link #NETID_UNKNOWN}（{@code -1}）；0 是**合法值**，
+         *       因此不能用 0 表示「未知」。</li>
+         * </ul>
+         */
+        public final long netId;
+
+        /** 旧构造入口（3 参）：netId / authFailures 未知。 */
         LogEvent(long at, String ssid, String kind, String raw) {
-            this(at, ssid, null, kind, raw);
+            this(at, ssid, null, kind, raw, NETID_UNKNOWN);
         }
 
+        /** 旧构造入口（5 参）：netId / authFailures 未知。 */
         LogEvent(long at, String ssid, String bssid, String kind, String raw) {
+            this(at, ssid, bssid, kind, raw, NETID_UNKNOWN);
+        }
+
+        /** 构造入口（6 参）：authFailures 未知。 */
+        LogEvent(long at, String ssid, String bssid, String kind, String raw, long netId) {
+            this(at, ssid, bssid, kind, raw, netId, AUTH_FAILURES_UNKNOWN);
+        }
+
+        /** 构造入口（7 参，全字段）。 */
+        LogEvent(long at, String ssid, String bssid, String kind, String raw, long netId,
+                 int authFailures) {
             this.at = at;
             this.ssid = ssid;
             this.bssid = bssid;
             this.kind = kind;
             this.raw = raw;
+            this.netId = netId;
+            this.authFailures = authFailures;
         }
+
+        /** netId 是否有有效值。 */
+        public boolean hasNetId() { return netId >= 0; }
+
+        /**
+         * {@code CTRL-EVENT-SSID-TEMP-DISABLED ... auth_failures=N} 里的 N。
+         *
+         * <p>只对 {@link #KIND_WRONG_KEY} 事件有意义；其它事件恒为 {@link #AUTH_FAILURES_UNKNOWN}。
+         * 用途：区分「本次连接刚失败第一次」与「系统已累计失败多次」。
+         */
+        public final int authFailures;
+
+        /** auth_failures 未知。 */
+        public static final int AUTH_FAILURES_UNKNOWN = -1;
     }
 
     private static final Pattern P_ASSOC =
@@ -96,6 +159,49 @@ public final class WpaLogReader {
      */
     private static final Pattern P_HANDSHAKE_M1 =
             Pattern.compile("(?:WPA|RSN): RX message 1 of 4-Way Handshake from ([0-9a-fA-F:]{17})");
+    // ------------------------------------------------------------ 事件 kind 常量
+
+    /** 正在尝试关联（带 SSID）。 */
+    public static final String KIND_ASSOCIATE = "associate";
+    /** 握手协商完成（Key negotiation completed，带 BSSID）。 */
+    public static final String KIND_NEGOTIATED = "negotiated";
+    /**
+     * 连接建立完成（CTRL-EVENT-CONNECTED，带 BSSID，可能带 netId）。
+     *
+     * <p><b>R3（2026-10-31）</b>：此前它被归入 {@link #KIND_NEGOTIATED}，
+     * 与「Key negotiation completed」共用同一 kind。两者语义不同 ——
+     * 前者是「连接已建立」，后者是「密钥协商完成」；混为一类会让
+     * 任何按 kind 区分的诊断（以及将来的归属分析）都无法分开统计。
+     *
+     * <p>注意：**kind 分离不改变任何判定结果** —— 生产里查询成功证据的是
+     * {@code sawNegotiatedFor()}，它按 kind 匹配。因此本类同时提供
+     * {@link #KIND_CONNECTED} 与 {@link #KIND_NEGOTIATED} 的兼容匹配，
+     * 见 {@code isSuccessEvidenceKind()}。
+     */
+    public static final String KIND_CONNECTED = "connected";
+    /** 4-Way Handshake failed（不带归属）。 */
+    public static final String KIND_HANDSHAKE_FAILED = "handshake_failed";
+    /** CTRL-EVENT-ASSOC-REJECT。 */
+    public static final String KIND_ASSOC_REJECT = "assoc_reject";
+    /** 握手第 1 帧（带 BSSID）。 */
+    public static final String KIND_HANDSHAKE_M1 = "handshake_m1";
+    /** CTRL-EVENT-SSID-TEMP-DISABLED（带 SSID，reason=WRONG_KEY）。 */
+    public static final String KIND_WRONG_KEY = "wrong_key";
+
+    /** netId 未知。所有"解析不出"的情形一律用这个值，绝不用 0 冒充。 */
+    public static final long NETID_UNKNOWN = -1L;
+
+    /**
+     * 哪些 kind 属于「成功证据」类事件。
+     *
+     * <p>R3 之前只有 {@code negotiated}；R3 之后 {@code connected} 独立成类，
+     * 但**在判定上仍然是成功证据**（{@code sawNegotiatedFor} 必须同时认这两个），
+     * 否则会把「CTRL-EVENT-CONNECTED 也算成功证据」这条既有行为破坏掉。
+     */
+    public static boolean isSuccessEvidenceKind(String kind) {
+        return KIND_NEGOTIATED.equals(kind) || KIND_CONNECTED.equals(kind);
+    }
+
     /**
      * 本机最明确的失败信号：wpa_supplicant 把该网络临时禁用并给出 WRONG_KEY。
      * 实测这一行与 `4-Way Handshake failed` 同时出现，但它更「结构化」，
@@ -103,9 +209,55 @@ public final class WpaLogReader {
      */
     private static final Pattern P_WRONG_KEY =
             Pattern.compile("CTRL-EVENT-SSID-TEMP-DISABLED[^\\n]*ssid=\"([^\"]+)\"");
+
+    /**
+     * 同一条 TEMP-DISABLED 行里的 {@code id=N}（D5）。
+     *
+     * <p>真机样本：
+     * <pre>
+     *   CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="B212" auth_failures=1 duration=10 reason=WRONG_KEY
+     * </pre>
+     * 注意这里是 {@code id=0}（**不是** {@code [id=0]}）—— 与
+     * {@code CTRL-EVENT-CONNECTED ... [id=0]} 的写法不同，所以必须单独一条正则。
+     *
+     * <p>前置有 {@code (?:^|\\s)} 锚定，避免把 {@code ssid="...id=..."} 这种
+     * 值里恰好含 {@code id=} 的内容误当字段。
+     */
+    private static final Pattern P_WRONG_KEY_ID =
+            Pattern.compile("(?:^|\\s)id=(-?[0-9]+)");
+
+    /**
+     * 同一条 TEMP-DISABLED 行里的 {@code auth_failures=N}。
+     *
+     * <p>它是 wpa_supplicant 对这个网络的**累计认证失败次数**：
+     * <ul>
+     *   <li>{@code 1} = 本次刚失败第一次 —— 通常是**我们自己**这次连接造成的</li>
+     *   <li>{@code ≥2} = 之前已经失败过 —— 极可能是系统后台用旧配置重试</li>
+     * </ul>
+     * 单独用它不足以定案（用户可能连续跑两条错误候选，第二条就是 2），
+     * 但配合「同窗口是否有本 BSSID 的失败前导」就能形成可靠归属。
+     */
+    private static final Pattern P_AUTH_FAILURES =
+            Pattern.compile("auth_failures=(\\d+)");
     /** 连上 —— 同样捕获 BSSID，是「握手完成」之后的第二条确认 */
+    /**
+     * 连上。R1：额外捕获行尾的 {@code [id=N]}（即 netId）。
+     *
+     * <p>真机样本：
+     * <pre>
+     * wlan0: CTRL-EVENT-CONNECTED - Connection to 28:93:7d:11:22:01 completed
+     *        [id=0 id_str=%7B%22configKey%22...]
+     * </pre>
+     * {@code id} 与 {@code id_str} 是两个独立字段；本模式**只取 id 的十进制值**，
+     * 绝不从 {@code id_str} 里反推（那是 URL 编码的 JSON，格式不稳定，且
+     * 可能含别的编号）。
+     *
+     * <p>id 段的捕获是可选的：没有 {@code [id=...]} 时整组为 {@code null}，
+     * 由 {@link #parseNetId(String)} 统一给 {@link #NETID_UNKNOWN}。
+     */
     private static final Pattern P_CONNECTED =
-            Pattern.compile("CTRL-EVENT-CONNECTED - Connection to ([0-9a-fA-F:]{17})");
+            Pattern.compile("CTRL-EVENT-CONNECTED - Connection to ([0-9a-fA-F:]{17})"
+                    + "(?:[^\\n]*?\\[id=(-?[0-9]+))?");
 
     /**
      * 服务端（shell 侧 grep）预过滤式。
@@ -157,44 +309,115 @@ public final class WpaLogReader {
 
         for (String line : logcatOutput.split("\n")) {
             if (line.isEmpty() || line.startsWith("---")) continue;
+            /*
+             * C5 / S1-1：事件时间戳。
+             *
+             * 旧实现把所有事件的 at 一律填 now（调用方通常传 0）—— 于是
+             * 「事件发生时间」恒为 0，既无法排序，也无法与任何时刻比较，
+             * 而 0 又是个**看起来合法的值**（比 null 更危险）。
+             *
+             * 现在：调用方给了 now 就用它（采集时刻），否则解析行首时间戳。
+             * 两种都拿不到 -> 0，并且调用方必须用 EventTime.parse(...).usable()
+             * 显式判断，不得把 0 当成有效时刻。
+             *
+             * **用途限制（写在代码里，防止将来被误用）**：
+             *   · 只能用于**同一份日志内**的相对排序与诊断；
+             *   · 不得与 clock().uptimeMillis() 直接比较（基准不同，见 EventTime）；
+             *   · 不得用「时间接近」把 AT1 证据升级为 AT3。
+             */
+            long at = now > 0 ? now : EventTime.parse(line).valueMs;
 
             Matcher m = P_ASSOC.matcher(line);
             if (m.find()) {
-                out.add(new LogEvent(now, m.group(1), "associate", line));
+                out.add(new LogEvent(at, m.group(1), KIND_ASSOCIATE, line));
                 continue;
             }
             Matcher mn = P_NEGOTIATED.matcher(line);
             if (mn.find()) {
-                out.add(new LogEvent(now, null, mn.group(1), "negotiated", line));
+                out.add(new LogEvent(at, null, mn.group(1), KIND_NEGOTIATED, line));
                 continue;
             }
             if (P_HANDSHAKE_FAIL.matcher(line).find()) {
                 // 这一行本身不带归属（wpa_supplicant 就是这么打的），
                 // 所以调用方必须结合「本次见过目标的关联」来判断 —— 见 sawFailureLikelyForTarget
-                out.add(new LogEvent(now, null, "handshake_failed", line));
+                out.add(new LogEvent(at, null, KIND_HANDSHAKE_FAILED, line));
                 continue;
             }
             if (P_ASSOC_REJECT.matcher(line).find()) {
-                out.add(new LogEvent(now, null, "assoc_reject", line));
+                out.add(new LogEvent(at, null, KIND_ASSOC_REJECT, line));
                 continue;
             }
             Matcher mm1 = P_HANDSHAKE_M1.matcher(line);
             if (mm1.find()) {
-                out.add(new LogEvent(now, null, mm1.group(1), "handshake_m1", line));
+                out.add(new LogEvent(at, null, mm1.group(1), KIND_HANDSHAKE_M1, line));
                 continue;
             }
             Matcher mw = P_WRONG_KEY.matcher(line);
             if (mw.find()) {
-                // ssid="X" 是这条日志唯一可靠的归属信息
-                out.add(new LogEvent(now, mw.group(1), "wrong_key", line));
+                // ssid="X" 是这条日志自带的归属；auth_failures=N 用于区分
+                // 「本次刚失败」与「系统累计失败」，见 sawWrongKeyForAttempt()。
+                Matcher mf = P_AUTH_FAILURES.matcher(line);
+                int af = LogEvent.AUTH_FAILURES_UNKNOWN;
+                if (mf.find()) {
+                    try { af = Integer.parseInt(mf.group(1)); }
+                    catch (Throwable ignored) { af = LogEvent.AUTH_FAILURES_UNKNOWN; }
+                }
+                // D5：把这条行的 id=N 也解析出来。
+                // 它是**唯一**能把「网络级认证失败」绑到「本条建的配置」的字段。
+                long wkNetId = NETID_UNKNOWN;
+                Matcher mi = P_WRONG_KEY_ID.matcher(line);
+                if (mi.find()) {
+                    try {
+                        long v = Long.parseLong(mi.group(1));
+                        if (v >= 0) wkNetId = v;   // 负数只可能是噪音
+                    } catch (Throwable ignored) { }
+                }
+                out.add(new LogEvent(at, mw.group(1), null, KIND_WRONG_KEY, line,
+                        wkNetId, af));
                 continue;
             }
             Matcher mc2 = P_CONNECTED.matcher(line);
             if (mc2.find()) {
-                out.add(new LogEvent(now, null, mc2.group(1), "negotiated", line));
+                String connId = mc2.groupCount() >= 2 ? mc2.group(2) : null;
+                out.add(new LogEvent(at, null, mc2.group(1),
+                        KIND_CONNECTED, line, parseNetId(connId)));
             }
         }
         return out;
+    }
+
+    /**
+     * 把 {@code [id=N]} 里抓到的字符串转成 netId（R1）。
+     *
+     * <p>规则（**任何异常都不抛，一律返回 {@link #NETID_UNKNOWN}**）：
+     * <ul>
+     *   <li>{@code null} / 空串 → 未知</li>
+     *   <li>非数字（含 {@code 0x10}、{@code abc}、{@code 1.5}）→ 未知</li>
+     *   <li>超出 {@code long} 范围 → 未知（{@link Long#parseLong} 抛异常被吞）</li>
+     *   <li>负数 → 未知（netId 在 Android 里非负；负值只可能是解析噪音）</li>
+     *   <li><b>0 是合法值</b>（第一条配置常常就是 0），必须原样保留</li>
+     * </ul>
+     *
+     * <p>依据：真机样本 {@code ... completed [id=0 id_str=%7B...]} —— id=0 是真实出现过的。
+     */
+    static long parseNetId(String raw) {
+        if (raw == null) return NETID_UNKNOWN;
+        String t = raw.trim();
+        if (t.isEmpty()) return NETID_UNKNOWN;
+        // 只接受纯十进制数字（可带一个负号，负号后面再判掉）
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (i == 0 && c == '-') continue;
+            if (c < '0' || c > '9') return NETID_UNKNOWN;
+        }
+        long v;
+        try {
+            v = Long.parseLong(t);
+        } catch (Throwable overflow) {
+            return NETID_UNKNOWN;
+        }
+        if (v < 0) return NETID_UNKNOWN;
+        return v;
     }
 
     /**
@@ -241,6 +464,132 @@ public final class WpaLogReader {
     }
 
     /**
+     * **本次尝试的** WRONG_KEY —— 带归属的严格版本。
+     *
+     * <h3>它解决什么</h3>
+     * {@link #sawWrongKeyFor} 只比 SSID，会把「系统后台用旧配置重试同一网络失败」
+     * 当成「本条候选失败」，进而把**正确密码判成 AUTH_FAIL**（这是
+     * WrongKeyAttributionTest 记录的缺陷）。
+     *
+     * <h3>判据（全部满足才算）</h3>
+     * <ol>
+     *   <li>切片里存在 {@code TEMP-DISABLED ssid=目标 reason=WRONG_KEY}；</li>
+     *   <li><b>同一切片里**先**出现过 {@code Trying to associate with SSID '目标'}</b>
+     *       —— 证明本次确实发起过这次连接；</li>
+     *   <li>且该切片里出现过**本次连接的失败前导**：
+     *       {@code 4-Way Handshake failed} 或 {@code RX message 1 of 4-Way Handshake}。
+     *       （后者是 AP 在收不到有效 M2 时重发 M1 —— 同样只在真实尝试后出现）</li>
+     * </ol>
+     *
+     * <h3>为什么这样能排除「后台重试」</h3>
+     * 系统后台重试用的是**旧配置**，它触发的 associate / handshake 行会出现在
+     * 本条候选标记**之前**，被 {@code AttemptMarker.sliceAfter} 切掉；
+     * 切片里只剩那条孤立的 {@code TEMP-DISABLED}，不满足条件 2/3 → 不采信。
+     *
+     * <h3>它不能解决的</h3>
+     * 若系统在**标记之后**恰好完整重试一遍（associate + handshake + TEMP-DISABLED
+     * 全在同一窗口内），仍无法与本次候选区分。那种情况需要 supplicant 的 config id
+     * 或系统级连接时序，超出 logcat 的可观测范围 —— 此时应退回 `exercised` 前置，
+     * 结果倾向 UNKNOWN 而不是误判 AUTH_FAIL。
+     *
+     * @param targetBssid 目标 BSSID；为空时只依赖步骤 2 的 SSID 关联行（较弱）
+     */
+    public static boolean sawWrongKeyForAttempt(String logcatOutput, String targetSsid,
+                                                String targetBssid) {
+        if (targetSsid == null || targetSsid.isEmpty() || logcatOutput == null) return false;
+
+        // 记录**首次出现下标**，用于校验先后顺序。
+        // 只要求「三样都出现过」是不够的：上一条候选残留的失败行若落在
+        // 本条的 associate 之前，三者同样齐备，却与本条毫无关系。
+        int assocAt = -1;
+        int preludeAt = -1;
+        int wrongKeyAt = -1;
+        boolean preferredBssidSeen = false;
+
+        java.util.List<LogEvent> evs = parse(logcatOutput);
+        for (int i = 0; i < evs.size(); i++) {
+            LogEvent e = evs.get(i);
+            if (assocAt < 0 && KIND_ASSOCIATE.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                assocAt = i;
+            }
+            if (preludeAt < 0 && KIND_HANDSHAKE_FAILED.equals(e.kind)) {
+                preludeAt = i;
+            }
+            if (preludeAt < 0 && KIND_HANDSHAKE_M1.equals(e.kind) && e.bssid != null) {
+                preludeAt = i;
+                if (targetBssid != null && !targetBssid.isEmpty()
+                        && targetBssid.equalsIgnoreCase(e.bssid)) {
+                    preferredBssidSeen = true;
+                }
+            }
+            if (wrongKeyAt < 0 && KIND_WRONG_KEY.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                wrongKeyAt = i;
+            }
+        }
+
+        if (wrongKeyAt < 0) return false;
+        if (assocAt < 0) return false;
+        if (preludeAt < 0) return false;
+        // **顺序约束**：本次关联必须发生在失败之前。
+        // 排除「上一条候选的失败行落在本条 associate 之前」这种残留污染。
+        if (preludeAt <= assocAt || wrongKeyAt <= assocAt) return false;
+        // BSSID 已知时，M1 必须来自目标 AP（若切片里根本没出现 M1，则由上面的
+        // failurePrelude 兜底 —— 那说明失败是 `4-Way Handshake failed` 给的）。
+        if (targetBssid != null && !targetBssid.isEmpty() && !preferredBssidSeen) {
+            // 没有目标 BSSID 的 M1，但可能有 handshake_failed；只要后者在，仍采信。
+            // 这里不再额外否决 —— 保留与旧行为一致的宽松度，只增加正向证据。
+        }
+        return true;
+    }
+
+    /**
+     * **AT3 级** WRONG_KEY：能证明「这次失败来自本条候选建的配置」（D5）。
+     *
+     * <h3>为什么需要它</h3>
+     * {@link #sawWrongKeyForAttempt} 只到 AT1：它证明「本次窗口里，目标网络
+     * 发生过一次带 SSID 的认证失败」。但同 SSID 多配置时，系统后台用**旧配置**
+     * 重试失败同样满足它 —— 证据绑不到**本条候选**，只能算网络级事件。
+     *
+     * <h3>AT3 的判据（比 AT1 多一条硬绑定）</h3>
+     * <ol>
+     *   <li>满足 {@link #sawWrongKeyForAttempt} 的全部条件（有序 + 失败前导）；</li>
+     *   <li><b>该 TEMP-DISABLED 行的 {@code id=N} 必须等于本次命令新建配置的
+     *       netId</b>（{@code targetNetId}）。</li>
+     * </ol>
+     * 第 2 条是**配置级绑定**：netId 是本条命令之后才出现的（命令前目标配置
+     * 已被删净并回读确认），所以「id 等于它」只可能指向本条候选建的配置。
+     *
+     * <h3>安全边界（必须理解）</h3>
+     * 这里隐含一个前提：<b>wpa_supplicant 的 {@code id=} 与 Android 的 Net ID
+     * 属于同一编号空间</b>。该前提**尚未在真机上证实**（残余风险 R-4）。
+     *
+     * <p>但**假设错误是安全的**：
+     * <ul>
+     *   <li>若两者不同体系 → {@code id} 几乎不可能恰好等于本次 netId →
+     *       本方法恒 false → 退回 AT1 的 NETWORK_AUTH_FAIL（保守，不误判）；</li>
+     *   <li>若两者同体系 → 绑定成立，可以安全地给出 AT3。</li>
+     * </ul>
+     * 换句话说：<b>这个设计只会「少给 DIRECT」，不会「错给 DIRECT」</b>。
+     * 这一点是它能被采用的关键理由 —— 它不是靠假设成立来保证安全，
+     * 而是靠假设**失败时的降级方向**来保证安全。
+     *
+     * @param targetNetId 本次命令新建配置的 netId；{@code < 0} 表示没拿到（直接 false）
+     */
+    public static boolean sawWrongKeyForConfig(String logcatOutput, String targetSsid,
+                                               String targetBssid, long targetNetId) {
+        if (targetSsid == null || targetSsid.isEmpty() || logcatOutput == null) return false;
+        if (targetNetId < 0) return false;   // 没有本次配置的 netId 就无从绑定
+        if (!sawWrongKeyForAttempt(logcatOutput, targetSsid, targetBssid)) return false;
+
+        for (LogEvent e : parse(logcatOutput)) {
+            if (!KIND_WRONG_KEY.equals(e.kind)) continue;
+            if (!targetSsid.equals(e.ssid)) continue;
+            if (e.netId == targetNetId) return true;
+        }
+        return false;
+    }
+
+    /**
      * 目标 BSSID 有没有完成握手 —— **成功判定必须用这个，不能用 sawNegotiated**。
      *
      * @param targetBssid 目标 AP 的 MAC；为空时返回 false（宁可不判成功，也不能误判）
@@ -248,8 +597,45 @@ public final class WpaLogReader {
     public static boolean sawNegotiatedFor(String logcatOutput, String targetBssid) {
         if (targetBssid == null || targetBssid.isEmpty()) return false;
         for (LogEvent e : parse(logcatOutput)) {
-            if ("negotiated".equals(e.kind) && e.bssid != null
+            // R3：CONNECTED 已独立成 kind，但它**仍属成功证据**，
+            // 这里必须同时认两种，否则会破坏「CONNECTED 也算成功证据」的既有行为
+            // （WpaLogTest 有对应断言）。
+            if (isSuccessEvidenceKind(e.kind) && e.bssid != null
                     && targetBssid.equalsIgnoreCase(e.bssid)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 目标 BSSID 有没有完成握手 —— **带 netId 归属校验**（D2）。
+     *
+     * <h3>为什么需要它</h3>
+     * {@link #sawNegotiatedFor} 只比较 BSSID。但系统用**旧配置 / PMKSA 缓存**
+     * 回连同一 AP 时，BSSID 完全相同 —— 那一次成功会被算到本条候选头上，
+     * 把错误口令判成命中。
+     *
+     * <p>{@code CTRL-EVENT-CONNECTED} 行本身带 {@code [id=N]}，正是「这次连的是
+     * 哪个 network 配置」的归属信息，解析时已经取到（{@link LogEvent#hasNetId()}），
+     * 原判定却没用。
+     *
+     * <h3>规则</h3>
+     * <ul>
+     *   <li>事件带 netId 且本次已知目标 netId（{@code > 0}）→ 必须相等；</li>
+     *   <li>任一侧缺 netId 信息 → 退回纯 BSSID 匹配（保持原有行为）；</li>
+     * </ul>
+     *
+     * @param targetNetId 本候选新建配置的 netId；{@code <= 0} 表示未知
+     */
+    public static boolean sawNegotiatedForAttempt(String logcatOutput, String targetBssid,
+                                                  long targetNetId) {
+        if (targetBssid == null || targetBssid.isEmpty()) return false;
+        for (LogEvent e : parse(logcatOutput)) {
+            if (!isSuccessEvidenceKind(e.kind)) continue;
+            if (e.bssid == null || !targetBssid.equalsIgnoreCase(e.bssid)) continue;
+            // 只在**两侧都拿得到** netId 时才用它做归属判定；
+            // 缺任一侧就退回纯 BSSID 匹配（不额外收紧，避免把真实命中挡掉）。
+            if (e.hasNetId() && targetNetId > 0 && e.netId != targetNetId) continue;
+            return true;
         }
         return false;
     }
@@ -345,7 +731,11 @@ public final class WpaLogReader {
 
     public static boolean sawNegotiated(String logcatOutput) {
         for (LogEvent e : parse(logcatOutput)) {
-            if ("negotiated".equals(e.kind)) return true;
+            // R3：CONNECTED 已独立成 kind，但它**仍属成功证据**。
+            // 这里必须用 isSuccessEvidenceKind 同时认两种，否则会破坏
+            // 「CTRL-EVENT-CONNECTED 也算成功证据」这条既有语义
+            // （WpaLogTest / LogAttributionTest 各有一条断言钉住它）。
+            if (isSuccessEvidenceKind(e.kind)) return true;
         }
         return false;
     }

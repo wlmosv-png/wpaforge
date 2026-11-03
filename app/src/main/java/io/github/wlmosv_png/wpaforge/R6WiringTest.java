@@ -193,14 +193,17 @@ public class R6WiringTest {
                         AttemptMarker.line(id1)).find());
 
         System.out.println("== 3.4-k 接线守卫（接线被删即红）==");
-        String eng = readFile("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = readFile(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读：需以项目根为工作目录运行）");
             ok("（占位）", true);
         } else {
             ok("run() 生成 runId", eng.contains("AttemptId.newRunId("));
-            ok("每条候选生成 attemptId", eng.contains("AttemptId.of(currentRunId, cursor)"));
+            // D5-3：序号改用候选在字典中的位置（i + 1）。
+            // 不能再用 cursor —— 它已改为「安全续跑边界」，遇到非 DIRECT 会停住，
+            // 若拿它当序号会让后续候选共用同一个 seq（attemptId 非法、日志窗口全失效）。
+            ok("每条候选生成 attemptId", eng.contains("AttemptId.of(currentRunId, i + 1)"));
             ok("Attempt 携带 attemptId", eng.contains("a.attemptId ="));
             // R11：不再清空缓冲；窗口起点由「时间锚点 + 起点标记」确立，
             // 且起点状态必须进入窗口元数据（不再是"清完就当它清了"）。

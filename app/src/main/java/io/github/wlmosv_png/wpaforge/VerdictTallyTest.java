@@ -1,6 +1,7 @@
 package io.github.wlmosv_png.wpaforge;
 
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
+import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
 import io.github.wlmosv_png.wpaforge.audit.VerdictTally;
 
 /**
@@ -35,7 +36,7 @@ public class VerdictTallyTest {
 
         System.out.println("== V2 全部有失败证据 → 「未命中」站得住 ==");
         t.reset();
-        for (int i = 0; i < 5; i++) t.add(CrackEngine.Verdict.AUTH_FAIL);
+        for (int i = 0; i < 5; i++) t.add(CrackEngine.Verdict.AUTH_FAIL, EvidenceGrade.Level.DIRECT);
         eq("失败 5", 5, t.confirmedFail());
         eq("无结论 0", 0, t.inconclusive());
         eq("执行 5", 5, t.executed());
@@ -43,7 +44,7 @@ public class VerdictTallyTest {
 
         System.out.println("== V3 混入无结论 → 「未命中」不成立 ==");
         t.reset();
-        t.add(CrackEngine.Verdict.AUTH_FAIL);
+        t.add(CrackEngine.Verdict.AUTH_FAIL, EvidenceGrade.Level.DIRECT);
         t.add(CrackEngine.Verdict.TIMEOUT);
         eq("失败 1", 1, t.confirmedFail());
         eq("无结论 1", 1, t.inconclusive());
@@ -59,7 +60,7 @@ public class VerdictTallyTest {
 
         System.out.println("== V5 SUCCESS / ABORTED 不进任何一类 ==");
         t.reset();
-        t.add(CrackEngine.Verdict.AUTH_FAIL);
+        t.add(CrackEngine.Verdict.AUTH_FAIL, EvidenceGrade.Level.DIRECT);
         t.add(CrackEngine.Verdict.SUCCESS);   // 命中由命中路径单独处理
         t.add(CrackEngine.Verdict.ABORTED);   // 中断的那条没结案（引擎还会回退游标重试）
         eq("失败 1", 1, t.confirmedFail());
@@ -71,7 +72,7 @@ public class VerdictTallyTest {
         t.reset();
         t.add(null);
         eq("null 不计入", 0, t.executed());
-        t.add(CrackEngine.Verdict.AUTH_FAIL);
+        t.add(CrackEngine.Verdict.AUTH_FAIL, EvidenceGrade.Level.DIRECT);
         t.reset();
         eq("reset 后失败归零", 0, t.confirmedFail());
         eq("reset 后无结论归零", 0, t.inconclusive());

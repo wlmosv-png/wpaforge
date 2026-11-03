@@ -95,9 +95,11 @@ public class R3VerdictTest {
         eq("status 显示目标但证据不足 → UNKNOWN/status-unclear", "status-unclear",
                 CrackEngine.classifyDeadline(false, false, false, false, true).reason);
         CrackEngine.DeadlineOutcome o6 = CrackEngine.classifyDeadline(false, false, false, false, false);
-        eq("全无证据 → TIMEOUT/no-evidence", "no-evidence", o6.reason);
-        ok("到期无证据 = TIMEOUT（**不是** AUTH_FAIL）",
-                o6.verdict == CrackEngine.Verdict.TIMEOUT
+        // 2026-11-02 审计：生命周期读不到 ≠ 请求已终止 → INCOMPLETE + 独立 reason
+        eq("全无证据（生命周期读不到）→ no-evidence-state-unknown",
+                "no-evidence-state-unknown", o6.reason);
+        ok("到期无证据 = INCOMPLETE（**不是** AUTH_FAIL，也不是「已终止」）",
+                o6.verdict == CrackEngine.Verdict.INCOMPLETE
                         && o6.verdict != CrackEngine.Verdict.AUTH_FAIL);
 
         System.out.println("== R3-5 到期归类：穷举 32 种组合的不变量 ==");
@@ -109,13 +111,17 @@ public class R3VerdictTest {
             combos++;
             if (o.verdict == CrackEngine.Verdict.AUTH_FAIL) authFail++;
             if (o.verdict == CrackEngine.Verdict.SUCCESS) success++;
+            // D4：TIMEOUT 必须且只能来自「零观察」那一种组合（reason=no-evidence）。
+            // 结构上不再要求「整个 32 格里只有一种 TIMEOUT」—— 因为零观察一格会按
+            // 生命周期分派（ACTIVE->INCOMPLETE，其余->TIMEOUT），
+            // 真实的硬约束是「TIMEOUT 的理由码只能是 no-evidence」。
             if (o.verdict == CrackEngine.Verdict.TIMEOUT && !(o.reason.equals("no-evidence"))) timeoutNonEmpty++;
             if (o.reason == null || o.reason.isEmpty()) missingReason++;
         }
         eq("穷举组合数 = 32", 32, combos);
         eq("**没有任何组合**产出 AUTH_FAIL（无归因证据不得判失败）", 0, authFail);
         eq("没有任何组合产出 SUCCESS（到期不是成功路径）", 0, success);
-        eq("TIMEOUT 只出现在「全无证据」一种组合", 0, timeoutNonEmpty);
+        eq("TIMEOUT 的理由码只能是 no-evidence", 0, timeoutNonEmpty);
         eq("每种组合都有理由码", 0, missingReason);
 
         System.out.println("== R3-6 窗口切片：陈旧行不得归因（审计 S3-2/S6-2）==");
@@ -176,9 +182,10 @@ public class R3VerdictTest {
                         && !WpaLogReader.sawNegotiatedFor(
                                 AttemptMarker.sliceAfter(truncatedTail, MID), BSSID));
         // 降级语义：任何「证据缺失」组合都不得变成认证失败
-        ok("证据全缺 → TIMEOUT（不是 AUTH_FAIL）",
+        // 2026-11-02 审计：生命周期读不到时不得报「已终止」的 TIMEOUT
+        ok("证据全缺（生命周期读不到）→ INCOMPLETE（不是 AUTH_FAIL）",
                 CrackEngine.classifyDeadline(false, false, false, false, false).verdict
-                        == CrackEngine.Verdict.TIMEOUT);
+                        == CrackEngine.Verdict.INCOMPLETE);
 
         System.out.println("== R3-7d 过滤遗漏：漏一类行只能降级为「无证据」 ==");
         // 过滤式若漏掉某类判据行，该类证据永远不会出现 —— 语义上必须等价于
@@ -201,7 +208,7 @@ public class R3VerdictTest {
                         && WpaLogReader.SHELL_FILTER.contains("reason="));
 
         System.out.println("== R3-7 接线守卫：闸门被删即红 ==");
-        String eng = readFile("/workspace/promo-wpaforge/app/src/main/java/"
+        String eng = readFile(TestPaths.javaSrcRoot()
                 + "io/github/wlmosv_png/wpaforge/audit/CrackEngine.java");
         if (eng == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");
@@ -218,8 +225,11 @@ public class R3VerdictTest {
                     flat.contains("WpaLogReader.countHandshakeM1For(wlogSlice, target.bssid)"));
             ok("日志判据 4/7：M1 存在性吃切片",
                     flat.contains("WpaLogReader.sawHandshakeM1(wlogSlice)"));
-            ok("日志判据 5/7：wrong_key 吃切片",
-                    flat.contains("WpaLogReader.sawWrongKeyFor(wlogSlice, target.ssid)"));
+            // 判据 4 归属收紧后调用点改为带 BSSID 的 sawWrongKeyForAttempt；
+            // 断言意图不变：**必须吃切片**（不得读整段日志）。
+            ok("日志判据 5/7：wrong_key 吃切片（含 BSSID 归属）",
+                    flat.contains("WpaLogReader.sawWrongKeyForAttempt(")
+                            && flat.contains("wlogSlice, target.ssid, target.bssid)"));
             ok("日志判据 6/7：握手失败吃切片",
                     flat.contains("WpaLogReader.sawHandshakeFailure(wlogSlice)"));
             ok("日志判据 7/7：关联被拒吃切片",

@@ -2,9 +2,9 @@
 
 <img src="docs/banner.png" alt="WPAForge" width="100%">
 
-**Try to recover your own router's WPA password, candidate by candidate.**
+**Line up your dictionaries and let your phone work through them, one after another.**
 
-<sub>candidates built for the target · every one really associated · curated dictionaries, or bring your own</sub>
+<sub>multi-dictionary plans and auto-relay · each password tried once per network · candidates built for the target · every one really associated · curated dictionaries, or bring your own</sub>
 
 [![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=FFD54F&labelColor=1C1C24&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
@@ -29,9 +29,14 @@
 ## Contents
 
 - [What it does](#what-it-does)
+- [Two ways to run](#two-ways-to-run)
+- [Multi-dictionary plan: line them up, let it run](#multi-dictionary-plan-line-them-up-let-it-run)
+- [Try each password only once per network: cross-dictionary filtering](#try-each-password-only-once-per-network-cross-dictionary-filtering)
 - [How it finds passwords](#how-it-finds-passwords)
 - [Dictionaries: bring your own, or use the built-ins](#dictionaries-bring-your-own-or-use-the-built-ins)
 - [Verdicts: prefer "uncertain" over a false hit](#verdicts-prefer-uncertain-over-a-false-hit)
+- [Frequently Asked Questions](#frequently-asked-questions)
+- [Dictionary management](#dictionary-management)
 - [Observe: see which channel to use at a glance](#observe-see-which-channel-to-use-at-a-glance)
 - [Quick start](#quick-start)
 - [Screenshots](#screenshots)
@@ -62,6 +67,58 @@
 - Offline check of `.cap` / `.hc22000` (EAPOL and PMKID paths; 10k entries in ~37 s)
 - Dictionary search, merge and editing (contains / prefix / suffix / regex)
 - Keeps running with the screen locked; survives being killed (progress is persisted)
+
+## Two ways to run
+
+| Mode | When to use it | Behaviour |
+|---|---|---|
+| **Single dictionary** | One list, or start with a small focused one | Pick one -> stop when it finishes |
+| **Multi-dictionary plan** | Several lists you want to finish in one go | Order them -> runs one after another, stops on a hit, moves on after a miss |
+
+Both modes share the same verdict logic and the same per-network record of what has been tried.
+
+## Multi-dictionary plan: line them up, let it run
+
+Previously you could run one dictionary at a time and had to pick the next one by hand.
+Now several dictionaries can be queued into a plan:
+
+- Runs in order; **stops immediately on a hit**, moves to the next one after a miss;
+- "Auto-advance" can be on (keep going) or off (stop after each dictionary so you decide);
+- The plan is managed right on the crack page (move up / move down / remove);
+- Pause, resume and stop are supported; **a dictionary that already finished is never re-run**;
+- The page shows "#N of M / current dictionary / next dictionary / overall progress" live;
+- When a plan finishes, pauses or is blocked, the page says exactly that - it never reuses the
+  single-dictionary wording.
+
+> **A plan is bound to a target network.** Network A and network B each have their own plan and
+> progress; switching networks never mixes them, and switching back restores the previous plan.
+>
+> **The order cannot be changed while a plan is running** (that would desynchronise tasks and
+> progress): the plan manager tells you to pause or stop first, after which reordering is free.
+
+## Try each password only once per network: cross-dictionary filtering
+
+On the same network, a password **already proven wrong is never retried in another dictionary**.
+
+- Changing dictionaries, changing their order, or re-picking a dictionary never repeats work;
+- The UI shows the real breakdown: **proven wrong / no result / will be skipped / actually queued**;
+- The "will be skipped" count is computed from the candidates that **actually exist in this plan**,
+  not from the total number of historical records.
+
+**Two tiers, with the boundary stated explicitly:**
+
+| Tier | What it skips | What it never skips |
+|---|---|---|
+| **Conservative (default)** | Only candidates **proven wrong** | Everything with "no result" is retried |
+| **Save time** | Also skips candidates that ran last time, whose connection was confirmed finished, but produced no result | Candidates still connected to the target (undecidable) are never skipped in either tier |
+
+Before you enable "Save time" the app shows exactly **how many entries would be skipped and how
+many of them produced no result**, plus the warning that if the previous run hit weak signal,
+router back-off or a manual stop, the correct password may be among them.
+
+Inconclusive results (timeout, weak signal, manual stop) are **never treated as a wrong password**
+and will be retried.
+
 
 ## How it finds passwords
 
@@ -138,6 +195,46 @@ This came out of a real failure: an early build showed a system dialog "could no
 BTWIFL_0923" while the app reported "connected". It would rather miss a hit than report a
 false one.
 
+## Frequently Asked Questions
+
+### "The tool cannot guarantee a 100% correct verdict, so why use it?"
+
+Because a 100% certain verdict is **not achievable in the first place** — this is the
+nature of the problem, not a shortcoming specific to WPAForge:
+
+1. **Objective limits**: the Android network stack, vendor drivers, router firmware
+   behaviour and the way wireless events are reported are all outside the app's control.
+   Even the same router may report differently at different moments.
+2. **An issued connection request does not mean the system did what you expected**, and
+   **a failed connection does not necessarily mean a wrong password** — it can be a driver
+   timeout, router back-off, channel change or interference.
+3. WPAForge's design rule is: **only draw a definite conclusion when there is attributable
+   evidence; otherwise keep it "uncertain".**
+4. "Uncertain" is never presented as a confirmed failure, and never permanently excludes a
+   candidate — it will be retried. A definite failure must be attributable to **this**
+   attempt, not carried over from a previous round.
+
+So what you get is not "a 100% verdict", but:
+
+- **Fewer wrong attributions** — a correct password is not crossed off because of one round
+  of environmental noise;
+- **Fewer wrong exclusions** — uncertain candidates are not skipped forever;
+- **Less repeated work** — a password already proven wrong on this network does not come
+  back in another dictionary.
+
+**It is better to acknowledge uncertainty than to present an unsupported failure as a fact.**
+
+## Dictionary management
+
+- Rows show entry count, run status and plan membership directly;
+- Multi-select to **add to / remove from a plan** in bulk; the plan card is collapsed by default;
+- **Deletion goes to a trash bin** - restorable, or permanently removable from there;
+- The editor has a **line-number gutter**, cursor line/column, go-to-line and find, so even a
+  few thousand lines can be located precisely;
+- **Dictionary resume by content**: after a dictionary is renamed, moved or re-imported it is
+  matched **by content** - identical content resumes from where it stopped; if the content really
+  changed the app says so and does **not** inherit the old position.
+
 ## Observe: see which channel to use at a glance
 
 The dial *is* a spectrum: the upper half is the 14 channels of 2.4G, the lower half the four
@@ -181,6 +278,10 @@ The header is a single line — `Updated just now` / `Updated Ns ago`, extended 
 </p>
 <p align="center"><sub>① Observe (spectrum radar) · ② Crack (progress &amp; rate) · ③ Hit (passphrase + one-tap copy) · ④ Dictionaries (ranked by hit rate, with local record)<br>⑤ LAN recon (devices &amp; open ports) · ⑥ Signal distribution &amp; channel advice · ⑦ Audit (restore state / dictionary / strength / offline check) · ⑧ Settings (permissions &amp; keep-alive)</sub></p>
 
+> **Note**: these screenshots show the v1.9.22 UI. The dictionary management page, the
+> multi-dictionary plan card and the trash bin were added later and have not been
+> re-photographed; no mock-ups or composites are placed here.
+
 ## How it compares
 
 | Approach | What you need | Speed | Effort |
@@ -203,6 +304,9 @@ passphrase is out of scope — that one is what WPA3 is for.
 | Permission errors | Root not granted, or the ROM blocks `cmd wifi` | run the 6-step self-check on the settings page |
 | Killed mid-run | battery optimisation | whitelist it; progress is persisted and it resumes |
 | Finishing says "original passphrase unavailable" | the sealed passphrase is gone (Keystore unavailable, device change, cleared data) | reconnect manually; the record explains why under Restore state |
+| A plan only covers the current network | plans are **bound to a target network** | arrange a plan for that network after switching |
+| Cannot reorder while a plan is running | reordering mid-run would desynchronise tasks and progress | pause or stop first, then reorder and continue |
+| With "save time" on, some passwords are not retried | that tier skips candidates that ran without a result | do not use it on an unstable network; turn it off, or use force re-run |
 | WPS targets show "capability unknown" and no device name | SELinux does not let the supplicant reply to the root domain | add one allow rule, see below |
 
 ### WPS channel (root required)
@@ -244,7 +348,7 @@ neither survives a per-candidate dictionary sweep.
 No Gradle; a two-stage manual chain:
 
 ```sh
-WP_VERSION_CODE=124 WP_VERSION_NAME=1.9.28 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
+WP_VERSION_CODE=136 WP_VERSION_NAME=1.9.40 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop side: javac + d8 + signing (needs WP_FORGE_KS*)
 ```
 

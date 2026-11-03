@@ -132,7 +132,7 @@ public class LogWindowTest {
                 oldSig.evidenceUsable() && !oldSig.timeAnchored);
 
         System.out.println("== R11L-6b WPS 路径也不再清空全局缓冲（最终审计 P0-3）==");
-        String wpsBase = "/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/wpaforge/";
+        String wpsBase = TestPaths.javaPkgDir();
         String wps = read(wpsBase + "wps/WpsHelper.java");
         if (wps == null) {
             System.out.println("  N/RUN WPS 接线守卫（源码不可读）");
@@ -164,11 +164,11 @@ public class LogWindowTest {
         }
 
         System.out.println("== R11L-6 接线守卫：生产主循环不再清空全局缓冲 ==");
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String eng = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/CrackEngine.java");
-        String wsl = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String wsl = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/WifiStateLog.java");
-        String wlr = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String wlr = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/WpaLogReader.java");
         if (eng == null || wsl == null || wlr == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");
@@ -203,7 +203,7 @@ public class LogWindowTest {
     }
 
     private static String sourceOf(String rel) {
-        return read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/wpaforge/" + rel);
+        return read(TestPaths.javaPkgDir() + rel);
     }
 
     private static String read(String p) {

@@ -44,7 +44,7 @@ public class SavedWifiUiTest {
         }
     }
 
-    private static final String ROOT = "/workspace/promo-wpaforge/app/src/main/java/io/github/"
+    private static final String ROOT = TestPaths.under("app/src/main/java/io/github") + "/"
             + "wlmosv_png/wpaforge/";
 
     public static void main(String[] args) {

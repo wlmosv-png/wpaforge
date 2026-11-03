@@ -169,9 +169,9 @@ public class LogPipelineTest {
                 .matcher("wlan0: CTRL-EVENT-SCAN-RESULTS").find());
 
         System.out.println("== P0-3f 引擎接线：只认结构化状态，不看 stdout 空不空 ==");
-        String eng = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String eng = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/CrackEngine.java");
-        String wlr = read("/workspace/promo-wpaforge/app/src/main/java/io/github/wlmosv_png/"
+        String wlr = read(TestPaths.under("app/src/main/java/io/github/wlmosv_png") + "/"
                 + "wpaforge/audit/WpaLogReader.java");
         if (eng == null || wlr == null) {
             System.out.println("  N/RUN 接线守卫（源码不可读）");

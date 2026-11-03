@@ -94,7 +94,7 @@ public class CrackPageLayoutTest {
         System.out.println("== 2. 破解页展示位：一个都不能漏赋值 ==");
         String[] views = {"connectTargetView", "connectDictView", "connectModeView",
                 "connectProgress", "candBox", "candLabel", "candRoll", "candPrev",
-                "hitCard", "hitPw", "hitMeta", "connectNotice", "flowHeader", "flowChevron",
+                "hitCard", "hitPw", "hitMeta", "flowHeader", "flowChevron",
                 "flowLabel", "flowCount", "chipKey", "chipAll", "flowClear",
                 "connectStreamView", "streamScroll", "streamParams", "jumpLatestBtn",
                 "connectEmptyHint", "startBtn", "pauseBtn", "stopBtn", "queueBox",

@@ -40,35 +40,29 @@ public final class ConnectNoticeAndLogScrollTest {
         System.out.println("=== 提示条归属 + 日志滚动 + 展开按钮 ===");
         String ma = read("io/github/wlmosv_png/wpaforge/MainActivity.java");
 
-        // ---- ① 双父 bug：两个页面各用各的控件 ----
-        ok("① 破解页用独立字段 connectNotice", ma.contains("private TextView connectNotice;"),
-                "字段缺失");
-        ok("① 观测页仍用 observeNotice", ma.contains("private TextView observeNotice;"),
-                "字段缺失");
-        ok("① 破解页 addView(connectNotice)", ma.contains("pageConnect.addView(connectNotice);"),
-                "未挂到破解页");
-        ok("① 观测页 addView(observeNotice)", ma.contains("pageObserve.addView(observeNotice,"),
-                "未挂到观测页");
-        // 破解页里不得再出现 observeNotice 的赋值
+        // ---- ① 破解页**不再**承担 Wi-Fi 开关状态展示（2026-11-03 需求）----
+        ok("① 破解页已无 connectNotice 控件", !ma.contains("connectNotice"), "仍在");
+        ok("① 破解页已无 refreshConnectNotice", !ma.contains("refreshConnectNotice"), "仍在");
+        ok("① 观测页仍用独立字段 observeNotice",
+                ma.contains("private TextView observeNotice;"), "字段缺失");
+        ok("① 观测页 addView(observeNotice)",
+                ma.contains("pageObserve.addView(observeNotice,"), "未挂到观测页");
+
+        // 破解页构建段（用于判断破解页自己有没有 Wi-Fi 提示代码）
         int connectTabStart = ma.indexOf("buildConnectTab");
         String connectTab = connectTabStart > 0
                 ? ma.substring(connectTabStart, Math.min(ma.length(), connectTabStart + 60000))
                 : "";
-        ok("① 破解页构建代码里不再出现 observeNotice",
-                !connectTab.contains("observeNotice"), "仍在复用");
         info("① 破解页构建段长度 " + connectTab.length());
 
-        // ---- ② 残留：WiFi 恢复后必须自动消失 ----
-        ok("② 存在 refreshConnectNotice", ma.contains("private void refreshConnectNotice()"),
-                "缺失");
-        ok("② 缓存真实 WiFi 状态（不是记上一次的提示）",
-                ma.contains("wm.isWifiEnabled()"), "未查真实状态");
-        ok("② WiFi 开着时隐藏提示",
-                ma.contains("connectNotice.setVisibility(View.GONE)"), "缺失");
-        ok("② 状态刷新时会调用它（updateConnectMode 内）",
-                ma.contains("refreshConnectNotice();"), "未接线");
-        ok("② 拿不到状态时不显示假警告",
-                ma.contains("拿不到状态时**不显示**警告"), "缺少说明");
+        // ---- ② 破解页构建段不再给 Wi-Fi 提示赋值（提示条已整体移除）----
+        ok("② 破解页构建段无 Wi-Fi 开关状态提示",
+                !connectTab.contains("WiFi 未开启") && !connectTab.contains("Wi-Fi is off"), "仍在");
+        ok("② 破解页构建段不再查系统开关",
+                !connectTab.contains("isWifiEnabled()"), "仍在");
+        // 观测页自身的 Wi-Fi 检查必须保留（扫描热点确实需要开 Wi-Fi）
+        ok("② 观测页的 Wi-Fi 检查仍保留",
+                ma.contains("private String observeBlocker() {"), "被误删");
 
         // ---- ③ 日志区：可滚动 + 显示最新 ----
         ok("③ 不再用 maxLines(4)/maxLines(1) 裁剪",

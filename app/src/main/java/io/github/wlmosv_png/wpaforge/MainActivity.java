@@ -142,7 +142,6 @@ public class MainActivity extends Activity {
      * </ul>
      * 现在拆成两个独立控件，各管各的。
      */
-    private TextView connectNotice;
     /** 信道建议卡（观测页，信道占用图下方） */
     private TextView adviceCard;
     private List<NetRecord> lastRecords = new ArrayList<>();
@@ -195,6 +194,8 @@ public class MainActivity extends Activity {
     private boolean usePlanMode = false;
     /** 当前选中的计划快照（仅用于界面显示与启动对齐，不参与判定）。 */
     private io.github.wlmosv_png.wpaforge.audit.DictPlan selectedPlan = null;
+    /** 结算卡当前对应哪条任务（多字典接力切换时用它判断卡是否已过期）。 */
+    private String resultCardTaskId = "";
     /** 字典续命：本次要继承的起始 offset（0 = 从头跑）。 */
     private int pendingResumeOffset = 0;
     /** 本次字典的内容 SHA-256（入队时写进任务，供下次续命识别）。 */
@@ -5146,14 +5147,15 @@ public class MainActivity extends Activity {
         dictCard.addView(connectDictView, dlp);
         pageConnect.addView(dictCard, cardLp(AmberTheme.GAP_CARD));
 
-        // 破解页提示条：**只由破解页自己的状态驱动**（当前只有「WiFi 未开启」）。
-        // 不再与观测页共用控件 —— 见 connectNotice 字段注释里的事故。
-        connectNotice = new TextView(this);
-        connectNotice.setTextSize(AmberTheme.FS_BODY);
-        connectNotice.setTextColor(DANGER);
-        connectNotice.setPadding(px(4), px(10), px(4), 0);
-        connectNotice.setVisibility(View.GONE);
-        pageConnect.addView(connectNotice);
+        /* 破解页**不再展示任何 Wi-Fi 开关状态**（2026-11-03）。
+         *
+         * 曾经这里有一条"请先打开 Wi-Fi 开关"的红字提示。问题是：执行链为了
+         * 强制重新关联，会短暂关/开 Wi-Fi，系统开关查询在这个窗口里读到 false
+         * —— 于是**手机明明开着 Wi-Fi，破解页却闪一下红字**（用户实测到过，
+         * 会让人怀疑设备或软件执行条件）。
+         *
+         * 破解页的职责不是报系统开关状态；真正的环境安全检查在 RootProber
+         * （开跑前）与执行引擎（关联失败即判失败/阻塞）里，一条都没动。 */
 
         // ================= ③ 命中卡（命中时才显示） =================
         hitCard = new LinearLayout(this);
@@ -5798,6 +5800,19 @@ public class MainActivity extends Activity {
             ui.post(() -> showResultCard(t, o));
             return;
         }
+        /* 多字典接力：文案必须由**真实计划状态**决定，不能让单字典的
+         * 「换一本字典」覆盖正在进行的接力。
+         *
+         * 判据是 livePlan()（服务端活计划）的 state/index，不是"页面上有没有计划"——
+         * 单字典模式下也可能存在别的目标的计划文件，那不该影响本卡。
+         */
+        {
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp0 = livePlan();
+            if (lp0 != null && !lp0.items.isEmpty()) {
+                showPlanResultCard(task, outcome, lp0);
+                return;
+            }
+        }
         if ("DONE_HIT".equals(outcome)) {
             resultCard.setVisibility(View.GONE);   // 命中已经有专门的命中卡
             return;
@@ -5890,11 +5905,86 @@ public class MainActivity extends Activity {
         resultActions.addView(actionButton(L.s("先算了", "Leave it"),
                 AmberTheme.BTN_NEUTRAL, 8, v -> hideResultCard()));
 
+        resultCardTaskId = task.id;
         resultCard.setVisibility(View.VISIBLE);
         // 候选区还留着最后一条 —— 标题换成陈述事实的词，明确告诉用户已经结束。
         // 刻意不用「完成」：没找到不算完成，用「最后尝试」只说发生过什么。
         if (candLabel != null) {
             candLabel.setText(L.s("最后尝试", "LAST TRIED"));
+        }
+    }
+
+    /**
+     * 多字典接力的结算卡：**每一句都由真实计划/任务状态推出**。
+     *
+     * <p>状态映射（调用时机：本本任务已结束、计划已 apply 完成）：
+     * <ul>
+     *   <li>{@code RUNNING} → 计划已前进到下一本 → 「当前字典已完成，正在准备下一本」
+     *       （**明确不说"正在执行"**：此刻下一本还没接管）。</li>
+     *   <li>{@code PAUSED} → 「计划已暂停」+ 继续入口。</li>
+     *   <li>{@code BLOCKED}/{@code ERROR} → 如实说被阻塞/出错，**不伪装成完成**。</li>
+     *   <li>终态（{@code DONE_HIT}/{@code DONE_MISS}/{@code STOPPED}）→ 「多字典计划已完成」+ 最终统计。</li>
+     * </ul>
+     */
+    private void showPlanResultCard(TaskQueue.Task task, String outcome,
+            io.github.wlmosv_png.wpaforge.audit.DictPlan lp) {
+        final int total = lp.items.size();
+        final int idx = Math.max(1, Math.min(lp.displayIndex(), total));
+        final String nextName = (lp.index + 1 < lp.items.size())
+                ? lp.items.get(lp.index + 1).name : "";
+        final String justName = task.dictName == null ? "" : task.dictName;
+
+        // 状态 → 语义 → 文案：全部在 PlanResultHint（纯函数）里，界面只填空。
+        final io.github.wlmosv_png.wpaforge.audit.PlanResultHint.Kind kind =
+                io.github.wlmosv_png.wpaforge.audit.PlanResultHint.kindOf(lp);
+
+        resultTitle.setText(io.github.wlmosv_png.wpaforge.audit.PlanResultHint.title(kind));
+        int titleColor;
+        switch (kind) {
+            case DONE_HIT:  titleColor = OK_GREEN; break;
+            case PAUSED:    titleColor = AmberTheme.WARN; break;
+            case BLOCKED:
+            case ERROR:     titleColor = DANGER; break;
+            case PREPARING_NEXT: titleColor = ACCENT; break;
+            default:        titleColor = AmberTheme.TEXT; break;
+        }
+        resultTitle.setTextColor(titleColor);
+        resultSub.setText("");
+
+        resultWhy.setText(io.github.wlmosv_png.wpaforge.audit.PlanResultHint.why(
+                kind, idx, total, nextName,
+                CrackService.lastSkippedConfirmed(), CrackService.lastSkippedUndetermined()));
+
+        resultActions.removeAllViews();
+        if (io.github.wlmosv_png.wpaforge.audit.PlanResultHint.isTerminalKind(kind)) {
+            resultActions.addView(actionButton(L.s("\u77e5\u9053\u4e86", "Got it"),
+                    AmberTheme.BTN_PRIMARY, 0, v -> hideResultCard()));
+        } else {
+            if (io.github.wlmosv_png.wpaforge.audit.PlanResultHint.isAbnormalKind(kind)
+                    || kind == io.github.wlmosv_png.wpaforge.audit.PlanResultHint.Kind.PAUSED) {
+                resultActions.addView(actionButton(L.s("\u7ee7\u7eed", "Resume"),
+                        AmberTheme.BTN_PRIMARY, 0, v -> {
+                            hideResultCard();
+                            CrackService.start(MainActivity.this);
+                        }));
+            } else {
+                resultActions.addView(actionButton(L.s("\u6682\u505c", "Pause"),
+                        AmberTheme.BTN_SECONDARY, 0, v -> {
+                            hideResultCard();
+                            if (crackService != null) crackService.pause();
+                        }));
+            }
+            resultActions.addView(actionButton(L.s("\u505c\u6b62\u8ba1\u5212", "Stop plan"),
+                    AmberTheme.BTN_NEUTRAL, 8, v -> {
+                        hideResultCard();
+                        onStopClicked();
+                    }));
+        }
+
+        resultCardTaskId = task.id;
+        resultCard.setVisibility(View.VISIBLE);
+        if (candLabel != null) {
+            candLabel.setText(L.s("\u6700\u540e\u5c1d\u8bd5", "LAST TRIED"));
         }
     }
 
@@ -6449,46 +6539,8 @@ public class MainActivity extends Activity {
      * 这一行不可点。可用性由上面的设置页实时检测负责，
      * 这里只报「用什么通道 + 实测多快」。
      */
-    /**
-     * 刷新破解页提示条（当前只有「WiFi 未开启」）。
-     *
-     * <h3>修的两个问题</h3>
-     * <ul>
-     *   <li><b>残留</b>：旧实现只在 Scanner 报告时写入，WiFi 恢复后无人清除
-     *       —— 用户明明开了 WiFi，屏幕上还挂着「WiFi 未开启」。</li>
-     *   <li><b>越位</b>：那条提示原本属于观测页，被双父 bug 搬到了破解页。</li>
-     * </ul>
-     * 现在每次都问一次系统真实状态，开着就隐藏、关着才显示。
-     */
-    private void refreshConnectNotice() {
-        if (connectNotice == null) return;
-        boolean wifiOn;
-        try {
-            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
-                    getApplicationContext().getSystemService(WIFI_SERVICE);
-            wifiOn = wm != null && wm.isWifiEnabled();
-        } catch (Throwable t) {
-            // 拿不到状态时**不显示**警告：宁可少提示，也不要给假状态。
-            wifiOn = true;
-        }
-        if (wifiOn) {
-            if (connectNotice.getVisibility() != View.GONE) {
-                connectNotice.setVisibility(View.GONE);
-            }
-        } else {
-            String msg = L.s("WiFi 未开启，请先打开 WiFi 开关",
-                    "Wi-Fi is off — turn it on first");
-            if (!msg.contentEquals(connectNotice.getText())) connectNotice.setText(msg);
-            if (connectNotice.getVisibility() != View.VISIBLE) {
-                connectNotice.setVisibility(View.VISIBLE);
-            }
-        }
-    }
-
     private void updateConnectMode() {
-        // 顺带刷新破解页的 WiFi 提示：状态变回「开着」时**必须自动消失**，
-        // 不能像原来那样留在屏幕上当假状态（用户实测到过）。
-        refreshConnectNotice();
+        // 破解页不再展示 Wi-Fi 开关状态（见 buildUi 里的说明）。
         if (connectModeView == null) return;
         // 用「每条约 X 秒」而不是「X 条/秒」。
         // 0.1 条/秒看着像「没在动」，换算成「每条约 10 秒」
@@ -6577,6 +6629,17 @@ public class MainActivity extends Activity {
                 updateDictStatus();
                 updateConnectDict();
                 refreshPlanLine();
+                // 下一本**真正接管**（出现新的 RUNNING 任务）后，收掉上一本的结算卡：
+                // 否则「正在准备下一本」会一直挂着，与新字典的运行状态打架。
+                if (!resultCardTaskId.isEmpty()) {
+                    for (TaskQueue.Task t : queueCache) {
+                        if (t.state == TaskQueue.State.RUNNING && !t.id.equals(resultCardTaskId)) {
+                            hideResultCard();
+                            resultCardTaskId = "";
+                            break;
+                        }
+                    }
+                }
             });
         }
 

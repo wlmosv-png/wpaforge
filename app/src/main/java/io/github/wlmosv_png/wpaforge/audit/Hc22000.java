@@ -33,6 +33,16 @@ public final class Hc22000 {
     /** EAPOL-Key 帧里 MIC 字段的偏移（从 EAPOL 头算起） */
     public static final int EAPOL_MIC_OFFSET = 81;
 
+    /**
+     * EAPOL-Key 帧里 key nonce 字段的偏移与长度（802.1X-2004 §7.6.2）。
+     *
+     * <p>message pair 3/4 时该字段承载 ANonce，其余情况是 SNonce；
+     * 但 PTK 派生对两个 nonce 做 Min/Max 排序，角色互换不改变结果，
+     * 所以这里统一按「帧内 nonce」取即可。
+     */
+    public static final int EAPOL_SNONCE_OFFSET = 17;
+    public static final int EAPOL_SNONCE_LEN = 32;
+
     private Hc22000() {}
 
     /** 一条可用的握手材料 */
@@ -140,10 +150,21 @@ public final class Hc22000 {
         return new AuditEngine.Pmkid(e.ssid, e.apMac, e.staMac, e.micOrPmkid);
     }
 
+    /** 从 EAPOL 帧里取 key nonce；帧太短返回 null。 */
+    public static byte[] sNonceOf(byte[] eapol) {
+        if (eapol == null || eapol.length < EAPOL_SNONCE_OFFSET + EAPOL_SNONCE_LEN) return null;
+        byte[] out = new byte[EAPOL_SNONCE_LEN];
+        System.arraycopy(eapol, EAPOL_SNONCE_OFFSET, out, 0, EAPOL_SNONCE_LEN);
+        return out;
+    }
+
     /** 把材料翻成离线校验引擎要的握手结构（仅 EAPOL 类型）。 */
     public static AuditEngine.Handshake toHandshake(Entry e) {
         if (e == null || e.type != TYPE_EAPOL) return null;
-        return new AuditEngine.Handshake(e.ssid, e.apMac, e.staMac, e.aNonce, null,
-                e.eapol, EAPOL_MIC_OFFSET, e.micOrPmkid);
+        // SNonce 必须从 EAPOL 帧里取。这里历史上传的是 null，
+        // 于是每一份 EAPOL 材料都在校验阶段被判「SNonce 需 32 字节」，
+        // EAPOL 分支等于完全不可用（PMKID 分支不受影响）。
+        return new AuditEngine.Handshake(e.ssid, e.apMac, e.staMac, e.aNonce,
+                sNonceOf(e.eapol), e.eapol, EAPOL_MIC_OFFSET, e.micOrPmkid);
     }
 }

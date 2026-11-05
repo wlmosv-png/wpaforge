@@ -4,6 +4,47 @@
 
 ---
 
+## [1.9.42] - 2026-11-06
+
+> ### 离线校验：EAPOL 材料终于能跑了
+>
+> 一句话：**修掉一个让 EAPOL 分支完全不可用的缺失**。
+
+### 根因
+
+`Hc22000.toHandshake()` 把 SNonce 硬编码传了 `null`：
+
+```java
+new AuditEngine.Handshake(e.ssid, e.apMac, e.staMac, e.aNonce, null, ...)
+//                                                            ^^^^
+```
+
+`Handshake.validate()` 因此必判「SNonce 需 32 字节」，
+**每一份 EAPOL 材料都在开跑前就被拦下**，用户看到的是
+「材料不完整: 握手材料不完整: SNonce 需 32 字节」。
+
+PMKID 分支不受影响，所以这个洞一直没被发现 ——
+门禁里原有断言只查了 `micOffset`，**没查 `sNonce`**。
+
+### 修了什么
+
+- `toHandshake()` 改为从 EAPOL 帧的 **offset 17** 起取 32 字节 nonce
+  （802.1X-2004 §7.6.2 的 key nonce 字段）。
+  message pair 3/4 时该字段承载 ANonce、其余情况是 SNonce，
+  但 PTK 派生对两个 nonce 做 Min/Max 排序，角色互换不改变结果，
+  所以统一取帧内值即可。
+- 新增 `Hc22000.sNonceOf(byte[])` 与两个偏移常量。
+
+### 测试
+
+- `Hc22000Test` 补 2 条断言（`sNonce` 32 字节、`validate()` 通过）与
+  **官方 hashcat 向量端到端**：PMKID 与 EAPOL 各一条，密码 `hashcat!`，
+  两条都必须命中。
+- **真阳性已验证**：先只加测试不改源码 → `36 通过 5 失败`（失败项正是
+  EAPOL 全部 5 条）；修完 production → `41 通过 0 失败`。
+
+---
+
 ## [1.9.41] - 2026-11-06
 
 > ### 离线校验：材料导入改走系统文件选择器

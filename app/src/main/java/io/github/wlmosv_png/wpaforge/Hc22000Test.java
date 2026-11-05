@@ -65,6 +65,9 @@ public class Hc22000Test {
         AuditEngine.Handshake hs = Hc22000.toHandshake(e2);
         ok("转成 Handshake 结构", hs != null);
         ok("Handshake MIC 偏移被带上", hs != null && hs.micOffset == Hc22000.EAPOL_MIC_OFFSET);
+        ok("Handshake 带上 SNonce（32 字节）",
+                hs != null && hs.sNonce != null && hs.sNonce.length == 32);
+        ok("Handshake 材料完整性校验通过", hs != null && hs.validate().isEmpty());
         ok("EAPOL 行不能转 Pmkid", Hc22000.toPmkid(e2) == null);
 
         System.out.println("== 中文 SSID ==");
@@ -108,6 +111,51 @@ public class Hc22000Test {
         ok("从 hc22000 行一路跑到命中", hit[0]);
         ok("hexToBytes 健全性（32 位 hex = 16 字节）",
                 WpaCore.hexToBytes(pmkid).length == 16);
+
+
+        System.out.println("== 官方 hashcat 向量：端到端命中 ==");
+        // 来源：https://hashcat.net/wiki/doku.php?id=example_hashes 22000 行（原样拄录，字段未改）
+        // wiki 脚注 1：Password: "hashcat!"
+        String offPmkid = "WPA*01*4d4fe7aac3a2cecab195321ceb99a7d0*fc690c158264*f4747f87f9f4*686173686361742d6573736964***";
+        String offEapol = "WPA*02*024022795224bffca545276c3762686f*6466b38ec3fc*225edc49b7aa*54502d4c494e4b5f48415348434154"
+                + "5f54455354*10e3be3b005a629e89de088d6a2fdc489db83ad4764f2d186b9cde15446e972e*0103007502010a000000"
+                + "0000000000000148ce2ccba9c1fda130ff2fbbfb4fd3b063d1a93920b0f7df54a5cbf787b16171000000000000000000"
+                + "000000000000000000000000000000000000000000000000000000000000000000000000000000001630140100000fac"
+                + "040100000fac040100000fac028000*a2";
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Candidate> offDict =
+                new java.util.ArrayList<>();
+        offDict.add(new io.github.wlmosv_png.wpaforge.audit.Candidate("hashcat!",
+                io.github.wlmosv_png.wpaforge.audit.Candidate.Origin.USER_DICT));
+
+        Hc22000.Entry op = Hc22000.parseLine(offPmkid);
+        ok("官方 PMKID 行解析成功且完整",
+                op != null && op.validate().isEmpty());
+        final AuditEngine.Result[] pr = {null};
+        new AuditEngine().runPmkid(Hc22000.toPmkid(op), offDict, new AuditEngine.Progress() {
+            @Override public void onProgress(long t, long total, String f) {}
+            @Override public void onDone(AuditEngine.Result r) { pr[0] = r; }
+            @Override public void onError(String m) { pr[0] = null; }
+        });
+        ok("官方 PMKID 命中 hashcat!",
+                pr[0] != null && pr[0].hit && "hashcat!".equals(pr[0].hitPassword));
+
+        Hc22000.Entry oe = Hc22000.parseLine(offEapol);
+        ok("官方 EAPOL 行解析成功且完整",
+                oe != null && oe.validate().isEmpty());
+        AuditEngine.Handshake ohs = Hc22000.toHandshake(oe);
+        ok("官方 EAPOL 转 Handshake 后完整性通过",
+                ohs != null && ohs.validate().isEmpty());
+        final AuditEngine.Result[] er = {null};
+        final String[] eerr = {null};
+        new AuditEngine().runHandshake(ohs, offDict, new AuditEngine.Progress() {
+            @Override public void onProgress(long t, long total, String f) {}
+            @Override public void onDone(AuditEngine.Result r) { er[0] = r; }
+            @Override public void onError(String m) { eerr[0] = m; }
+        });
+        ok("官方 EAPOL 校验不报错" + (eerr[0] == null ? "" : "（" + eerr[0] + "）"),
+                eerr[0] == null);
+        ok("官方 EAPOL 命中 hashcat!",
+                er[0] != null && er[0].hit && "hashcat!".equals(er[0].hitPassword));
 
         System.out.println();
         System.out.println("=== hc22000 解析测试: " + pass + " 通过, " + fail + " 失败 ===");

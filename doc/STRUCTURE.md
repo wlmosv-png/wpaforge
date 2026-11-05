@@ -1,7 +1,7 @@
-# NetScope 项目结构
+# WPAForge 项目结构
 
 ```
-netscope/
+promo-wpaforge/                    # 唯一权威源码目录（Git: wlmosv-png/wpaforge, 分支 main）
 ├── 1-aapt2.sh                     # 构建第一段：Android 侧资源编译
 ├── 2-build-dex.sh                 # 构建第二段：桌面侧 dex + 组装 + 签名
 ├── README.md
@@ -16,7 +16,7 @@ netscope/
     │   │   └── ic_launcher_background.xml
     │   ├── mipmap-anydpi-v26/ic_launcher.xml # 自适应图标
     │   └── values/strings.xml
-    └── java/io/github/wlmosv_png/netscope/
+    └── java/io/github/wlmosv_png/wpaforge/
         ├── MainActivity.java      # 主界面（代码构建，三页签）
         ├── SelfTest.java          # 算法自检（36 项）
         ├── E2ETest.java           # 端到端自检（10 项）

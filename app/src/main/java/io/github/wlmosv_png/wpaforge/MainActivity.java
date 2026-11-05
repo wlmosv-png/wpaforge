@@ -1190,6 +1190,8 @@ public class MainActivity extends Activity {
 
     private LinearLayout wpsImportRow;
     private static final int REQ_WPS_IMPORT = 0x7A51;
+    /** 「选择材料文件」的 SAF 请求码（离线校验用）。 */
+    private static final int REQ_OFFLINE_PICK = 0x7A62;
 
     private void refreshWpsImportLine() {
         if (wpsImportLine == null) return;
@@ -1236,6 +1238,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        // 离线校验的材料导入走独立通道，必须先分流 ——
+        // 否则会被下面 WPS 的守卫直接 return 掉，表现为「点了没反应」。
+        if (requestCode == REQ_OFFLINE_PICK) {
+            handleOfflinePick(resultCode, data);
+            return;
+        }
         if (requestCode != REQ_WPS_IMPORT || resultCode != RESULT_OK || data == null) return;
         final android.net.Uri uri = data.getData();
         if (uri == null) return;
@@ -3791,10 +3799,12 @@ public class MainActivity extends Activity {
         TextView offHint = new TextView(this);
         offHint.setText(L.s(
                 "材料由电脑侧抓包工具导出，手机端只做本地比对 —— 不会发起任何关联请求。\n"
-                + "支持 hashcat 22000 格式（.hc22000 / .22000），放到 Download 或 Download/WPAForge-hc/ 下即可。\n"
+                + "支持 hashcat 22000 格式（.hc22000 / .22000）。点下面的按钮后选"
+                + "「系统文件选择器」，从任意目录挑文件即可 —— 不需要任何存储权限。\n"
                 + "PMKID 材料只需 PBKDF2 + 一次 HMAC，比握手材料快近一倍，抓包时优先要它。",
                 "Material comes from a desktop capture tool; the phone only compares locally.\n"
-                + "hashcat 22000 format (.hc22000 / .22000) supported — drop it in Download or Download/WPAForge-hc/.\n"
+                + "hashcat 22000 format (.hc22000 / .22000). Tap the button below and choose "
+                + "“system file picker” to pick a file anywhere — no storage permission needed.\n"
                 + "PMKID needs only PBKDF2 + one HMAC, about twice as fast as EAPOL — ask for it when capturing."));
         offHint.setTextSize(AmberTheme.FS_BODY);
         offHint.setTextColor(TEXT_DIM);
@@ -3846,6 +3856,22 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 离线校验的入口。
+     *
+     * <p>修复前这里直接 {@code new File("/sdcard/Download").listFiles()}：
+     * 在分区存储下（targetSdk 35、未申请 MANAGE_EXTERNAL_STORAGE），应用只能看到
+     * **本应用自己写入**的 Download 文件，别人放进去的材料一律不可见；而且
+     * {@code listFiles()} 返回 null 时静默跳过，最终统一塌成一句
+     * 「没找到 .hc22000 / .22000 文件」—— 用户拿不到任何可执行信息。
+     *
+     * <p>现在把两条通道摆到台面上：
+     * <ol>
+     *   <li><b>系统文件选择器（SAF）</b>—— 唯一不依赖任何存储权限的通道，也是推荐路径；</li>
+     *   <li><b>扫描 Download</b>（尽力而为）—— 仅当文件确实对本应用可见时才有结果，
+     *       扫不到时给出原因而不是一句「没找到」。</li>
+     * </ol>
+     */
     private void showOfflinePicker() {
         if (offlineBusy) {
             Toast.makeText(this, L.s("正在比对，等这一轮结束", "Already running"),
@@ -3857,64 +3883,240 @@ public class MainActivity extends Activity {
                     "Dictionary is empty - load or generate one first"), Toast.LENGTH_SHORT).show();
             return;
         }
+
+        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(
+                        this, L.s("选择材料文件", "Pick a capture file"), null);
+
+        dlg.addItem(L.s("① 用系统文件选择器打开（推荐，不需要存储权限）",
+                        "① Open with the system file picker (recommended, no permission needed)"),
+                d -> pickOfflineFileViaSaf());
+
         final java.util.List<java.io.File> files = new java.util.ArrayList<>();
         scanHcFiles(new java.io.File("/sdcard/Download"), files);
         scanHcFiles(new java.io.File("/sdcard/Download/WPAForge-hc"), files);
-        if (files.isEmpty()) {
-            Toast.makeText(this, L.s(
-                    "没找到 .hc22000 / .22000 文件。\n把电脑导出的材料放进 Download 目录即可。",
-                    "No .hc22000 / .22000 file found. Put one in the Download folder."),
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
         java.util.Collections.sort(files, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
-        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg = new io.github.wlmosv_png.wpaforge.ui.NetDialog(
-                this, L.s("选择材料文件", "Pick a capture file"), null);
-        for (java.io.File f : files) {
-            final java.io.File pick = f;
-            dlg.addItem(f.getName() + "  (" + Math.max(1, f.length() / 1024) + " KB)",
-                    d -> runOfflineRead(pick));
+
+        if (files.isEmpty()) {
+            dlg.addHint(L.s(
+                    "② 扫描 Download：没有发现材料。\n"
+                            + "Android 11 起，应用只能看到自己写入的 Download 文件；"
+                            + "由其他应用或电脑放进来的材料请走上面第 ① 条。\n"
+                            + "已扫描 /sdcard/Download 与 /sdcard/Download/WPAForge-hc。",
+                    "② Scan Download: nothing found.\n"
+                            + "Since Android 11 an app only sees Download files it wrote itself; "
+                            + "material placed by other apps or a PC must go through ① above.\n"
+                            + "Scanned /sdcard/Download and /sdcard/Download/WPAForge-hc."));
+        } else {
+            for (java.io.File f : files) {
+                final java.io.File pick = f;
+                dlg.addItem(L.s("② ", "② ") + f.getName()
+                                + "  (" + Math.max(1, f.length() / 1024) + " KB)",
+                        d -> runOfflineRead(pick));
+            }
         }
+        dlg.setNegative(L.s("取消", "Cancel"), null);
         dlg.show();
     }
 
-    /** 读文件并解析材料；多条时让用户挑一条，避免一次跑很久。 */
+    /** 启动系统文件选择器（SAF）—— 不依赖任何存储权限的读取通道。 */
+    private void pickOfflineFileViaSaf() {
+        try {
+            android.content.Intent i = new android.content.Intent(
+                    android.content.Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            // 22000 材料是纯文本，但各家文件管理器给的 MIME 并不统一，
+            // 这里给一组常见值再加 */* 兜底，避免文件被选择器灰掉。
+            i.putExtra(android.content.Intent.EXTRA_MIME_TYPES,
+                    new String[]{"application/octet-stream", "text/plain", "*/*"});
+            i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(i, REQ_OFFLINE_PICK);
+        } catch (Throwable t) {
+            appendLog(L.s("无法打开系统文件选择器: ", "Cannot open the system file picker: ")
+                    + io.github.wlmosv_png.wpaforge.audit.OfflineImport
+                    .classifyReadFailure(t));
+        }
+    }
+
+    /** 系统文件选择器的返回。取消 / 没数据都算「没有选择文件」，不再静默。 */
+    private void handleOfflinePick(int resultCode, android.content.Intent data) {
+        final android.net.Uri uri = data == null ? null : data.getData();
+        if (resultCode != RESULT_OK || uri == null) {
+            appendLog(L.s("已取消选择材料文件（没有选中任何文件）。",
+                    "Material selection cancelled (no file picked)."));
+            return;
+        }
+        // 授权能持久化就持久化（同一文件下次还能读）；拿不到也不影响本次读取。
+        try {
+            getContentResolver().takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Throwable ignored) {
+        }
+        runOfflineReadUri(uri);
+    }
+
+    /** 从 Content URI 读材料 —— 绝不假设 URI 能转成普通文件路径。 */
+    private void runOfflineReadUri(final android.net.Uri uri) {
+        final String shown = uriDisplayName(uri);
+        appendLog(L.s("读取材料: ", "Reading: ") + shown);
+        new Thread(() -> {
+            final io.github.wlmosv_png.wpaforge.audit.OfflineImport.Result r;
+            try {
+                r = readOfflineText(getContentResolver().openInputStream(uri));
+            } catch (Throwable t) {
+                ui.post(() -> reportOffline(shown, io.github.wlmosv_png.wpaforge.audit
+                        .OfflineImport.classifyReadFailure(t), null, t));
+                return;
+            }
+            ui.post(() -> reportOffline(shown, r.status, r, null));
+        }, "wpaforge-offline-read").start();
+    }
+
+    /** 取 URI 的显示名；失败时退回 URI 末段，绝不抛。 */
+    private String uriDisplayName(android.net.Uri uri) {
+        try {
+            android.database.Cursor c = getContentResolver().query(uri,
+                    new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
+                    null, null, null);
+            if (c != null) {
+                try {
+                    if (c.moveToFirst()) {
+                        String n = c.getString(0);
+                        if (n != null && !n.isEmpty()) return n;
+                    }
+                } finally {
+                    c.close();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        String last = uri.getLastPathSegment();
+        return last == null ? String.valueOf(uri) : last;
+    }
+
+    /**
+     * 读文本：上限 4 MB，超出即判 TOO_LARGE。
+     *
+     * <p>判定逻辑放在 {@code OfflineImport.analyzeStream}，这里只负责打开与关闭流 ——
+     * 让门禁测试能直接跑同一条代码路径，而不是各自一套。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.OfflineImport.Result readOfflineText(
+            java.io.InputStream raw) throws Exception {
+        try {
+            return io.github.wlmosv_png.wpaforge.audit.OfflineImport.analyzeStream(raw);
+        } finally {
+            if (raw != null) try {
+                raw.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /**
+     * 统一出口：把「读取 / 解析」两段的结论翻成人话，并说清下一步。
+     *
+     * <p>修复前这里只有两种输出：「没找到文件」和「文件里没有可用材料」。
+     * 现在按 {@link io.github.wlmosv_png.wpaforge.audit.OfflineImport.Status}
+     * 分别给出原因与处置动作。
+     */
+    private void reportOffline(String name,
+                               io.github.wlmosv_png.wpaforge.audit.OfflineImport.Status st,
+                               io.github.wlmosv_png.wpaforge.audit.OfflineImport.Result r,
+                               Throwable err) {
+        switch (st) {
+            case OK:
+                appendLog(L.f("文件: %s", "File: %s", name));
+                appendLog(L.f("材料: 共 %d 条 —— PMKID %d 条、EAPOL %d 条%s",
+                        "Material: %d entries — %d PMKID, %d EAPOL%s",
+                        r.count(), r.pmkid, r.eapol,
+                        r.comments > 0
+                                ? L.f("（另跳过注释 %d 行）", " (%d comment lines skipped)", r.comments)
+                                : ""));
+                break;
+            case EMPTY:
+                appendLog(L.s("材料解析失败: 文件是空的（或只有空行 / 注释行）。",
+                        "Parse failed: the file is empty (or only blank/comment lines)."));
+                appendLog(L.s("下一步: 确认材料文件已写完整，重新导出一份再试。",
+                        "Next: re-export the capture - it looks truncated to zero content."));
+                return;
+            case FORMAT_INVALID:
+                appendLog(L.f("材料解析失败: 没有一行是合法的 hashcat 22000 记录（不合格行 %d）。",
+                        "Parse failed: no valid hashcat 22000 line (bad lines: %d).",
+                        r == null ? 0 : r.bad));
+                appendLog(L.s(
+                        "下一步: 每行应形如 WPA*01*... 或 WPA*02*...；"
+                                + "确认不是把 .pcap/.cap 直接改了扩展名，"
+                                + "导出请用 hcxpcapngtool 或 hcxdumptool。",
+                        "Next: each line must look like WPA*01*... or WPA*02*...; make sure the file "
+                                + "is not a .pcap/.cap renamed; export with hcxpcapngtool or hcxdumptool."));
+                return;
+            case UNSUPPORTED:
+                appendLog(L.f("材料解析失败: 记录类型不支持（%d 条）。",
+                        "Parse failed: unsupported record type (%d entries).",
+                        r == null ? 0 : r.unsupported));
+                appendLog(L.s("下一步: 本功能只处理 PMKID（WPA*01）与 EAPOL（WPA*02）两种记录。",
+                        "Next: only PMKID (WPA*01) and EAPOL (WPA*02) records are supported."));
+                return;
+            case TOO_LARGE:
+                appendLog(L.s("材料读取失败: 文件超过 4 MB。", "Read failed: file exceeds 4 MB."));
+                appendLog(L.s("下一步: 离线校验只针对单次抓包材料，先裁剪到 4 MB 以内。",
+                        "Next: offline check targets one capture; trim the file below 4 MB first."));
+                return;
+            case NO_FILE:
+                appendLog(L.s("材料读取失败: 没有拿到文件。", "Read failed: no file was returned."));
+                appendLog(L.s("下一步: 重新点「选择材料文件」，在系统文件选择器里选中一个文件。",
+                        "Next: tap the button again and pick a file in the system picker."));
+                return;
+            case NO_ACCESS:
+                appendLog(L.s("材料读取失败: 系统没有授予该文件的读取权限。",
+                        "Read failed: the system did not grant read access to that file."));
+                appendLog(L.s("下一步: 重新选择一次；若仍失败，换 Download 目录下的文件，"
+                                + "或在系统文件选择器里对该目录授权。",
+                        "Next: select it again; if it still fails, use a file under Download, "
+                                + "or grant access to that folder from the system picker."));
+                return;
+            default:
+                appendLog(L.s("材料读取失败: ", "Read failed: ")
+                        + (err == null ? L.s("未知错误", "unknown error") : String.valueOf(err)));
+                appendLog(L.s("下一步: 确认文件没有被其他应用占用，或换一个文件再试。",
+                        "Next: make sure no other app is holding the file, or try another file."));
+                return;
+        }
+
+        // 走到这里说明解析成功 —— 展示材料信息，多条时让用户挑一条（避免一次跑很久）。
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> entries = r.entries;
+        for (int i = 0; i < entries.size(); i++) {
+            appendLog("  " + (i + 1) + ". " + entries.get(i).label());
+        }
+        if (entries.size() > 1) {
+            io.github.wlmosv_png.wpaforge.ui.NetDialog pick =
+                    new io.github.wlmosv_png.wpaforge.ui.NetDialog(
+                            this, L.f("选择材料（%d 条）", "Pick material (%d)", entries.size()), null);
+            for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : entries) {
+                final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry chosen = e;
+                pick.addItem(e.label(), d -> runOfflineOne(chosen));
+            }
+            pick.setNegative(L.s("取消", "Cancel"), null);
+            pick.show();
+        } else {
+            runOfflineOne(entries.get(0));
+        }
+    }
+
+    /** 从普通文件读材料（仅「扫描 Download」这条尽力而为的路径会用）。 */
     private void runOfflineRead(final java.io.File f) {
         appendLog(L.s("读取材料: ", "Reading: ") + f.getName());
         new Thread(() -> {
-            String text;
+            final io.github.wlmosv_png.wpaforge.audit.OfflineImport.Result r;
             try {
-                text = readTextFile(f);
+                r = readOfflineText(new java.io.FileInputStream(f));
             } catch (Throwable t) {
-                ui.post(() -> appendLog(L.s("读取失败: ", "read failed: ") + t));
+                ui.post(() -> reportOffline(f.getName(), io.github.wlmosv_png.wpaforge.audit
+                        .OfflineImport.classifyReadFailure(t), null, t));
                 return;
             }
-            final java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> entries =
-                    io.github.wlmosv_png.wpaforge.audit.Hc22000.parse(text);
-            ui.post(() -> {
-                if (entries.isEmpty()) {
-                    appendLog(L.s("文件里没有可用材料（需要 PMKID，或含 MIC 的 EAPOL 帧）",
-                            "No usable material (need a PMKID, or an EAPOL frame with MIC)"));
-                    return;
-                }
-                int pmkid = 0;
-                for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : entries) {
-                    if (e.isPmkid()) pmkid++;
-                }
-                appendLog(L.f("找到 %d 条材料（其中 PMKID %d 条）",
-                        "Found %d material entries (%d PMKID)", entries.size(), pmkid));
-                if (entries.size() > 1) {
-                    io.github.wlmosv_png.wpaforge.ui.NetDialog pick = new io.github.wlmosv_png.wpaforge.ui.NetDialog(
-                            this, L.f("选择材料（%d 条）", "Pick material (%d)", entries.size()), null);
-                    for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : entries) {
-                        final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry chosen = e;
-                        pick.addItem(e.label(), d -> runOfflineOne(chosen));
-                    }
-                    pick.show();
-                } else {
-                    runOfflineOne(entries.get(0));
-                }
-            });
+            ui.post(() -> reportOffline(f.getName(), r.status, r, null));
         }, "wpaforge-offline-read").start();
     }
 
@@ -3968,17 +4170,6 @@ public class MainActivity extends Activity {
                 engine.runHandshake(io.github.wlmosv_png.wpaforge.audit.Hc22000.toHandshake(e), dict, cb);
             }
         }, "wpaforge-offline-run").start();
-    }
-
-    /** 读文本文件（材料文件都是纯文本，限制 4 MB 防止误选大文件）。 */
-    private static String readTextFile(java.io.File f) throws Exception {
-        int cap = (int) Math.min(Math.max(f.length(), 1L), 4L * 1024 * 1024);
-        byte[] buf = new byte[cap];
-        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
-            int off = 0, n;
-            while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
-            return new String(buf, 0, off, java.nio.charset.StandardCharsets.UTF_8);
-        }
     }
 
     /**

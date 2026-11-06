@@ -276,6 +276,13 @@ public class AuditPageLayoutTest {
                         && build.contains("dManage.setOnClickListener(v -> openDictManager());"));
         ok("字典管理入口直接进 DictActivity",
                 body(ma, "private void openDictManager()").contains("DictActivity.class"));
+        ok("非 UTF-8 的 SSID 不提供派生入口（只接受 ssidExact）",
+                body(ma, "private String materialSsid()").contains("lastEntry.ssidExact"));
+        ok("非 UTF-8 时给明确解释，而不是静默产出乱码候选",
+                body(ma, "private void confirmDeriveFromMaterial()")
+                        .contains("这条 SSID 不能用于派生")
+                        && body(ma, "private void confirmDeriveFromMaterial()")
+                                .contains("!e.ssidExact"));
         ok("空字典时给直达按钮（不是只写一句话）",
                 body(ma, "private void renderDictCard()")
                         .contains("L.s(\"去字典管理新建 / 导入\", \"Open dictionary management\")"));

@@ -4246,13 +4246,21 @@ public class MainActivity extends Activity {
 
     // ---- ③ 字典卡 ----
 
-    /** 当前材料里可用的 SSID（优先已选中的那条）。 */
+    /**
+     * 当前材料里可用的 SSID（优先已选中的那条）。
+     *
+     * <p>只接受**合法 UTF-8** 的 SSID：派生逻辑按文本做变形（大小写、数字族、字母族），
+     * 而 SSID 是任意字节串 —— 把非 UTF-8（如 GBK 中文）的字节解成 String 再拿去派生，
+     * 得到的是乱码产生的无意义候选（还可能是替换字符 U+FFFD），既浪费候选位，
+     * 又让用户以为"派生过了"。这种材料我们宁可不提供这个入口，也不产出垃圾。
+     */
     private String materialSsid() {
-        if (lastEntry != null && lastEntry.ssid != null && !lastEntry.ssid.isEmpty()) {
+        if (lastEntry != null && lastEntry.ssidExact
+                && lastEntry.ssid != null && !lastEntry.ssid.isEmpty()) {
             return lastEntry.ssid;
         }
         for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : safeEntries()) {
-            if (e.ssid != null && !e.ssid.isEmpty()) return e.ssid;
+            if (e.ssidExact && e.ssid != null && !e.ssid.isEmpty()) return e.ssid;
         }
         return "";
     }
@@ -7413,6 +7421,22 @@ public class MainActivity extends Activity {
     private void confirmDeriveFromMaterial() {
         final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = lastEntry;
         if (e == null || e.ssid == null || e.ssid.isEmpty()) return;
+        if (!e.ssidExact) {
+            // 非 UTF-8 的 SSID 不能用文本派生；说明原因，而不是静默产出乱码候选。
+            io.github.wlmosv_png.wpaforge.ui.NetDialog.info(this,
+                    L.s("这条 SSID 不能用于派生", "This SSID cannot be used for derivation"),
+                    L.s("它的 SSID 不是合法 UTF-8（常见于中文路由器，如 GBK 编码），"
+                                    + "按文本派生只会产出乱码候选。\n\n"
+                                    + "离线校验本身不受影响 —— 材料和口令比对用的是原始字节。\n"
+                                    + "需要字典的话，用「更换字典」选一本，或「内置生成器」造一本通用表。",
+                            "Its SSID is not valid UTF-8 (common on Chinese routers, e.g. GBK), "
+                                    + "and text derivation would only produce garbage candidates.\n\n"
+                                    + "The offline check itself is unaffected - the material and "
+                                    + "candidates are compared using the raw bytes.\n"
+                                    + "For a dictionary, use \"Change dictionary\" or the built-in "
+                                    + "generator."));
+            return;
+        }
         new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
                 L.s("按此目标派生字典", "Derive a dictionary from this target"),
                 L.f("将把当前字典替换为按「%s」派生的候选。\n"

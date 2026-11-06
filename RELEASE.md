@@ -1,7 +1,7 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.48 · 离线校验全链路二次审计：16 处缺陷修复 -->
-<!-- tag: v1.9.48   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.49 · 非 UTF-8 SSID 不再提供按材料派生 -->
+<!-- tag: v1.9.49   target: main -->
 
-WPAForge 1.9.48 · 离线校验全链路二次审计：16 处缺陷修复
+WPAForge 1.9.49 · 非 UTF-8 SSID 不再提供按材料派生
 
 这次不做「再加几个按钮」，而是把审计页重做成一条主线：
 

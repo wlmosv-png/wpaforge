@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.9.50] - 2026-11-06
+
+> ### P0：在线破解判定链根因修复（B3b cycle 2）
+
+CrackEngine.tryOneShell 中 exercised = sawAttempt || targetNetId >= 0，
+当 exercised 仅因 targetNetId>=0 成立（从未 sawAttempt）时，
+lifecycleOfStatus("Wifi is not connected") 仍返回 TERMINATED——
+但那可能只是"从未连接"，而非"曾经连接、现已终止"。
+
+- 该 TERMINATED 流入 authcast/m1retry/wpalog 等证据分支后，
+  Adjudicator 规则 4 产出 NETWORK_AUTH_FAIL →
+  AttemptLedger.classify 映射为 NETWORK_TERMINATED →
+  省时档跳过集合错误排除候选。
+- 修复：在五条证据分支之前加 !sawAttempt 守护，
+  将 lastLifecycle 强制改为 UNKNOWN，
+  阻止从未观察到的终止状态被当作失败证据。
+- AuthCastAttributionTest.GatedShell.attemptStarted 加 volatile，
+  消除测试中的数据竞争。
+
+---
+
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ---

@@ -1,7 +1,7 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.44 · 审计页三轮：五步工作台 + 字典快照 -->
-<!-- tag: v1.9.44   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.47 · 字典管理入口重做（新用户找得到） -->
+<!-- tag: v1.9.47   target: main -->
 
-WPAForge 1.9.44 · 审计页三轮：五步工作台 + 字典快照
+WPAForge 1.9.47 · 字典管理入口重做（新用户找得到）
 
 这次不做「再加几个按钮」，而是把审计页重做成一条主线：
 

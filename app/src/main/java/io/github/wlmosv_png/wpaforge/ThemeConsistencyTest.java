@@ -168,8 +168,10 @@ public class ThemeConsistencyTest {
         // ①材料 matCard / ②诊断 diagCard / ③字典 dictCard / ④执行 runCard /
         // ⑤结果 resultCard / 运行记录 logCard / 口令强度 checkCard。
         // 这里同步换成新名字 —— 断言的本意（每块区域都是一张分组卡）不变。
+        // 2026-11-06（1.9.46）：审计页把「①导入 + ②诊断」合成一张材料卡（matCard），
+        // 原来的 diagCard 已并入其中。
         for (String card : new String[]{"radarCard", "barsCard", "chanCard", "adviceBoxRef",
-                "matCard", "diagCard", "dictCard", "runCard", "resultCard", "logCard",
+                "matCard", "dictCard", "runCard", "resultCard", "logCard",
                 "checkCard", "wpsTargetCard", "wpsModeCard", "wpsProgressCard"}) {
             ok("MainActivity 有分组卡 " + card, maFull != null && maFull.contains(card));
         }

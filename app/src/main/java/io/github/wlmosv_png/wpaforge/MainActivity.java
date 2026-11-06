@@ -164,16 +164,19 @@ public class MainActivity extends Activity {
     private java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> offEntries;
     /** 哪些材料条目被展开看详情。 */
     private final java.util.Set<Integer> diagOpen = new java.util.HashSet<Integer>();
-    /** 五步状态条 / 总览 / ①材料 / ②诊断 / ③字典 / ④执行 的容器。 */
+    /** 顶部状态条 / 现状 / ①材料摘要 / ①材料列表 / ②字典 / ③执行 的容器。 */
     private LinearLayout auditFlowStrip, auditOverviewBox, auditMatBox, auditDiagBox,
-            auditDictBox, auditRunBox, auditIntroBox, auditChanStrip, auditRecBox,
-            strengthRecBox;
-    /** 五步状态条的跳转锚点卡片。 */
-    private final View[] auditStepCards = new View[5];
-    private Button auditIntroToggle, auditStartBtn, auditStopBtn, auditDeriveMat;
+            auditDictBox, auditRunBox, auditChanStrip, auditRecBox, strengthRecBox;
+    /** 四步状态条的跳转锚点卡片。 */
+    private final View[] auditStepCards = new View[4];
+    /** 材料主按钮（导入 / 更换）、清除材料、开始、停止、按材料 SSID 派生。 */
+    private Button auditImportBtn, auditClearMatBtn, auditStartBtn, auditStopBtn, auditDeriveMat;
+    /** 字典卡：空字典时的直达入口 / 「更换字典」（没字典时隐藏）。 */
+    private LinearLayout auditDictEmptyCta;
+    private Button auditChangeDictBtn;
     private TextView auditBlocker;
-    /** 「离线校验是什么？」是否展开（持久化）。 */
-    private boolean offIntroOpen = true;
+    /** 运行中的进度条（条数 / 百分比 / 已用 / 速率）。 */
+    private io.github.wlmosv_png.wpaforge.ui.ThinProgress auditProgress;
     /** 当前查看的运行记录频道。 */
     private io.github.wlmosv_png.wpaforge.audit.RunLog.Op logChannel =
             io.github.wlmosv_png.wpaforge.audit.RunLog.Op.OFFLINE;
@@ -191,8 +194,6 @@ public class MainActivity extends Activity {
     private static final int MAX_DIAG_CARDS = 40;
     /** 选条目对话框最多列多少条（同样是为了不把界面拖死）。 */
     private static final int MAX_PICK_ITEMS = 200;
-    /** 运行时那一行实时进度（只在跑的时候存在）。 */
-    private TextView auditLive;
 
     // ================= 离线校验 / 运行记录（1.9.43） =================
     /** 结构化运行记录：离线与口令强度两个频道互不干扰。 */
@@ -3695,162 +3696,158 @@ public class MainActivity extends Activity {
     // ---------------- 审计页 ----------------
 
     /**
-     * 审计页 —— 1.9.44 产品级重做：五步工作台。
+     * 审计页 —— 1.9.45 重做：四个区块，说明全部收进「?」。
      *
-     * <h3>为什么再改一次</h3>
-     * 上一版（1.9.43）解决了「能不能停、结果丢不丢、日志有没有时间」，但用户拿到的
-     * 仍是一个**功能堆**：一段说明 + 一堆行入口 + 两个日志框。普通用户看完还是不知道
-     * 「这个页面是干什么的、该按什么顺序点、现在用的是哪本字典、跑出来的结果什么意思」。
+     * <h3>为什么又改（真机反馈原话）</h3>
+     * 上一版把「离线校验是什么」「材料为什么这样判断」等整段说明直接铺在页面上，
+     * 每个区块前面都顶一块灰底长文；材料还拆成「① 导入」「② 诊断」两张卡，
+     * 每条材料再配两条整行大按钮（展开详情 / 选这条做离线校验）。
+     * 结果是：页面很长、到处是按钮，用户仍然不知道「我现在该点哪」。
      *
-     * <h3>现在的结构（自上而下，一条主线）</h3>
+     * <h3>现在</h3>
      * <pre>
-     *   审计总览       五步状态条 + 五条现状（状态／字典／材料／最近结果／待处理）
-     *   ① 导入材料     系统文件选择器 → 文件名 · 大小 · SHA-256 · 记录数 · PMKID／EAPOL
-     *   ② 材料诊断     每条材料独立成卡，可展开看字段；状态四分
-     *   ③ 选择字典     当前字典（名 · 来源 · 条数 · 内容指纹 · 文件指纹）+ 入口
-     *   ④ 开始校验     离线校验说明（可折叠）+ 执行前摘要 + 开始／停止
-     *   ⑤ 结果         常驻结果卡（含字典指纹）
-     *   运行记录       四个频道（离线／强度／字典／其他），点开看详情
-     *   口令强度评估   与离线校验彻底分开
-     *   恢复状态       默认折叠，有待处理项时才提醒
+     *   顶部卡   离线校验 + [?] + 四步状态条 + 五行现状
+     *   ① 材料   摘要一行 + 材料列表（整行可点 = 选中并展开）+ 导入/更换 + 清除
+     *   ② 字典   名称 · 条数 · 指纹 + 更换 / 按目标派生 / 按材料 SSID / 字典工具
+     *   ③ 校验   摘要 + 进度条 + 阻断原因 + 开始 / 停止
+     *   ④ 结果   状态 + 「与当前选择一致吗」+ 字段 + 命中块
+     *   运行记录 / 口令强度评估 / 恢复状态（默认折叠）
      * </pre>
-     *
-     * <p>回调、字典来源、判定语义、triedSet/cursor 规则**与改版前一致** ——
-     * 这一版只重排信息架构与交互顺序，并把「本次到底跑哪本字典」钉成
-     * {@link io.github.wlmosv_png.wpaforge.audit.AuditWorkflow} 里的快照。
+     * 页面上**不再有任何整段说明** —— 全部在「?」里，按「怎么用 → 概念 →
+     * 状态含义 → 边界」分节。条数、指纹、耗时、实时进度这些**细节照旧显示**。
      */
     private void buildAuditTab() {
         if (radar != null) radar.stopSpin();
         pageAudit.removeAllViews();
 
-        // 结果卡跨进程保留：每次重建审计页都从持久层取一次。
         lastVerdict = io.github.wlmosv_png.wpaforge.OfflineRunStore.load(this);
         restoreDictIfPossible();
 
-        // ================= 审计总览 =================
-        pageAudit.addView(sectionLabel(L.s("审计总览", "Audit overview")));
-        LinearLayout overviewCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        // ================= 顶部：标题 + ? + 四步状态条 + 现状 =================
+        LinearLayout topCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView topTitle = new TextView(this);
+        topTitle.setText(L.s("离线校验", "Offline check"));
+        topTitle.setTextSize(AmberTheme.FS_TITLE);
+        topTitle.setTextColor(TEXT);
+        topTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        topRow.addView(topTitle, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        // 「?」说明入口：与破解页同一个做法（弱底小图标、放在第一张卡的顶行最右）。
+        // 说明是「查询」，不是操作，所以不占主按钮的位置，也不铺在页面上。
+        ImageView help = new ImageView(this);
+        help.setImageDrawable(io.github.wlmosv_png.wpaforge.ui.DictIcons.sized(
+                io.github.wlmosv_png.wpaforge.ui.DictIcons.Kind.HELP,
+                AmberTheme.ACCENT, dp, 20f));
+        help.setContentDescription(L.s("说明", "Help"));
+        help.setPadding(px(9), px(9), px(9), px(9));
+        help.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
+        help.setLayoutParams(new LinearLayout.LayoutParams(px(38), px(38)));
+        help.setOnClickListener(v -> showAuditHelp());
+        topRow.addView(help);
+        topCard.addView(topRow);
 
         auditFlowStrip = new LinearLayout(this);
         auditFlowStrip.setOrientation(LinearLayout.HORIZONTAL);
-        overviewCard.addView(auditFlowStrip);
+        topCard.addView(auditFlowStrip, topGap(12));
 
         auditOverviewBox = new LinearLayout(this);
         auditOverviewBox.setOrientation(LinearLayout.VERTICAL);
-        overviewCard.addView(auditOverviewBox, topGap(14));
-        auditStepCards[0] = overviewCard;
-        pageAudit.addView(overviewCard);
+        topCard.addView(auditOverviewBox, topGap(14));
+        auditStepCards[0] = topCard;
+        pageAudit.addView(topCard);
 
-        // ================= ① 导入材料 =================
-        pageAudit.addView(sectionLabel(L.s("① 导入 Wi-Fi 握手材料",
-                "① Import Wi-Fi material")));
+        // ================= ① 材料 =================
+        pageAudit.addView(sectionLabel(L.s("① 握手材料", "① Handshake material")));
         LinearLayout matCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        matCard.addView(hintBox(L.s(
-                "支持 hashcat 22000 格式：.hc22000 / .22000。\n"
-                        + "材料由电脑侧抓包工具导出（hcxdumptool / hcxpcapngtool / aircrack-ng）。\n"
-                        + "用系统文件选择器从任意目录取文件，不需要任何存储权限。",
-                "hashcat 22000 format: .hc22000 / .22000.\n"
-                        + "Exported by a desktop capture tool (hcxdumptool / hcxpcapngtool / "
-                        + "aircrack-ng).\n"
-                        + "Pick it anywhere with the system file picker - no storage permission "
-                        + "needed.")));
 
-        offPick = rowAction(L.s("用系统文件选择器导入材料",
-                "Import material with the system file picker"));
-        offPick.setOnClickListener(v -> showOfflinePicker());
-        matCard.addView(groupDivider(10));
-        matCard.addView(offPick);
-
-        Button scanDl = rowAction(L.s("从 Download 目录扫描（备用）",
-                "Scan the Download folder (fallback)"));
-        scanDl.setOnClickListener(v -> showDownloadScan());
-        matCard.addView(groupDivider(2));
-        matCard.addView(scanDl);
+        auditImportBtn = AmberTheme.action(this, dp,
+                L.s("导入材料（.hc22000 / .22000）",
+                        "Import material (.hc22000 / .22000)"), AmberTheme.BTN_PRIMARY);
+        auditImportBtn.setOnClickListener(v -> showOfflinePicker());
+        matCard.addView(auditImportBtn);
 
         auditMatBox = new LinearLayout(this);
         auditMatBox.setOrientation(LinearLayout.VERTICAL);
-        matCard.addView(auditMatBox);
+        matCard.addView(auditMatBox, topGap(10));
+
+        auditDiagBox = new LinearLayout(this);
+        auditDiagBox.setOrientation(LinearLayout.VERTICAL);
+        matCard.addView(auditDiagBox, topGap(8));
+
+        auditClearMatBtn = rowAction(L.s("清除材料（回到未导入）", "Clear material"));
+        auditClearMatBtn.setOnClickListener(v -> clearMaterialAction());
+        matCard.addView(groupDivider(10));
+        matCard.addView(auditClearMatBtn);
         auditStepCards[1] = matCard;
         pageAudit.addView(matCard);
 
-        // ================= ② 材料诊断 =================
-        pageAudit.addView(sectionLabel(L.s("② 检查材料是否可以使用",
-                "② Check whether the material works")));
-        LinearLayout diagCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        diagCard.addView(hintBox(L.s(
-                "每条材料独立判断。只看字段非空是不够的 —— 字段格式错、nonce 全零、"
-                        + "MIC 字段没被抹掉，都会让比对结果毫无意义，所以这些情况一律拦下，"
-                        + "不会伪装成「密码未命中」。",
-                "Each entry is judged on its own. Non-empty fields are not enough - a bad field "
-                        + "format, an all-zero nonce or an un-scrubbed MIC field makes the result "
-                        + "meaningless, so those are blocked instead of disguised as a miss.")));
-        auditDiagBox = new LinearLayout(this);
-        auditDiagBox.setOrientation(LinearLayout.VERTICAL);
-        diagCard.addView(auditDiagBox, topGap(10));
-        auditStepCards[2] = diagCard;
-        pageAudit.addView(diagCard);
-
-        // ================= ③ 选择字典 =================
-        pageAudit.addView(sectionLabel(L.s("③ 选择候选口令字典",
-                "③ Pick a candidate dictionary")));
+        // ================= ② 字典 =================
+        pageAudit.addView(sectionLabel(L.s("② 候选口令字典", "② Candidate dictionary")));
         LinearLayout dictCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         auditDictBox = new LinearLayout(this);
         auditDictBox.setOrientation(LinearLayout.VERTICAL);
         dictCard.addView(auditDictBox);
-        dictStatus = new TextView(this);
-        dictStatus.setTextSize(AmberTheme.FS_SMALL);
-        dictStatus.setTextColor(AmberTheme.TEXT_FAINT);
-        dictStatus.setLineSpacing(px(4), 1f);
-        dictCard.addView(dictStatus, topGap(4));
 
-        Button load = rowAction(L.s("更换字典（从字典管理里选）", "Change dictionary"));
-        load.setOnClickListener(v -> showDictPicker());
+        // 空字典时的直达入口。新用户的第一个状态就是"我没有字典"，
+        // 而「字典管理」原来埋在第 4 行、名字还叫「字典工具」——
+        // 连提示语里写的「去字典管理」都对不上，等于没有入口。
+        auditDictEmptyCta = new LinearLayout(this);
+        auditDictEmptyCta.setOrientation(LinearLayout.VERTICAL);
+        dictCard.addView(auditDictEmptyCta, topGap(12));
+
+        // ① 字典管理放第一行：新建 / 导入 / 清理都在里面，用词与提示语一致。
+        Button dManage = rowAction(L.s("字典管理（新建 / 导入 / 清理）",
+                "Manage dictionaries (create / import / clean)"));
+        dManage.setTextColor(ACCENT);
+        dManage.setOnClickListener(v -> openDictManager());
         dictCard.addView(groupDivider(10));
-        dictCard.addView(load);
+        dictCard.addView(dManage);
 
-        Button manage = rowAction(L.s("打开字典管理", "Manage dictionaries"));
-        manage.setOnClickListener(v ->
-                startActivity(new android.content.Intent(this, DictActivity.class)));
+        // ② 从已有的里挑一本（最常用的动作）
+        auditChangeDictBtn = rowAction(L.s("更换字典（从已有的里挑一本）",
+                "Change dictionary (pick an existing one)"));
+        auditChangeDictBtn.setOnClickListener(v -> showDictPicker());
         dictCard.addView(groupDivider(2));
-        dictCard.addView(manage);
+        dictCard.addView(auditChangeDictBtn);
 
-        Button gen = rowAction(L.s("内置生成器（快速）", "Built-in generator (quick)"));
-        gen.setOnClickListener(v -> buildGenericDictFromAudit());
+        // ③ 现场派生
+        Button d2 = rowAction(L.s("按目标派生（选一个扫描到的网络）",
+                "Derive from a scanned target"));
+        d2.setOnClickListener(v -> pickTargetForDerive(true));
         dictCard.addView(groupDivider(2));
-        dictCard.addView(gen);
-
-        Button derive = rowAction(L.s("按目标派生（选一个扫描到的网络）",
-                "Derive from target (pick a scanned network)"));
-        derive.setOnClickListener(v -> pickTargetForDerive(true));
-        dictCard.addView(groupDivider(2));
-        dictCard.addView(derive);
+        dictCard.addView(d2);
 
         auditDeriveMat = rowAction("");
         auditDeriveMat.setOnClickListener(v -> confirmDeriveFromMaterial());
         dictCard.addView(groupDivider(2));
         dictCard.addView(auditDeriveMat);
-        auditStepCards[3] = dictCard;
+
+        // ④ 兜底：一键造一本通用字典
+        Button d3 = rowAction(L.s("内置生成器（快速造一本通用字典）",
+                "Built-in generator (quick generic list)"));
+        d3.setOnClickListener(v -> buildGenericDictFromAudit());
+        dictCard.addView(groupDivider(2));
+        dictCard.addView(d3);
+        auditStepCards[2] = dictCard;
         pageAudit.addView(dictCard);
 
-        // ================= ④ 开始离线校验 =================
-        pageAudit.addView(sectionLabel(L.s("④ 开始离线校验", "④ Run the offline check")));
+        // ================= ③ 开始校验 =================
+        pageAudit.addView(sectionLabel(L.s("③ 开始离线校验", "③ Run the offline check")));
         LinearLayout runCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-
-        auditIntroToggle = rowActionPlain("");
-        auditIntroToggle.setOnClickListener(v -> {
-            offIntroOpen = !offIntroOpen;
-            Prefs.setAuditIntroOpen(this, offIntroOpen);
-            renderAuditIntro();
-        });
-        runCard.addView(auditIntroToggle);
-
-        auditIntroBox = new LinearLayout(this);
-        auditIntroBox.setOrientation(LinearLayout.VERTICAL);
-        runCard.addView(auditIntroBox);
 
         auditRunBox = new LinearLayout(this);
         auditRunBox.setOrientation(LinearLayout.VERTICAL);
-        runCard.addView(auditRunBox, topGap(4));
+        runCard.addView(auditRunBox);
+
+        auditProgress = new io.github.wlmosv_png.wpaforge.ui.ThinProgress(this);
+        auditProgress.setVisibility(View.GONE);
+        runCard.addView(auditProgress, topGap(12));
 
         auditBlocker = new TextView(this);
         auditBlocker.setTextSize(AmberTheme.FS_SMALL);
@@ -3868,35 +3865,23 @@ public class MainActivity extends Activity {
                 L.s("停止比对   \u25a0", "Stop   \u25a0"), AmberTheme.BTN_DANGER);
         auditStopBtn.setOnClickListener(v -> stopOfflineRun());
         runCard.addView(auditStopBtn, topGap(6));
-        auditStepCards[4] = runCard;
+        auditStepCards[3] = runCard;
         pageAudit.addView(runCard);
 
-        // ================= ⑤ 结果 =================
-        pageAudit.addView(sectionLabel(L.s("⑤ 离线校验结果", "⑤ Offline check result")));
+        // ================= ④ 结果 =================
+        pageAudit.addView(sectionLabel(L.s("④ 离线校验结果", "④ Offline check result")));
         LinearLayout resultCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        resultCard.addView(hintBox(L.s(
-                "结果卡是常驻的：切换页面、重开应用都还在，而且记下了本次实际使用的"
-                        + "字典指纹与材料摘要，事后可以核对。",
-                "The result card is permanent: it survives page switches and restarts, and it "
-                        + "records the dictionary fingerprint and material digest actually used.")));
         offResult = new LinearLayout(this);
         offResult.setOrientation(LinearLayout.VERTICAL);
-        resultCard.addView(offResult, topGap(10));
+        resultCard.addView(offResult);
         pageAudit.addView(resultCard);
 
         // ================= 运行记录 =================
         pageAudit.addView(sectionLabel(L.s("运行记录", "Run records")));
         LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        logCard.addView(hintBox(L.s(
-                "按操作类型分成四个频道。每条记录 = 时间 · 状态 · 对象 · 简短结果，"
-                        + "点一下看完整日志；新记录自动滚到底，往上翻历史时不会被打断。",
-                "Split into four channels by operation type. Each record = time · status · "
-                        + "subject · result; tap for the full log. New lines auto-scroll unless "
-                        + "you scrolled up.")));
-
         auditChanStrip = new LinearLayout(this);
         auditChanStrip.setOrientation(LinearLayout.HORIZONTAL);
-        logCard.addView(auditChanStrip, topGap(10));
+        logCard.addView(auditChanStrip);
 
         auditRecBox = new LinearLayout(this);
         auditRecBox.setOrientation(LinearLayout.VERTICAL);
@@ -3905,7 +3890,7 @@ public class MainActivity extends Activity {
         auditLogScroll.setBackground(roundBgStatic(AmberTheme.TERM_BG, AmberTheme.RADIUS_CHIP));
         auditLogScroll.addView(auditRecBox);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(168));
+                ViewGroup.LayoutParams.MATCH_PARENT, px(160));
         alp.topMargin = px(10);
         logCard.addView(auditLogScroll, alp);
 
@@ -3925,19 +3910,9 @@ public class MainActivity extends Activity {
         pageAudit.addView(sectionLabel(L.s("口令强度评估", "Passphrase strength")));
         LinearLayout checkCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
-        checkCard.addView(hintBox(L.s(
-                "这是对你输入的口令做强度与位次分析（它会多快被猜出来），"
-                        + "不是对握手材料执行离线校验 —— 两件事互不相干，日志也分开。",
-                "This analyses a passphrase you type (how fast it would be guessed); it is NOT "
-                        + "an offline check against handshake material. The two are unrelated and "
-                        + "keep separate logs.")));
-
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
         inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams irlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        irlp.topMargin = px(10);
 
         EditText input = new EditText(this);
         input.setHint(L.s("口令", "Passphrase"));
@@ -3955,7 +3930,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         cklp.leftMargin = px(10);
         inputRow.addView(check, cklp);
-        checkCard.addView(inputRow, irlp);
+        checkCard.addView(inputRow);
 
         final TextView checkResult = new TextView(this);
         checkResult.setTextSize(AmberTheme.FS_BODY);
@@ -4039,8 +4014,6 @@ public class MainActivity extends Activity {
         pageAudit.addView(restoreCard);
 
         // ---- 一次性渲染 ----
-        offIntroOpen = Prefs.auditIntroOpen(this);
-        renderAuditIntro();
         refreshRestoreCard();
         renderAudit();
         renderOfflineVerdict();
@@ -4048,37 +4021,34 @@ public class MainActivity extends Activity {
         renderStrengthLog();
     }
 
+
     // ---------------------------------------------------------------- 审计页渲染
 
     /** 全部动态区一次性刷新（状态变了就调它，不重建整个页面）。 */
     private void renderAudit() {
         renderAuditFlow();
         refreshAuditOverview();
-        renderAuditMaterial();
-        renderAuditDiag();
-        renderAuditDict();
-        renderAuditRun();
+        renderMaterialCard();
+        renderDictCard();
+        renderRunCard();
     }
 
-    /** 五步状态条：一眼看出「做到哪一步、下一步是什么」。 */
+
+    /** 四步状态条：一眼看出「做到哪一步、下一步是什么」。 */
     private void renderAuditFlow() {
         if (auditFlowStrip == null) return;
         auditFlowStrip.removeAllViews();
         io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.StepInfo[] steps =
                 workbench.steps(lastVerdict.hasResult());
-        String[] shortName = {
-                L.s("材料", "Mat."), L.s("诊断", "Chk."), L.s("字典", "Dict"),
-                L.s("校验", "Run"), L.s("结果", "Out")
-        };
-        String[] marks = {"\u2460", "\u2461", "\u2462", "\u2463", "\u2464"};
+        String[] marks = {"\u2460", "\u2461", "\u2462", "\u2463"};
         for (int i = 0; i < steps.length; i++) {
             final int idx = i;
             TextView chip = new TextView(this);
-            chip.setText(marks[i] + " " + shortName[i]);
+            chip.setText(marks[i] + " " + shortStepName(steps[i].step));
             chip.setTextSize(AmberTheme.FS_MICRO);
             chip.setGravity(Gravity.CENTER);
             chip.setSingleLine(true);
-            chip.setPadding(px(4), px(7), px(4), px(7));
+            chip.setPadding(px(4), px(8), px(4), px(8));
             int fg, bg;
             switch (steps[i].state) {
                 case DONE:    fg = AmberTheme.OK;          bg = AmberTheme.OK_BG; break;
@@ -4096,6 +4066,17 @@ public class MainActivity extends Activity {
             auditFlowStrip.addView(chip, lp);
         }
     }
+
+    /** 状态条上的短标签（只在这里用，所以不放进工作台）。 */
+    private String shortStepName(io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Step s) {
+        switch (s) {
+            case MATERIAL: return L.s("材料", "Material");
+            case DICT:     return L.s("字典", "Dictionary");
+            case RUN:      return L.s("校验", "Run");
+            default:       return L.s("结果", "Result");
+        }
+    }
+
 
     /** 点状态条跳到对应步骤卡片。 */
     private void scrollToAuditStep(int index) {
@@ -4136,18 +4117,6 @@ public class MainActivity extends Activity {
             case DIM:    return AmberTheme.TEXT_FAINT;
             default:     return TEXT_DIM;
         }
-    }
-
-    /** 固定的说明块（下沉底）。 */
-    private View hintBox(String text) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(AmberTheme.FS_SMALL);
-        t.setTextColor(TEXT_DIM);
-        t.setLineSpacing(px(5), 1f);
-        t.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
-        t.setPadding(px(13), px(12), px(13), px(12));
-        return t;
     }
 
     /** 键值行（值可带语义色）。 */
@@ -4193,149 +4162,27 @@ public class MainActivity extends Activity {
 
     // ---- ① 材料卡 ----
 
-    private void renderAuditMaterial() {
-        if (auditMatBox == null) return;
-        auditMatBox.removeAllViews();
-        if (workbench.materialRecords() <= 0 && workbench.materialProblem().isEmpty()) {
-            auditMatBox.addView(dimLine(L.s("还没有导入材料。",
-                    "No material imported yet.")), topGap(12));
-            return;
-        }
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundBgStatic(AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
-        box.setPadding(px(13), px(12), px(13), px(12));
-
-        String name = workbench.materialName();
-        TextView title = new TextView(this);
-        title.setText(name.isEmpty() ? L.s("(未命名)", "(unnamed)") : name);
-        title.setTextSize(AmberTheme.FS_ACTION);
-        title.setTextColor(TEXT);
-        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        box.addView(title);
-
-        if (!workbench.materialProblem().isEmpty()) {
-            box.addView(kvRowTone(L.s("结果", "Result"), workbench.materialProblem(),
-                    AmberTheme.DANGER), topGap(6));
-            auditMatBox.addView(box, topGap(12));
-            return;
-        }
-        box.addView(kvRowTone(L.s("大小", "Size"), fmtBytes(workbench.materialBytes()),
-                TEXT_DIM), topGap(6));
-        box.addView(kvRowTone("SHA-256", workbench.materialSha256().isEmpty()
-                ? "\u2014" : workbench.materialSha256(), TEXT_DIM), topGap(3));
-        box.addView(kvRowTone(L.s("记录数", "Records"),
-                workbench.materialRecords() + L.s(" 条", " entries"), TEXT_DIM), topGap(3));
-        box.addView(kvRowTone(L.s("构成", "Breakdown"),
-                "PMKID " + workbench.materialPmkid() + " \u00b7 EAPOL "
-                        + workbench.materialEapol(), TEXT_DIM), topGap(3));
-        auditMatBox.addView(box, topGap(12));
+    /**
+     * 清除当前材料。
+     *
+     * <p>结果卡**不跟着删** —— 它是历史记录。保留的同时由结果卡顶部的一致性徽标
+     * 说明「这条结果与当前选择是什么关系」，所以留着不会造成误读。
+     */
+    private void clearMaterialAction() {
+        workbench.clearMaterial();
+        offEntries = null;
+        diagOpen.clear();
+        lastEntry = null;
+        lastReport = null;
+        renderAudit();
+        Toast.makeText(this, L.s(
+                        "已清除材料。下方历史结果仍在，并会标明它与当前选择的关系。",
+                        "Material cleared. The history result stays below and states how it "
+                                + "relates to your current selection."),
+                Toast.LENGTH_LONG).show();
     }
 
     // ---- ② 诊断卡 ----
-
-    private void renderAuditDiag() {
-        if (auditDiagBox == null) return;
-        auditDiagBox.removeAllViews();
-        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> es = safeEntries();
-        if (es.isEmpty()) {
-            auditDiagBox.addView(dimLine(L.s("导入材料后，这里会逐条给出可用性结论。",
-                    "After importing, each entry gets its own verdict here.")));
-            return;
-        }
-        int drawn = Math.min(es.size(), MAX_DIAG_CARDS);
-        for (int i = 0; i < drawn; i++) {
-            final int idx = i;
-            final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = es.get(i);
-            final io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report rep =
-                    io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.examine(e);
-            final boolean ok = rep.executable;
-            final boolean selected = workbench.selectedIndex() == idx;
-            final boolean unsupported = rep.status()
-                    == io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Status.UNSUPPORTED;
-
-            LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setBackground(roundBgStatic(selected ? AmberTheme.ACCENT_BG
-                    : AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
-            card.setPadding(px(13), px(11), px(13), px(11));
-
-            LinearLayout head = new LinearLayout(this);
-            head.setOrientation(LinearLayout.HORIZONTAL);
-            head.setGravity(Gravity.CENTER_VERTICAL);
-
-            TextView tl = new TextView(this);
-            tl.setText((i + 1) + ". " + e.label());
-            tl.setTextSize(AmberTheme.FS_BODY);
-            tl.setTextColor(TEXT);
-            head.addView(tl, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            head.addView(chipView(rep.statusLabel(),
-                    ok ? AmberTheme.OK : (unsupported ? AmberTheme.TEXT_FAINT : AmberTheme.WARN),
-                    ok ? AmberTheme.OK_BG : AmberTheme.WARN_BG));
-            card.addView(head);
-
-            if (!ok) {
-                TextView why = new TextView(this);
-                why.setText(L.s("缺什么/为什么不能跑: ", "Blocked by: ") + rep.whyNot());
-                why.setTextSize(AmberTheme.FS_SMALL);
-                why.setTextColor(AmberTheme.WARN);
-                why.setLineSpacing(px(4), 1f);
-                card.addView(why, topGap(6));
-            } else if (!rep.warnings.isEmpty()) {
-                TextView w = new TextView(this);
-                w.setText(L.s("警告: ", "Warning: ") + rep.warnings.get(0));
-                w.setTextSize(AmberTheme.FS_SMALL);
-                w.setTextColor(AmberTheme.WARN);
-                card.addView(w, topGap(6));
-            }
-
-            final boolean open = diagOpen.contains(Integer.valueOf(idx));
-            Button toggle = rowActionPlain(open
-                    ? L.s("收起详情   \u2303", "Collapse   \u2303")
-                    : L.s("展开详情   \u2304", "Expand   \u2304"));
-            toggle.setOnClickListener(v -> {
-                Integer key = Integer.valueOf(idx);
-                if (diagOpen.contains(key)) diagOpen.remove(key);
-                else diagOpen.add(key);
-                renderAuditDiag();
-            });
-            card.addView(toggle);
-
-            if (open) {
-                LinearLayout facts = new LinearLayout(this);
-                facts.setOrientation(LinearLayout.VERTICAL);
-                facts.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
-                facts.setPadding(px(11), px(10), px(11), px(10));
-                for (String[] f : rep.facts) {
-                    facts.addView(kvRowTone(f[0], f[1], TEXT_DIM), topGap(3));
-                }
-                card.addView(facts, topGap(6));
-            }
-
-            if (es.size() > 1) {
-                Button pickBtn = rowActionPlain(selected
-                        ? L.s("\u2713 本次将校验这一条", "\u2713 This one will be checked")
-                        : L.s("选这条做离线校验", "Use this one"));
-                pickBtn.setTextColor(selected ? ACCENT : TEXT);
-                pickBtn.setOnClickListener(v -> selectMaterialEntry(idx));
-                card.addView(pickBtn);
-            }
-            auditDiagBox.addView(card, topGap(8));
-        }
-        if (es.size() > drawn) {
-            auditDiagBox.addView(dimLine(L.f(
-                    "共 %d 条材料，这里只画前 %d 条（逐条建控件会把界面拖死）。"
-                            + "离线校验用你选中的那一条。",
-                    "%d entries in total; only the first %d are shown here (rendering every one "
-                            + "would freeze the UI). The offline check uses the entry you pick.",
-                    es.size(), drawn)), topGap(8));
-            Button more = rowAction(L.f("从全部 %d 条里选一条…", "Pick from all %d entries…",
-                    es.size()));
-            more.setOnClickListener(v -> showAllEntriesPicker());
-            auditDiagBox.addView(more);
-        }
-    }
 
     /**
      * 从全部材料里选一条。
@@ -4378,55 +4225,6 @@ public class MainActivity extends Activity {
 
     // ---- ③ 字典卡 ----
 
-    private void renderAuditDict() {
-        if (auditDictBox == null) return;
-        auditDictBox.removeAllViews();
-        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = workbench.dictionary();
-        if (s.empty()) {
-            auditDictBox.addView(dimLine(L.s(
-                    "当前还没有字典。可以先「按目标派生」，或从字典管理里加载一本。",
-                    "No dictionary yet. Derive one from a target, or load one from dictionary "
-                            + "management.")));
-        } else {
-            auditDictBox.addView(kvRowTone(L.s("名称", "Name"), s.name, TEXT), topGap(2));
-            auditDictBox.addView(kvRowTone(L.s("来源", "Source"),
-                    auditSourceLabel(s.source), TEXT_DIM), topGap(4));
-            auditDictBox.addView(kvRowTone(L.s("候选数", "Candidates"),
-                    s.count + L.s(" 条", " entries"), TEXT), topGap(4));
-            auditDictBox.addView(kvRowTone(L.s("内容指纹", "Content id"),
-                    s.fingerprint().isEmpty() ? "\u2014" : s.fingerprint(), ACCENT), topGap(4));
-            auditDictBox.addView(kvRowTone(L.s("文件", "File"),
-                    s.onDisk()
-                            ? s.filePath + "\nSHA-256 " + s.fileId()
-                            : L.s("未落盘（仅内存）", "not written to a file (in memory only)"),
-                    s.onDisk() ? TEXT_DIM : AmberTheme.WARN), topGap(4));
-            auditDictBox.addView(kvRowTone(L.s("快照时间", "Snapshot at"),
-                    fmtStamp(s.createdAt), TEXT_DIM), topGap(4));
-        }
-        if (!dictRestoreNote.isEmpty()) {
-            TextView n = new TextView(this);
-            n.setText(dictRestoreNote);
-            n.setTextSize(AmberTheme.FS_SMALL);
-            n.setTextColor(AmberTheme.WARN);
-            n.setLineSpacing(px(4), 1f);
-            n.setBackground(roundBgStatic(AmberTheme.WARN_BG, AmberTheme.RADIUS_CHIP));
-            n.setPadding(px(11), px(10), px(11), px(10));
-            auditDictBox.addView(n, topGap(8));
-        }
-        // 「按材料 SSID 派生」只在材料真的带 SSID 时出现，且必须经用户确认
-        if (auditDeriveMat != null) {
-            String ssid = materialSsid();
-            if (ssid.isEmpty()) {
-                auditDeriveMat.setVisibility(View.GONE);
-            } else {
-                auditDeriveMat.setVisibility(View.VISIBLE);
-                auditMaterialSsid = ssid;
-                auditDeriveMat.setText(L.f("按材料的 SSID 派生字典（%s）   \u203a",
-                        "Derive a dictionary from the material's SSID (%s)   \u203a", ssid));
-            }
-        }
-    }
-
     /** 当前材料里可用的 SSID（优先已选中的那条）。 */
     private String materialSsid() {
         if (lastEntry != null && lastEntry.ssid != null && !lastEntry.ssid.isEmpty()) {
@@ -4446,100 +4244,6 @@ public class MainActivity extends Activity {
     }
 
     // ---- ④ 执行卡 ----
-
-    private void renderAuditIntro() {
-        if (auditIntroToggle == null) return;
-        auditIntroToggle.setText((offIntroOpen ? "\u2303 " : "\u2304 ")
-                + L.s("离线校验是什么？", "What is the offline check?"));
-        auditIntroToggle.setTextColor(offIntroOpen ? ACCENT : TEXT);
-        auditIntroBox.removeAllViews();
-        if (!offIntroOpen) return;
-        TextView t = new TextView(this);
-        t.setText(L.s(
-                "将从你有权测试的 Wi-Fi 网络获取的握手材料（.hc22000 / .22000），"
-                        + "与本机字典中的候选口令逐条比对，判断字典中是否包含对应密码。\n\n"
-                        + "\u00b7 不需要连接目标 Wi-Fi\n"
-                        + "\u00b7 不会向目标网络发起连接请求\n"
-                        + "\u00b7 材料和候选口令在本地进行处理\n"
-                        + "\u00b7 需要准备有效的握手材料和合适的字典\n"
-                        + "\u00b7 找到匹配结果才表示当前字典中存在对应口令\n"
-                        + "\u00b7 未命中不代表密码绝对安全，只代表本次材料和候选集合没有找到匹配",
-                "The handshake material captured from a Wi-Fi network you are authorised to test "
-                        + "(.hc22000 / .22000) is compared one by one against the candidates in "
-                        + "your local dictionary, to decide whether the dictionary contains the "
-                        + "matching password.\n\n"
-                        + "\u00b7 No need to connect to the target Wi-Fi\n"
-                        + "\u00b7 No connection request is sent to the target network\n"
-                        + "\u00b7 Material and candidates are processed locally\n"
-                        + "\u00b7 You need valid handshake material and a suitable dictionary\n"
-                        + "\u00b7 A match means this dictionary contains the password\n"
-                        + "\u00b7 No hit does not mean the password is safe - it only means this "
-                        + "material and candidate set found no match"));
-        t.setTextSize(AmberTheme.FS_SMALL);
-        t.setTextColor(TEXT_DIM);
-        t.setLineSpacing(px(5), 1f);
-        t.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
-        t.setPadding(px(13), px(12), px(13), px(12));
-        auditIntroBox.addView(t, topGap(8));
-    }
-
-    private void renderAuditRun() {
-        if (auditRunBox == null) return;
-        auditRunBox.removeAllViews();
-        io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = lastEntry;
-        io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap = workbench.dictionary();
-        auditRunBox.addView(kvRowTone(L.s("材料", "Material"),
-                workbench.materialImported() ? workbench.materialName()
-                        : L.s("未导入", "none"), TEXT_DIM), topGap(12));
-        auditRunBox.addView(kvRowTone(L.s("目标 SSID", "Target SSID"),
-                e == null || e.ssid == null || e.ssid.isEmpty()
-                        ? "\u2014" : e.ssid, TEXT_DIM), topGap(4));
-        auditRunBox.addView(kvRowTone(L.s("材料类型", "Type"),
-                e == null ? "\u2014" : (e.isPmkid() ? "PMKID" : "EAPOL"), TEXT_DIM), topGap(4));
-        auditRunBox.addView(kvRowTone(L.s("使用的字典", "Dictionary"),
-                snap.empty()
-                        ? L.s("未选择", "none")
-                        : snap.name + " \u00b7 " + snap.count + L.s(" 条", " entries")
-                          + " \u00b7 " + snap.fingerprint(), TEXT_DIM), topGap(4));
-        String integrity;
-        int ic;
-        if (workbench.selectedIndex() < 0) {
-            integrity = L.s("未选择材料", "no entry selected");
-            ic = AmberTheme.TEXT_FAINT;
-        } else if (workbench.materialExecutable()) {
-            integrity = L.s("可执行", "Runnable");
-            ic = AmberTheme.OK;
-        } else {
-            integrity = L.s("不完整: ", "Incomplete: ") + workbench.materialExecReason();
-            ic = AmberTheme.WARN;
-        }
-        auditRunBox.addView(kvRowTone(L.s("材料完整性", "Integrity"), integrity, ic), topGap(4));
-
-        auditLive = null;
-        if (offlineBusy) {
-            auditLive = new TextView(this);
-            auditLive.setTextSize(AmberTheme.FS_BODY);
-            auditLive.setTextColor(AmberTheme.ACCENT_SOFT);
-            auditLive.setTypeface(Typeface.MONOSPACE);
-            auditLive.setText(L.s("进行中…", "Running..."));
-            auditRunBox.addView(auditLive, topGap(6));
-        }
-
-        if (auditBlocker != null) {
-            String why = workbench.blocker();
-            if (why.isEmpty()) {
-                auditBlocker.setText(L.s(
-                        "条件已满足，可以开始。完成后结果会固定在下面的结果卡里。",
-                        "Ready. When it finishes, the verdict is pinned to the result card "
-                                + "below."));
-                auditBlocker.setTextColor(AmberTheme.OK);
-            } else {
-                auditBlocker.setText(why);
-                auditBlocker.setTextColor(AmberTheme.WARN);
-            }
-        }
-        refreshOfflineButtons();
-    }
 
     /**
      * 步骤 ④ 的「开始离线校验」。
@@ -4580,14 +4284,8 @@ public class MainActivity extends Activity {
         if (auditStopBtn != null) {
             auditStopBtn.setVisibility(offlineBusy ? View.VISIBLE : View.GONE);
         }
-        if (offPick != null) {
-            offPick.setText(offlineBusy
-                    ? L.s("正在比对…（先停止再换材料）", "Comparing... (stop before switching)")
-                    : L.s("用系统文件选择器导入材料",
-                          "Import material with the system file picker"));
-            offPick.setAlpha(offlineBusy ? 0.5f : 1f);
-        }
     }
+
 
     // ---------------------------------------------------------------- 运行记录
 
@@ -4637,6 +4335,490 @@ public class MainActivity extends Activity {
             if (i > 0) lp.leftMargin = px(5);
             auditChanStrip.addView(chip, lp);
         }
+    }
+
+    /**
+     * 材料卡：摘要一行 + 材料列表（整行可点 = 选中并展开）。
+     *
+     * <p>上一版每条材料配了两条整行大按钮（「展开详情」「选这条做离线校验」），
+     * 一份两条记录的文件就多出四行按钮，页面立刻散掉。现在合成一个动作：
+     * **点那一行 = 选中它并且展开它的字段**；再点一次收起。
+     */
+    private void renderMaterialCard() {
+        if (auditMatBox == null || auditDiagBox == null) return;
+        auditMatBox.removeAllViews();
+        auditDiagBox.removeAllViews();
+
+        boolean imported = workbench.materialImported();
+        boolean failed = !workbench.materialProblem().isEmpty();
+
+        if (auditImportBtn != null) {
+            auditImportBtn.setText(imported || failed
+                    ? L.s("更换材料", "Change material")
+                    : L.s("导入材料（.hc22000 / .22000）",
+                          "Import material (.hc22000 / .22000)"));
+        }
+        if (auditClearMatBtn != null) {
+            auditClearMatBtn.setVisibility(imported || failed ? View.VISIBLE : View.GONE);
+        }
+
+        if (!imported && !failed) {
+            auditMatBox.addView(dimLine(L.s("还没有导入材料。",
+                    "No material imported yet.")));
+            return;
+        }
+
+        if (failed) {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setBackground(roundBgStatic(AmberTheme.DANGER_BG, AmberTheme.RADIUS_CHIP));
+            box.setPadding(px(13), px(12), px(13), px(12));
+            TextView n = new TextView(this);
+            n.setText(workbench.materialName().isEmpty()
+                    ? L.s("(未选择文件)", "(no file)") : workbench.materialName());
+            n.setTextSize(AmberTheme.FS_BODY);
+            n.setTextColor(TEXT);
+            box.addView(n);
+            box.addView(kvRowTone(L.s("读取失败", "Read failed"),
+                    workbench.materialProblem(), AmberTheme.DANGER), topGap(5));
+            auditMatBox.addView(box);
+            return;
+        }
+
+        // ---- 摘要：这份文件是什么、什么时候进来的 ----
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundBgStatic(AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
+        box.setPadding(px(13), px(12), px(13), px(12));
+
+        TextView title = new TextView(this);
+        title.setText(workbench.materialName());
+        title.setTextSize(AmberTheme.FS_ACTION);
+        title.setTextColor(TEXT);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        box.addView(title);
+
+        TextView meta = new TextView(this);
+        meta.setText(workbench.materialRecords() + L.s(" 条", " entries")
+                + "  \u00b7  PMKID " + workbench.materialPmkid()
+                + " / EAPOL " + workbench.materialEapol()
+                + "  \u00b7  " + fmtStamp(workbench.materialAt()));
+        meta.setTextSize(AmberTheme.FS_SMALL);
+        meta.setTextColor(AmberTheme.TEXT_DIM);
+        meta.setTypeface(Typeface.MONOSPACE);
+        box.addView(meta, topGap(4));
+
+        TextView meta2 = new TextView(this);
+        meta2.setText(fmtBytes(workbench.materialBytes())
+                + L.s("  \u00b7  SHA-256 ", "  \u00b7  SHA-256 ")
+                + shortId(workbench.materialSha256()));
+        meta2.setTextSize(AmberTheme.FS_SMALL);
+        meta2.setTextColor(AmberTheme.TEXT_FAINT);
+        meta2.setTypeface(Typeface.MONOSPACE);
+        box.addView(meta2, topGap(2));
+        auditMatBox.addView(box);
+
+        // ---- 列表：每条一行，整行可点 ----
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> es = safeEntries();
+        int drawn = Math.min(es.size(), MAX_DIAG_CARDS);
+        for (int i = 0; i < drawn; i++) {
+            auditDiagBox.addView(materialRow(i, es.get(i)), topGap(6));
+        }
+        if (es.size() > drawn) {
+            auditDiagBox.addView(dimLine(L.f(
+                    "共 %d 条材料，这里只画前 %d 条。离线校验用你点中的那一条。",
+                    "%d entries in total; only the first %d are shown here. The check uses the "
+                            + "one you tap.", es.size(), drawn)), topGap(6));
+            Button more = rowAction(L.f("从全部 %d 条里选一条…",
+                    "Pick from all %d entries…", es.size()));
+            more.setOnClickListener(v -> showAllEntriesPicker());
+            auditDiagBox.addView(more);
+        }
+    }
+
+    /** 一条材料：紧凑单行（标题 / 副标题 / 状态胶囊 / 展开箭头），整行可点。 */
+    private View materialRow(final int idx, io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e) {
+        io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report rep =
+                io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.examine(e);
+        boolean ok = rep.executable;
+        boolean unsupported = rep.status()
+                == io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Status.UNSUPPORTED;
+        boolean selected = workbench.selectedIndex() == idx;
+        final boolean open = diagOpen.contains(Integer.valueOf(idx));
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setBackground(roundBgStatic(selected ? AmberTheme.ACCENT_BG : AmberTheme.CARD_2,
+                AmberTheme.RADIUS_CHIP));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(px(12), px(10), px(12), px(10));
+
+        // 选中标记用一条 3dp 琥珀竖条：比整行换色更省视觉重量，也不影响可读性。
+        View bar = new View(this);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(px(3), px(32));
+        blp.rightMargin = px(11);
+        bar.setLayoutParams(blp);
+        bar.setBackgroundColor(selected ? ACCENT : 0x00000000);
+        row.addView(bar);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t1 = new TextView(this);
+        t1.setText((idx + 1) + ". " + (e.isPmkid() ? "PMKID" : "EAPOL")
+                + "  \u00b7  " + (e.ssid == null || e.ssid.isEmpty() ? "(无 SSID)" : e.ssid));
+        t1.setTextSize(AmberTheme.FS_BODY);
+        t1.setTextColor(TEXT);
+        t1.setSingleLine(true);
+        t1.setEllipsize(TextUtils.TruncateAt.END);
+        col.addView(t1);
+        TextView t2 = new TextView(this);
+        t2.setText("AP " + io.github.wlmosv_png.wpaforge.audit.Hc22000.hexMac(e.apMac)
+                + (ok ? "" : L.s("   \u00b7  ", "   \u00b7  ") + firstIssue(rep)));
+        t2.setTextSize(AmberTheme.FS_SMALL);
+        t2.setTextColor(ok ? AmberTheme.TEXT_FAINT : AmberTheme.WARN);
+        t2.setSingleLine(true);
+        t2.setEllipsize(TextUtils.TruncateAt.END);
+        col.addView(t2, topGap(2));
+        row.addView(col, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(chipView(rep.statusLabel(),
+                ok ? AmberTheme.OK : (unsupported ? AmberTheme.TEXT_FAINT : AmberTheme.WARN),
+                ok ? AmberTheme.OK_BG : AmberTheme.WARN_BG));
+
+        TextView arrow = new TextView(this);
+        arrow.setText(open ? "\u2303" : "\u2304");
+        arrow.setTextSize(AmberTheme.FS_TITLE);
+        arrow.setTextColor(AmberTheme.TEXT_FAINT);
+        arrow.setPadding(px(10), 0, 0, 0);
+        row.addView(arrow);
+        wrap.addView(row);
+
+        if (open) {
+            LinearLayout facts = new LinearLayout(this);
+            facts.setOrientation(LinearLayout.VERTICAL);
+            facts.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+            facts.setPadding(px(11), px(10), px(11), px(10));
+            for (String[] f : rep.facts) {
+                facts.addView(kvRowTone(f[0], f[1], TEXT_DIM), topGap(3));
+            }
+            for (String w : rep.warnings) {
+                facts.addView(kvRowTone(L.s("警告", "Warning"), w, AmberTheme.WARN), topGap(3));
+            }
+            if (!rep.executable) {
+                facts.addView(kvRowTone(L.s("为什么不能跑", "Blocked by"),
+                        rep.whyNot(), AmberTheme.WARN), topGap(3));
+            }
+            LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            flp.leftMargin = px(12);
+            flp.rightMargin = px(12);
+            flp.bottomMargin = px(11);
+            wrap.addView(facts, flp);
+        }
+
+        wrap.setOnClickListener(v -> onMaterialRowTap(idx));
+        return wrap;
+    }
+
+    /** 第一条问题（折叠态只露一条，展开态在字段表里给全）。 */
+    private static String firstIssue(io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report r) {
+        if (r.warnings != null && !r.warnings.isEmpty()) return r.warnings.get(0);
+        String w = r.whyNot();
+        if (w.isEmpty()) return "";
+        int cut = w.indexOf('\uff1b');
+        return cut > 0 ? w.substring(0, cut) : w;
+    }
+
+    /**
+     * 点材料那一行：没选中就选中并展开；已选中就切换展开/收起。
+     * 一个动作做完「选哪条 + 看细节」，不再要用户点两个按钮。
+     */
+    private void onMaterialRowTap(int idx) {
+        Integer key = Integer.valueOf(idx);
+        if (workbench.selectedIndex() != idx) {
+            diagOpen.add(key);
+            selectMaterialEntry(idx);      // 内含 renderAudit()
+            return;
+        }
+        if (diagOpen.contains(key)) diagOpen.remove(key);
+        else diagOpen.add(key);
+        renderAudit();
+    }
+
+    /** 字典卡：只给「当前是哪本 + 条数 + 指纹」，操作收成三行。 */
+    private void renderDictCard() {
+        if (auditDictBox == null) return;
+        auditDictBox.removeAllViews();
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = workbench.dictionary();
+        if (auditDictEmptyCta != null) {
+            auditDictEmptyCta.removeAllViews();
+        }
+        if (auditChangeDictBtn != null) {
+            // 一本字典都没有时，「更换字典」点进去只能看到空列表 —— 先藏起来，
+            // 把位置让给「去字典管理新建 / 导入」。
+            auditChangeDictBtn.setVisibility(s.empty() ? View.GONE : View.VISIBLE);
+        }
+        if (s.empty()) {
+            if (auditDictEmptyCta != null) {
+                TextView t = new TextView(this);
+                t.setText(L.s("还没有字典。可以在字典管理里新建一份、从手机导入一份 txt，"
+                                + "或直接加载内置字典。",
+                        "No dictionary yet. Create one in dictionary management, import a .txt "
+                                + "from the device, or load a built-in list."));
+                t.setTextSize(AmberTheme.FS_SMALL);
+                t.setTextColor(TEXT_DIM);
+                t.setLineSpacing(px(4), 1f);
+                t.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+                t.setPadding(px(13), px(11), px(13), px(11));
+                auditDictEmptyCta.addView(t);
+                Button go = AmberTheme.action(this, dp,
+                        L.s("去字典管理新建 / 导入", "Open dictionary management"),
+                        AmberTheme.BTN_PRIMARY);
+                go.setOnClickListener(v -> openDictManager());
+                auditDictEmptyCta.addView(go, topGap(8));
+            }
+            auditDictBox.addView(dimLine(L.s("当前字典：未选择",
+                    "Current dictionary: none")));
+        } else {
+            TextView name = new TextView(this);
+            name.setText(s.name);
+            name.setTextSize(AmberTheme.FS_ACTION);
+            name.setTextColor(TEXT);
+            name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            name.setSingleLine(true);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            auditDictBox.addView(name);
+
+            TextView meta = new TextView(this);
+            meta.setText(s.count + L.s(" 条", " entries")
+                    + "  \u00b7  " + L.s("指纹 ", "id ") + s.fingerprint()
+                    + "\n" + (s.onDisk()
+                            ? s.filePath + "\nSHA-256 " + s.fileId()
+                            : L.s("未落盘（仅内存）", "not on disk (in memory only)")));
+            meta.setTextSize(AmberTheme.FS_SMALL);
+            meta.setTextColor(AmberTheme.TEXT_DIM);
+            meta.setTypeface(Typeface.MONOSPACE);
+            meta.setLineSpacing(px(3), 1f);
+            auditDictBox.addView(meta, topGap(4));
+
+            TextView src = new TextView(this);
+            src.setText(L.s("来源 ", "source ") + auditSourceLabel(s.source)
+                    + L.s("  \u00b7  快照 ", "  \u00b7  taken ") + fmtStamp(s.createdAt));
+            src.setTextSize(AmberTheme.FS_SMALL);
+            src.setTextColor(AmberTheme.TEXT_FAINT);
+            auditDictBox.addView(src, topGap(4));
+        }
+        if (!dictRestoreNote.isEmpty()) {
+            TextView n = new TextView(this);
+            n.setText(dictRestoreNote);
+            n.setTextSize(AmberTheme.FS_SMALL);
+            n.setTextColor(AmberTheme.WARN);
+            n.setLineSpacing(px(4), 1f);
+            n.setBackground(roundBgStatic(AmberTheme.WARN_BG, AmberTheme.RADIUS_CHIP));
+            n.setPadding(px(11), px(10), px(11), px(10));
+            auditDictBox.addView(n, topGap(8));
+        }
+        if (auditDeriveMat != null) {
+            String ssid = materialSsid();
+            if (ssid.isEmpty()) {
+                auditDeriveMat.setVisibility(View.GONE);
+            } else {
+                auditDeriveMat.setVisibility(View.VISIBLE);
+                auditMaterialSsid = ssid;
+                auditDeriveMat.setText(L.f("按材料的 SSID 派生字典（%s）   \u203a",
+                        "Derive from the material's SSID (%s)   \u203a", ssid));
+            }
+        }
+    }
+
+    /** 执行卡：摘要两行 + 进度条 + 一句状态 + 开始/停止。 */
+    private void renderRunCard() {
+        if (auditRunBox == null) return;
+        auditRunBox.removeAllViews();
+        io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = lastEntry;
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap = workbench.dictionary();
+        boolean picked = workbench.selectedIndex() >= 0 && e != null;
+
+        TextView line1 = new TextView(this);
+        line1.setText(L.s("材料  ", "Material  ")
+                + (picked ? (e.isPmkid() ? "PMKID" : "EAPOL") + "  \u00b7  "
+                        + (e.ssid == null || e.ssid.isEmpty() ? L.s("(无 SSID)", "(no SSID)")
+                                                              : e.ssid)
+                        : L.s("未选中", "none")));
+        line1.setTextSize(AmberTheme.FS_BODY);
+        line1.setTextColor(picked ? TEXT : AmberTheme.TEXT_FAINT);
+        auditRunBox.addView(line1);
+
+        TextView line2 = new TextView(this);
+        line2.setText(L.s("字典  ", "Dictionary  ")
+                + (snap.empty() ? L.s("未选择", "none")
+                        : snap.name + "  \u00b7  " + snap.count + L.s(" 条", " entries")
+                          + "  \u00b7  " + snap.fingerprint()));
+        line2.setTextSize(AmberTheme.FS_BODY);
+        line2.setTextColor(snap.empty() ? AmberTheme.TEXT_FAINT : TEXT);
+        line2.setSingleLine(true);
+        line2.setEllipsize(TextUtils.TruncateAt.END);
+        auditRunBox.addView(line2, topGap(6));
+
+        TextView line3 = new TextView(this);
+        line3.setText(L.s("完整性  ", "Integrity  ") + (picked
+                ? (workbench.materialExecutable() ? L.s("可执行", "runnable")
+                        : L.s("不完整：", "incomplete: ") + workbench.materialExecReason())
+                : L.s("\u2014", "\u2014")));
+        line3.setTextSize(AmberTheme.FS_BODY);
+        line3.setTextColor(!picked ? AmberTheme.TEXT_FAINT
+                : (workbench.materialExecutable() ? AmberTheme.OK : AmberTheme.WARN));
+        line3.setSingleLine(true);
+        line3.setEllipsize(TextUtils.TruncateAt.END);
+        auditRunBox.addView(line3, topGap(6));
+
+        // 进度条只在跑的时候出现（空着一条更碍眼）
+        if (auditProgress != null) {
+            auditProgress.setVisibility(offlineBusy ? View.VISIBLE : View.GONE);
+            if (!offlineBusy) {
+                auditProgress.setProgress(0f);
+                auditProgress.setText("", "");
+                auditProgress.setSubText("");
+            }
+        }
+
+        if (auditBlocker != null) {
+            String why = workbench.blocker();
+            if (why.isEmpty()) {
+                auditBlocker.setText(L.s(
+                        "条件已满足，可以开始。完成后结果会固定在下面的结果卡里。",
+                        "Ready. When it finishes, the verdict is pinned to the result card "
+                                + "below."));
+                auditBlocker.setTextColor(AmberTheme.OK);
+            } else {
+                auditBlocker.setText(why);
+                auditBlocker.setTextColor(AmberTheme.WARN);
+            }
+        }
+        refreshOfflineButtons();
+    }
+
+    /**
+     * 审计页说明（「?」入口）—— 页面上**所有**整段说明都收在这里。
+     *
+     * <p>分节顺序按「用户会依次产生的疑问」排：
+     *   ① 怎么用（四步）② 离线校验是什么 ③ 材料那四种状态什么意思
+     *   ④ 结果有几种、各自什么意思 ⑤ 字典指纹/「与当前选择一致」是什么
+     *   ⑥ 为什么未命中不等于安全 ⑦ 边界
+     */
+    private void showAuditHelp() {
+        StringBuilder b = new StringBuilder();
+
+        b.append(L.s("① 怎么用（四步）\n"
+                        + "1) 导入材料 —— 电脑上抓的握手包（.hc22000 / .22000）\n"
+                        + "2) 选一条材料 —— 点材料列表里的那一行就选中了（再点一次看它全部字段）\n"
+                        + "3) 选字典 —— 「按目标派生」通常最划算，也可以从字典管理里加载\n"
+                        + "4) 开始校验 —— 跑完结果固定在④里，切页/重开都还在\n\n",
+                "1) How to use (4 steps)\n"
+                        + "1) Import material - a capture made on a desktop (.hc22000 / .22000)\n"
+                        + "2) Pick an entry - tap a row in the material list (tap again to see "
+                        + "every field)\n"
+                        + "3) Pick a dictionary - \"derive from target\" is usually the best value\n"
+                        + "4) Run - the verdict is pinned in 4) and survives restarts\n\n"));
+
+        b.append(L.s("② 离线校验是什么\n"
+                        + "把材料与你本机字典里的候选口令逐条比对，判断字典里有没有对应密码。\n"
+                        + "\u00b7 不需要连接目标 Wi-Fi\n"
+                        + "\u00b7 不会向目标网络发起连接请求\n"
+                        + "\u00b7 材料和候选口令在本地处理\n"
+                        + "\u00b7 找到匹配才表示当前字典里有对应口令\n\n",
+                "2) What the offline check is\n"
+                        + "Compares the material against every candidate in your local dictionary.\n"
+                        + "\u00b7 No connection to the target Wi-Fi\n"
+                        + "\u00b7 No request is sent to the target network\n"
+                        + "\u00b7 Everything is processed locally\n"
+                        + "\u00b7 A match means this dictionary contains the password\n\n"));
+
+        b.append(L.s("③ 材料那四种状态\n"
+                        + "\u00b7 可执行 —— 字段齐全且自洽，能跑\n"
+                        + "\u00b7 信息不完整 —— 格式没错，但关键值缺了/全零（抓包时没抓到有效值）\n"
+                        + "\u00b7 格式错误 —— 字段长度或取值根本不合格式（文件本身是坏的，得重新导出）\n"
+                        + "\u00b7 不支持 —— 记录类型不在 WPA*01 / WPA*02 之内\n"
+                        + "只看字段非空是不够的：MIC 字段没被抹零、帧内 nonce 全零、"
+                        + "Key Version 读不出，这些都会让比对结果毫无意义，所以一律拦下，"
+                        + "不会伪装成「密码未命中」。\n\n",
+                "3) The four material states\n"
+                        + "\u00b7 Runnable - fields complete and self-consistent\n"
+                        + "\u00b7 Incomplete - format is fine but a key value is missing/zero\n"
+                        + "\u00b7 Malformed - field length or value breaks the format (bad export)\n"
+                        + "\u00b7 Unsupported - record type is not WPA*01 / WPA*02\n"
+                        + "Non-empty fields are not enough: an un-scrubbed MIC field, an all-zero "
+                        + "nonce or an unreadable Key Version makes the comparison meaningless, so "
+                        + "those are blocked instead of disguised as a miss.\n\n"));
+
+        b.append(L.s("④ 结果有五种，别混\n"
+                        + "\u00b7 命中 —— 字典里就有这个密码（口令默认打码，可显示/复制）\n"
+                        + "\u00b7 未命中 —— 字典确实跑满了，里面没有\n"
+                        + "\u00b7 已取消 —— 跑了一半被你停掉，什么结论都下不了（不算未命中）\n"
+                        + "\u00b7 材料异常 —— 根本没开跑\n"
+                        + "\u00b7 执行失败 —— 引擎报错\n\n",
+                "4) Five outcomes, do not mix them up\n"
+                        + "\u00b7 Hit - the dictionary contains the password\n"
+                        + "\u00b7 Miss - the dictionary was fully exhausted, no match\n"
+                        + "\u00b7 Cancelled - you stopped it; nothing can be concluded\n"
+                        + "\u00b7 Bad material - it never ran\n"
+                        + "\u00b7 Failed - the engine errored\n\n"));
+
+        b.append(L.s("⑤ 字典指纹 / 「与当前选择一致」\n"
+                        + "指纹是这本字典内容的 SHA-256 前 12 位。条数和名字都可能重名，"
+                        + "指纹不会 —— 所以开跑时会把当时那本冻结下来，结果卡上记的就是它。\n"
+                        + "结果卡第一条就是「这条结果是不是当前材料 + 当前字典」：\n"
+                        + "材料按照文件名/类型/SSID/AP MAC 四个字段比，字典按内容指纹比。\n"
+                        + "对不上就会写清楚「结果来自谁、你现在选的是谁」，并给你一个"
+                        + "「用当前选择再跑一次」。\n\n",
+                "5) Dictionary fingerprint / \"matches current selection\"\n"
+                        + "The fingerprint is the first 12 hex of the SHA-256 over the "
+                        + "dictionary CONTENT. Names and counts can collide; it cannot. The "
+                        + "dictionary is frozen when a run starts, and the result card records it.\n"
+                        + "The first line of the result card says whether the result belongs to "
+                        + "your current material and dictionary.\n\n"));
+
+        b.append(L.s("⑥ 未命中不代表密码绝对安全\n"
+                        + "只代表本次材料 + 这本字典的候选集合没找到匹配。\n"
+                        + "密码完全可能存在于别的字典、别的候选集合里。\n\n",
+                "6) \"No hit\" does not mean safe\n"
+                        + "It only means this material and this candidate set found no match.\n"
+                        + "The password may well exist in another dictionary.\n\n"));
+
+        b.append(L.s("⑦ 边界\n"
+                        + "只用于你自己拥有或已获授权的网络。对别人的网就是违法。",
+                "7) Scope\nFor networks you own or are explicitly authorised to test only."));
+
+        io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.s("审计页怎么用？", "How does this tab work?"), b.toString());
+        d.addItem(L.s("去导入材料", "Import material"), dd -> showOfflinePicker());
+        d.addItem(L.s("去选字典", "Pick a dictionary"), dd -> showDictPicker());
+        d.setPositive(L.s("知道了", "Got it"), null);
+        d.show();
+    }
+
+    /**
+     * 打开字典管理页。
+     *
+     * <p>唯一入口，命名必须与用户看到的提示语一致（就是「字典管理」）——
+     * 上一版这行叫「字典工具（管理 / 生成）」，而空状态提示写的是
+     * 「请先去字典管理里新建或导入」，两边用词对不上，等于没有入口。
+     */
+    private void openDictManager() {
+        startActivity(new android.content.Intent(this, DictActivity.class));
+    }
+
+    /** 长指纹的紧凑显示（前 12 位，大写）。 */
+    private static String shortId(String hex) {
+        if (hex == null || hex.isEmpty()) return "\u2014";
+        return hex.substring(0, Math.min(12, hex.length()))
+                .toUpperCase(java.util.Locale.ROOT);
     }
 
     /** 兼容旧入口。 */
@@ -5301,7 +5483,7 @@ public class MainActivity extends Activity {
         final io.github.wlmosv_png.wpaforge.audit.AuditEngine engine =
                 new io.github.wlmosv_png.wpaforge.audit.AuditEngine();
         runningEngine = engine;
-        renderAuditRun();
+        renderRunCard();
         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO, e.label(),
                 L.s("开始比对：", "Comparing: ") + snap.count + L.s(" 条候选", " candidates"),
                 L.f("材料: %s\n目标 SSID: %s\n材料类型: %s\n字典: %s\n候选数: %d"
@@ -5420,14 +5602,22 @@ public class MainActivity extends Activity {
         }, "wpaforge-offline-run").start();
     }
 
-    /** 运行中刷新「进度」那一行（不重建整张卡）。 */
+    /** 运行中刷新进度条（不重建整张卡）。 */
     private void updateLiveProgress(long tested, long total, long elapsedMs) {
-        if (auditLive == null) return;
-        auditLive.setText(L.f("进行中: %d / %d（%s） · 已用 %s",
-                "Running: %d / %d (%s) \u00b7 %s",
-                tested, total, pct(tested, total), fmtDuration(elapsedMs)));
-        auditLive.setTextColor(AmberTheme.ACCENT_SOFT);
+        if (auditProgress == null) return;
+        float p = total > 0 ? (float) ((double) tested / (double) total) : 0f;
+        auditProgress.setProgress(p);
+        auditProgress.setText(tested + " / " + total + L.s(" 条", " entries"),
+                String.format(java.util.Locale.ROOT, "%.1f%%", p * 100f));
+        String rate = elapsedMs > 0
+                ? String.format(java.util.Locale.ROOT, "%.0f", tested * 1000.0 / elapsedMs)
+                  + L.s(" 条/秒", "/s")
+                : "";
+        auditProgress.setSubText(L.s("已用 ", "elapsed ") + fmtDuration(elapsedMs)
+                + (rate.isEmpty() ? "" : "  \u00b7  " + rate));
+        auditProgress.requestLayout();
     }
+
 
     /**
      * 回到前台时检查：后台期间引擎是不是被系统挂起过。
@@ -6129,7 +6319,23 @@ public class MainActivity extends Activity {
                 io.github.wlmosv_png.wpaforge.audit.DictStore.scan(
                         io.github.wlmosv_png.wpaforge.audit.DictStore.defaultDir(this));
         if (entries.isEmpty()) {
-            Toast.makeText(this, L.s("还没有字典，请先去字典管理里新建或导入", "No dictionaries yet. Create or import one in dictionary management."), Toast.LENGTH_LONG).show();
+            // 只说一句「请先去字典管理」是没用的 —— 用户下一句就是"在哪"。
+            // 直接把入口摆进弹窗。
+            io.github.wlmosv_png.wpaforge.ui.NetDialog d =
+                    new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                            L.s("还没有字典", "No dictionaries yet"),
+                            L.s("当前字典目录里没有可用的字典文件。\n"
+                                    + "可以去字典管理新建一份、从手机导入一份 txt，"
+                                    + "或加载内置字典。",
+                            "There is no usable dictionary file in the dictionary folder.\n"
+                                    + "Create one in dictionary management, import a .txt from the "
+                                    + "device, or load a built-in list."));
+            d.addItem(L.s("打开字典管理", "Open dictionary management"),
+                    dd -> openDictManager());
+            d.addItem(L.s("内置生成器（快速造一本）", "Built-in generator (quick)"),
+                    dd -> buildGenericDictFromAudit());
+            d.setNegative(L.s("取消", "Cancel"), null);
+            d.show();
             return;
         }
         final String[] labels = new String[entries.size()];
@@ -6737,10 +6943,23 @@ public class MainActivity extends Activity {
         title.setTextColor(color);
         offResult.addView(title);
 
+        // ★ 这条结果与「当前材料 / 当前字典」是否同源，必须写在最显眼的位置。
+        //   否则用户看到的就是「页面上有个 1937/13255，不知道跑的是不是我手上这份」。
+        io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Match match = resultMatch(v);
+        if (match != io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Match.NO_RESULT) {
+            offResult.addView(matchBadge(match, v), topGap(8));
+            if (match != io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Match.SAME
+                    && workbench.canStart()) {
+                Button again = rowAction(L.s("用当前选择再跑一次", "Run again with the current pick"));
+                again.setOnClickListener(x -> startOfflineRun());
+                offResult.addView(again, topGap(6));
+            }
+        }
+
         String mat = v.fileName;
         String ms = v.materialSummary();
         if (!ms.isEmpty()) mat = mat + "  ·  " + ms;
-        offResult.addView(kvRow(L.s("材料", "Material"), mat), topGap(6));
+        offResult.addView(kvRow(L.s("结果用的材料", "Material used"), mat), topGap(6));
         offResult.addView(kvRow(L.s("材料摘要", "Digest"), v.materialKind.isEmpty()
                 ? "\u2014" : v.materialKind
                 + (v.ssid.isEmpty() ? "" : " · SSID " + v.ssid)), topGap(3));
@@ -6813,6 +7032,89 @@ public class MainActivity extends Activity {
             renderOfflineVerdict();
         });
         offResult.addView(clear, topGap(2));
+    }
+
+    /** 当前选中的材料与最近一次结果是同一份吗（材料 + 字典两个维度）。 */
+    private io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Match resultMatch(
+            io.github.wlmosv_png.wpaforge.audit.OfflineVerdict v) {
+        io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = lastEntry;
+        int idx = workbench.selectedIndex();
+        boolean picked = e != null && idx >= 0 && workbench.materialImported();
+        return workbench.matchOf(v,
+                picked ? workbench.materialName() : "",
+                picked ? kindOf(e) : "",
+                picked && e.ssid != null ? e.ssid : "",
+                picked ? io.github.wlmosv_png.wpaforge.audit.Hc22000.hexMac(e.apMac) : "");
+    }
+
+    /** 一致性徽标：一句话说清这条结果与当前选择的关系。 */
+    private View matchBadge(io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Match m,
+                            io.github.wlmosv_png.wpaforge.audit.OfflineVerdict v) {
+        String text;
+        int fg, bg;
+        String curMat = workbench.materialImported()
+                ? L.f("%s（%s）", "%s (%s)", workbench.materialName(),
+                      lastEntry == null ? "-" : kindOf(lastEntry))
+                : L.s("当前没有选中任何材料", "no material selected now");
+        String resMat = L.f("%s（%s）", "%s (%s)",
+                v.fileName.isEmpty() ? L.s("(未记录)", "(unrecorded)") : v.fileName,
+                v.materialKind.isEmpty() ? "-" : v.materialKind);
+        switch (m) {
+            case SAME:
+                text = L.s("\u2713 这条结果就是当前材料 + 当前字典，可以直接采信。",
+                        "\u2713 This result uses the material and dictionary selected right now.");
+                fg = AmberTheme.OK;
+                bg = AmberTheme.OK_BG;
+                break;
+            case MATERIAL_CHANGED:
+                text = L.s("\u26a0 这条结果不是当前材料：结果来自 " + resMat
+                                + "；现在选中的是 " + curMat
+                                + "。要看当前材料的结果，请再跑一次。",
+                        "\u26a0 This result is NOT for the current material: it came from "
+                                + resMat + "; you have " + curMat + " selected now. Run again "
+                                + "for the current material.");
+                fg = AmberTheme.WARN;
+                bg = AmberTheme.WARN_BG;
+                break;
+            case DICT_CHANGED:
+                text = L.s("\u26a0 字典已更换：这条结果用的是「"
+                                + io.github.wlmosv_png.wpaforge.audit.AuditWorkflow
+                                        .verdictDictLabelFull(v)
+                                + "」；当前字典是「" + workbench.currentDictLabel() + "」。",
+                        "\u26a0 The dictionary changed: this result used \""
+                                + io.github.wlmosv_png.wpaforge.audit.AuditWorkflow
+                                        .verdictDictLabelFull(v)
+                                + "\"; the current one is \""
+                                + workbench.currentDictLabel() + "\".");
+                fg = AmberTheme.WARN;
+                bg = AmberTheme.WARN_BG;
+                break;
+            case BOTH_CHANGED:
+                text = L.s("\u26a0 材料与字典都已更换：这条结果来自 " + resMat + " + 「"
+                                + io.github.wlmosv_png.wpaforge.audit.AuditWorkflow
+                                        .verdictDictLabelFull(v) + "」。",
+                        "\u26a0 Both changed: this result came from " + resMat + " + \""
+                                + io.github.wlmosv_png.wpaforge.audit.AuditWorkflow
+                                        .verdictDictLabelFull(v) + "\".");
+                fg = AmberTheme.WARN;
+                bg = AmberTheme.WARN_BG;
+                break;
+            default:
+                // NO_RESULT 到不了这里（调用方已经挡掉），给一句中性兜底而不是留空。
+                text = L.s("这条结果与当前选择的关系无法判断。",
+                        "The relation to your current selection cannot be decided.");
+                fg = AmberTheme.TEXT_DIM;
+                bg = AmberTheme.SUNKEN;
+                break;
+        }
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(AmberTheme.FS_SMALL);
+        t.setTextColor(fg);
+        t.setLineSpacing(px(4), 1f);
+        t.setBackground(roundBgStatic(bg, AmberTheme.RADIUS_CHIP));
+        t.setPadding(px(13), px(11), px(13), px(11));
+        return t;
     }
 
     /** 结果的可追溯标识：状态 + 字典指纹 + 完成时间，三点定位一次运行（不含密码）。 */

@@ -39,9 +39,15 @@ import java.util.List;
  */
 public final class AuditWorkflow {
 
-    /** 五步，顺序固定。 */
+    /**
+     * 四步，顺序固定。
+     *
+     * <p>1.9.45 由「五步」并成「四步」：原来把「导入材料」和「材料诊断」拆成两步，
+     * 界面上就变成两张卡 + 每条材料两条整行按钮，真机反馈是「很杂乱、不知道点哪」。
+     * 现在 MATERIAL 一步同时表达「导入了没 / 选了一条没 / 那条能不能跑」。
+     */
     public enum Step {
-        MATERIAL, DIAGNOSE, DICT, RUN, RESULT
+        MATERIAL, DICT, RUN, RESULT
     }
 
     /** 一步的展示状态。 */
@@ -61,6 +67,27 @@ public final class AuditWorkflow {
     /** 总览行的语气（配色交给界面）。 */
     public enum Tone {
         NORMAL, OK, WARN, DANGER, DIM
+    }
+
+    /**
+     * 「最近一次结果」与「当前工作区」是否一致。
+     *
+     * <h3>为什么必须显式算出来</h3>
+     * 结果卡是常驻的（跨页面、跨重启），材料与字典却是随时会换的。只把两者
+     * 并排显示，用户根本判断不出「刚才那个 1937/13255 到底跑的是不是我手上这份」——
+     * 真机反馈就是这么来的。所以这里把结论算成一个确定的状态，界面直接写出来。
+     */
+    public enum Match {
+        /** 还没跑过。 */
+        NO_RESULT,
+        /** 材料与字典都和当前一致。 */
+        SAME,
+        /** 材料换了（字典一致）。 */
+        MATERIAL_CHANGED,
+        /** 字典换了（材料一致）。 */
+        DICT_CHANGED,
+        /** 材料与字典都换了。 */
+        BOTH_CHANGED
     }
 
     /** 总览里的一行：{@code 标签 + 取值 + 语气}。 */
@@ -154,6 +181,8 @@ public final class AuditWorkflow {
     private boolean matExecutable;
     /** 已选中条目的诊断摘要（缺什么 / 为什么不能跑）。 */
     private String matExecReason = "";
+    /** 这份材料是**什么时候**导入的（epoch ms）。0 = 没导入过。 */
+    private long matAt;
 
     // ---- 字典 ----
     private DictSnapshot snap = DictSnapshot.none();
@@ -176,6 +205,7 @@ public final class AuditWorkflow {
         matSelected = -1;
         matExecutable = false;
         matExecReason = "";
+        matAt = 0;
     }
 
     /** 读取 / 解析失败。材料名与原因都要留下来，不能只剩一句「失败」。 */
@@ -197,6 +227,24 @@ public final class AuditWorkflow {
         matPmkid = Math.max(0, pmkid);
         matEapol = Math.max(0, eapol);
         matProblem = "";
+        matSelected = -1;
+        matExecutable = false;
+        matExecReason = "";
+        matAt = System.currentTimeMillis();
+    }
+
+    /** 这份材料是什么时候导入的（epoch ms）；0 = 没导入过。 */
+    public long materialAt() {
+        return matAt;
+    }
+
+    /** 用户显式清除材料（清完这一步回到「未导入」）。 */
+    public void clearMaterial() {
+        resetMaterial();
+        selectedEntryIndexReset();
+    }
+
+    private void selectedEntryIndexReset() {
         matSelected = -1;
         matExecutable = false;
         matExecReason = "";
@@ -391,11 +439,7 @@ public final class AuditWorkflow {
         switch (s) {
             case MATERIAL:
                 if (!matProblem.isEmpty()) return StepState.BLOCKED;
-                if (materialImported()) return StepState.DONE;
-                return StepState.READY;
-            case DIAGNOSE:
-                if (!matProblem.isEmpty()) return StepState.TODO;
-                if (!materialImported()) return StepState.TODO;
+                if (!materialImported()) return StepState.READY;
                 if (matSelected < 0) return StepState.READY;
                 return matExecutable ? StepState.DONE : StepState.BLOCKED;
             case DICT:
@@ -415,37 +459,32 @@ public final class AuditWorkflow {
         }
     }
 
-    /** 五步的展示信息（工作流状态条 + 卡片副标题都从这里取）。 */
+    /** 四步的展示信息（状态条副标题也从这里取）。 */
     public StepInfo[] steps(boolean hasVerdict) {
-        StepInfo[] out = new StepInfo[5];
+        StepInfo[] out = new StepInfo[4];
         out[0] = new StepInfo(Step.MATERIAL, 1, stateOf(Step.MATERIAL, hasVerdict),
-                L.s("导入 Wi-Fi 握手材料", "Import Wi-Fi handshake material"),
-                materialImported()
-                        ? matName + " · " + matRecords + L.s(" 条", " entries")
-                        : (matProblem.isEmpty()
-                                ? L.s(".hc22000 / .22000，用系统文件选择器",
-                                      ".hc22000 / .22000 via the system file picker")
-                                : matProblem));
-        out[1] = new StepInfo(Step.DIAGNOSE, 2, stateOf(Step.DIAGNOSE, hasVerdict),
-                L.s("检查材料是否可以使用", "Check whether the material works"),
-                matSelected < 0
-                        ? L.s("每条材料独立展示完整度", "Each entry shows its own completeness")
-                        : (matExecutable
-                                ? L.s("可执行", "Runnable")
-                                : L.s("信息不完整：", "Incomplete: ") + matExecReason));
-        out[2] = new StepInfo(Step.DICT, 3, stateOf(Step.DICT, hasVerdict),
-                L.s("选择候选口令字典", "Pick a candidate dictionary"),
+                L.s("握手材料", "Handshake material"),
+                !matProblem.isEmpty() ? matProblem
+                        : (!materialImported()
+                                ? L.s(".hc22000 / .22000", ".hc22000 / .22000")
+                                : matName + " · " + matRecords + L.s(" 条", " entries")
+                                  + (matSelected < 0
+                                        ? L.s("（还没选一条）", " (no entry picked)")
+                                        : (matExecutable ? "" : L.s("（不可执行）",
+                                              " (not runnable)")))));
+        out[1] = new StepInfo(Step.DICT, 2, stateOf(Step.DICT, hasVerdict),
+                L.s("候选口令字典", "Candidate dictionary"),
                 snap.empty()
                         ? L.s("还没有字典", "No dictionary yet")
                         : snap.name + " · " + snap.count + L.s(" 条 · 指纹 ", " entries · id ")
                           + snap.fingerprint());
-        out[3] = new StepInfo(Step.RUN, 4, stateOf(Step.RUN, hasVerdict),
+        out[2] = new StepInfo(Step.RUN, 3, stateOf(Step.RUN, hasVerdict),
                 L.s("开始离线校验", "Run the offline check"),
                 running()
                         ? L.s("正在比对…", "Comparing...")
                         : (canStart() ? L.s("条件已满足", "Ready")
                                       : blocker()));
-        out[4] = new StepInfo(Step.RESULT, 5, stateOf(Step.RESULT, hasVerdict),
+        out[3] = new StepInfo(Step.RESULT, 4, stateOf(Step.RESULT, hasVerdict),
                 L.s("离线校验结果", "Offline check result"),
                 hasVerdict ? L.s("最近一次结果已保存", "Last result is stored")
                            : L.s("还没有结果", "No result yet"));
@@ -492,7 +531,8 @@ public final class AuditWorkflow {
         // ② 当前字典 + 候选数量
         if (snap.empty()) {
             rows.add(new Row(L.s("当前字典", "Dictionary"),
-                    L.s("未选择", "none"), Tone.DIM));
+                    L.s("未选择（去 ② 新建或挑一本）",
+                        "none (create or pick one in 2)"), Tone.DIM));
         } else {
             String v = snap.name + " · " + snap.count + L.s(" 条", " entries");
             if (snap.present() && !snap.fingerprint().isEmpty()) {
@@ -539,6 +579,52 @@ public final class AuditWorkflow {
                     L.s("无", "none"), Tone.DIM));
         }
         return rows;
+    }
+
+    /**
+     * 把「最近一次结果」与「当前工作区」比一比。
+     *
+     * @param curName 当前选中材料的文件名（没选就传空串）
+     * @param curKind 当前选中材料的类型（PMKID / EAPOL；没选传空串）
+     * @param curSsid 当前选中材料的 SSID
+     * @param curApMac 当前选中材料的 AP MAC
+     */
+    public Match matchOf(OfflineVerdict last, String curName, String curKind,
+                         String curSsid, String curApMac) {
+        if (last == null || !last.hasResult()) return Match.NO_RESULT;
+        boolean matSame = !nz(curKind).isEmpty()
+                && nz(curName).equals(nz(last.fileName))
+                && nz(curKind).equals(nz(last.materialKind))
+                && nz(curSsid).equals(nz(last.ssid))
+                && nz(curApMac).equals(nz(last.apMac));
+        // 旧结果（v1）没有字典指纹 —— 无法证明字典变了，就不误报「字典已更换」。
+        boolean dictSame = last.dictFingerprint.isEmpty()
+                || (snap.present() && last.dictFingerprint.equals(snap.fingerprint()));
+        if (matSame && dictSame) return Match.SAME;
+        if (!matSame && !dictSame) return Match.BOTH_CHANGED;
+        if (!matSame) return Match.MATERIAL_CHANGED;
+        return Match.DICT_CHANGED;
+    }
+
+    /** 最近一次结果里那本字典的显示名（结果卡文案用）。 */
+    public static String verdictDictLabel(OfflineVerdict v) {
+        if (v == null) return "";
+        return v.dictName.isEmpty() ? L.s("(未命名)", "(unnamed)") : v.dictName;
+    }
+
+    /** 当前字典的显示名（结果卡文案用）。 */
+    public String currentDictLabel() {
+        return snap.empty() ? L.s("(未选择)", "(none)")
+                : snap.name + " · " + snap.fingerprint();
+    }
+
+    /** 结果卡里那句「这条结果当初用的是哪本字典」。 */
+    public static String verdictDictLabelFull(OfflineVerdict v) {
+        if (v == null) return "";
+        String fp = v.dictFingerprint.isEmpty()
+                ? L.s("(旧结果无指纹)", "(old result, no id)") : v.dictFingerprint;
+        return verdictDictLabel(v) + " · " + v.dictSize + L.s(" 条", " entries")
+                + " · " + fp;
     }
 
     /** 最近结果的短句（不含密码明文）。 */

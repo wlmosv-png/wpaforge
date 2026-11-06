@@ -59,13 +59,13 @@ public class AuditWorkflowTest {
         eq("候选 0", w.dictionaryCount(), 0);
         eq("第一步是 READY", w.stateOf(AuditWorkflow.Step.MATERIAL, false),
                 AuditWorkflow.StepState.READY);
-        eq("第二步是 TODO", w.stateOf(AuditWorkflow.Step.DIAGNOSE, false),
+        eq("第二步是 TODO", w.stateOf(AuditWorkflow.Step.DICT, false),
                 AuditWorkflow.StepState.TODO);
         eq("第三步是 TODO", w.stateOf(AuditWorkflow.Step.DICT, false),
                 AuditWorkflow.StepState.TODO);
         eq("第四步是 TODO", w.stateOf(AuditWorkflow.Step.RUN, false),
                 AuditWorkflow.StepState.TODO);
-        eq("第五步是 TODO", w.stateOf(AuditWorkflow.Step.RESULT, false),
+        eq("第四步是 TODO", w.stateOf(AuditWorkflow.Step.RESULT, false),
                 AuditWorkflow.StepState.TODO);
         ok("beginRun 在没有材料时返回 null", w.beginRun() == null);
 
@@ -90,24 +90,28 @@ public class AuditWorkflowTest {
         eq("记录数", w3.materialRecords(), 2);
         eq("PMKID", w3.materialPmkid(), 1);
         eq("EAPOL", w3.materialEapol(), 1);
-        eq("步骤① DONE", w3.stateOf(AuditWorkflow.Step.MATERIAL, false),
-                AuditWorkflow.StepState.DONE);
-        eq("步骤② READY（还没选条目）", w3.stateOf(AuditWorkflow.Step.DIAGNOSE, false),
+        eq("刚导入还没选条目 -> 第一步 READY（不是 DONE）",
+                w3.stateOf(AuditWorkflow.Step.MATERIAL, false),
+                AuditWorkflow.StepState.READY);
+        eq("导入了但没选条目 -> 第一步仍是 READY",
+                w3.stateOf(AuditWorkflow.Step.MATERIAL, false),
                 AuditWorkflow.StepState.READY);
         ok("多条目时必须先选一条", !w3.canStart());
 
         w3.selectEntry(1, false, "MIC 字段未置零");
-        eq("步骤② BLOCKED（选中的不完整）", w3.stateOf(AuditWorkflow.Step.DIAGNOSE, false),
+        eq("选中的不可执行 -> 第一步 BLOCKED",
+                w3.stateOf(AuditWorkflow.Step.MATERIAL, false),
                 AuditWorkflow.StepState.BLOCKED);
         ok("选中的材料不完整 -> 仍不能开始", !w3.canStart());
         ok("阻断原因带上具体缺失项", w3.blocker().contains("MIC 字段未置零"));
 
         w3.selectEntry(0, true, "");
-        eq("步骤② DONE", w3.stateOf(AuditWorkflow.Step.DIAGNOSE, false),
+        eq("选中可执行的 -> 第一步 DONE",
+                w3.stateOf(AuditWorkflow.Step.MATERIAL, false),
                 AuditWorkflow.StepState.DONE);
         ok("材料齐了但字典还空 -> 不能开始", !w3.canStart());
-        eq("步骤③ READY", w3.stateOf(AuditWorkflow.Step.DICT, false),
-                AuditWorkflow.StepState.READY);
+        eq("材料齐了 -> 第二步 READY（该选字典了）",
+                w3.stateOf(AuditWorkflow.Step.DICT, false), AuditWorkflow.StepState.READY);
 
         System.out.println("== 越界选中必须被拒（不给脏状态）==");
         w3.selectEntry(9, true, "");
@@ -122,8 +126,10 @@ public class AuditWorkflowTest {
                 list("hashcat!", "x")));
         ok("可以开始", w3.canStart());
         eq("阻断原因为空", w3.blocker(), "");
-        eq("步骤④ READY", w3.stateOf(AuditWorkflow.Step.RUN, false),
+        eq("条件齐了 -> 第三步 READY", w3.stateOf(AuditWorkflow.Step.RUN, false),
                 AuditWorkflow.StepState.READY);
+        eq("没跑过 -> 第四步 TODO", w3.stateOf(AuditWorkflow.Step.RESULT, false),
+                AuditWorkflow.StepState.TODO);
 
         System.out.println("== 冻结：本次任务与界面脱钩 ==");
         List<Candidate> uiDict = list("hashcat!", "x");
@@ -134,8 +140,11 @@ public class AuditWorkflowTest {
         eq("冻结条数 = 界面条数", f.candidateCount(), 2);
         eq("冻结的字典名", f.snap.name, "B");
         ok("冻结包自洽（快照与副本一致）", f.snap.matches(f.dict));
-        eq("步骤④ ACTIVE", w3.stateOf(AuditWorkflow.Step.RUN, false),
+        eq("跑起来 -> 第三步 ACTIVE", w3.stateOf(AuditWorkflow.Step.RUN, false),
                 AuditWorkflow.StepState.ACTIVE);
+        eq("跑的时候第四步还是 TODO（结果还没出来）",
+                w3.stateOf(AuditWorkflow.Step.RESULT, true),
+                AuditWorkflow.StepState.TODO);
         ok("运行中不能再开一个", w3.beginRun() == null);
         ok("运行中阻断原因指向'已经在跑'", !w3.blocker().isEmpty());
 
@@ -151,6 +160,8 @@ public class AuditWorkflowTest {
         w3.endRun();
         ok("结束之后不再运行", !w3.running());
         ok("结束后可以再次开始", w3.canStart());
+        eq("有结果 -> 第四步 DONE", w3.stateOf(AuditWorkflow.Step.RESULT, true),
+                AuditWorkflow.StepState.DONE);
 
         System.out.println("== 界面字典被改坏 -> 开跑前被拦下 ==");
         AuditWorkflow w4 = new AuditWorkflow();
@@ -217,26 +228,94 @@ public class AuditWorkflowTest {
         eq("材料异常 -> 待处理 DANGER", w6.overview(OfflineVerdict.none(), 0).get(4).tone,
                 AuditWorkflow.Tone.DANGER);
 
-        System.out.println("== 步骤条：五步标题与副标题都在 ==");
+        System.out.println("== 步骤条：四步标题与副标题都在 ==");
         AuditWorkflow w7 = new AuditWorkflow();
         AuditWorkflow.StepInfo[] steps = w7.steps(false);
-        eq("五步", steps.length, 5);
-        eq("序号 1..5", steps[0].ordinal + steps[4].ordinal, 6);
-        eq("① 标题", steps[0].title,
-                L.s("导入 Wi-Fi 握手材料", "Import Wi-Fi handshake material"));
-        eq("② 标题", steps[1].title,
-                L.s("检查材料是否可以使用", "Check whether the material works"));
-        eq("③ 标题", steps[2].title,
-                L.s("选择候选口令字典", "Pick a candidate dictionary"));
-        eq("④ 标题", steps[3].title,
-                L.s("开始离线校验", "Run the offline check"));
-        eq("⑤ 标题", steps[4].title,
-                L.s("离线校验结果", "Offline check result"));
+        eq("四步", steps.length, 4);
+        eq("序号 1..4", steps[0].ordinal + steps[3].ordinal, 5);
+        eq("① 标题", steps[0].title, L.s("握手材料", "Handshake material"));
+        eq("② 标题", steps[1].title, L.s("候选口令字典", "Candidate dictionary"));
+        eq("③ 标题", steps[2].title, L.s("开始离线校验", "Run the offline check"));
+        eq("④ 标题", steps[3].title, L.s("离线校验结果", "Offline check result"));
         ok("每步都有副标题（不是空字符串）",
                 !steps[0].detail.isEmpty() && !steps[1].detail.isEmpty()
-                        && !steps[2].detail.isEmpty() && !steps[3].detail.isEmpty()
-                        && !steps[4].detail.isEmpty());
-        ok("④ 的副标题直接给出为什么不能开始", steps[3].detail.equals(w7.blocker()));
+                        && !steps[2].detail.isEmpty() && !steps[3].detail.isEmpty());
+        ok("③ 的副标题直接给出为什么不能开始", steps[2].detail.equals(w7.blocker()));
+
+        System.out.println("== 材料导入时间 / 显式清除 ==");
+        AuditWorkflow wa = new AuditWorkflow();
+        eq("没导入过 -> 时间 0", wa.materialAt(), 0L);
+        wa.onMaterialOk("m.hc22000", 10, hash64(), 2, 1, 1);
+        ok("导入后有导入时间", wa.materialAt() > 0);
+        wa.selectEntry(0, true, "");
+        wa.clearMaterial();
+        eq("清除后时间归零", wa.materialAt(), 0L);
+        eq("清除后记录数归零", wa.materialRecords(), 0);
+        eq("清除后没有选中条目", wa.selectedIndex(), -1);
+        ok("清除后不能开始", !wa.canStart());
+
+        System.out.println("== 结果 ↔ 当前选择：一致性必须能算出来 ==");
+        // 这是真机反馈的核心：页面上有个 1937/13255 的结果，用户不知道
+        // 那是哪份材料、哪本字典跑出来的。
+        AuditWorkflow wm = new AuditWorkflow();
+        wm.onMaterialOk("hit.hc22000", 10, hash64(), 1, 1, 0);
+        wm.selectEntry(0, true, "");
+        wm.setDictionary("甲", DictSnapshot.SRC_FILE, "/tmp/a.txt", list("qwerty12"));
+        String fpA = wm.dictionary().fingerprint();
+        OfflineVerdict hitA = new OfflineVerdict(OfflineVerdict.State.HIT,
+                "hit.hc22000", "PMKID", "WPAForge-TEST-HIT", "02:AA:BB:CC:DD:01",
+                "甲", 1, 1, 5, 1L, "qwerty12", "", "file", fpA, "/tmp/a.txt", "AA11");
+
+        eq("还没结果 -> NO_RESULT", wm.matchOf(OfflineVerdict.none(), "hit.hc22000",
+                "PMKID", "WPAForge-TEST-HIT", "02:AA:BB:CC:DD:01"),
+                AuditWorkflow.Match.NO_RESULT);
+        eq("材料 + 字典都一样 -> SAME",
+                wm.matchOf(hitA, "hit.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.SAME);
+        eq("材料名不同 -> MATERIAL_CHANGED",
+                wm.matchOf(hitA, "other.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.MATERIAL_CHANGED);
+        eq("类型不同 -> MATERIAL_CHANGED",
+                wm.matchOf(hitA, "hit.hc22000", "EAPOL", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.MATERIAL_CHANGED);
+        eq("SSID 不同 -> MATERIAL_CHANGED",
+                wm.matchOf(hitA, "hit.hc22000", "PMKID", "别的网",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.MATERIAL_CHANGED);
+        eq("AP MAC 不同 -> MATERIAL_CHANGED",
+                wm.matchOf(hitA, "hit.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:09"), AuditWorkflow.Match.MATERIAL_CHANGED);
+
+        wm.setDictionary("乙", DictSnapshot.SRC_FILE, "/tmp/b.txt", list("x", "y"));
+        eq("换了字典、材料没变 -> DICT_CHANGED",
+                wm.matchOf(hitA, "hit.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.DICT_CHANGED);
+        eq("换字典 + 换材料 -> BOTH_CHANGED",
+                wm.matchOf(hitA, "other.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.BOTH_CHANGED);
+
+        eq("当前没选材料 -> 不能算 SAME（哪怕名字一样）",
+                wm.matchOf(hitA, "", "", "", ""), AuditWorkflow.Match.BOTH_CHANGED);
+
+        // 旧结果（1.9.43 写的 v1）没有字典指纹：无法证明字典变了，就不误报。
+        OfflineVerdict legacy = new OfflineVerdict(OfflineVerdict.State.MISS,
+                "hit.hc22000", "PMKID", "WPAForge-TEST-HIT", "02:AA:BB:CC:DD:01",
+                "甲", 3336, 3336, 10, 1L, "", "");
+        ok("v1 结果没有指纹", legacy.dictFingerprint.isEmpty());
+        eq("v1 结果 + 材料一致 -> SAME（不误报字典已更换）",
+                wm.matchOf(legacy, "hit.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.SAME);
+        eq("v1 结果 + 材料不一致 -> MATERIAL_CHANGED",
+                wm.matchOf(legacy, "x.hc22000", "PMKID", "WPAForge-TEST-HIT",
+                        "02:AA:BB:CC:DD:01"), AuditWorkflow.Match.MATERIAL_CHANGED);
+
+        System.out.println("== 结果卡要能写出「当初用的是哪本字典」==");
+        ok("带条数与指纹",
+                AuditWorkflow.verdictDictLabelFull(hitA).contains("甲")
+                        && AuditWorkflow.verdictDictLabelFull(hitA).contains(String.valueOf(1)));
+        ok("当前字典带指纹", wm.currentDictLabel().contains(wm.dictionary().fingerprint()));
+        ok("旧结果给出「无指纹」而不是空白",
+                AuditWorkflow.verdictDictLabelFull(legacy)
+                        .contains(L.s("(旧结果无指纹)", "(old result, no id)")));
 
         System.out.println("== resetMaterial 清得干净 ==");
         AuditWorkflow w8 = new AuditWorkflow();

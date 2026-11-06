@@ -54,13 +54,6 @@ public final class Prefs {
     private static final String K_SKIP_POLICY = "skip_policy_id";
     /** 是否自动连续执行下一本字典（计划模式） */
     private static final String K_PLAN_AUTO = "plan_auto_advance";
-    /**
-     * 审计页「离线校验是什么？」说明块是否展开。
-     *
-     * <p>默认**展开**：第一次用的人根本不知道这个页面在干什么，折叠起来等于没有。
-     * 看懂之后自己收起，选择会被记住。
-     */
-    private static final String K_AUDIT_INTRO = "audit_intro_open";
 
     private Prefs() {}
 
@@ -161,14 +154,6 @@ public final class Prefs {
         sp(ctx).edit().putInt(K_BUDGET, v).apply();
     }
 
-    /** 审计页「离线校验是什么？」是否展开（默认展开）。 */
-    public static boolean auditIntroOpen(Context ctx) {
-        return sp(ctx).getBoolean(K_AUDIT_INTRO, true);
-    }
-
-    public static void setAuditIntroOpen(Context ctx, boolean open) {
-        sp(ctx).edit().putBoolean(K_AUDIT_INTRO, open).apply();
-    }
 
     // ---------------- 引擎心跳 ----------------
 

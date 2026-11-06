@@ -51,7 +51,15 @@ public final class OfflineImport {
         /** 有授权但读不出来（IO 错误） */
         READ_ERROR,
         /** 超过体积上限 */
-        TOO_LARGE
+        TOO_LARGE,
+        /**
+         * 每行都是合法的 22000 记录，但**缺少 SSID**（隐藏网络）。
+         *
+         * <p>这一类原来被算成「不是合法的 22000 记录」，把用户引向"重新导出"这条
+         * 走不通的路。它其实格式没问题，只是没有 SSID 就无法派生 PMK —— 属于
+         * **材料不可用**，不是**文件损坏**。
+         */
+        INCOMPLETE
     }
 
     /** 解析结果：状态 + 统计 + 材料列表。 */
@@ -68,6 +76,8 @@ public final class OfflineImport {
         public final int unsupported;
         public final int pmkid;
         public final int eapol;
+        /** 格式合法但缺少 SSID 而被跳过的记录数（隐藏网络）。 */
+        public final int noSsid;
         /** 材料字节数（读取阶段实际读到的长度）；失败时为 0。 */
         public final long bytes;
         /** 材料原始字节的 SHA-256（小写十六进制）；拿不到时为空串。 */
@@ -75,11 +85,18 @@ public final class OfflineImport {
 
         Result(Status status, List<Hc22000.Entry> entries, int lines, int comments,
                int bad, int unsupported, int pmkid, int eapol) {
-            this(status, entries, lines, comments, bad, unsupported, pmkid, eapol, 0, "");
+            this(status, entries, lines, comments, bad, unsupported, pmkid, eapol, 0, "", 0);
         }
 
         Result(Status status, List<Hc22000.Entry> entries, int lines, int comments,
                int bad, int unsupported, int pmkid, int eapol, long bytes, String sha256) {
+            this(status, entries, lines, comments, bad, unsupported, pmkid, eapol,
+                    bytes, sha256, 0);
+        }
+
+        Result(Status status, List<Hc22000.Entry> entries, int lines, int comments,
+               int bad, int unsupported, int pmkid, int eapol, long bytes, String sha256,
+               int noSsid) {
             this.status = status;
             this.entries = entries;
             this.lines = lines;
@@ -90,6 +107,7 @@ public final class OfflineImport {
             this.eapol = eapol;
             this.bytes = bytes;
             this.sha256 = sha256 == null ? "" : sha256;
+            this.noSsid = noSsid;
         }
 
         public boolean ok() {
@@ -114,7 +132,7 @@ public final class OfflineImport {
 
     public static Result fail(Status status, long bytes, String sha256) {
         return new Result(status, new ArrayList<Hc22000.Entry>(), 0, 0, 0, 0, 0, 0,
-                Math.max(0, bytes), sha256);
+                Math.max(0, bytes), sha256, 0);
     }
 
     // ------------------------------------------------------------------ 解析阶段
@@ -133,11 +151,14 @@ public final class OfflineImport {
 
     private static Result analyze(String text, long bytes, String sha) {
         List<Hc22000.Entry> entries = new ArrayList<Hc22000.Entry>();
-        int lines = 0, comments = 0, bad = 0, unsupported = 0;
+        int lines = 0, comments = 0, bad = 0, unsupported = 0, noSsid = 0;
 
         if (text != null) {
             for (String raw : text.split("\r?\n")) {
-                String s = raw.trim();
+                // 去掉 UTF-8 BOM：Windows 记事本与部分导出工具会加 3 个字节，
+                // 不剥掉的话**第一行必然被当成坏行**，单条记录的文件会整份被拒，
+                // 而提示词是"重新导出" —— 用户怎么导都还是这样。
+                String s = raw.replace("\uFEFF", "").trim();
                 if (s.isEmpty()) continue;
                 if (s.startsWith("#")) {
                     comments++;
@@ -158,6 +179,11 @@ public final class OfflineImport {
                     bad++;
                     continue;
                 }
+                // 缺 SSID 是**材料不可用**，不是文件坏 —— 分开计数，别混进坏行。
+                if (e.ssidMissing()) {
+                    noSsid++;
+                    continue;
+                }
                 if (!e.validate().isEmpty()) {
                     bad++;
                     continue;
@@ -174,11 +200,15 @@ public final class OfflineImport {
 
         if (!entries.isEmpty()) {
             return new Result(Status.OK, entries, lines, comments, bad, unsupported,
-                    pmkid, eapol, bytes, sha);
+                    pmkid, eapol, bytes, sha, noSsid);
         }
         if (lines == 0 && comments == 0) return fail(Status.EMPTY);
         if (unsupported > 0) return fail(Status.UNSUPPORTED);
         if (bad > 0) return fail(Status.FORMAT_INVALID);
+        if (noSsid > 0) {
+            return new Result(Status.INCOMPLETE, new ArrayList<Hc22000.Entry>(), lines,
+                    comments, bad, unsupported, pmkid, eapol, bytes, sha, noSsid);
+        }
         // 只有注释行 / 只有空行
         return fail(Status.EMPTY);
     }

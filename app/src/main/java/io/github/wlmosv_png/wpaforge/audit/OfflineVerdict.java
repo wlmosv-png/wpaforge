@@ -227,6 +227,42 @@ public final class OfflineVerdict {
     }
 
     /**
+     * 按未转义的 {@code |} 切分字段。
+     *
+     * <h3>为什么不能用 split 正则（真机事故级缺陷）</h3>
+     * 原来这里是 {@code s.split("(?<!\\\\)\\|", -1)}：它只在分隔符**前一个字符不是
+     * 反斜杠**时才切。而 {@link #esc} 把字段里的反斜杠编成 {@code \\}，于是
+     * 「字段以反斜杠结尾」时编码结果是 {@code ...\\|} —— 分隔符前面正好是反斜杠
+     * → **不切**，两个字段并成一个，字段数从 17 掉到 16，{@link #decode} 判定格式
+     * 不合法后返回 {@link #none()}。
+     *
+     * <p>后果是结果卡**静默消失**（界面显示「还没有跑过」），最坏情况是刚命中的
+     * 明文口令被丢掉。触发条件只需要某个字段以反斜杠结尾（SSID、口令、路径都可能）。
+     *
+     * <p>这里改成逐字符扫描：遇到反斜杠就把它和下一个字符当成一个整体（转义对）
+     * 塞进当前字段，只有**不在转义对里**的 {@code |} 才是分隔符。
+     */
+    private static String[] splitFields(String s) {
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                cur.append(c).append(s.charAt(++i));
+                continue;
+            }
+            if (c == SEP) {
+                out.add(cur.toString());
+                cur.setLength(0);
+                continue;
+            }
+            cur.append(c);
+        }
+        out.add(cur.toString());
+        return out.toArray(new String[0]);
+    }
+
+    /**
      * 解码失败一律退回 {@link #none()}，不抛。
      *
      * <p>同时接受 v1（1.9.43 写入的 13 字段）与 v2（17 字段）—— 版本升级不该
@@ -234,7 +270,7 @@ public final class OfflineVerdict {
      */
     public static OfflineVerdict decode(String s) {
         if (s == null || s.isEmpty()) return none();
-        String[] f = s.split("(?<!\\\\)\\" + SEP, -1);
+        String[] f = splitFields(s);
         boolean v1 = FORMAT_V1.equals(f[0]) && f.length >= FIELDS_V1;
         boolean v2 = FORMAT.equals(f[0]) && f.length >= FIELDS_V2;
         if (!v1 && !v2) return none();

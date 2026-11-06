@@ -184,7 +184,12 @@ public final class MaterialDoctor {
         // ---- 公共字段 ----
         String kind = e.isPmkid() ? "PMKID" : "EAPOL";
         facts.add(new String[]{"类型", kind});
-        facts.add(new String[]{"SSID", e.ssid == null || e.ssid.isEmpty() ? "(空)" : e.ssid});
+        facts.add(new String[]{"SSID", e.ssidLabel()});
+        if (!e.ssidExact) {
+            facts.add(new String[]{"SSID 编码",
+                    "不是合法 UTF-8 —— 已按原始 " + (e.ssidBytes == null ? 0 : e.ssidBytes.length)
+                            + " 字节参与计算（如 GBK 中文 SSID）"});
+        }
         facts.add(new String[]{"AP MAC", Hc22000.hexMac(e.apMac)});
         facts.add(new String[]{"STA MAC", Hc22000.hexMac(e.staMac)});
 
@@ -212,7 +217,9 @@ public final class MaterialDoctor {
             warnings.add("AP MAC 与 STA MAC 相同，不像真实抓包");
         }
 
-        byte[] essid = e.ssid == null ? new byte[0] : e.ssid.getBytes(StandardCharsets.UTF_8);
+        // 必须用**原始字节**判断长度：非 UTF-8 的 SSID 一旦被当 String 转回，
+        // 长度会膨胀（每个非法字节变 3 字节），10 字节的 GBK SSID 会变成 30 字节。
+        byte[] essid = e.ssidBytes == null ? new byte[0] : e.ssidBytes;
         if (essid.length == 0) {
             blockers.add("缺少 SSID");
             tags.add(Tag.INCOMPLETE);
@@ -244,8 +251,9 @@ public final class MaterialDoctor {
                 tags.add(Tag.INCOMPLETE);
             } else {
                 facts.add(new String[]{"EAPOL 帧长度", frame.length + " 字节"});
-                int keyVer = keyVersion(frame);
+                int keyVer = Hc22000.keyVersionOf(frame);
                 facts.add(new String[]{"Key Version", keyVer <= 0 ? "(读不到)" : String.valueOf(keyVer)});
+                facts.add(new String[]{"MIC 算法", micAlgoName(keyVer)});
                 facts.add(new String[]{"Message Pair",
                         e.messagePair == null || e.messagePair.isEmpty() ? "(空)" : e.messagePair});
 
@@ -270,6 +278,13 @@ public final class MaterialDoctor {
                     if (keyVer < 1 || keyVer > 3) {
                         blockers.add("Key Version 不是 1/2/3，无法确定 MIC 算法");
                         tags.add(Tag.MALFORMED);
+                    } else if (keyVer == 3) {
+                        // 引擎只实现 HMAC-MD5 / HMAC-SHA1。这里必须拦下：
+                        // 放行的话算出的 MIC 永远不等，最后会被报成「未命中」——
+                        // 把「算不了」伪装成「密码错」，是最危险的结论。
+                        blockers.add("Key Version 3（AES-CMAC）暂不支持，"
+                                + "离线比对给不出结论（不要当成密码错误）");
+                        tags.add(Tag.UNSUPPORTED);
                     }
                     // 声明的长度与实际长度
                     int declared = declaredLength(frame);
@@ -296,10 +311,14 @@ public final class MaterialDoctor {
 
     // ------------------------------------------------------------------ 小工具
 
-    private static int keyVersion(byte[] frame) {
-        if (frame == null || frame.length < 7) return -1;
-        int keyInfo = ((frame[5] & 0xFF) << 8) | (frame[6] & 0xFF);
-        return keyInfo & 0x07;   // 802.11: Key Descriptor Version 占低 3 位
+    /** Key Version -> MIC 算法名（给用户看的口径）。 */
+    public static String micAlgoName(int keyVer) {
+        switch (keyVer) {
+            case 1:  return "HMAC-MD5";
+            case 2:  return "HMAC-SHA1";
+            case 3:  return "AES-128-CMAC（本应用不支持）";
+            default: return "(未知)";
+        }
     }
 
     private static int declaredLength(byte[] frame) {

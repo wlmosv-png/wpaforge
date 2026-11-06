@@ -90,13 +90,29 @@ public final class AuditEngine {
      * 这正是它比握手快的原因：省掉 PTK 派生与 MIC 计算。
      */
     public static final class Pmkid {
+        /** 展示用 SSID（可能是非 UTF-8 字节的近似文本）。 */
         public final String ssid;
+        /**
+         * **参与计算的** SSID 原始字节。
+         *
+         * <p>必须以这个为准：SSID 是任意字节串，把它当 String 再转回字节
+         * 会把非 UTF-8 的字节改写成 {@code EF BF BD}，salt 一错，任何口令都算不中。
+         */
+        public final byte[] ssidBytes;
         public final byte[] apMac;
         public final byte[] staMac;
         public final byte[] expected;
 
         public Pmkid(String ssid, byte[] apMac, byte[] staMac, byte[] expected) {
+            this(ssid, ssid == null ? null
+                    : ssid.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    apMac, staMac, expected);
+        }
+
+        public Pmkid(String ssid, byte[] ssidBytes, byte[] apMac, byte[] staMac,
+                     byte[] expected) {
             this.ssid = ssid;
+            this.ssidBytes = ssidBytes;
             this.apMac = apMac;
             this.staMac = staMac;
             this.expected = expected;
@@ -104,7 +120,9 @@ public final class AuditEngine {
 
         /** 材料完整性检查，返回缺失项描述，空串表示齐全 */
         public String validate() {
-            if (ssid == null || ssid.isEmpty()) return L.s("缺少 SSID", "Missing SSID");
+            if (ssidBytes == null || ssidBytes.length == 0) {
+                return L.s("缺少 SSID", "Missing SSID");
+            }
             if (apMac == null || apMac.length != 6) return L.s("AP MAC 需 6 字节", "AP MAC must be 6 bytes");
             if (staMac == null || staMac.length != 6) return L.s("STA MAC 需 6 字节", "STA MAC must be 6 bytes");
             if (expected == null || expected.length != 16) return L.s("PMKID 需 16 字节", "PMKID must be 16 bytes");
@@ -143,7 +161,7 @@ public final class AuditEngine {
                 return;
             }
             tested++;
-            if (WpaCore.checkPmkid(c.password, m.ssid, m.apMac, m.staMac, m.expected)) {
+            if (WpaCore.checkPmkid(c.password, m.ssidBytes, m.apMac, m.staMac, m.expected)) {
                 cb.onDone(new Result(tested, System.currentTimeMillis() - start,
                         true, c.password, c.origin, tested));
                 return;
@@ -158,6 +176,8 @@ public final class AuditEngine {
     /** 握手材料。全部是用户导入的离线数据。 */
     public static final class Handshake {
         public final String ssid;
+        /** 参与计算的 SSID 原始字节（见 {@link Pmkid#ssidBytes}）。 */
+        public final byte[] ssidBytes;
         public final byte[] apMac;
         public final byte[] staMac;
         public final byte[] aNonce;
@@ -165,11 +185,24 @@ public final class AuditEngine {
         public final byte[] eapolFrame;   // MIC 已置零的帧
         public final int micOffset;
         public final byte[] expectedMic;
+        /** Key Descriptor Version（决定 MIC 算法）：1=HMAC-MD5 2=HMAC-SHA1 3=AES-CMAC */
+        public final int keyVersion;
 
+        /** 兼容入口：SSID 按 UTF-8 取字节，Key Version 按 2（HMAC-SHA1）。 */
         public Handshake(String ssid, byte[] apMac, byte[] staMac,
                          byte[] aNonce, byte[] sNonce,
                          byte[] eapolFrame, int micOffset, byte[] expectedMic) {
+            this(ssid, ssid == null ? null
+                            : ssid.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    apMac, staMac, aNonce, sNonce, eapolFrame, micOffset, expectedMic, 2);
+        }
+
+        public Handshake(String ssid, byte[] ssidBytes, byte[] apMac, byte[] staMac,
+                         byte[] aNonce, byte[] sNonce,
+                         byte[] eapolFrame, int micOffset, byte[] expectedMic,
+                         int keyVersion) {
             this.ssid = ssid;
+            this.ssidBytes = ssidBytes;
             this.apMac = apMac;
             this.staMac = staMac;
             this.aNonce = aNonce;
@@ -177,11 +210,24 @@ public final class AuditEngine {
             this.eapolFrame = eapolFrame;
             this.micOffset = micOffset;
             this.expectedMic = expectedMic;
+            this.keyVersion = keyVersion;
         }
 
         /** 材料完整性检查，返回缺失项描述，空串表示齐全 */
         public String validate() {
-            if (ssid == null || ssid.isEmpty()) return L.s("缺少 SSID", "Missing SSID");
+            if (ssidBytes == null || ssidBytes.length == 0) {
+                return L.s("缺少 SSID", "Missing SSID");
+            }
+            // Key Version 3 = AES-128-CMAC：本引擎不实现，绝不能用 SHA1 硬算后
+            // 报「未命中」—— 那是把「算不了」伪装成「密码错」。
+            if (keyVersion == 3) {
+                return L.s("Key Version 3（AES-CMAC）暂不支持，无法给出结论",
+                        "Key Version 3 (AES-CMAC) is not supported - no conclusion possible");
+            }
+            if (keyVersion != 1 && keyVersion != 2) {
+                return L.s("Key Version 不是 1/2，无法确定 MIC 算法",
+                        "Key Version is not 1/2 - MIC algorithm unknown");
+            }
             if (apMac == null || apMac.length != 6) return L.s("AP MAC 需 6 字节", "AP MAC must be 6 bytes");
             if (staMac == null || staMac.length != 6) return L.s("STA MAC 需 6 字节", "STA MAC must be 6 bytes");
             if (aNonce == null || aNonce.length != 32) return L.s("ANonce 需 32 字节", "ANonce must be 32 bytes");
@@ -235,8 +281,9 @@ public final class AuditEngine {
             }
             tested++;
             boolean ok = WpaCore.checkCandidate(
-                    c.password, hs.ssid, hs.apMac, hs.staMac,
-                    hs.aNonce, hs.sNonce, hs.eapolFrame, hs.micOffset, hs.expectedMic);
+                    c.password, hs.ssidBytes, hs.apMac, hs.staMac,
+                    hs.aNonce, hs.sNonce, hs.eapolFrame, hs.micOffset, hs.expectedMic,
+                    hs.keyVersion);
             if (ok) {
                 cb.onDone(new Result(tested, System.currentTimeMillis() - start,
                         true, c.password, c.origin, tested));

@@ -390,7 +390,64 @@ public class AuditPageLayoutTest {
         ok("v2 自洽", back2.consistent());
         ok("乱码仍退回 none", !OfflineVerdict.decode("v2|garbage").hasResult());
 
-        System.out.println("== L. 文案不许出现 Markdown 星号 / addView 不许传 null ==");
+        System.out.println("== L. 执行控制与状态：本轮审计修掉的那几条要有结构约束 ==");
+        // ① 结果卡的材料身份不能再读可变字段
+        eq("MainActivity 里不再有 offlineFileName（结果卡材料名由开跑那一刻固定）",
+                countOf(ma, "offlineFileName"), 0);
+        ok("verdictOf 带 materialName 参数",
+                ma.contains("String materialName,") && ma.contains("frozenMaterialName, snap,"));
+        // ② applyDict 必须"两边一起成功或一起不动"
+        String ap = body(ma, "private void applyDict(java.util.List<Candidate> list, "
+                + "String name, String path, String source)");
+        ok("先让工作台接受、被拒就整体不动",
+                ap.contains("boolean accepted;") && ap.contains("if (!accepted) {")
+                        && ap.contains("return;"));
+        ok("setDictionary 的返回值被使用（不再忽略）",
+                ap.contains("accepted = workbench.setDictionary("));
+        ok("每次成功替换都递增代际 dictEpoch++", ap.contains("dictEpoch++;"));
+        // ③ 异步恢复要校验代际，别覆盖用户刚选的
+        String rs = body(ma, "private void restoreDictIfPossible()");
+        ok("恢复线程记录代际", rs.contains("final long epoch = dictEpoch;"));
+        ok("回填前校验代际与占用", rs.contains("dictEpoch != epoch"));
+        // ④ 开始按钮不隐藏（双击第二下会打到"停止"）
+        String rb = body(ma, "private void refreshOfflineButtons()");
+        ok("开始按钮始终占位（View.VISIBLE）",
+                rb.contains("auditStartBtn.setVisibility(View.VISIBLE)"));
+        ok("不再把开始按钮设成 GONE",
+                !rb.contains("auditStartBtn.setVisibility(offlineBusy ? View.GONE"));
+        // ⑤ 进程级运行守卫 + 落盘痕迹
+        String run2 = body(ma, "private void runOfflineOne(final io.github.wlmosv_png.wpaforge"
+                + ".audit.Hc22000.Entry e)");
+        ok("开跑前拿进程级独占", run2.contains("OfflineRunGuard.tryAcquire(runToken)"));
+        ok("拿不到就拒绝开跑并说明", run2.contains("进程内已有一次比对在进行"));
+        ok("结束时释放独占", run2.contains("OfflineRunGuard.release(runToken)"));
+        ok("开跑落盘痕迹", run2.contains("OfflineRunStore.saveInflight("));
+        ok("结束清掉痕迹", run2.contains("OfflineRunStore.clearInflight(this)"));
+        ok("有痕迹渲染入口", ma.contains("private void renderInflight()"));
+        ok("总览/执行卡体现进程占用",
+                ma.contains("OfflineRunGuard.held()"));
+        // ⑥ 取消看门狗
+        String stop2 = body(ma, "private void stopOfflineRun()");
+        ok("停止时记录取消时刻", stop2.contains("OfflineRunGuard.markCancel("));
+        ok("停止时启动看门狗", stop2.contains("startStallWatchdog()"));
+        ok("看门狗存在且会强制解锁",
+                ma.contains("private final Runnable stallTick")
+                        && ma.contains("OfflineRunGuard.forceRelease()"));
+        ok("强制解锁写成「已取消」而不是命中/未命中",
+                ma.contains("引擎在 %d 秒内没有退出")
+                        && ma.contains("OfflineVerdict.State.CANCELLED"));
+        // ⑦ 材料自动选中要扫全部
+        ok("自动选中扫描全部条目（不再只看前 40 条）",
+                ma.contains("int scan = entries.size();"));
+        // ⑧ 缺 SSID 的处理与上报
+        ok("导入判定有 INCOMPLETE 分支", ma.contains("case INCOMPLETE:"));
+        ok("OK 时把缺 SSID 被跳过的条数报出来", ma.contains("r.noSsid > 0"));
+        // ⑨ 结果记录损坏与「没跑过」分开
+        ok("结果读回失败要能识别",
+                ma.contains("OfflineRunStore.lastDecodeFailed(this)")
+                        && ma.contains("verdictLoadFailed"));
+
+        System.out.println("== M. 文案不许出现 Markdown 星号 / addView 不许传 null ==");
         eq("审计页字符串字面量里没有 Markdown 星号",
                 countStarsInsideStrings(auditSection), 0);
         int badAdd = 0;

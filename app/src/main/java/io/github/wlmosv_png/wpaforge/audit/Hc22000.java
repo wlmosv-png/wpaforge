@@ -1,5 +1,7 @@
 package io.github.wlmosv_png.wpaforge.audit;
 
+import io.github.wlmosv_png.wpaforge.L;
+
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,18 +53,38 @@ public final class Hc22000 {
         public final byte[] micOrPmkid;   // 16 字节
         public final byte[] apMac;        // 6 字节
         public final byte[] staMac;       // 6 字节
+        /** 展示用 SSID 文本。 */
         public final String ssid;
+        /**
+         * **参与计算的 SSID 原始字节**（ESSID 字段的 hex 解码结果，不做任何重编码）。
+         *
+         * <p>SSID 是任意字节串：GBK 中文、含控制字节都合法。把它当 String 再转回
+         * 字节会改写非 UTF-8 字节 → PBKDF2 的 salt 变了 → 真口令也算不中 → 假「未命中」。
+         */
+        public final byte[] ssidBytes;
+        /** SSID 是否是合法 UTF-8（否则展示文本是替代字符，只能当参考）。 */
+        public final boolean ssidExact;
         public final byte[] aNonce;       // 仅 type=2：32 字节
         public final byte[] eapol;        // 仅 type=2：完整 EAPOL 帧（MIC 已置零）
         public final String messagePair;
 
         Entry(int type, byte[] micOrPmkid, byte[] apMac, byte[] staMac, String ssid,
               byte[] aNonce, byte[] eapol, String messagePair) {
+            this(type, micOrPmkid, apMac, staMac, ssid,
+                    ssid == null ? null : ssid.getBytes(StandardCharsets.UTF_8),
+                    true, aNonce, eapol, messagePair);
+        }
+
+        Entry(int type, byte[] micOrPmkid, byte[] apMac, byte[] staMac, String ssid,
+              byte[] ssidBytes, boolean ssidExact,
+              byte[] aNonce, byte[] eapol, String messagePair) {
             this.type = type;
             this.micOrPmkid = micOrPmkid;
             this.apMac = apMac;
             this.staMac = staMac;
             this.ssid = ssid;
+            this.ssidBytes = ssidBytes;
+            this.ssidExact = ssidExact;
             this.aNonce = aNonce;
             this.eapol = eapol;
             this.messagePair = messagePair;
@@ -75,8 +97,20 @@ public final class Hc22000 {
         /** 给用户看的一行摘要 */
         public String label() {
             String kind = isPmkid() ? "PMKID" : "EAPOL";
-            return kind + " · " + (ssid == null || ssid.isEmpty() ? "(无 SSID)" : ssid)
-                    + " · AP " + hexMac(apMac);
+            return kind + " · " + ssidLabel() + " · AP " + hexMac(apMac);
+        }
+
+        /** SSID 的展示文本：非 UTF-8 时明确标注，不假装它是可读文本。 */
+        public String ssidLabel() {
+            if (ssidBytes == null || ssidBytes.length == 0) return "(无 SSID)";
+            if (ssidExact) return ssid;
+            return L.s("(非 UTF-8 SSID，" + ssidBytes.length + " 字节)",
+                    "(non-UTF-8 SSID, " + ssidBytes.length + " bytes)");
+        }
+
+        /** 是否缺少 SSID（隐藏网络很常见）。单独一个判据，避免去匹配本地化文案。 */
+        public boolean ssidMissing() {
+            return ssidBytes == null || ssidBytes.length == 0;
         }
 
         /** 材料是否齐全；空串表示齐全 */
@@ -84,7 +118,7 @@ public final class Hc22000 {
             if (micOrPmkid == null || micOrPmkid.length != 16) return "校验值需 16 字节";
             if (apMac == null || apMac.length != 6) return "AP MAC 需 6 字节";
             if (staMac == null || staMac.length != 6) return "STA MAC 需 6 字节";
-            if (ssid == null || ssid.isEmpty()) return "缺少 SSID";
+            if (ssidBytes == null || ssidBytes.length == 0) return "缺少 SSID";
             if (type == TYPE_EAPOL) {
                 if (aNonce == null || aNonce.length != 32) return "ANonce 需 32 字节";
                 if (eapol == null || eapol.length < EAPOL_MIC_OFFSET + 16) return "EAPOL 帧过短";
@@ -123,14 +157,17 @@ public final class Hc22000 {
         if (check == null || ap == null || sta == null || essidBytes == null) return null;
         String ssid = new String(essidBytes, StandardCharsets.UTF_8);
 
+        // SSID 是否合法 UTF-8：合法才拿 String 当展示文本，否则用原始字节的等价说明。
+        boolean exact = java.util.Arrays.equals(essidBytes,
+                ssid.getBytes(StandardCharsets.UTF_8));
         if (type == TYPE_PMKID) {
-            return new Entry(type, check, ap, sta, ssid, null, null, "");
+            return new Entry(type, check, ap, sta, ssid, essidBytes, exact, null, null, "");
         }
         if (f.length < 9) return null;
         byte[] aNonce = WpaCore.hexToBytes(f[6]);
         byte[] eapol = WpaCore.hexToBytes(f[7]);
         if (aNonce == null || eapol == null || eapol.length < EAPOL_MIC_OFFSET + 16) return null;
-        return new Entry(type, check, ap, sta, ssid, aNonce, eapol, f[8]);
+        return new Entry(type, check, ap, sta, ssid, essidBytes, exact, aNonce, eapol, f[8]);
     }
 
     /** 解析整个文件，跳过无效行。 */
@@ -147,7 +184,18 @@ public final class Hc22000 {
     /** 把材料翻成 PMKID 校验结构（仅 PMKID 类型）。 */
     public static AuditEngine.Pmkid toPmkid(Entry e) {
         if (e == null || e.type != TYPE_PMKID) return null;
-        return new AuditEngine.Pmkid(e.ssid, e.apMac, e.staMac, e.micOrPmkid);
+        return new AuditEngine.Pmkid(e.ssid, e.ssidBytes, e.apMac, e.staMac, e.micOrPmkid);
+    }
+
+    /**
+     * EAPOL 帧的 Key Descriptor Version（key info 低 3 位）＝ MIC 算法。
+     *
+     * <p>1 = HMAC-MD5、2 = HMAC-SHA1、3 = AES-128-CMAC。帧太短返回 0（表示读不到）。
+     */
+    public static int keyVersionOf(byte[] frame) {
+        if (frame == null || frame.length < 7) return 0;
+        int keyInfo = ((frame[5] & 0xFF) << 8) | (frame[6] & 0xFF);
+        return keyInfo & 0x07;
     }
 
     /** 从 EAPOL 帧里取 key nonce；帧太短返回 null。 */
@@ -164,7 +212,8 @@ public final class Hc22000 {
         // SNonce 必须从 EAPOL 帧里取。这里历史上传的是 null，
         // 于是每一份 EAPOL 材料都在校验阶段被判「SNonce 需 32 字节」，
         // EAPOL 分支等于完全不可用（PMKID 分支不受影响）。
-        return new AuditEngine.Handshake(e.ssid, e.apMac, e.staMac, e.aNonce,
-                sNonceOf(e.eapol), e.eapol, EAPOL_MIC_OFFSET, e.micOrPmkid);
+        return new AuditEngine.Handshake(e.ssid, e.ssidBytes, e.apMac, e.staMac, e.aNonce,
+                sNonceOf(e.eapol), e.eapol, EAPOL_MIC_OFFSET, e.micOrPmkid,
+                keyVersionOf(e.eapol));
     }
 }

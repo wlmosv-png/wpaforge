@@ -177,6 +177,21 @@ public class MainActivity extends Activity {
     private TextView auditBlocker;
     /** 运行中的进度条（条数 / 百分比 / 已用 / 速率）。 */
     private io.github.wlmosv_png.wpaforge.ui.ThinProgress auditProgress;
+    /**
+     * 当前字典的**代际**：每次成功替换字典就 +1。
+     *
+     * <p>用来作废"更早发出的异步请求"（派生 / 加载 / 从快照恢复都是后台线程 +
+     * ui.post）。没有它，最终生效的字典取决于线程完成顺序，而不是用户最后一次操作。
+     */
+    private long dictEpoch = 0;
+    /** 上次的结果记录在盘上但解不开（要和"没跑过"分开说）。 */
+    private boolean verdictLoadFailed = false;
+    /** 运行中痕迹提示块（③ 卡内）。 */
+    private LinearLayout auditInflightBox;
+    /** 取值：材料名（开跑那一刻固定），结果卡只认它，不再读任何可变字段。 */
+    private String frozenMaterialName = "";
+    /** 离线引擎最后上报的已处理条数（看门狗强制解锁时写结果用）。 */
+    private long offlineLastTested = 0L;
     /** 当前查看的运行记录频道。 */
     private io.github.wlmosv_png.wpaforge.audit.RunLog.Op logChannel =
             io.github.wlmosv_png.wpaforge.audit.RunLog.Op.OFFLINE;
@@ -210,8 +225,6 @@ public class MainActivity extends Activity {
     private io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report lastReport;
     /** 当前选中材料（「按此目标派生」用）。 */
     private io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry lastEntry;
-    /** 当前选中材料的文件名（结果卡要显示）。 */
-    private String offlineFileName = "";
     /** 离线日志滚动容器（判断是否该自动滚底）。 */
     private ScrollView auditLogScroll;
     /** 口令强度评估自己的记录区（与离线校验彻底分开）。 */
@@ -3721,6 +3734,9 @@ public class MainActivity extends Activity {
         pageAudit.removeAllViews();
 
         lastVerdict = io.github.wlmosv_png.wpaforge.OfflineRunStore.load(this);
+        // 盘上存过内容却解不开 —— 必须和"从没跑过"分开说，否则用户以为结果凭空消失。
+        verdictLoadFailed = !lastVerdict.hasResult()
+                && io.github.wlmosv_png.wpaforge.OfflineRunStore.lastDecodeFailed(this);
         restoreDictIfPossible();
 
         // ================= 顶部：标题 + ? + 四步状态条 + 现状 =================
@@ -3844,6 +3860,11 @@ public class MainActivity extends Activity {
         auditRunBox = new LinearLayout(this);
         auditRunBox.setOrientation(LinearLayout.VERTICAL);
         runCard.addView(auditRunBox);
+
+        auditInflightBox = new LinearLayout(this);
+        auditInflightBox.setOrientation(LinearLayout.VERTICAL);
+        auditInflightBox.setVisibility(View.GONE);
+        runCard.addView(auditInflightBox, topGap(12));
 
         auditProgress = new io.github.wlmosv_png.wpaforge.ui.ThinProgress(this);
         auditProgress.setVisibility(View.GONE);
@@ -4273,17 +4294,93 @@ public class MainActivity extends Activity {
         runOfflineOne(es.get(idx));
     }
 
-    /** 开始按钮 / 停止按钮 / 导入按钮三者的可用性。 */
+    /**
+     * 开始按钮 / 停止按钮 的可用性。
+     *
+     * <h3>为什么开始按钮不隐藏</h3>
+     * 上一版运行时把「开始」设成 {@code GONE}，它下面的「停止」立刻上移顶到同一个
+     * 位置上（只差 6dp 上边距）。用户双击「开始」时，第二下正好落在「停止」上 ——
+     * 刚起来的任务被立刻取消，用户看到的是"一点开始就自己取消了"。
+     * 现在开始按钮**始终占位**（运行中置灰并改文案），两个按钮位置恒定。
+     */
     private void refreshOfflineButtons() {
+        boolean processBusy = io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.held();
         if (auditStartBtn != null) {
-            boolean can = workbench.canStart();
-            auditStartBtn.setVisibility(offlineBusy ? View.GONE : View.VISIBLE);
+            boolean can = workbench.canStart() && !processBusy;
+            auditStartBtn.setVisibility(View.VISIBLE);
             auditStartBtn.setEnabled(can);
             auditStartBtn.setAlpha(can ? 1f : 0.5f);
+            auditStartBtn.setText(offlineBusy
+                    ? L.s("比对进行中…", "Comparing...")
+                    : L.s("开始离线校验", "Run the offline check"));
         }
         if (auditStopBtn != null) {
-            auditStopBtn.setVisibility(offlineBusy ? View.VISIBLE : View.GONE);
+            auditStopBtn.setVisibility(offlineBusy || processBusy ? View.VISIBLE : View.GONE);
         }
+    }
+
+    /**
+     * 渲染「上次的比对没有正常结束」的痕迹。
+     *
+     * <p>运行状态只在内存里，进程被杀后一点痕迹都不剩 —— 重开时用户看到的是
+     * **上一次**的结果卡，材料与字典碰巧一样时一致性徽标还会写"可以直接采信"，
+     * 与"上次那轮被中断"完全混为一谈。开跑时落一条最小痕迹即可把两者分开。
+     */
+    private void renderInflight() {
+        if (auditInflightBox == null) return;
+        auditInflightBox.removeAllViews();
+        io.github.wlmosv_png.wpaforge.audit.InflightRun inf =
+                io.github.wlmosv_png.wpaforge.OfflineRunStore.loadInflight(this);
+        boolean processBusy = io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.held();
+        if (inf == null && !processBusy) {
+            auditInflightBox.setVisibility(View.GONE);
+            return;
+        }
+        auditInflightBox.setVisibility(View.VISIBLE);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundBgStatic(AmberTheme.WARN_BG, AmberTheme.RADIUS_CHIP));
+        box.setPadding(px(13), px(11), px(13), px(11));
+
+        TextView t = new TextView(this);
+        StringBuilder sb = new StringBuilder();
+        if (inf != null) {
+            sb.append(L.f("\u26a0 上次的比对没有正常结束：%s 开始",
+                    "\u26a0 The last comparison never finished: started %s",
+                    fmtStamp(inf.startedAt)));
+            if (!inf.materialName.isEmpty()) {
+                sb.append(L.s(" · 材料 ", " · material ")).append(inf.materialName);
+            }
+            if (!inf.dictName.isEmpty()) {
+                sb.append(L.s(" · 字典 ", " · dictionary ")).append(inf.dictName);
+            }
+            sb.append(L.s("\n很可能是应用被系统回收了。下面的结果卡是在那之前跑的那一次，"
+                            + "不是这一轮的。",
+                    "\nThe app was most likely reclaimed by the system. The result card below "
+                            + "belongs to the run BEFORE that one."));
+        }
+        if (processBusy) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(L.s("\u26a0 进程内仍有比对在运行（可能来自上一次会话的界面实例）。",
+                    "\u26a0 A comparison is still running in this process (possibly started by a "
+                            + "previous activity instance)."));
+        }
+        t.setText(sb.toString());
+        t.setTextSize(AmberTheme.FS_SMALL);
+        t.setTextColor(AmberTheme.WARN);
+        t.setLineSpacing(px(4), 1f);
+        box.addView(t);
+
+        Button clear = rowActionPlain(L.s("清除这条痕迹", "Clear this marker"));
+        clear.setTextColor(ACCENT);
+        clear.setOnClickListener(v -> {
+            io.github.wlmosv_png.wpaforge.OfflineRunStore.clearInflight(this);
+            renderInflight();
+            renderRunCard();
+        });
+        box.addView(clear);
+        auditInflightBox.addView(box);
     }
 
 
@@ -4470,7 +4567,7 @@ public class MainActivity extends Activity {
         col.setOrientation(LinearLayout.VERTICAL);
         TextView t1 = new TextView(this);
         t1.setText((idx + 1) + ". " + (e.isPmkid() ? "PMKID" : "EAPOL")
-                + "  \u00b7  " + (e.ssid == null || e.ssid.isEmpty() ? "(无 SSID)" : e.ssid));
+                + "  \u00b7  " + e.ssidLabel());
         t1.setTextSize(AmberTheme.FS_BODY);
         t1.setTextColor(TEXT);
         t1.setSingleLine(true);
@@ -4687,8 +4784,18 @@ public class MainActivity extends Activity {
             }
         }
 
+        renderInflight();
+
         if (auditBlocker != null) {
             String why = workbench.blocker();
+            if (why.isEmpty()
+                    && io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.held()
+                    && !offlineBusy) {
+                // 进程里还握着运行权但本实例没在跑 —— 通常是上一次会话的实例留下的。
+                why = L.s("进程内已有一次比对在运行（可能来自上一次会话）。先点「停止」或清除痕迹。",
+                        "A comparison is still running in this process (possibly from a previous "
+                                + "session). Stop it or clear the marker first.");
+            }
             if (why.isEmpty()) {
                 auditBlocker.setText(L.s(
                         "条件已满足，可以开始。完成后结果会固定在下面的结果卡里。",
@@ -4980,6 +5087,7 @@ public class MainActivity extends Activity {
         if (workbench.setDictionary(currentDictName, currentDictSource, currentDictPath,
                 currentDict)) {
             io.github.wlmosv_png.wpaforge.DictSnapshotStore.save(this, workbench.dictionary());
+            dictEpoch++;
         }
         renderAudit();
     }
@@ -5014,6 +5122,7 @@ public class MainActivity extends Activity {
             return;
         }
         final String path = saved.filePath;
+        final long epoch = dictEpoch;   // 恢复开始时的代际
         new Thread(() -> {
             String nowHash = io.github.wlmosv_png.wpaforge.audit.DictSnapshot
                     .sha256OfFile(path);
@@ -5028,6 +5137,13 @@ public class MainActivity extends Activity {
             final java.util.List<Candidate> r = loaded;
             final String h = nowHash;
             ui.post(() -> {
+                // 代际/占用校验：算指纹是秒级操作，这段时间里用户完全可能自己挑了一本。
+                // 没有这道检查，后到的恢复 post 会把用户刚选的字典**覆盖回**"上次那本"，
+                // 而且连续两次 Toast，用户还以为是自己点出来的。
+                if (dictEpoch != epoch
+                        || (currentDict != null && !currentDict.isEmpty())) {
+                    return;
+                }
                 if (r != null && !r.isEmpty() && saved.matches(r)) {
                     applyDict(r, saved.name, path, saved.source);
                     dictRestoreNote = "";
@@ -5156,19 +5272,16 @@ public class MainActivity extends Activity {
                             "Material selection cancelled (no file picked)."));
             return;
         }
-        // 授权能持久化就持久化（同一文件下次还能读）；拿不到也不影响本次读取。
-        try {
-            getContentResolver().takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (Throwable ignored) {
-        }
+        // 这里原本申请持久化读取授权，但全链路没有任何地方保存/复用这个 URI，
+        // 失败还被 catch(Throwable ignored) 静默吞掉 —— 属于"看着有用、实际不用、
+        // 出错还看不见"的死代码（每次导入还会占一个持久授权名额且永不释放）。
+        // 本次读取靠的是本次的临时授权，够用，所以直接去掉。
         runOfflineReadUri(uri);
     }
 
     /** 从 Content URI 读材料 —— 绝不假设 URI 能转成普通文件路径。 */
     private void runOfflineReadUri(final android.net.Uri uri) {
         final String shown = uriDisplayName(uri);
-        offlineFileName = shown;
         appendLog(L.s("读取材料: ", "Reading: ") + shown);
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.OfflineImport.Result r;
@@ -5248,6 +5361,9 @@ public class MainActivity extends Activity {
             case FORMAT_INVALID: why = L.s("不是合法的 22000 记录", "not a valid 22000 line"); break;
             case UNSUPPORTED:   why = L.s("记录类型不支持", "unsupported record type"); break;
             case TOO_LARGE:     why = L.s("文件超过 4 MB", "file exceeds 4 MB"); break;
+            case INCOMPLETE:    why = L.s("记录合法但缺 SSID（隐藏网络），无法用于离线校验",
+                                    "well-formed records but no SSID (hidden network) - cannot "
+                                            + "be used for an offline check"); break;
             case NO_FILE:       why = L.s("没有拿到文件", "no file was returned"); break;
             case NO_ACCESS:     why = L.s("没有读取授权", "read access was not granted"); break;
             default:            why = err == null ? L.s("读取失败", "read failed") : String.valueOf(err);
@@ -5265,7 +5381,7 @@ public class MainActivity extends Activity {
         lastReport = null;
         setVerdict(verdictOf(
                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.BAD_MATERIAL,
-                null, workbench.dictionary(), 0, 0, "", why));
+                null, name, workbench.dictionary(), 0, 0, "", why));
         renderAudit();
     }
 
@@ -5300,6 +5416,27 @@ public class MainActivity extends Activity {
                         r == null ? 0 : r.unsupported));
                 appendLog(L.s("下一步: 本功能只处理 PMKID（WPA*01）与 EAPOL（WPA*02）两种记录。",
                         "Next: only PMKID (WPA*01) and EAPOL (WPA*02) records are supported."));
+                return;
+            case INCOMPLETE:
+                // 这不是"文件坏了"，是"材料用不了" —— 处置完全不同。
+                // 原来它被算成「不是合法的 22000 记录」，把用户引向"重新导出"这条走不通的路。
+                auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN, name,
+                        L.f("记录格式合法，但 %d 条都缺少 SSID。",
+                                "%d well-formed record(s), but all lack an SSID.",
+                                r == null ? 0 : r.noSsid),
+                        L.s("SSID 是派生 PMK 必需的：没有它，任何候选都无法比对，"
+                                + "所以这一份材料无法用于离线校验。\n"
+                                + "下一步：换一份抓到了 SSID 的材料（抓包时等目标广播 beacon，"
+                                + "或换一条已关联上的记录）—— 不需要重新导出同一个文件。",
+                                "The SSID is required to derive the PMK: without it no candidate "
+                                        + "can ever match, so this material cannot be used for an "
+                                        + "offline check.\nNext: use a capture that contains the "
+                                        + "SSID (wait for the target's beacon, or pick a record from "
+                                        + "an associated session) - re-exporting the same file will "
+                                        + "not help."));
+                appendLog(L.s("材料不可用: 缺 SSID（隐藏网络）。不是文件损坏，换个材料即可。",
+                        "Material unusable: SSID missing (hidden network). The file is not "
+                                + "corrupt - use a different capture."));
                 return;
             case TOO_LARGE:
                 appendLog(L.s("材料读取失败: 文件超过 4 MB。", "Read failed: file exceeds 4 MB."));
@@ -5346,12 +5483,20 @@ public class MainActivity extends Activity {
                         r.count(), r.pmkid, r.eapol)
                         + (r.comments > 0
                                 ? L.f("\n跳过注释行: %d", "\ncomment lines skipped: %d", r.comments)
+                                : "")
+                        // 缺 SSID 的记录原来**静默消失**：只报 count()，不说少了多少。
+                        + (r.noSsid > 0
+                                ? L.f("\n跳过（缺 SSID，隐藏网络）: %d",
+                                      "\nskipped (no SSID, hidden network): %d", r.noSsid)
                                 : ""));
 
         // 自动选中第一条**可执行**的材料，这样单条材料可以一步开跑；
         // 多条材料时用户可以在步骤 ② 里改选。
+        // 必须扫**全部**条目：只扫前 MAX_DIAG_CARDS 条时，一份上千条记录的文件里
+        // 唯一可执行的那条若排在后面，会自动选中第 1 条（恰好不可执行），
+        // 用户看到"就绪"却永远跑不了。
         int pick = -1;
-        int scan = Math.min(entries.size(), MAX_DIAG_CARDS);
+        int scan = entries.size();
         for (int i = 0; i < scan; i++) {
             if (io.github.wlmosv_png.wpaforge.audit.MaterialDoctor
                     .examine(entries.get(i)).executable) {
@@ -5366,7 +5511,6 @@ public class MainActivity extends Activity {
 
     /** 从普通文件读材料（仅「扫描 Download」这条尽力而为的路径会用）。 */
     private void runOfflineRead(final java.io.File f) {
-        offlineFileName = f.getName();
         appendLog(L.s("读取材料: ", "Reading: ") + f.getName());
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.OfflineImport.Result r;
@@ -5401,12 +5545,14 @@ public class MainActivity extends Activity {
     private io.github.wlmosv_png.wpaforge.audit.OfflineVerdict verdictOf(
             io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State st,
             io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e,
+            String materialName,
             io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap,
             long tested, long elapsedMs, String hitPassword, String note) {
         io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = snap == null
                 ? io.github.wlmosv_png.wpaforge.audit.DictSnapshot.none() : snap;
         return new io.github.wlmosv_png.wpaforge.audit.OfflineVerdict(st,
-                offlineFileName, kindOf(e), e == null ? "" : e.ssid,
+                materialName == null ? "" : materialName, kindOf(e),
+                e == null ? "" : e.ssidLabel(),
                 e == null ? "" : io.github.wlmosv_png.wpaforge.audit.Hc22000.hexMac(e.apMac),
                 s.empty() ? dictNameNow() : s.name,
                 s.empty() ? dictCount() : s.count,
@@ -5458,7 +5604,7 @@ public class MainActivity extends Activity {
                     rep.allIssues());
             setVerdict(verdictOf(
                     io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.BAD_MATERIAL,
-                    e, workbench.dictionary(), 0, 0, "", rep.whyNot()));
+                    e, workbench.materialName(), workbench.dictionary(), 0, 0, "", rep.whyNot()));
             renderAudit();
             return;
         }
@@ -5475,11 +5621,32 @@ public class MainActivity extends Activity {
             return;
         }
         final io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap = frozen.snap;
+        // 进程级独占：Activity 被回收后重建的新实例也能看见"上一个实例还在跑"。
+        final String runToken = "offline|" + workbench.materialName() + "|"
+                + snap.fingerprint() + "|" + System.currentTimeMillis();
+        if (!io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.tryAcquire(runToken)) {
+            workbench.endRun();
+            Toast.makeText(this, L.s("进程内已有一次比对在进行（可能来自上一次会话），先等它结束。",
+                    "A comparison is already running in this process (possibly from a previous "
+                            + "session) - wait for it."), Toast.LENGTH_LONG).show();
+            renderRunCard();
+            return;
+        }
+        // 材料名在这一刻固定：结果卡的材料身份不能再读可变字段，
+        // 否则「跑的过程中换材料」会把结果记到另一个文件名上。
+        final String matName = workbench.materialName();
+        frozenMaterialName = matName;
+        io.github.wlmosv_png.wpaforge.OfflineRunStore.saveInflight(this,
+                new io.github.wlmosv_png.wpaforge.audit.InflightRun(
+                        matName, snap.name, snap.fingerprint(), System.currentTimeMillis()));
+        renderInflight();
         final long t0 = System.currentTimeMillis();
         final long total = frozen.candidateCount();
         final long step = Math.max(1L, total / 100L);
 
         offlineBusy = true;
+        offlineLastTested = 0L;
+        stopStallWatchdog();
         final io.github.wlmosv_png.wpaforge.audit.AuditEngine engine =
                 new io.github.wlmosv_png.wpaforge.audit.AuditEngine();
         runningEngine = engine;
@@ -5505,6 +5672,7 @@ public class MainActivity extends Activity {
                     final long tt = tested, nn = t;
                     final long el = System.currentTimeMillis() - t0;
                     ui.post(() -> {
+                        offlineLastTested = tt;
                         updateLiveProgress(tt, nn, el);
                         if (tt % (step * 10L) == 0) {
                             auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.PROGRESS,
@@ -5542,7 +5710,8 @@ public class MainActivity extends Activity {
                                 snap.name, L.s("执行失败: ", "Failed: ") + why, why);
                         setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.FAILED,
-                                e, snap, r == null ? 0 : r.tested, ms, "", why));
+                                e, frozenMaterialName, snap, r == null ? 0 : r.tested, ms,
+                                "", why));
                     } else if (r.cancelled) {
                         // 取消不是未命中 —— 单独一条状态，别糊在一起。
                         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.CANCEL,
@@ -5555,7 +5724,7 @@ public class MainActivity extends Activity {
                                         fmtDuration(ms)));
                         setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.CANCELLED,
-                                e, snap, r.tested, ms, "",
+                                e, frozenMaterialName, snap, r.tested, ms, "",
                                 L.s("用户停止", "stopped by user")));
                     } else if (r.hit) {
                         // 日志里**绝不出现明文口令**：只记位次与耗时。
@@ -5572,7 +5741,7 @@ public class MainActivity extends Activity {
                                         fmtDuration(ms)));
                         setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.HIT,
-                                e, snap, r.tested, ms, r.hitPassword, ""));
+                                e, frozenMaterialName, snap, r.tested, ms, r.hitPassword, ""));
                     } else {
                         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN,
                                 snap.name,
@@ -5589,12 +5758,15 @@ public class MainActivity extends Activity {
                                         fmtDuration(ms)));
                         setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.MISS,
-                                e, snap, r.tested, ms, "", ""));
+                                e, frozenMaterialName, snap, r.tested, ms, "", ""));
                     }
                 } finally {
                     offlineBusy = false;
                     runningEngine = null;
                     workbench.endRun();
+                    io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.release(runToken);
+                    io.github.wlmosv_png.wpaforge.OfflineRunStore.clearInflight(this);
+                    stopStallWatchdog();
                     renderAudit();
                     renderOfflineVerdict();
                 }
@@ -6277,19 +6449,47 @@ public class MainActivity extends Activity {
      */
     private void applyDict(java.util.List<Candidate> list, String name, String path, String source) {
         boolean empty = list == null || list.isEmpty();
-        currentDict = empty ? new java.util.ArrayList<Candidate>() : list;
-        currentDictName = name == null ? "" : name;
-        currentDictPath = path == null ? "" : path;
-        currentDictSource = source == null ? "" : source;
-        currentDictSkipped = empty ? 0 : countSkipped(currentDict);
+        final String nm = name == null ? "" : name;
+        final String px = path == null ? "" : path;
+        final String src = source == null ? "" : source;
+        final java.util.List<Candidate> next =
+                empty ? new java.util.ArrayList<Candidate>() : list;
 
+        // **两边一起成功、或一起不动**：先让工作台接受（它会做「条数 ↔ 内容指纹」
+        // 自洽校验）。原来先写 currentDict* 再 setDictionary，返回值被忽略 ——
+        // setDictionary 拒绝时字段已是新值、快照还是旧的，于是"界面显示 A、
+        // 执行层与结果卡是 B"，正是要根除的那类不一致。
+        boolean accepted;
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap;
         if (empty) {
             workbench.clearDictionary();
+            snap = io.github.wlmosv_png.wpaforge.audit.DictSnapshot.none();
+            accepted = true;
+        } else {
+            accepted = workbench.setDictionary(nm, src, px, next);
+            snap = workbench.dictionary();
+        }
+        if (!accepted) {
+            dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.FAIL, nm,
+                    L.s("这本字典没能生效（条数与内容指纹不自洽），当前字典保持不变。",
+                            "This dictionary was rejected (count vs fingerprint mismatch); "
+                                    + "the current one is unchanged."), null);
+            Toast.makeText(this, L.s("字典没能生效，当前字典保持不变",
+                    "Dictionary rejected; current one unchanged"), Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        currentDict = next;
+        currentDictName = nm;
+        currentDictPath = px;
+        currentDictSource = src;
+        currentDictSkipped = empty ? 0 : countSkipped(currentDict);
+        dictEpoch++;   // 任何一次成功替换都让"更早的异步请求"作废
+
+        if (empty) {
             io.github.wlmosv_png.wpaforge.DictSnapshotStore.clear(this);
         } else {
-            workbench.setDictionary(currentDictName, currentDictSource, currentDictPath,
-                    currentDict);
-            io.github.wlmosv_png.wpaforge.DictSnapshotStore.save(this, workbench.dictionary());
+            io.github.wlmosv_png.wpaforge.DictSnapshotStore.save(this, snap);
         }
 
         updateDictStatus();
@@ -6297,7 +6497,7 @@ public class MainActivity extends Activity {
         Toast.makeText(this, L.f("已应用 %d 条", "Applied %d entries",
                 currentDict.size()), Toast.LENGTH_SHORT).show();
 
-        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = workbench.dictionary();
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = snap;
         dictLine(empty ? io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN
                        : io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
                 s.empty() ? (currentDictName.isEmpty() ? "(unnamed)" : currentDictName) : s.name,
@@ -6790,10 +6990,71 @@ public class MainActivity extends Activity {
     /** 请求停止：调真正的 engine.cancel()，并说明「已请求、等退出」，不假报成功。 */
     private void stopOfflineRun() {
         io.github.wlmosv_png.wpaforge.audit.AuditEngine eng = runningEngine;
-        if (eng == null) return;
+        if (eng == null) {
+            // 没有引擎可停（可能任务属于上一次会话的实例）—— 也要给用户一句话，
+            // 不能点了没反应。
+            auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO,
+                    L.s("当前实例没有正在运行的引擎（任务可能来自上一次会话）。",
+                            "This instance holds no running engine (the task may belong to a "
+                                    + "previous session)."));
+            renderInflight();
+            return;
+        }
         eng.cancel();
+        io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.markCancel(
+                System.currentTimeMillis());
         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.CANCEL,
                 L.s("已请求停止，等待引擎退出…", "Stop requested, waiting for the engine to exit..."));
+        // 取消是协作式的：引擎只在遍历候选时检查标志位。若线程被系统冻结或阻塞，
+        // 它会一直不返回 —— 没有看门狗的话界面上的"运行中"永远不解锁，
+        // 开始按钮永久置灰、停止也无效，只能杀进程。
+        startStallWatchdog();
+    }
+
+    /** 每秒一次：取消后超时未退出就强制解锁，并如实写一条「已取消（强制解锁）」。 */
+    private final Runnable stallTick = new Runnable() {
+        @Override public void run() {
+            if (!offlineBusy
+                    && !io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.held()) return;
+            long now = System.currentTimeMillis();
+            if (io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard
+                    .stalled(now, io.github.wlmosv_png.wpaforge.audit
+                            .OfflineRunGuard.DEFAULT_STALL_MS)) {
+                long waited = io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard
+                        .DEFAULT_STALL_MS / 1000L;
+                io.github.wlmosv_png.wpaforge.audit.OfflineRunGuard.forceRelease();
+                offlineBusy = false;
+                runningEngine = null;
+                workbench.endRun();
+                io.github.wlmosv_png.wpaforge.OfflineRunStore.clearInflight(MainActivity.this);
+                auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.CANCEL, "",
+                        L.f("引擎在 %d 秒内没有退出，界面已强制解锁。这一轮既不是命中也不是未命中。",
+                                "The engine did not exit within %d s; the UI was force-unlocked. "
+                                        + "This run is neither a hit nor a miss.", waited),
+                        L.s("原因：取消是协作式的，线程被系统冻结或阻塞时不会立刻返回。",
+                                "Reason: cancellation is cooperative - a frozen or blocked thread "
+                                        + "will not return promptly."));
+                setVerdict(verdictOf(
+                        io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.CANCELLED,
+                        lastEntry, frozenMaterialName, workbench.dictionary(),
+                        offlineLastTested, 0, "",
+                        L.f("引擎未在 %d 秒内退出（已强制解锁）",
+                                "engine did not exit within %d s (force-unlocked)", waited)));
+                renderAudit();
+                renderOfflineVerdict();
+                return;
+            }
+            ui.postDelayed(this, 1000L);
+        }
+    };
+
+    private void startStallWatchdog() {
+        ui.removeCallbacks(stallTick);
+        ui.postDelayed(stallTick, 1000L);
+    }
+
+    private void stopStallWatchdog() {
+        ui.removeCallbacks(stallTick);
     }
 
     // ---- 结果卡 ----
@@ -6923,8 +7184,12 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
 
         if (!v.hasResult()) {
-            title.setText(L.s("还没有跑过", "No run yet"));
-            title.setTextColor(AmberTheme.TEXT_DIM);
+            // 「盘上存过但解不开」必须和「从没跑过」分开说，否则用户以为结果凭空消失。
+            title.setText(verdictLoadFailed
+                    ? L.s("\u26a0 上次的结果记录损坏了（已忽略）",
+                          "\u26a0 The stored result was corrupted (ignored)")
+                    : L.s("还没有跑过", "No run yet"));
+            title.setTextColor(verdictLoadFailed ? AmberTheme.WARN : AmberTheme.TEXT_DIM);
             offResult.addView(title);
             TextView hint = new TextView(this);
             hint.setText(L.s("跑一次之后，结论、材料、字典与耗时会固定显示在这里，"
@@ -7043,7 +7308,7 @@ public class MainActivity extends Activity {
         return workbench.matchOf(v,
                 picked ? workbench.materialName() : "",
                 picked ? kindOf(e) : "",
-                picked && e.ssid != null ? e.ssid : "",
+                picked ? e.ssidLabel() : "",
                 picked ? io.github.wlmosv_png.wpaforge.audit.Hc22000.hexMac(e.apMac) : "");
     }
 

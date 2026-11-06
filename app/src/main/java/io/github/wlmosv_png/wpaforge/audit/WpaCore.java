@@ -121,11 +121,26 @@ public final class WpaCore {
         return out;
     }
 
-    /** 口令 -> PMK（32 字节） */
-    public static byte[] derivePmk(String passphrase, String ssid) {
-        byte[] pw   = passphrase.getBytes(StandardCharsets.UTF_8);
-        byte[] salt = ssid.getBytes(StandardCharsets.UTF_8);
+    /**
+     * 口令 -> PMK（32 字节）。
+     *
+     * <p><b>salt 必须是 SSID 的原始字节</b>：802.11 的 SSID 是任意字节串，不保证是
+     * 合法 UTF-8。早期实现把 ESSID 的 hex 先解码成 String、这里再用 UTF-8 编回去，
+     * 于是非 UTF-8 的 SSID（国内极常见的 GBK 中文 SSID）会被改写成
+     * {@code EF BF BD} 替换序列 —— salt 变了 → PMK 全错 → 真口令也算不出正确
+     * PMKID/MIC → 引擎正常返回「跑完了」，界面报「未命中」。这是最危险的假结论。
+     */
+    public static byte[] derivePmk(String passphrase, byte[] ssidBytes) {
+        if (passphrase == null) return null;
+        byte[] pw = passphrase.getBytes(StandardCharsets.UTF_8);
+        byte[] salt = ssidBytes == null ? new byte[0] : ssidBytes;
         return pbkdf2HmacSha1(pw, salt, 4096, 32);
+    }
+
+    /** 兼容旧入口（按 UTF-8 取 SSID 字节）。新代码请用 byte[] 版本。 */
+    public static byte[] derivePmk(String passphrase, String ssid) {
+        return derivePmk(passphrase,
+                ssid == null ? new byte[0] : ssid.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -194,12 +209,48 @@ public final class WpaCore {
      */
     public static boolean verifyMic(byte[] ptk, byte[] eapolFrame, int micOffset,
                                     byte[] expectedMic) {
+        return verifyMic(ptk, eapolFrame, micOffset, expectedMic, 2);
+    }
+
+    /**
+     * 按 Key Descriptor Version 选 MIC 算法。
+     *
+     * <p>802.11 规定：version 1 = HMAC-MD5、2 = HMAC-SHA1、3 = AES-128-CMAC。
+     * 早期实现**无条件用 HMAC-SHA1**，而诊断只拦「不是 1/2/3」的情况 ——
+     * 于是 version 1 与 version 3 的材料一律被放行，算出的 MIC 必然不等，
+     * 最后报成「未命中」。这是一个把「算不了」伪装成「密码错」的静默错答。
+     *
+     * <p>现在：1 与 2 都真的按规范算；3（AES-CMAC）在材料诊断阶段就被拦下，
+     * 不会走到这里（走到了也只返回 false，绝不谎报命中）。
+     *
+     * @param keyVersion 帧内 key info 低 3 位；其它值按 2 处理（诊断已拦）
+     */
+    public static boolean verifyMic(byte[] ptk, byte[] eapolFrame, int micOffset,
+                                    byte[] expectedMic, int keyVersion) {
+        if (ptk == null || ptk.length < 16 || eapolFrame == null
+                || micOffset < 0 || micOffset + 16 > eapolFrame.length
+                || expectedMic == null || expectedMic.length != 16) {
+            return false;
+        }
+        if (keyVersion == 3) return false;   // AES-CMAC：不支持，绝不谎报
         byte[] kck = Arrays.copyOfRange(ptk, 0, 16);
         byte[] frame = eapolFrame.clone();
         for (int i = 0; i < 16; i++) frame[micOffset + i] = 0;
-        byte[] mic = hmacSha1(kck, frame);
+        byte[] mic = (keyVersion == 1) ? hmacMd5(kck, frame) : hmacSha1(kck, frame);
+        if (mic == null) return false;
         byte[] calc = Arrays.copyOf(mic, 16);
         return constantTimeEquals(calc, expectedMic);
+    }
+
+    /** HMAC-MD5（Key Descriptor Version 1 用的算法）。 */
+    public static byte[] hmacMd5(byte[] key, byte[] data) {
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacMD5");
+            mac.init(new javax.crypto.spec.SecretKeySpec(key, "HmacMD5"));
+            return mac.doFinal(data);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -211,10 +262,21 @@ public final class WpaCore {
                                          byte[] aNonce, byte[] sNonce,
                                          byte[] eapolFrame, int micOffset,
                                          byte[] expectedMic) {
+        return checkCandidate(passphrase,
+                ssid == null ? new byte[0] : ssid.getBytes(StandardCharsets.UTF_8),
+                apMac, staMac, aNonce, sNonce, eapolFrame, micOffset, expectedMic, 2);
+    }
+
+    /** 完整校验链（SSID 按原始字节、MIC 按 Key Version 选算法）。 */
+    public static boolean checkCandidate(String passphrase, byte[] ssidBytes,
+                                         byte[] apMac, byte[] staMac,
+                                         byte[] aNonce, byte[] sNonce,
+                                         byte[] eapolFrame, int micOffset,
+                                         byte[] expectedMic, int keyVersion) {
         try {
-            byte[] pmk = derivePmk(passphrase, ssid);
+            byte[] pmk = derivePmk(passphrase, ssidBytes);
             byte[] ptk = derivePtk(pmk, apMac, staMac, aNonce, sNonce);
-            return verifyMic(ptk, eapolFrame, micOffset, expectedMic);
+            return verifyMic(ptk, eapolFrame, micOffset, expectedMic, keyVersion);
         } catch (Exception e) {
             return false;
         }
@@ -248,10 +310,17 @@ public final class WpaCore {
      */
     public static byte[] computePmkid(String passphrase, String ssid,
                                       byte[] apMac, byte[] staMac) {
-        if (passphrase == null || ssid == null) return null;
+        return computePmkid(passphrase,
+                ssid == null ? null : ssid.getBytes(StandardCharsets.UTF_8), apMac, staMac);
+    }
+
+    /** PMKID（SSID 按原始字节，不做任何重编码）。 */
+    public static byte[] computePmkid(String passphrase, byte[] ssidBytes,
+                                      byte[] apMac, byte[] staMac) {
+        if (passphrase == null || ssidBytes == null || ssidBytes.length == 0) return null;
         if (apMac == null || apMac.length != 6) return null;
         if (staMac == null || staMac.length != 6) return null;
-        byte[] pmk = derivePmk(passphrase, ssid);
+        byte[] pmk = derivePmk(passphrase, ssidBytes);
         if (pmk == null) return null;
         byte[] data = new byte[8 + 6 + 6];
         byte[] name = new byte[]{0x50, 0x4D, 0x4B, 0x20, 0x4E, 0x61, 0x6D, 0x65}; // "PMK Name"
@@ -265,11 +334,18 @@ public final class WpaCore {
         return out;
     }
 
-    /** 候选密码的 PMKID 是否与材料一致。 */
+    /** 候选密码的 PMKID 是否与材料一致（SSID 按原始字节）。 */
     public static boolean checkPmkid(String passphrase, String ssid,
                                      byte[] apMac, byte[] staMac, byte[] expected) {
+        return checkPmkid(passphrase,
+                ssid == null ? null : ssid.getBytes(StandardCharsets.UTF_8),
+                apMac, staMac, expected);
+    }
+
+    public static boolean checkPmkid(String passphrase, byte[] ssidBytes,
+                                     byte[] apMac, byte[] staMac, byte[] expected) {
         if (expected == null || expected.length != 16) return false;
-        byte[] got = computePmkid(passphrase, ssid, apMac, staMac);
+        byte[] got = computePmkid(passphrase, ssidBytes, apMac, staMac);
         if (got == null) return false;
         int diff = 0;
         for (int i = 0; i < 16; i++) diff |= got[i] ^ expected[i];

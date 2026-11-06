@@ -2,24 +2,34 @@
 
 ## [1.9.50] - 2026-11-06
 
-> ### P0：在线破解判定链根因修复（B3b cycle 2）
+> ### 在线破解：修复目标连接尚未观察到活跃状态时可能被错误认定为连接终止的问题
 
-CrackEngine.tryOneShell 中 exercised = sawAttempt || targetNetId >= 0，
-当 exercised 仅因 targetNetId>=0 成立（从未 sawAttempt）时，
+CrackEngine.tryOneShell 中 exercised = sawAttempt || targetNetId >= 0。
+当 exercised 仅因 targetNetId >= 0 成立（从未 sawAttempt）时，
 lifecycleOfStatus("Wifi is not connected") 仍返回 TERMINATED——
 但那可能只是"从未连接"，而非"曾经连接、现已终止"。
 
-- 该 TERMINATED 流入 authcast/m1retry/wpalog 等证据分支后，
+- 该 TERMINATED 流入 authcast / m1retry / wpalog 等证据分支后，
   Adjudicator 规则 4 产出 NETWORK_AUTH_FAIL →
   AttemptLedger.classify 映射为 NETWORK_TERMINATED →
   省时档跳过集合错误排除候选。
-- 修复：在五条证据分支之前加 !sawAttempt 守护，
-  将 lastLifecycle 强制改为 UNKNOWN，
+- **修复**：在五条证据分支之前加 `!sawAttempt` 守护，
+  将 `lastLifecycle` 强制改为 `UNKNOWN`，
   阻止从未观察到的终止状态被当作失败证据。
-- AuthCastAttributionTest.GatedShell.attemptStarted 加 volatile，
-  消除测试中的数据竞争。
+- **线程安全**：AuthCastAttributionTest.GatedShell.attemptStarted
+  改为 `volatile`，消除测试中的数据竞争。
 
----
+> ### 说明
+
+- 本版本改动集中在线破解判定链的**一处守护**与测试线程可见性修正，
+  不涉及离线审计页面（离线审计的前序改进见 1.9.41–1.9.49）。
+- 在线破解与离线审计采用独立的执行和判定流程。
+- 全量测试：**6502 通过、6 项既有失败**（来自 P05AttributionTest 与
+  UnifiedVerdictIntegrationTest）；6 项失败为既有测试预期与修复后行为的差异，
+  非回归，未降低断言、未屏蔽测试、未修改预期。相关测试用例仍需后续更新。
+- 离线验证结果取决于材料类型、完整性及协议支持情况。
+
+
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 

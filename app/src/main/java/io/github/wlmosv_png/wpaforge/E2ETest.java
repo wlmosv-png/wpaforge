@@ -58,7 +58,9 @@ public class E2ETest {
         for (int i = 0; i < frame.length; i++) frame[i] = (byte) (i * 7);
         for (int i = 0; i < 16; i++) frame[micOffset + i] = 0;
         byte[] realMic = java.util.Arrays.copyOf(WpaCore.hmacSha1(kck, frame), 16);
-        System.arraycopy(realMic, 0, frame, micOffset, 16);
+        // 22000 约定：帧里的 MIC 字段必须**保持零**，真值只放进 expectedMic。
+        // 以前这里把 realMic 又写回帧里 —— 那属于"导出异常"形态，
+        // 现在会被引擎的材料守卫正当拦下（这是修复，不是回归）。
 
         // 3) 构造握手对象，交给引擎
         AuditEngine.Handshake hs = new AuditEngine.Handshake(

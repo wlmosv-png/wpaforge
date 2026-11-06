@@ -1,5 +1,5 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.42 · EAPOL 材料校验修复 -->
-<!-- tag: v1.9.42   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.43 · 审计页二轮（停止·结果卡·日志） -->
+<!-- tag: v1.9.43   target: main -->
 
 本次更新把 WPAForge 从「一本一本试」变成「排好计划，自动一本接一本」；
 同时收口了连接判定可靠性、跨字典候选过滤与字典管理的一整套体验。

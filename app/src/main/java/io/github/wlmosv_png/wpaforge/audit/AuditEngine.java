@@ -34,15 +34,36 @@ public final class AuditEngine {
         public final long hitIndex;      // 在字典中的位次，1 起
         public final double perSecond;
 
+        /**
+         * 是否被用户主动取消。
+         *
+         * <p><b>取消与未命中是两回事</b>：未命中代表字典确实被完整跑过，
+         * 结论是「这份材料不匹配这本字典」；取消只代表跑了一半被打断，
+         * 什么都断定不了。此前两者共用 {@code hit=false}，调用方无从分辨，
+         * 会把「已取消」显示成「未命中」。
+         */
+        public final boolean cancelled;
+
         Result(long tested, long elapsedMs, boolean hit, String hitPassword,
                Candidate.Origin hitOrigin, long hitIndex) {
+            this(tested, elapsedMs, hit, hitPassword, hitOrigin, hitIndex, false);
+        }
+
+        Result(long tested, long elapsedMs, boolean hit, String hitPassword,
+               Candidate.Origin hitOrigin, long hitIndex, boolean cancelled) {
             this.tested = tested;
             this.elapsedMs = elapsedMs;
             this.hit = hit;
             this.hitPassword = hitPassword;
             this.hitOrigin = hitOrigin;
             this.hitIndex = hitIndex;
+            this.cancelled = cancelled;
             this.perSecond = elapsedMs > 0 ? (tested * 1000.0 / elapsedMs) : 0;
+        }
+
+        /** 只有「跑满且没命中」才算把字典跑穷。 */
+        public boolean exhausted() {
+            return !hit && !cancelled;
         }
     }
 
@@ -87,6 +108,14 @@ public final class AuditEngine {
             if (apMac == null || apMac.length != 6) return L.s("AP MAC 需 6 字节", "AP MAC must be 6 bytes");
             if (staMac == null || staMac.length != 6) return L.s("STA MAC 需 6 字节", "STA MAC must be 6 bytes");
             if (expected == null || expected.length != 16) return L.s("PMKID 需 16 字节", "PMKID must be 16 bytes");
+            boolean allZero = true;
+            for (byte b : expected) {
+                if (b != 0) {
+                    allZero = false;
+                    break;
+                }
+            }
+            if (allZero) return L.s("PMKID 全零（没抓到有效值）", "PMKID is all zero (nothing captured)");
             return "";
         }
     }
@@ -110,7 +139,7 @@ public final class AuditEngine {
         for (Candidate c : dict) {
             if (cancelled.get()) {
                 cb.onDone(new Result(tested, System.currentTimeMillis() - start,
-                        false, null, null, -1));
+                        false, null, null, -1, true));
                 return;
             }
             tested++;
@@ -159,6 +188,15 @@ public final class AuditEngine {
             if (sNonce == null || sNonce.length != 32) return L.s("SNonce 需 32 字节", "SNonce must be 32 bytes");
             if (eapolFrame == null || eapolFrame.length == 0) return L.s("缺少 EAPOL 帧", "Missing EAPOL frame");
             if (micOffset < 0 || micOffset + 16 > eapolFrame.length) return L.s("MIC 偏移越界", "MIC offset out of range");
+            // 22000 格式约定：帧里的 MIC 字段**必须是零**（导出时抹掉，校验时重算）。
+            // 非零说明导出工具没抹干净 —— 拿它去比对，任何密码都会判不匹配，
+            // 用户看到的是「未命中」，会以为密码错。必须在开跑前挡住。
+            for (int i = micOffset; i < micOffset + 16; i++) {
+                if (eapolFrame[i] != 0) {
+                    return L.s("EAPOL 帧的 MIC 字段未置零（导出异常，无法校验）",
+                            "EAPOL frame MIC field is not zeroed (bad export)");
+                }
+            }
             if (expectedMic == null || expectedMic.length != 16) return L.s("期望 MIC 需 16 字节", "Expected MIC must be 16 bytes");
             return "";
         }
@@ -192,7 +230,7 @@ public final class AuditEngine {
         for (Candidate c : dict) {
             if (cancelled.get()) {
                 cb.onDone(new Result(tested, System.currentTimeMillis() - start,
-                        false, null, null, -1));
+                        false, null, null, -1, true));
                 return;
             }
             tested++;

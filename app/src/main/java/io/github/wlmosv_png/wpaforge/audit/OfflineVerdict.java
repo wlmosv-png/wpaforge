@@ -1,0 +1,239 @@
+package io.github.wlmosv_png.wpaforge.audit;
+
+import java.util.Locale;
+
+/**
+ * 离线校验的**一次结果** —— 明确的数据模型，不是一行日志。
+ *
+ * <h3>为什么要有它</h3>
+ * 以前跑完只在运行记录里追加一行文字：「未命中：跑了 N 条，耗时 X ms」。
+ * 于是页面一切换、应用一重开，结论就没了；连续跑几轮之后也分不清
+ * 哪一行对应哪份材料、哪本字典。
+ *
+ * <p>这里把「结论 + 材料 + 字典 + 计数 + 时间」收成一个不可变对象，
+ * 自带编解码（存 SharedPreferences 用），字段值做转义，可以被安全地
+ * 反复读写。
+ *
+ * <p>纯逻辑，无 Android 依赖，可离线测试。
+ */
+public final class OfflineVerdict {
+
+    /** 最终状态。**刻意把「取消」和「未命中」分开** —— 这是两回事。 */
+    public enum State {
+        /** 还没跑过 */
+        NONE,
+        /** 命中：材料对应的真实口令在字典里 */
+        HIT,
+        /** 未命中：字典确实被完整跑过，没找到 */
+        MISS,
+        /** 用户主动停止（不能算未命中） */
+        CANCELLED,
+        /** 材料不完整，根本没开跑（不能算未命中） */
+        BAD_MATERIAL,
+        /** 执行过程中出错 */
+        FAILED
+    }
+
+    private static final char SEP = '|';
+    private static final String FORMAT = "v1";
+
+    public final State state;
+    /** 材料文件名（可能是 URI 末段） */
+    public final String fileName;
+    /** "PMKID" / "EAPOL" / "" */
+    public final String materialKind;
+    public final String ssid;
+    public final String apMac;
+    /** 当前字典的显示名 */
+    public final String dictName;
+    /** 字典候选总数 */
+    public final long dictSize;
+    /** 实际完成的候选数 */
+    public final long tested;
+    /** 执行耗时（毫秒） */
+    public final long elapsedMs;
+    /** 完成时间（epoch ms）；NONE 时为 0 */
+    public final long finishedAt;
+    /** 命中口令；仅 HIT 非空。**日志里绝不打印它** */
+    public final String hitPassword;
+    /** 取消原因 / 失败原因 / 材料缺什么；其余状态为空 */
+    public final String note;
+
+    public OfflineVerdict(State state, String fileName, String materialKind, String ssid,
+                          String apMac, String dictName, long dictSize, long tested,
+                          long elapsedMs, long finishedAt, String hitPassword, String note) {
+        this.state = state == null ? State.NONE : state;
+        this.fileName = nz(fileName);
+        this.materialKind = nz(materialKind);
+        this.ssid = nz(ssid);
+        this.apMac = nz(apMac);
+        this.dictName = nz(dictName);
+        this.dictSize = dictSize;
+        this.tested = tested;
+        this.elapsedMs = elapsedMs;
+        this.finishedAt = finishedAt;
+        this.hitPassword = nz(hitPassword);
+        this.note = nz(note);
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
+    }
+
+    /** 还没有结果。 */
+    public static OfflineVerdict none() {
+        return new OfflineVerdict(State.NONE, "", "", "", "", "", 0, 0, 0, 0, "", "");
+    }
+
+    public boolean hasResult() {
+        return state != State.NONE;
+    }
+
+    /** 这次是不是"确实把字典跑完了"。只有它才配叫未命中。 */
+    public boolean dictionaryExhausted() {
+        return state == State.MISS && dictSize > 0 && tested >= dictSize;
+    }
+
+    /**
+     * 自洽性检查：状态与数字不能打架。
+     *
+     * <p>用途有二：写盘前挡掉脏数据；单测里当不变式断言。
+     */
+    public boolean consistent() {
+        if (tested < 0 || dictSize < 0 || elapsedMs < 0) return false;
+        switch (state) {
+            case NONE:
+                return tested == 0 && dictSize == 0 && finishedAt == 0
+                        && hitPassword.isEmpty();
+            case HIT:
+                return !hitPassword.isEmpty() && tested >= 1;
+            case MISS:
+                return hitPassword.isEmpty() && dictSize > 0 && tested >= dictSize;
+            case CANCELLED:
+                // 取消时可能一条都没跑完，但绝不能报"跑满"
+                return hitPassword.isEmpty() && tested <= dictSize;
+            case BAD_MATERIAL:
+                return hitPassword.isEmpty() && tested == 0;
+            case FAILED:
+                return hitPassword.isEmpty();
+            default:
+                return false;
+        }
+    }
+
+    /** 材料那一栏的摘要，如 {@code EAPOL · TP-LINK_HASHCAT_TEST · AP 64:66:B3:8E:C3:FC}。 */
+    public String materialSummary() {
+        StringBuilder sb = new StringBuilder();
+        if (!materialKind.isEmpty()) sb.append(materialKind);
+        if (!ssid.isEmpty()) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(ssid);
+        }
+        if (!apMac.isEmpty()) {
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append("AP ").append(apMac);
+        }
+        return sb.toString();
+    }
+
+    // ------------------------------------------------------------------ 编解码
+
+    private static String esc(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\') sb.append("\\\\");
+            else if (c == SEP) sb.append("\\p");
+            else if (c == '\n') sb.append("\\n");
+            else if (c == '\r') sb.append("\\r");
+            else sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    private static String unesc(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != '\\' || i + 1 >= s.length()) {
+                sb.append(c);
+                continue;
+            }
+            char n = s.charAt(++i);
+            if (n == '\\') sb.append('\\');
+            else if (n == 'p') sb.append(SEP);
+            else if (n == 'n') sb.append('\n');
+            else if (n == 'r') sb.append('\r');
+            else sb.append(n);
+        }
+        return sb.toString();
+    }
+
+    /** 编成一行的持久化串。 */
+    public String encode() {
+        StringBuilder sb = new StringBuilder(192);
+        sb.append(FORMAT).append(SEP);
+        sb.append(state.name()).append(SEP);
+        sb.append(esc(fileName)).append(SEP);
+        sb.append(esc(materialKind)).append(SEP);
+        sb.append(esc(ssid)).append(SEP);
+        sb.append(esc(apMac)).append(SEP);
+        sb.append(esc(dictName)).append(SEP);
+        sb.append(dictSize).append(SEP);
+        sb.append(tested).append(SEP);
+        sb.append(elapsedMs).append(SEP);
+        sb.append(finishedAt).append(SEP);
+        sb.append(esc(hitPassword)).append(SEP);
+        sb.append(esc(note));
+        return sb.toString();
+    }
+
+    /** 解码失败一律退回 {@link #none()}，不抛。 */
+    public static OfflineVerdict decode(String s) {
+        if (s == null || s.isEmpty()) return none();
+        String[] f = s.split("(?<!\\\\)\\" + SEP, -1);
+        if (f.length < 13 || !FORMAT.equals(f[0])) return none();
+        State st;
+        try {
+            st = State.valueOf(f[1]);
+        } catch (Throwable t) {
+            return none();
+        }
+        long dictSize = parseLong(f[7]);
+        long tested = parseLong(f[8]);
+        long elapsed = parseLong(f[9]);
+        long finished = parseLong(f[10]);
+        OfflineVerdict v = new OfflineVerdict(st, unesc(f[2]), unesc(f[3]), unesc(f[4]),
+                unesc(f[5]), unesc(f[6]), dictSize, tested, elapsed, finished,
+                unesc(f[11]), unesc(f[12]));
+        return v.consistent() ? v : none();
+    }
+
+    private static long parseLong(String s) {
+        try {
+            return Long.parseLong(s.trim());
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /** 给日志用的一行（**不含密码明文**）。 */
+    public String logLine() {
+        switch (state) {
+            case HIT:
+                return String.format(Locale.ROOT, "命中（字典第 %d 位）", tested);
+            case MISS:
+                return String.format(Locale.ROOT, "未命中：跑完 %d 条", tested);
+            case CANCELLED:
+                return String.format(Locale.ROOT, "已取消：跑到 %d / %d", tested, dictSize);
+            case BAD_MATERIAL:
+                return "材料异常，未执行：" + note;
+            case FAILED:
+                return "执行失败：" + note;
+            default:
+                return "";
+        }
+    }
+}

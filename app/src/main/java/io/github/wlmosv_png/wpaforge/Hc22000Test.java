@@ -29,8 +29,13 @@ public class Hc22000Test {
     }
 
     private static String eapolHex() {
+        byte[] b = new byte[140];
+        for (int i = 0; i < b.length; i++) b[i] = (byte) ((i * 7) & 0xFF);
+        // 22000 约定：帧里的 MIC 字段必须是零（导出时抹掉，校验时重算）。
+        // 自造帧也要遵守，否则会被引擎的材料守卫正当拦下。
+        for (int i = Hc22000.EAPOL_MIC_OFFSET; i < Hc22000.EAPOL_MIC_OFFSET + 16; i++) b[i] = 0;
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 120; i++) sb.append(String.format("%02x", (i * 7) & 0xFF));
+        for (byte x : b) sb.append(String.format("%02x", x));
         return sb.toString();
     }
 

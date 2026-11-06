@@ -68,9 +68,18 @@ public final class OfflineImport {
         public final int unsupported;
         public final int pmkid;
         public final int eapol;
+        /** 材料字节数（读取阶段实际读到的长度）；失败时为 0。 */
+        public final long bytes;
+        /** 材料原始字节的 SHA-256（小写十六进制）；拿不到时为空串。 */
+        public final String sha256;
 
         Result(Status status, List<Hc22000.Entry> entries, int lines, int comments,
                int bad, int unsupported, int pmkid, int eapol) {
+            this(status, entries, lines, comments, bad, unsupported, pmkid, eapol, 0, "");
+        }
+
+        Result(Status status, List<Hc22000.Entry> entries, int lines, int comments,
+               int bad, int unsupported, int pmkid, int eapol, long bytes, String sha256) {
             this.status = status;
             this.entries = entries;
             this.lines = lines;
@@ -79,6 +88,8 @@ public final class OfflineImport {
             this.unsupported = unsupported;
             this.pmkid = pmkid;
             this.eapol = eapol;
+            this.bytes = bytes;
+            this.sha256 = sha256 == null ? "" : sha256;
         }
 
         public boolean ok() {
@@ -93,7 +104,17 @@ public final class OfflineImport {
 
     /** 失败结果的快捷构造。 */
     public static Result fail(Status status) {
-        return new Result(status, new ArrayList<Hc22000.Entry>(), 0, 0, 0, 0, 0, 0);
+        return fail(status, 0, "");
+    }
+
+    /** 失败结果，带已读到的字节数（{@code TOO_LARGE} 时要让用户看到到底多大）。 */
+    public static Result fail(Status status, long bytes) {
+        return fail(status, bytes, "");
+    }
+
+    public static Result fail(Status status, long bytes, String sha256) {
+        return new Result(status, new ArrayList<Hc22000.Entry>(), 0, 0, 0, 0, 0, 0,
+                Math.max(0, bytes), sha256);
     }
 
     // ------------------------------------------------------------------ 解析阶段
@@ -105,6 +126,12 @@ public final class OfflineImport {
      * 注释行与空行不计入坏行 —— 这两种在真实导出文件里很常见，不该把整份材料拖成失败。
      */
     public static Result analyze(String text) {
+        byte[] rawBytes = text == null ? new byte[0]
+                : text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return analyze(text, rawBytes.length, DictSnapshot.sha256OfBytes(rawBytes));
+    }
+
+    private static Result analyze(String text, long bytes, String sha) {
         List<Hc22000.Entry> entries = new ArrayList<Hc22000.Entry>();
         int lines = 0, comments = 0, bad = 0, unsupported = 0;
 
@@ -146,7 +173,8 @@ public final class OfflineImport {
         int eapol = entries.size() - pmkid;
 
         if (!entries.isEmpty()) {
-            return new Result(Status.OK, entries, lines, comments, bad, unsupported, pmkid, eapol);
+            return new Result(Status.OK, entries, lines, comments, bad, unsupported,
+                    pmkid, eapol, bytes, sha);
         }
         if (lines == 0 && comments == 0) return fail(Status.EMPTY);
         if (unsupported > 0) return fail(Status.UNSUPPORTED);
@@ -164,10 +192,12 @@ public final class OfflineImport {
         int total = 0;
         while ((n = in.read(buf)) > 0) {
             total += n;
-            if (total > MAX_BYTES) return fail(Status.TOO_LARGE);
+            if (total > MAX_BYTES) return fail(Status.TOO_LARGE, total);
             bos.write(buf, 0, n);
         }
-        return analyze(new String(bos.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+        byte[] raw = bos.toByteArray();
+        return analyze(new String(raw, java.nio.charset.StandardCharsets.UTF_8),
+                raw.length, DictSnapshot.sha256OfBytes(raw));
     }
 
     // ------------------------------------------------------------------ 读取阶段

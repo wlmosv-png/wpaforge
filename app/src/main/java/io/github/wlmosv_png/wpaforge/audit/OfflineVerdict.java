@@ -35,7 +35,13 @@ public final class OfflineVerdict {
     }
 
     private static final char SEP = '|';
-    private static final String FORMAT = "v1";
+    /** 当前写盘格式。v1 = 13 字段（1.9.43），v2 = 17 字段（1.9.44，加字典指纹）。 */
+    private static final String FORMAT = "v2";
+    private static final String FORMAT_V1 = "v1";
+    /** v2 的字段数。 */
+    private static final int FIELDS_V2 = 17;
+    /** v1 的字段数，仍要能读 —— 升级不让用户丢掉上一次的结果卡。 */
+    private static final int FIELDS_V1 = 13;
 
     public final State state;
     /** 材料文件名（可能是 URI 末段） */
@@ -59,9 +65,31 @@ public final class OfflineVerdict {
     /** 取消原因 / 失败原因 / 材料缺什么；其余状态为空 */
     public final String note;
 
+    /**
+     * 本次实际使用的字典来源代码（{@code profile} / {@code generic} / {@code file}）。
+     *
+     * <p>1.9.44 起记在结果里：只有名字与条数时，事后无法证明「这次跑的到底是哪一份内容」。
+     */
+    public final String dictSource;
+    /** 本次实际使用的字典**内容指纹**（{@link DictSnapshot#fingerprint()}）。 */
+    public final String dictFingerprint;
+    /** 本次实际使用的字典文件路径；未落盘为空串。 */
+    public final String dictPath;
+    /** 本次实际使用的字典**文件指纹**；未落盘为空串。 */
+    public final String dictFileId;
+
     public OfflineVerdict(State state, String fileName, String materialKind, String ssid,
                           String apMac, String dictName, long dictSize, long tested,
                           long elapsedMs, long finishedAt, String hitPassword, String note) {
+        this(state, fileName, materialKind, ssid, apMac, dictName, dictSize, tested,
+                elapsedMs, finishedAt, hitPassword, note, "", "", "", "");
+    }
+
+    public OfflineVerdict(State state, String fileName, String materialKind, String ssid,
+                          String apMac, String dictName, long dictSize, long tested,
+                          long elapsedMs, long finishedAt, String hitPassword, String note,
+                          String dictSource, String dictFingerprint,
+                          String dictPath, String dictFileId) {
         this.state = state == null ? State.NONE : state;
         this.fileName = nz(fileName);
         this.materialKind = nz(materialKind);
@@ -74,6 +102,10 @@ public final class OfflineVerdict {
         this.finishedAt = finishedAt;
         this.hitPassword = nz(hitPassword);
         this.note = nz(note);
+        this.dictSource = nz(dictSource);
+        this.dictFingerprint = nz(dictFingerprint);
+        this.dictPath = nz(dictPath);
+        this.dictFileId = nz(dictFileId);
     }
 
     private static String nz(String s) {
@@ -173,7 +205,7 @@ public final class OfflineVerdict {
 
     /** 编成一行的持久化串。 */
     public String encode() {
-        StringBuilder sb = new StringBuilder(192);
+        StringBuilder sb = new StringBuilder(256);
         sb.append(FORMAT).append(SEP);
         sb.append(state.name()).append(SEP);
         sb.append(esc(fileName)).append(SEP);
@@ -186,15 +218,26 @@ public final class OfflineVerdict {
         sb.append(elapsedMs).append(SEP);
         sb.append(finishedAt).append(SEP);
         sb.append(esc(hitPassword)).append(SEP);
-        sb.append(esc(note));
+        sb.append(esc(note)).append(SEP);
+        sb.append(esc(dictSource)).append(SEP);
+        sb.append(esc(dictFingerprint)).append(SEP);
+        sb.append(esc(dictPath)).append(SEP);
+        sb.append(esc(dictFileId));
         return sb.toString();
     }
 
-    /** 解码失败一律退回 {@link #none()}，不抛。 */
+    /**
+     * 解码失败一律退回 {@link #none()}，不抛。
+     *
+     * <p>同时接受 v1（1.9.43 写入的 13 字段）与 v2（17 字段）—— 版本升级不该
+     * 让用户把上一次的结果卡丢掉。
+     */
     public static OfflineVerdict decode(String s) {
         if (s == null || s.isEmpty()) return none();
         String[] f = s.split("(?<!\\\\)\\" + SEP, -1);
-        if (f.length < 13 || !FORMAT.equals(f[0])) return none();
+        boolean v1 = FORMAT_V1.equals(f[0]) && f.length >= FIELDS_V1;
+        boolean v2 = FORMAT.equals(f[0]) && f.length >= FIELDS_V2;
+        if (!v1 && !v2) return none();
         State st;
         try {
             st = State.valueOf(f[1]);
@@ -207,7 +250,9 @@ public final class OfflineVerdict {
         long finished = parseLong(f[10]);
         OfflineVerdict v = new OfflineVerdict(st, unesc(f[2]), unesc(f[3]), unesc(f[4]),
                 unesc(f[5]), unesc(f[6]), dictSize, tested, elapsed, finished,
-                unesc(f[11]), unesc(f[12]));
+                unesc(f[11]), unesc(f[12]),
+                v2 ? unesc(f[13]) : "", v2 ? unesc(f[14]) : "",
+                v2 ? unesc(f[15]) : "", v2 ? unesc(f[16]) : "");
         return v.consistent() ? v : none();
     }
 

@@ -164,9 +164,13 @@ public class ThemeConsistencyTest {
 
         System.out.println("== T7 页面分组（卡片化）==");
         String maFull = read(SRC + "MainActivity.java");
+        // 2026-11-06（1.9.44）：审计页重做成五步工作台，卡片容器随之改名：
+        // ①材料 matCard / ②诊断 diagCard / ③字典 dictCard / ④执行 runCard /
+        // ⑤结果 resultCard / 运行记录 logCard / 口令强度 checkCard。
+        // 这里同步换成新名字 —— 断言的本意（每块区域都是一张分组卡）不变。
         for (String card : new String[]{"radarCard", "barsCard", "chanCard", "adviceBoxRef",
-                "dictCard", "checkCard", "offCard", "wpsTargetCard", "wpsModeCard",
-                "wpsProgressCard"}) {
+                "matCard", "diagCard", "dictCard", "runCard", "resultCard", "logCard",
+                "checkCard", "wpsTargetCard", "wpsModeCard", "wpsProgressCard"}) {
             ok("MainActivity 有分组卡 " + card, maFull != null && maFull.contains(card));
         }
         ok("筛选片有选中态刷新（renderFilterChips）",

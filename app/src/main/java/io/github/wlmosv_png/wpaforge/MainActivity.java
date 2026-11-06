@@ -152,14 +152,47 @@ public class MainActivity extends Activity {
     private TextView modeInfo;
     /** 设置页里的“当前模式能不能用”小字 */
     private TextView modeReadyLabel;
-    private TextView auditLog;
-    /** 强度检查的就地结论（与写进日志的那条同源）。 */
-    private TextView auditCheckResult;
-    /** 审计页日志是否已经写过内容（用于空状态占位：写第一条时要把占位清掉）。 */
-    private boolean auditLogTouched = false;
     /** 离线校验是否在跑（同一时间只允许一条） */
     private boolean offlineBusy = false;
     private List<Candidate> currentDict;
+
+    // ================= 审计工作台（1.9.44） =================
+    /** 五步工作流状态机：谁该做、能不能开始、用哪本字典，全在它里面。 */
+    private final io.github.wlmosv_png.wpaforge.audit.AuditWorkflow workbench =
+            new io.github.wlmosv_png.wpaforge.audit.AuditWorkflow();
+    /** 已导入的材料条目（按文件顺序）。 */
+    private java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> offEntries;
+    /** 哪些材料条目被展开看详情。 */
+    private final java.util.Set<Integer> diagOpen = new java.util.HashSet<Integer>();
+    /** 五步状态条 / 总览 / ①材料 / ②诊断 / ③字典 / ④执行 的容器。 */
+    private LinearLayout auditFlowStrip, auditOverviewBox, auditMatBox, auditDiagBox,
+            auditDictBox, auditRunBox, auditIntroBox, auditChanStrip, auditRecBox,
+            strengthRecBox;
+    /** 五步状态条的跳转锚点卡片。 */
+    private final View[] auditStepCards = new View[5];
+    private Button auditIntroToggle, auditStartBtn, auditStopBtn, auditDeriveMat;
+    private TextView auditBlocker;
+    /** 「离线校验是什么？」是否展开（持久化）。 */
+    private boolean offIntroOpen = true;
+    /** 当前查看的运行记录频道。 */
+    private io.github.wlmosv_png.wpaforge.audit.RunLog.Op logChannel =
+            io.github.wlmosv_png.wpaforge.audit.RunLog.Op.OFFLINE;
+    /** 上次字典恢复失败的说明（空 = 没问题）。 */
+    private String dictRestoreNote = "";
+    /** 「按材料 SSID 派生」当前指向的 SSID。 */
+    private String auditMaterialSsid = "";
+    /**
+     * 步骤 ② 最多画多少张材料卡。
+     *
+     * <p>22000 上限 4 MB，一行不到 100 字节 —— 一份完整抓包文件里完全可能有
+     * 上万条握手。逐条建 View 会直接卡死界面（实测：这是最容易忽略的一处
+     * 「数据量决定渲染量」）。所以只画前 {@value} 张，其余给一个入口。
+     */
+    private static final int MAX_DIAG_CARDS = 40;
+    /** 选条目对话框最多列多少条（同样是为了不把界面拖死）。 */
+    private static final int MAX_PICK_ITEMS = 200;
+    /** 运行时那一行实时进度（只在跑的时候存在）。 */
+    private TextView auditLive;
 
     // ================= 离线校验 / 运行记录（1.9.43） =================
     /** 结构化运行记录：离线与口令强度两个频道互不干扰。 */
@@ -180,12 +213,9 @@ public class MainActivity extends Activity {
     private String offlineFileName = "";
     /** 离线日志滚动容器（判断是否该自动滚底）。 */
     private ScrollView auditLogScroll;
-    /** 口令强度评估自己的日志 —— 与离线校验彻底分开。 */
-    private TextView strengthLog;
+    /** 口令强度评估自己的记录区（与离线校验彻底分开）。 */
     private ScrollView strengthLogScroll;
-    /** 审计总览文本。 */
-    private TextView auditOverview;
-    /** 「选择材料文件」按钮；busy 时它变成「停止比对」。 */
+    /** 「导入材料」按钮（busy 时弱化，不再兼任停止按钮）。 */
     private Button offPick;
     private String currentDictName = "";
     /**
@@ -3665,172 +3695,242 @@ public class MainActivity extends Activity {
     // ---------------- 审计页 ----------------
 
     /**
-     * 审计页 —— 2026-10-24 重做。
+     * 审计页 —— 1.9.44 产品级重做：五步工作台。
      *
-     * <h3>为什么重做</h3>
-     * 上一版是四五个占满宽度的胶囊按钮竖着排：每个都像主操作，按钮墙把页面撑得
-     * 很长，而且「评估」这种一次性的小动作也用整行大按钮，层级混乱（用户反馈
-     * "感觉这个还不够软件美学"）。现在：
-     * <ul>
-     *   <li>字典入口改成**行式**（与设置页同一套行结构与箭头）；</li>
-     *   <li>强度检查：输入框与「评估」按钮**同一行** —— 输入与动作是一件事；</li>
-     *   <li>评估结果**就地显示**一行结论（与写进日志的那条结论同源同文案）；</li>
-     *   <li>离线校验：说明块 + 一行入口；</li>
-     *   <li>日志区改成终端卡：等宽、下沉底、带标题与空状态引导。</li>
-     * </ul>
+     * <h3>为什么再改一次</h3>
+     * 上一版（1.9.43）解决了「能不能停、结果丢不丢、日志有没有时间」，但用户拿到的
+     * 仍是一个**功能堆**：一段说明 + 一堆行入口 + 两个日志框。普通用户看完还是不知道
+     * 「这个页面是干什么的、该按什么顺序点、现在用的是哪本字典、跑出来的结果什么意思」。
      *
-     * <p>所有回调、字典来源、判定语义与文案内容**与改版前一致**。
+     * <h3>现在的结构（自上而下，一条主线）</h3>
+     * <pre>
+     *   审计总览       五步状态条 + 五条现状（状态／字典／材料／最近结果／待处理）
+     *   ① 导入材料     系统文件选择器 → 文件名 · 大小 · SHA-256 · 记录数 · PMKID／EAPOL
+     *   ② 材料诊断     每条材料独立成卡，可展开看字段；状态四分
+     *   ③ 选择字典     当前字典（名 · 来源 · 条数 · 内容指纹 · 文件指纹）+ 入口
+     *   ④ 开始校验     离线校验说明（可折叠）+ 执行前摘要 + 开始／停止
+     *   ⑤ 结果         常驻结果卡（含字典指纹）
+     *   运行记录       四个频道（离线／强度／字典／其他），点开看详情
+     *   口令强度评估   与离线校验彻底分开
+     *   恢复状态       默认折叠，有待处理项时才提醒
+     * </pre>
+     *
+     * <p>回调、字典来源、判定语义、triedSet/cursor 规则**与改版前一致** ——
+     * 这一版只重排信息架构与交互顺序，并把「本次到底跑哪本字典」钉成
+     * {@link io.github.wlmosv_png.wpaforge.audit.AuditWorkflow} 里的快照。
      */
     private void buildAuditTab() {
         if (radar != null) radar.stopSpin();
+        pageAudit.removeAllViews();
 
         // 结果卡跨进程保留：每次重建审计页都从持久层取一次。
         lastVerdict = io.github.wlmosv_png.wpaforge.OfflineRunStore.load(this);
+        restoreDictIfPossible();
 
-        // ---------------- 审计总览 ----------------
-        // 一进来先看到「现在是什么状态」，而不是先看一堆操作。
+        // ================= 审计总览 =================
         pageAudit.addView(sectionLabel(L.s("审计总览", "Audit overview")));
         LinearLayout overviewCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        auditOverview = new TextView(this);
-        auditOverview.setTextSize(AmberTheme.FS_BODY);
-        auditOverview.setTextColor(TEXT);
-        auditOverview.setLineSpacing(px(5), 1f);
-        overviewCard.addView(auditOverview);
+
+        auditFlowStrip = new LinearLayout(this);
+        auditFlowStrip.setOrientation(LinearLayout.HORIZONTAL);
+        overviewCard.addView(auditFlowStrip);
+
+        auditOverviewBox = new LinearLayout(this);
+        auditOverviewBox.setOrientation(LinearLayout.VERTICAL);
+        overviewCard.addView(auditOverviewBox, topGap(14));
+        auditStepCards[0] = overviewCard;
         pageAudit.addView(overviewCard);
 
-        // ---------------- 离线校验 ----------------
-        pageAudit.addView(sectionLabel(L.s("离线校验（外部材料）",
-                "Offline check (external capture)")));
-        LinearLayout offCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        // ================= ① 导入材料 =================
+        pageAudit.addView(sectionLabel(L.s("① 导入 Wi-Fi 握手材料",
+                "① Import Wi-Fi material")));
+        LinearLayout matCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        matCard.addView(hintBox(L.s(
+                "支持 hashcat 22000 格式：.hc22000 / .22000。\n"
+                        + "材料由电脑侧抓包工具导出（hcxdumptool / hcxpcapngtool / aircrack-ng）。\n"
+                        + "用系统文件选择器从任意目录取文件，不需要任何存储权限。",
+                "hashcat 22000 format: .hc22000 / .22000.\n"
+                        + "Exported by a desktop capture tool (hcxdumptool / hcxpcapngtool / "
+                        + "aircrack-ng).\n"
+                        + "Pick it anywhere with the system file picker - no storage permission "
+                        + "needed.")));
 
-        TextView offHint = new TextView(this);
-        offHint.setText(L.s(
-                "材料由电脑侧抓包工具导出，手机端只做本地比对 —— 不会发起任何关联请求。\n"
-                        + "支持 hashcat 22000 格式（.hc22000 / .22000）。用系统文件选择器从任意目录取文件，"
-                        + "不需要存储权限。",
-                "Material comes from a desktop capture tool; the phone only compares locally.\n"
-                        + "hashcat 22000 (.hc22000 / .22000). Pick it anywhere with the system file picker — "
-                        + "no storage permission needed."));
-        offHint.setTextSize(AmberTheme.FS_SMALL);
-        offHint.setTextColor(TEXT_DIM);
-        offHint.setLineSpacing(px(5), 1f);
-        offHint.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
-        offHint.setPadding(px(14), px(13), px(14), px(13));
-        offCard.addView(offHint);
+        offPick = rowAction(L.s("用系统文件选择器导入材料",
+                "Import material with the system file picker"));
+        offPick.setOnClickListener(v -> showOfflinePicker());
+        matCard.addView(groupDivider(10));
+        matCard.addView(offPick);
 
-        // 同一个按钮两种身份：空闲时是「选材料」，跑起来就是「停止比对」。
-        offPick = rowActionPlain(L.s("选择材料文件，跑当前字典   ›",
-                "Pick a capture file, run the current dictionary   ›"));
-        offPick.setOnClickListener(v -> {
-            if (offlineBusy) stopOfflineRun();
-            else showOfflinePicker();
-        });
-        offCard.addView(groupDivider(10));
-        offCard.addView(offPick);
+        Button scanDl = rowAction(L.s("从 Download 目录扫描（备用）",
+                "Scan the Download folder (fallback)"));
+        scanDl.setOnClickListener(v -> showDownloadScan());
+        matCard.addView(groupDivider(2));
+        matCard.addView(scanDl);
 
-        // 常驻结果卡：跨页面、跨进程都不丢。
-        offResult = new LinearLayout(this);
-        offResult.setOrientation(LinearLayout.VERTICAL);
-        offCard.addView(offResult, topGap(12));
-        pageAudit.addView(offCard);
+        auditMatBox = new LinearLayout(this);
+        auditMatBox.setOrientation(LinearLayout.VERTICAL);
+        matCard.addView(auditMatBox);
+        auditStepCards[1] = matCard;
+        pageAudit.addView(matCard);
 
-        // ---------------- 离线校验记录 ----------------
-        pageAudit.addView(sectionLabel(L.s("离线校验记录", "Offline run log")));
-        LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        // ================= ② 材料诊断 =================
+        pageAudit.addView(sectionLabel(L.s("② 检查材料是否可以使用",
+                "② Check whether the material works")));
+        LinearLayout diagCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        diagCard.addView(hintBox(L.s(
+                "每条材料独立判断。只看字段非空是不够的 —— 字段格式错、nonce 全零、"
+                        + "MIC 字段没被抹掉，都会让比对结果毫无意义，所以这些情况一律拦下，"
+                        + "不会伪装成「密码未命中」。",
+                "Each entry is judged on its own. Non-empty fields are not enough - a bad field "
+                        + "format, an all-zero nonce or an un-scrubbed MIC field makes the result "
+                        + "meaningless, so those are blocked instead of disguised as a miss.")));
+        auditDiagBox = new LinearLayout(this);
+        auditDiagBox.setOrientation(LinearLayout.VERTICAL);
+        diagCard.addView(auditDiagBox, topGap(10));
+        auditStepCards[2] = diagCard;
+        pageAudit.addView(diagCard);
 
-        TextView logHint = new TextView(this);
-        logHint.setText(L.s("每条都带时间与级别；新记录会滚到底，往上翻历史时不会被打断。",
-                "Each line carries a timestamp and a level; new lines auto-scroll unless you scrolled up."));
-        logHint.setTextSize(AmberTheme.FS_SMALL);
-        logHint.setTextColor(AmberTheme.TEXT_FAINT);
-        logHint.setLineSpacing(px(4), 1f);
-        logCard.addView(logHint);
-
-        auditLog = new TextView(this);
-        auditLog.setTextSize(AmberTheme.FS_SMALL);
-        auditLog.setTextColor(AmberTheme.TERM_FG);
-        auditLog.setTypeface(Typeface.MONOSPACE);
-        auditLog.setLineSpacing(px(4), 1f);
-        auditLog.setPadding(px(12), px(12), px(12), px(12));
-
-        auditLogScroll = new ScrollView(this);
-        auditLogScroll.setBackground(roundBgStatic(AmberTheme.TERM_BG, AmberTheme.RADIUS_CHIP));
-        auditLogScroll.addView(auditLog);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(200));
-        alp.topMargin = px(10);
-        logCard.addView(auditLogScroll, alp);
-
-        Button clearOfflineLog = rowAction(L.s("清空离线记录", "Clear offline log"));
-        clearOfflineLog.setOnClickListener(v -> {
-            runLog.offline.clear();
-            renderOfflineLog();
-            Toast.makeText(this, L.s("已清空（最近结果保留）", "Cleared (last result kept)"),
-                    Toast.LENGTH_SHORT).show();
-        });
-        logCard.addView(groupDivider(10));
-        logCard.addView(clearOfflineLog);
-        pageAudit.addView(logCard);
-
-        // ---------------- 字典 ----------------
-        pageAudit.addView(sectionLabel(L.s("字典", "Dictionary")));
+        // ================= ③ 选择字典 =================
+        pageAudit.addView(sectionLabel(L.s("③ 选择候选口令字典",
+                "③ Pick a candidate dictionary")));
         LinearLayout dictCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-
+        auditDictBox = new LinearLayout(this);
+        auditDictBox.setOrientation(LinearLayout.VERTICAL);
+        dictCard.addView(auditDictBox);
         dictStatus = new TextView(this);
-        dictStatus.setTextSize(AmberTheme.FS_TITLE);
-        dictStatus.setTextColor(TEXT);
-        dictStatus.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        dictStatus.setSingleLine(false);
-        dictCard.addView(dictStatus);
-        updateDictStatus();
+        dictStatus.setTextSize(AmberTheme.FS_SMALL);
+        dictStatus.setTextColor(AmberTheme.TEXT_FAINT);
+        dictStatus.setLineSpacing(px(4), 1f);
+        dictCard.addView(dictStatus, topGap(4));
+
+        Button load = rowAction(L.s("更换字典（从字典管理里选）", "Change dictionary"));
+        load.setOnClickListener(v -> showDictPicker());
+        dictCard.addView(groupDivider(10));
+        dictCard.addView(load);
 
         Button manage = rowAction(L.s("打开字典管理", "Manage dictionaries"));
         manage.setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, DictActivity.class)));
-        dictCard.addView(groupDivider(10));
+        dictCard.addView(groupDivider(2));
         dictCard.addView(manage);
 
-        Button load = rowAction(L.s("加载字典文件", "Load dictionary file"));
-        load.setOnClickListener(v -> showDictPicker());
-        dictCard.addView(groupDivider(2));
-        dictCard.addView(load);
-
         Button gen = rowAction(L.s("内置生成器（快速）", "Built-in generator (quick)"));
-        gen.setOnClickListener(v -> {
-            new Thread(() -> {
-                DictGenerator g = DictGenerator.quick(100000);
-                currentDict = g.build();
-                ui.post(() -> {
-                    currentDictName = L.s("内置生成器", "Built-in generator");
-                    currentDictPath = "";
-                    updateDictStatus();
-                    appendLog(L.s("已生成 ", "Generated ") + currentDict.size()
-                            + L.s(" 条候选", " candidates"));
-                    appendLog(L.s("构成: ", "Breakdown: ") + renderStats(g.stats()));
-                    refreshAuditOverview();
-                });
-            }).start();
-        });
+        gen.setOnClickListener(v -> buildGenericDictFromAudit());
         dictCard.addView(groupDivider(2));
         dictCard.addView(gen);
 
-        Button derive = rowAction(L.s("按目标派生（选目标）", "Derive from target (pick one)"));
-        derive.setOnClickListener(v -> pickTargetForDerive());
+        Button derive = rowAction(L.s("按目标派生（选一个扫描到的网络）",
+                "Derive from target (pick a scanned network)"));
+        derive.setOnClickListener(v -> pickTargetForDerive(true));
         dictCard.addView(groupDivider(2));
         dictCard.addView(derive);
+
+        auditDeriveMat = rowAction("");
+        auditDeriveMat.setOnClickListener(v -> confirmDeriveFromMaterial());
+        dictCard.addView(groupDivider(2));
+        dictCard.addView(auditDeriveMat);
+        auditStepCards[3] = dictCard;
         pageAudit.addView(dictCard);
 
-        // ---------------- 口令强度检查（自带日志，与离线校验分开） ----------------
-        pageAudit.addView(sectionLabel(L.s("口令强度检查", "Passphrase strength check")));
+        // ================= ④ 开始离线校验 =================
+        pageAudit.addView(sectionLabel(L.s("④ 开始离线校验", "④ Run the offline check")));
+        LinearLayout runCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+
+        auditIntroToggle = rowActionPlain("");
+        auditIntroToggle.setOnClickListener(v -> {
+            offIntroOpen = !offIntroOpen;
+            Prefs.setAuditIntroOpen(this, offIntroOpen);
+            renderAuditIntro();
+        });
+        runCard.addView(auditIntroToggle);
+
+        auditIntroBox = new LinearLayout(this);
+        auditIntroBox.setOrientation(LinearLayout.VERTICAL);
+        runCard.addView(auditIntroBox);
+
+        auditRunBox = new LinearLayout(this);
+        auditRunBox.setOrientation(LinearLayout.VERTICAL);
+        runCard.addView(auditRunBox, topGap(4));
+
+        auditBlocker = new TextView(this);
+        auditBlocker.setTextSize(AmberTheme.FS_SMALL);
+        auditBlocker.setLineSpacing(px(4), 1f);
+        auditBlocker.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        auditBlocker.setPadding(px(13), px(11), px(13), px(11));
+        runCard.addView(auditBlocker, topGap(10));
+
+        auditStartBtn = AmberTheme.action(this, dp,
+                L.s("开始离线校验", "Run the offline check"), AmberTheme.BTN_PRIMARY);
+        auditStartBtn.setOnClickListener(v -> startOfflineRun());
+        runCard.addView(auditStartBtn, topGap(10));
+
+        auditStopBtn = AmberTheme.action(this, dp,
+                L.s("停止比对   \u25a0", "Stop   \u25a0"), AmberTheme.BTN_DANGER);
+        auditStopBtn.setOnClickListener(v -> stopOfflineRun());
+        runCard.addView(auditStopBtn, topGap(6));
+        auditStepCards[4] = runCard;
+        pageAudit.addView(runCard);
+
+        // ================= ⑤ 结果 =================
+        pageAudit.addView(sectionLabel(L.s("⑤ 离线校验结果", "⑤ Offline check result")));
+        LinearLayout resultCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        resultCard.addView(hintBox(L.s(
+                "结果卡是常驻的：切换页面、重开应用都还在，而且记下了本次实际使用的"
+                        + "字典指纹与材料摘要，事后可以核对。",
+                "The result card is permanent: it survives page switches and restarts, and it "
+                        + "records the dictionary fingerprint and material digest actually used.")));
+        offResult = new LinearLayout(this);
+        offResult.setOrientation(LinearLayout.VERTICAL);
+        resultCard.addView(offResult, topGap(10));
+        pageAudit.addView(resultCard);
+
+        // ================= 运行记录 =================
+        pageAudit.addView(sectionLabel(L.s("运行记录", "Run records")));
+        LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        logCard.addView(hintBox(L.s(
+                "按操作类型分成四个频道。每条记录 = 时间 · 状态 · 对象 · 简短结果，"
+                        + "点一下看完整日志；新记录自动滚到底，往上翻历史时不会被打断。",
+                "Split into four channels by operation type. Each record = time · status · "
+                        + "subject · result; tap for the full log. New lines auto-scroll unless "
+                        + "you scrolled up.")));
+
+        auditChanStrip = new LinearLayout(this);
+        auditChanStrip.setOrientation(LinearLayout.HORIZONTAL);
+        logCard.addView(auditChanStrip, topGap(10));
+
+        auditRecBox = new LinearLayout(this);
+        auditRecBox.setOrientation(LinearLayout.VERTICAL);
+        auditRecBox.setPadding(px(12), px(12), px(12), px(12));
+        auditLogScroll = new ScrollView(this);
+        auditLogScroll.setBackground(roundBgStatic(AmberTheme.TERM_BG, AmberTheme.RADIUS_CHIP));
+        auditLogScroll.addView(auditRecBox);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(168));
+        alp.topMargin = px(10);
+        logCard.addView(auditLogScroll, alp);
+
+        Button clearChan = rowAction(L.s("清空本频道记录", "Clear this channel"));
+        clearChan.setOnClickListener(v -> {
+            runLog.clearChannel(logChannel);
+            renderChannelRecords();
+            Toast.makeText(this, L.s("已清空本频道（结果卡与正在跑的任务不受影响）",
+                            "Channel cleared (result card and running task untouched)"),
+                    Toast.LENGTH_SHORT).show();
+        });
+        logCard.addView(groupDivider(10));
+        logCard.addView(clearChan);
+        pageAudit.addView(logCard);
+
+        // ================= 口令强度评估（与离线校验分开） =================
+        pageAudit.addView(sectionLabel(L.s("口令强度评估", "Passphrase strength")));
         LinearLayout checkCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
-        TextView checkHint = new TextView(this);
-        checkHint.setText(L.s("输入一个口令，看它在当前字典里的位置（第几位 = 多快被猜出来）",
-                "Type a passphrase to see its rank in the current dictionary"));
-        checkHint.setTextSize(AmberTheme.FS_BODY);
-        checkHint.setTextColor(TEXT_DIM);
-        checkHint.setLineSpacing(px(4), 1f);
-        checkCard.addView(checkHint);
+        checkCard.addView(hintBox(L.s(
+                "这是对你输入的口令做强度与位次分析（它会多快被猜出来），"
+                        + "不是对握手材料执行离线校验 —— 两件事互不相干，日志也分开。",
+                "This analyses a passphrase you type (how fast it would be guessed); it is NOT "
+                        + "an offline check against handshake material. The two are unrelated and "
+                        + "keep separate logs.")));
 
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -3868,36 +3968,39 @@ public class MainActivity extends Activity {
             String pw = input.getText().toString();
             if (pw.isEmpty()) return;
             long rank = AuditEngine.rankOf(currentDict, pw);
+            String masked = io.github.wlmosv_png.wpaforge.ui.Redact.pw(pw);
+            String dn = dictNameNow();
+            long dn2 = dictCount();
             if (rank > 0) {
                 checkResult.setText(L.f("命中: 在字典第 %d 位 —— 弱口令",
-                        "Hit: rank %d — weak passphrase", rank));
+                        "Hit: rank %d - weak passphrase", rank));
                 checkResult.setTextColor(AmberTheme.WARN);
-                strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN,
-                        io.github.wlmosv_png.wpaforge.ui.Redact.pw(pw)
-                                + L.s("  在第 ", "  at rank ") + rank + L.s(" 位", ""));
+                strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN, masked,
+                        L.s("在第 ", "at rank ") + rank + L.s(" 位（弱口令）", " (weak)"),
+                        L.f("口令（已脱敏）: %s\n在「%s」中第 %d 位（共 %d 条）",
+                                "Passphrase (masked): %s\nRank %d of %d in \"%s\"",
+                                masked, dn, rank, dn2));
             } else {
                 checkResult.setText(L.s("未命中: 不在当前字典里",
                         "Not in the current dictionary"));
                 checkResult.setTextColor(AmberTheme.OK);
-                strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
-                        io.github.wlmosv_png.wpaforge.ui.Redact.pw(pw)
-                                + L.s("  不在字典中", "  not in dictionary"));
+                strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK, masked,
+                        L.s("不在字典中", "not in dictionary"),
+                        L.f("口令（已脱敏）: %s\n不在「%s」中（共 %d 条）",
+                                "Passphrase (masked): %s\nNot in \"%s\" (%d entries)",
+                                masked, dn, dn2));
             }
             checkResult.setVisibility(View.VISIBLE);
         });
 
-        strengthLog = new TextView(this);
-        strengthLog.setTextSize(AmberTheme.FS_SMALL);
-        strengthLog.setTextColor(AmberTheme.TERM_FG);
-        strengthLog.setTypeface(Typeface.MONOSPACE);
-        strengthLog.setLineSpacing(px(4), 1f);
-        strengthLog.setPadding(px(12), px(12), px(12), px(12));
-
+        strengthRecBox = new LinearLayout(this);
+        strengthRecBox.setOrientation(LinearLayout.VERTICAL);
+        strengthRecBox.setPadding(px(12), px(12), px(12), px(12));
         strengthLogScroll = new ScrollView(this);
         strengthLogScroll.setBackground(roundBgStatic(AmberTheme.TERM_BG, AmberTheme.RADIUS_CHIP));
-        strengthLogScroll.addView(strengthLog);
+        strengthLogScroll.addView(strengthRecBox);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(120));
+                ViewGroup.LayoutParams.MATCH_PARENT, px(104));
         slp.topMargin = px(10);
         checkCard.addView(strengthLogScroll, slp);
 
@@ -3910,7 +4013,7 @@ public class MainActivity extends Activity {
         checkCard.addView(clearStrength);
         pageAudit.addView(checkCard);
 
-        // ---------------- 恢复状态（折叠在最后） ----------------
+        // ================= 恢复状态（默认折叠） =================
         pageAudit.addView(sectionLabel(L.s("恢复状态", "Restore state")));
         restoreCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         restoreSummary = new TextView(this);
@@ -3935,13 +4038,847 @@ public class MainActivity extends Activity {
         restoreCard.addView(restoreToggle);
         pageAudit.addView(restoreCard);
 
+        // ---- 一次性渲染 ----
+        offIntroOpen = Prefs.auditIntroOpen(this);
+        renderAuditIntro();
         refreshRestoreCard();
-        refreshOfflineButton();
+        renderAudit();
         renderOfflineVerdict();
-        renderOfflineLog();
+        renderChannelRecords();
         renderStrengthLog();
-        refreshAuditOverview();
     }
+
+    // ---------------------------------------------------------------- 审计页渲染
+
+    /** 全部动态区一次性刷新（状态变了就调它，不重建整个页面）。 */
+    private void renderAudit() {
+        renderAuditFlow();
+        refreshAuditOverview();
+        renderAuditMaterial();
+        renderAuditDiag();
+        renderAuditDict();
+        renderAuditRun();
+    }
+
+    /** 五步状态条：一眼看出「做到哪一步、下一步是什么」。 */
+    private void renderAuditFlow() {
+        if (auditFlowStrip == null) return;
+        auditFlowStrip.removeAllViews();
+        io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.StepInfo[] steps =
+                workbench.steps(lastVerdict.hasResult());
+        String[] shortName = {
+                L.s("材料", "Mat."), L.s("诊断", "Chk."), L.s("字典", "Dict"),
+                L.s("校验", "Run"), L.s("结果", "Out")
+        };
+        String[] marks = {"\u2460", "\u2461", "\u2462", "\u2463", "\u2464"};
+        for (int i = 0; i < steps.length; i++) {
+            final int idx = i;
+            TextView chip = new TextView(this);
+            chip.setText(marks[i] + " " + shortName[i]);
+            chip.setTextSize(AmberTheme.FS_MICRO);
+            chip.setGravity(Gravity.CENTER);
+            chip.setSingleLine(true);
+            chip.setPadding(px(4), px(7), px(4), px(7));
+            int fg, bg;
+            switch (steps[i].state) {
+                case DONE:    fg = AmberTheme.OK;          bg = AmberTheme.OK_BG; break;
+                case READY:   fg = ON_ACCENT;              bg = ACCENT; break;
+                case ACTIVE:  fg = ON_ACCENT;              bg = AmberTheme.ACCENT_MID; break;
+                case BLOCKED: fg = AmberTheme.DANGER;      bg = AmberTheme.DANGER_BG; break;
+                default:      fg = AmberTheme.TEXT_FAINT;  bg = AmberTheme.CARD_2; break;
+            }
+            chip.setTextColor(fg);
+            chip.setBackground(roundBgStatic(bg, AmberTheme.RADIUS_CHIP));
+            chip.setOnClickListener(v -> scrollToAuditStep(idx));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lp.leftMargin = px(5);
+            auditFlowStrip.addView(chip, lp);
+        }
+    }
+
+    /** 点状态条跳到对应步骤卡片。 */
+    private void scrollToAuditStep(int index) {
+        if (index < 0 || index >= auditStepCards.length) return;
+        View v = auditStepCards[index];
+        if (v == null || mainScroll == null) return;
+        final int y = Math.max(0, v.getTop() + pageAudit.getTop() - px(8));
+        mainScroll.smoothScrollTo(0, y);
+    }
+
+    /** 审计总览：状态 / 字典 / 材料 / 最近结果 / 待处理。 */
+    private void refreshAuditOverview() {
+        if (auditOverviewBox == null) return;
+        auditOverviewBox.removeAllViews();
+        int pending = 0;
+        try {
+            pending = io.github.wlmosv_png.wpaforge.audit.RestoreAdmin.pendingCount();
+        } catch (Throwable ignored) {
+        }
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Row> rows =
+                workbench.overview(lastVerdict, pending);
+        for (int i = 0; i < rows.size(); i++) {
+            io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Row r = rows.get(i);
+            // 注意：不能给 addView 传 null 作为 LayoutParams ——
+            // 这一版 Android 的 ViewGroup.addViewInner 会走
+            // checkLayoutParams(null) -> generateLayoutParams(null) -> new LayoutParams(null)
+            // 直接 NPE（真机实测：点审计页即闪退）。第一行用 topGap(0) 而不是 null。
+            auditOverviewBox.addView(kvRowTone(r.label, r.value, toneColor(r.tone)),
+                    topGap(i == 0 ? 0 : 5));
+        }
+    }
+
+    private int toneColor(io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Tone t) {
+        switch (t) {
+            case OK:     return AmberTheme.OK;
+            case WARN:   return AmberTheme.WARN;
+            case DANGER: return AmberTheme.DANGER;
+            case DIM:    return AmberTheme.TEXT_FAINT;
+            default:     return TEXT_DIM;
+        }
+    }
+
+    /** 固定的说明块（下沉底）。 */
+    private View hintBox(String text) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(AmberTheme.FS_SMALL);
+        t.setTextColor(TEXT_DIM);
+        t.setLineSpacing(px(5), 1f);
+        t.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        t.setPadding(px(13), px(12), px(13), px(12));
+        return t;
+    }
+
+    /** 键值行（值可带语义色）。 */
+    private View kvRowTone(String k, String val, int color) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        TextView kk = new TextView(this);
+        kk.setText(k);
+        kk.setTextSize(AmberTheme.FS_SMALL);
+        kk.setTextColor(AmberTheme.TEXT_FAINT);
+        kk.setMinWidth(px(76));
+        row.addView(kk);
+        TextView vv = new TextView(this);
+        vv.setText(val);
+        vv.setTextSize(AmberTheme.FS_SMALL);
+        vv.setTextColor(color);
+        vv.setLineSpacing(px(3), 1f);
+        row.addView(vv, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        return row;
+    }
+
+    /** 状态胶囊。 */
+    private TextView chipView(String text, int fg, int bg) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(AmberTheme.FS_MICRO);
+        t.setTextColor(fg);
+        t.setSingleLine(true);
+        t.setPadding(px(8), px(4), px(8), px(4));
+        t.setBackground(roundBgStatic(bg, AmberTheme.RADIUS_CHIP));
+        return t;
+    }
+
+    private TextView dimLine(String s) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(AmberTheme.FS_SMALL);
+        t.setTextColor(AmberTheme.TEXT_FAINT);
+        t.setLineSpacing(px(4), 1f);
+        return t;
+    }
+
+    // ---- ① 材料卡 ----
+
+    private void renderAuditMaterial() {
+        if (auditMatBox == null) return;
+        auditMatBox.removeAllViews();
+        if (workbench.materialRecords() <= 0 && workbench.materialProblem().isEmpty()) {
+            auditMatBox.addView(dimLine(L.s("还没有导入材料。",
+                    "No material imported yet.")), topGap(12));
+            return;
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundBgStatic(AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
+        box.setPadding(px(13), px(12), px(13), px(12));
+
+        String name = workbench.materialName();
+        TextView title = new TextView(this);
+        title.setText(name.isEmpty() ? L.s("(未命名)", "(unnamed)") : name);
+        title.setTextSize(AmberTheme.FS_ACTION);
+        title.setTextColor(TEXT);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        box.addView(title);
+
+        if (!workbench.materialProblem().isEmpty()) {
+            box.addView(kvRowTone(L.s("结果", "Result"), workbench.materialProblem(),
+                    AmberTheme.DANGER), topGap(6));
+            auditMatBox.addView(box, topGap(12));
+            return;
+        }
+        box.addView(kvRowTone(L.s("大小", "Size"), fmtBytes(workbench.materialBytes()),
+                TEXT_DIM), topGap(6));
+        box.addView(kvRowTone("SHA-256", workbench.materialSha256().isEmpty()
+                ? "\u2014" : workbench.materialSha256(), TEXT_DIM), topGap(3));
+        box.addView(kvRowTone(L.s("记录数", "Records"),
+                workbench.materialRecords() + L.s(" 条", " entries"), TEXT_DIM), topGap(3));
+        box.addView(kvRowTone(L.s("构成", "Breakdown"),
+                "PMKID " + workbench.materialPmkid() + " \u00b7 EAPOL "
+                        + workbench.materialEapol(), TEXT_DIM), topGap(3));
+        auditMatBox.addView(box, topGap(12));
+    }
+
+    // ---- ② 诊断卡 ----
+
+    private void renderAuditDiag() {
+        if (auditDiagBox == null) return;
+        auditDiagBox.removeAllViews();
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> es = safeEntries();
+        if (es.isEmpty()) {
+            auditDiagBox.addView(dimLine(L.s("导入材料后，这里会逐条给出可用性结论。",
+                    "After importing, each entry gets its own verdict here.")));
+            return;
+        }
+        int drawn = Math.min(es.size(), MAX_DIAG_CARDS);
+        for (int i = 0; i < drawn; i++) {
+            final int idx = i;
+            final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = es.get(i);
+            final io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report rep =
+                    io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.examine(e);
+            final boolean ok = rep.executable;
+            final boolean selected = workbench.selectedIndex() == idx;
+            final boolean unsupported = rep.status()
+                    == io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Status.UNSUPPORTED;
+
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setBackground(roundBgStatic(selected ? AmberTheme.ACCENT_BG
+                    : AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
+            card.setPadding(px(13), px(11), px(13), px(11));
+
+            LinearLayout head = new LinearLayout(this);
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            head.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView tl = new TextView(this);
+            tl.setText((i + 1) + ". " + e.label());
+            tl.setTextSize(AmberTheme.FS_BODY);
+            tl.setTextColor(TEXT);
+            head.addView(tl, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            head.addView(chipView(rep.statusLabel(),
+                    ok ? AmberTheme.OK : (unsupported ? AmberTheme.TEXT_FAINT : AmberTheme.WARN),
+                    ok ? AmberTheme.OK_BG : AmberTheme.WARN_BG));
+            card.addView(head);
+
+            if (!ok) {
+                TextView why = new TextView(this);
+                why.setText(L.s("缺什么/为什么不能跑: ", "Blocked by: ") + rep.whyNot());
+                why.setTextSize(AmberTheme.FS_SMALL);
+                why.setTextColor(AmberTheme.WARN);
+                why.setLineSpacing(px(4), 1f);
+                card.addView(why, topGap(6));
+            } else if (!rep.warnings.isEmpty()) {
+                TextView w = new TextView(this);
+                w.setText(L.s("警告: ", "Warning: ") + rep.warnings.get(0));
+                w.setTextSize(AmberTheme.FS_SMALL);
+                w.setTextColor(AmberTheme.WARN);
+                card.addView(w, topGap(6));
+            }
+
+            final boolean open = diagOpen.contains(Integer.valueOf(idx));
+            Button toggle = rowActionPlain(open
+                    ? L.s("收起详情   \u2303", "Collapse   \u2303")
+                    : L.s("展开详情   \u2304", "Expand   \u2304"));
+            toggle.setOnClickListener(v -> {
+                Integer key = Integer.valueOf(idx);
+                if (diagOpen.contains(key)) diagOpen.remove(key);
+                else diagOpen.add(key);
+                renderAuditDiag();
+            });
+            card.addView(toggle);
+
+            if (open) {
+                LinearLayout facts = new LinearLayout(this);
+                facts.setOrientation(LinearLayout.VERTICAL);
+                facts.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+                facts.setPadding(px(11), px(10), px(11), px(10));
+                for (String[] f : rep.facts) {
+                    facts.addView(kvRowTone(f[0], f[1], TEXT_DIM), topGap(3));
+                }
+                card.addView(facts, topGap(6));
+            }
+
+            if (es.size() > 1) {
+                Button pickBtn = rowActionPlain(selected
+                        ? L.s("\u2713 本次将校验这一条", "\u2713 This one will be checked")
+                        : L.s("选这条做离线校验", "Use this one"));
+                pickBtn.setTextColor(selected ? ACCENT : TEXT);
+                pickBtn.setOnClickListener(v -> selectMaterialEntry(idx));
+                card.addView(pickBtn);
+            }
+            auditDiagBox.addView(card, topGap(8));
+        }
+        if (es.size() > drawn) {
+            auditDiagBox.addView(dimLine(L.f(
+                    "共 %d 条材料，这里只画前 %d 条（逐条建控件会把界面拖死）。"
+                            + "离线校验用你选中的那一条。",
+                    "%d entries in total; only the first %d are shown here (rendering every one "
+                            + "would freeze the UI). The offline check uses the entry you pick.",
+                    es.size(), drawn)), topGap(8));
+            Button more = rowAction(L.f("从全部 %d 条里选一条…", "Pick from all %d entries…",
+                    es.size()));
+            more.setOnClickListener(v -> showAllEntriesPicker());
+            auditDiagBox.addView(more);
+        }
+    }
+
+    /**
+     * 从全部材料里选一条。
+     *
+     * <p>列表同样有上限（{@link #MAX_PICK_ITEMS}）—— 上万条的对话框和上万张卡片
+     * 一样会把界面拖死。超出部分明确写出来，不静默截断。
+     */
+    private void showAllEntriesPicker() {
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> es = safeEntries();
+        if (es.isEmpty()) return;
+        int shown = Math.min(es.size(), MAX_PICK_ITEMS);
+        io.github.wlmosv_png.wpaforge.ui.NetDialog pick =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                        L.f("选择材料（共 %d 条）", "Pick material (%d in total)", es.size()),
+                        es.size() > shown
+                                ? L.f("列表只列前 %d 条；其余请用材料文件裁剪后再导入。",
+                                      "Only the first %d are listed; trim the capture and import "
+                                              + "again for the rest.", shown)
+                                : null);
+        for (int i = 0; i < shown; i++) {
+            final int idx = i;
+            pick.addItem((i + 1) + ". " + es.get(i).label(), d -> selectMaterialEntry(idx));
+        }
+        pick.setNegative(L.s("取消", "Cancel"), null);
+        pick.show();
+    }
+
+    /** 选中一条材料，并把诊断结论同步给工作台。 */
+    private void selectMaterialEntry(int index) {
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> es = safeEntries();
+        if (index < 0 || index >= es.size()) return;
+        io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = es.get(index);
+        io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report rep =
+                io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.examine(e);
+        lastEntry = e;
+        lastReport = rep;
+        workbench.selectEntry(index, rep.executable, rep.whyNot());
+        renderAudit();
+    }
+
+    // ---- ③ 字典卡 ----
+
+    private void renderAuditDict() {
+        if (auditDictBox == null) return;
+        auditDictBox.removeAllViews();
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = workbench.dictionary();
+        if (s.empty()) {
+            auditDictBox.addView(dimLine(L.s(
+                    "当前还没有字典。可以先「按目标派生」，或从字典管理里加载一本。",
+                    "No dictionary yet. Derive one from a target, or load one from dictionary "
+                            + "management.")));
+        } else {
+            auditDictBox.addView(kvRowTone(L.s("名称", "Name"), s.name, TEXT), topGap(2));
+            auditDictBox.addView(kvRowTone(L.s("来源", "Source"),
+                    auditSourceLabel(s.source), TEXT_DIM), topGap(4));
+            auditDictBox.addView(kvRowTone(L.s("候选数", "Candidates"),
+                    s.count + L.s(" 条", " entries"), TEXT), topGap(4));
+            auditDictBox.addView(kvRowTone(L.s("内容指纹", "Content id"),
+                    s.fingerprint().isEmpty() ? "\u2014" : s.fingerprint(), ACCENT), topGap(4));
+            auditDictBox.addView(kvRowTone(L.s("文件", "File"),
+                    s.onDisk()
+                            ? s.filePath + "\nSHA-256 " + s.fileId()
+                            : L.s("未落盘（仅内存）", "not written to a file (in memory only)"),
+                    s.onDisk() ? TEXT_DIM : AmberTheme.WARN), topGap(4));
+            auditDictBox.addView(kvRowTone(L.s("快照时间", "Snapshot at"),
+                    fmtStamp(s.createdAt), TEXT_DIM), topGap(4));
+        }
+        if (!dictRestoreNote.isEmpty()) {
+            TextView n = new TextView(this);
+            n.setText(dictRestoreNote);
+            n.setTextSize(AmberTheme.FS_SMALL);
+            n.setTextColor(AmberTheme.WARN);
+            n.setLineSpacing(px(4), 1f);
+            n.setBackground(roundBgStatic(AmberTheme.WARN_BG, AmberTheme.RADIUS_CHIP));
+            n.setPadding(px(11), px(10), px(11), px(10));
+            auditDictBox.addView(n, topGap(8));
+        }
+        // 「按材料 SSID 派生」只在材料真的带 SSID 时出现，且必须经用户确认
+        if (auditDeriveMat != null) {
+            String ssid = materialSsid();
+            if (ssid.isEmpty()) {
+                auditDeriveMat.setVisibility(View.GONE);
+            } else {
+                auditDeriveMat.setVisibility(View.VISIBLE);
+                auditMaterialSsid = ssid;
+                auditDeriveMat.setText(L.f("按材料的 SSID 派生字典（%s）   \u203a",
+                        "Derive a dictionary from the material's SSID (%s)   \u203a", ssid));
+            }
+        }
+    }
+
+    /** 当前材料里可用的 SSID（优先已选中的那条）。 */
+    private String materialSsid() {
+        if (lastEntry != null && lastEntry.ssid != null && !lastEntry.ssid.isEmpty()) {
+            return lastEntry.ssid;
+        }
+        for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : safeEntries()) {
+            if (e.ssid != null && !e.ssid.isEmpty()) return e.ssid;
+        }
+        return "";
+    }
+
+    private java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> safeEntries() {
+        return offEntries == null
+                ? java.util.Collections
+                        .<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry>emptyList()
+                : offEntries;
+    }
+
+    // ---- ④ 执行卡 ----
+
+    private void renderAuditIntro() {
+        if (auditIntroToggle == null) return;
+        auditIntroToggle.setText((offIntroOpen ? "\u2303 " : "\u2304 ")
+                + L.s("离线校验是什么？", "What is the offline check?"));
+        auditIntroToggle.setTextColor(offIntroOpen ? ACCENT : TEXT);
+        auditIntroBox.removeAllViews();
+        if (!offIntroOpen) return;
+        TextView t = new TextView(this);
+        t.setText(L.s(
+                "将从你有权测试的 Wi-Fi 网络获取的握手材料（.hc22000 / .22000），"
+                        + "与本机字典中的候选口令逐条比对，判断字典中是否包含对应密码。\n\n"
+                        + "\u00b7 不需要连接目标 Wi-Fi\n"
+                        + "\u00b7 不会向目标网络发起连接请求\n"
+                        + "\u00b7 材料和候选口令在本地进行处理\n"
+                        + "\u00b7 需要准备有效的握手材料和合适的字典\n"
+                        + "\u00b7 找到匹配结果才表示当前字典中存在对应口令\n"
+                        + "\u00b7 未命中不代表密码绝对安全，只代表本次材料和候选集合没有找到匹配",
+                "The handshake material captured from a Wi-Fi network you are authorised to test "
+                        + "(.hc22000 / .22000) is compared one by one against the candidates in "
+                        + "your local dictionary, to decide whether the dictionary contains the "
+                        + "matching password.\n\n"
+                        + "\u00b7 No need to connect to the target Wi-Fi\n"
+                        + "\u00b7 No connection request is sent to the target network\n"
+                        + "\u00b7 Material and candidates are processed locally\n"
+                        + "\u00b7 You need valid handshake material and a suitable dictionary\n"
+                        + "\u00b7 A match means this dictionary contains the password\n"
+                        + "\u00b7 No hit does not mean the password is safe - it only means this "
+                        + "material and candidate set found no match"));
+        t.setTextSize(AmberTheme.FS_SMALL);
+        t.setTextColor(TEXT_DIM);
+        t.setLineSpacing(px(5), 1f);
+        t.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        t.setPadding(px(13), px(12), px(13), px(12));
+        auditIntroBox.addView(t, topGap(8));
+    }
+
+    private void renderAuditRun() {
+        if (auditRunBox == null) return;
+        auditRunBox.removeAllViews();
+        io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e = lastEntry;
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap = workbench.dictionary();
+        auditRunBox.addView(kvRowTone(L.s("材料", "Material"),
+                workbench.materialImported() ? workbench.materialName()
+                        : L.s("未导入", "none"), TEXT_DIM), topGap(12));
+        auditRunBox.addView(kvRowTone(L.s("目标 SSID", "Target SSID"),
+                e == null || e.ssid == null || e.ssid.isEmpty()
+                        ? "\u2014" : e.ssid, TEXT_DIM), topGap(4));
+        auditRunBox.addView(kvRowTone(L.s("材料类型", "Type"),
+                e == null ? "\u2014" : (e.isPmkid() ? "PMKID" : "EAPOL"), TEXT_DIM), topGap(4));
+        auditRunBox.addView(kvRowTone(L.s("使用的字典", "Dictionary"),
+                snap.empty()
+                        ? L.s("未选择", "none")
+                        : snap.name + " \u00b7 " + snap.count + L.s(" 条", " entries")
+                          + " \u00b7 " + snap.fingerprint(), TEXT_DIM), topGap(4));
+        String integrity;
+        int ic;
+        if (workbench.selectedIndex() < 0) {
+            integrity = L.s("未选择材料", "no entry selected");
+            ic = AmberTheme.TEXT_FAINT;
+        } else if (workbench.materialExecutable()) {
+            integrity = L.s("可执行", "Runnable");
+            ic = AmberTheme.OK;
+        } else {
+            integrity = L.s("不完整: ", "Incomplete: ") + workbench.materialExecReason();
+            ic = AmberTheme.WARN;
+        }
+        auditRunBox.addView(kvRowTone(L.s("材料完整性", "Integrity"), integrity, ic), topGap(4));
+
+        auditLive = null;
+        if (offlineBusy) {
+            auditLive = new TextView(this);
+            auditLive.setTextSize(AmberTheme.FS_BODY);
+            auditLive.setTextColor(AmberTheme.ACCENT_SOFT);
+            auditLive.setTypeface(Typeface.MONOSPACE);
+            auditLive.setText(L.s("进行中…", "Running..."));
+            auditRunBox.addView(auditLive, topGap(6));
+        }
+
+        if (auditBlocker != null) {
+            String why = workbench.blocker();
+            if (why.isEmpty()) {
+                auditBlocker.setText(L.s(
+                        "条件已满足，可以开始。完成后结果会固定在下面的结果卡里。",
+                        "Ready. When it finishes, the verdict is pinned to the result card "
+                                + "below."));
+                auditBlocker.setTextColor(AmberTheme.OK);
+            } else {
+                auditBlocker.setText(why);
+                auditBlocker.setTextColor(AmberTheme.WARN);
+            }
+        }
+        refreshOfflineButtons();
+    }
+
+    /**
+     * 步骤 ④ 的「开始离线校验」。
+     *
+     * <p>条件不满足时**不静默**：直接把 {@code workbench.blocker()} 的原因弹出来，
+     * 并在卡片上高亮同一句话 —— 用户不用猜「为什么按钮按不动」。
+     */
+    private void startOfflineRun() {
+        if (offlineBusy) {
+            Toast.makeText(this, L.s("正在比对，先停止或等它结束",
+                    "Already running - stop it or wait"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String why = workbench.blocker();
+        if (!why.isEmpty()) {
+            Toast.makeText(this, why, Toast.LENGTH_LONG).show();
+            renderAudit();
+            return;
+        }
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> es = safeEntries();
+        int idx = workbench.selectedIndex();
+        if (idx < 0 || idx >= es.size()) {
+            Toast.makeText(this, L.s("请先在第 2 步选一条材料",
+                    "Pick an entry in step 2 first"), Toast.LENGTH_LONG).show();
+            return;
+        }
+        runOfflineOne(es.get(idx));
+    }
+
+    /** 开始按钮 / 停止按钮 / 导入按钮三者的可用性。 */
+    private void refreshOfflineButtons() {
+        if (auditStartBtn != null) {
+            boolean can = workbench.canStart();
+            auditStartBtn.setVisibility(offlineBusy ? View.GONE : View.VISIBLE);
+            auditStartBtn.setEnabled(can);
+            auditStartBtn.setAlpha(can ? 1f : 0.5f);
+        }
+        if (auditStopBtn != null) {
+            auditStopBtn.setVisibility(offlineBusy ? View.VISIBLE : View.GONE);
+        }
+        if (offPick != null) {
+            offPick.setText(offlineBusy
+                    ? L.s("正在比对…（先停止再换材料）", "Comparing... (stop before switching)")
+                    : L.s("用系统文件选择器导入材料",
+                          "Import material with the system file picker"));
+            offPick.setAlpha(offlineBusy ? 0.5f : 1f);
+        }
+    }
+
+    // ---------------------------------------------------------------- 运行记录
+
+    /** 频道条 + 记录列表（一条记录一行）。 */
+    private void renderChannelRecords() {
+        renderChannelChips();
+        if (auditRecBox == null) return;
+        String empty;
+        switch (logChannel) {
+            case STRENGTH: empty = L.s("尚无记录。输入一个口令点「评估」。",
+                    "No records yet. Type a passphrase and hit Check."); break;
+            case DICT: empty = L.s("尚无记录。加载 / 生成 / 派生字典后会记在这里。",
+                    "No records yet. Loading, generating or deriving a dictionary logs here."); break;
+            case OTHER: empty = L.s("尚无记录。", "No records yet."); break;
+            default: empty = L.s("尚无记录。导入材料跑一次，这里会按「时间 · 状态 · 对象 · 结果」记录。",
+                    "No records yet. Import material and run once."); break;
+        }
+        renderRecords(runLog.channel(logChannel), auditRecBox, auditLogScroll, empty);
+    }
+
+    private void renderChannelChips() {
+        if (auditChanStrip == null) return;
+        auditChanStrip.removeAllViews();
+        final io.github.wlmosv_png.wpaforge.audit.RunLog.Op[] ops = {
+                io.github.wlmosv_png.wpaforge.audit.RunLog.Op.OFFLINE,
+                io.github.wlmosv_png.wpaforge.audit.RunLog.Op.STRENGTH,
+                io.github.wlmosv_png.wpaforge.audit.RunLog.Op.DICT,
+                io.github.wlmosv_png.wpaforge.audit.RunLog.Op.OTHER
+        };
+        String[] names = {
+                L.s("离线校验", "Offline"), L.s("口令强度", "Strength"),
+                L.s("字典操作", "Dictionary"), L.s("其他", "Other")
+        };
+        for (int i = 0; i < ops.length; i++) {
+            final io.github.wlmosv_png.wpaforge.audit.RunLog.Op op = ops[i];
+            boolean on = op == logChannel;
+            TextView chip = chipView(names[i] + " " + runLog.channel(op).size(),
+                    on ? ON_ACCENT : AmberTheme.TEXT_DIM,
+                    on ? ACCENT : AmberTheme.CARD_2);
+            chip.setGravity(Gravity.CENTER);
+            chip.setOnClickListener(v -> {
+                logChannel = op;
+                renderChannelRecords();
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lp.leftMargin = px(5);
+            auditChanStrip.addView(chip, lp);
+        }
+    }
+
+    /** 兼容旧入口。 */
+    private void renderOfflineLog() {
+        renderChannelRecords();
+    }
+
+    private void renderStrengthLog() {
+        renderRecords(runLog.strength, strengthRecBox, strengthLogScroll,
+                L.s("尚无记录。输入一个口令点「评估」。",
+                        "No records yet. Type a passphrase and hit Check."));
+    }
+
+    /**
+     * 渲染一个频道的记录列表。
+     *
+     * <p>从「大块文本日志」换成「一条记录一行」：时间 · 状态 · 对象 · 简短结果。
+     * 点一行看完整日志。
+     */
+    private void renderRecords(io.github.wlmosv_png.wpaforge.audit.RunLog.Channel ch,
+                               LinearLayout box, ScrollView scroller, String emptyText) {
+        if (box == null) return;
+        boolean tail = isNearBottom(scroller) || box.getChildCount() == 0;
+        box.removeAllViews();
+        java.util.List<io.github.wlmosv_png.wpaforge.audit.RunLog.Line> lines = ch.snapshot();
+        if (lines.isEmpty()) {
+            if (emptyText != null) box.addView(dimLine(emptyText));
+            return;
+        }
+        for (io.github.wlmosv_png.wpaforge.audit.RunLog.Line ln : lines) {
+            final io.github.wlmosv_png.wpaforge.audit.RunLog.Line line = ln;
+            TextView row = new TextView(this);
+            StringBuilder sb = new StringBuilder();
+            sb.append(ln.clock()).append("  ").append(ln.status()).append("  ");
+            if (!ln.subject.isEmpty()) sb.append(ln.subject).append("  ");
+            sb.append(ln.text);
+            row.setText(sb.toString());
+            row.setTextSize(AmberTheme.FS_SMALL);
+            row.setTextColor(logColor(ln.kind));
+            row.setTypeface(Typeface.MONOSPACE);
+            row.setLineSpacing(px(3), 1f);
+            row.setPadding(px(2), px(3), px(2), px(3));
+            if (ln.hasDetail()) row.setOnClickListener(v -> showRecordDetail(line));
+            box.addView(row);
+        }
+        if (tail && scroller != null) {
+            final ScrollView s = scroller;
+            s.post(() -> s.fullScroll(View.FOCUS_DOWN));
+        }
+    }
+
+    private boolean isNearBottom(ScrollView sc) {
+        if (sc == null || sc.getChildCount() == 0) return true;
+        View child = sc.getChildAt(0);
+        int diff = child.getBottom() - (sc.getScrollY() + sc.getHeight());
+        return diff <= px(24);
+    }
+
+    private void showRecordDetail(io.github.wlmosv_png.wpaforge.audit.RunLog.Line ln) {
+        io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this,
+                ln.clock() + " \u00b7 " + ln.status()
+                        + (ln.subject.isEmpty() ? "" : " \u00b7 " + ln.subject),
+                ln.detail);
+    }
+
+    /** 离线校验频道写一条带上下文的记录。 */
+    private void auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind, String text) {
+        auditLine(kind, "", text, null);
+    }
+
+    private void auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind,
+                           String subject, String text, String detail) {
+        runLog.offline.add(System.currentTimeMillis(), kind, subject, text, detail);
+        renderChannelRecords();
+    }
+
+    /** 字典操作频道写一条记录（与离线校验彻底分开）。 */
+    private void dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind,
+                          String subject, String text, String detail) {
+        runLog.dict.add(System.currentTimeMillis(), kind, subject, text, detail);
+        if (logChannel == io.github.wlmosv_png.wpaforge.audit.RunLog.Op.DICT) {
+            renderChannelRecords();
+        } else {
+            renderChannelChips();
+        }
+    }
+
+    /** 口令强度评估频道写一条记录。 */
+    private void strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind, String text) {
+        strengthLine(kind, "", text, null);
+    }
+
+    private void strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind,
+                              String subject, String text, String detail) {
+        runLog.strength.add(System.currentTimeMillis(), kind, subject, text, detail);
+        renderStrengthLog();
+    }
+
+    /** 级别 -> 颜色。 */
+    private int logColor(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind k) {
+        switch (k) {
+            case OK:       return AmberTheme.OK;
+            case WARN:     return AmberTheme.WARN;
+            case FAIL:     return AmberTheme.DANGER;
+            case CANCEL:   return AmberTheme.ACCENT_SOFT;
+            case PROGRESS: return AmberTheme.TEXT_DIM;
+            default:       return AmberTheme.TERM_FG;
+        }
+    }
+
+    /**
+     * 为某个 SSID 准备派生线索。
+     *
+     * <h3>为什么必须有这个函数（真实缺陷）</h3>
+     * {@link io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder#build} 里，
+     * SSID 派生是否生效只由 {@code seeds != null && seeds.useSsid} 决定。
+     * 旧实现调用的是两参重载（{@code seeds == null}），于是「按材料 SSID 派生字典」
+     * 实际产出的是一份**与 SSID 完全无关**的通用弱口令表（实测 40 条，
+     * 由 build 自己给出的说明写着「SSID 派生: 关」），
+     * 而字典名却是 {@code 定向派生 · <SSID>} ——
+     * 名字说 A、内容其实是 B，用户事后核对时无从发现。
+     *
+     * <p>这里显式给一个 {@code useSsid = true} 的线索模型：用户点的就是
+     * 「按 SSID 派生」，这一项必须是开。
+     *
+     * <p>线索只从**同一个网络**取：材料 SSID 与破解页选中的目标一致时才复用它的画像，
+     * 否则一条线索都不用（别人的手机号不应该是这个网的密码素材）。
+     * 复用走 encode/decode 克隆，避免把用户保存的画像在内存里改掉。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.SeedModel seedModelForSsid(String ssid) {
+        io.github.wlmosv_png.wpaforge.audit.SeedModel m;
+        String cur = targetNet == null || targetNet.ssid == null
+                ? "" : targetNet.ssid.trim();
+        if (!cur.isEmpty() && cur.equalsIgnoreCase(ssid.trim())) {
+            io.github.wlmosv_png.wpaforge.audit.SeedModel src =
+                    profileForCurrentTarget().seeds;
+            m = io.github.wlmosv_png.wpaforge.audit.SeedModel.decode(
+                    src == null ? "" : src.encode());
+        } else {
+            m = new io.github.wlmosv_png.wpaforge.audit.SeedModel();
+        }
+        m.useSsid = true;
+        return m;
+    }
+
+    /**
+     * 把「从服务 / 队列权威重建」的当前字典同步进工作台与持久层。
+     *
+     * <p>审计页只认工作台里的快照。如果只在别处给 {@code currentDict} 赋值，
+     * 就会出现「破解页显示有字典、审计页说没有」这类前后不一致 ——
+     * 所以每一个给 {@code currentDict} 赋值的权威入口都必须带上这一步。
+     */
+    private void syncWorkbenchDict() {
+        if (currentDict == null || currentDict.isEmpty()) {
+            workbench.clearDictionary();
+            renderAudit();
+            return;
+        }
+        if (workbench.setDictionary(currentDictName, currentDictSource, currentDictPath,
+                currentDict)) {
+            io.github.wlmosv_png.wpaforge.DictSnapshotStore.save(this, workbench.dictionary());
+        }
+        renderAudit();
+    }
+
+    /** 字节数的人话。 */
+    private static String fmtBytes(long b) {
+        if (b <= 0) return "\u2014";
+        if (b < 1024) return b + " B";
+        if (b < 1024 * 1024) return String.format(java.util.Locale.ROOT, "%.1f KB", b / 1024.0);
+        return String.format(java.util.Locale.ROOT, "%.2f MB", b / 1048576.0);
+    }
+
+    /**
+     * 恢复上次的当前字典。
+     *
+     * <p>应用重开后 {@code currentDict} 是空的，只显示「未选择」是没用的信息 ——
+     * 用户上一秒刚派生过一本。这里按持久化的快照 + **文件指纹**把它读回来；
+     * 文件不在了或内容变了就明确说「已失效」，不用来路不明的内容顶替。
+     */
+    private void restoreDictIfPossible() {
+        if (currentDict != null && !currentDict.isEmpty()) return;
+        final io.github.wlmosv_png.wpaforge.audit.DictSnapshot saved =
+                io.github.wlmosv_png.wpaforge.DictSnapshotStore.load(this);
+        if (!saved.present()) return;
+        if (!saved.onDisk()) {
+            dictRestoreNote = L.f(
+                    "上次使用的字典「%s」（%d 条，指纹 %s）只存在于内存里，"
+                            + "应用重开后已失效，请重新选择或派生一本。",
+                    "The dictionary \"%s\" (%d entries, id %s) lived only in memory; after the "
+                            + "restart it is gone. Pick or derive one again.",
+                    saved.name, saved.count, saved.fingerprint());
+            return;
+        }
+        final String path = saved.filePath;
+        new Thread(() -> {
+            String nowHash = io.github.wlmosv_png.wpaforge.audit.DictSnapshot
+                    .sha256OfFile(path);
+            java.util.List<Candidate> loaded = null;
+            if (!nowHash.isEmpty() && nowHash.equals(saved.fileSha256)) {
+                try {
+                    loaded = io.github.wlmosv_png.wpaforge.audit.DictStore.load(
+                            new java.io.File(path), 0);
+                } catch (Throwable ignored) {
+                }
+            }
+            final java.util.List<Candidate> r = loaded;
+            final String h = nowHash;
+            ui.post(() -> {
+                if (r != null && !r.isEmpty() && saved.matches(r)) {
+                    applyDict(r, saved.name, path, saved.source);
+                    dictRestoreNote = "";
+                    dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO, saved.name,
+                            L.s("已恢复上次使用的字典", "Restored the last dictionary"),
+                            L.f("名称: %s\n条数: %d\n内容指纹: %s\n文件: %s\n文件指纹: %s",
+                                    "Name: %s\nEntries: %d\nContent id: %s\nFile: %s\nFile id: %s",
+                                    saved.name, r.size(), saved.fingerprint(), path,
+                                    saved.fileId()));
+                } else {
+                    dictRestoreNote = L.f(
+                            "上次使用的字典「%s」（%d 条，指纹 %s）已失效：%s。"
+                                    + "为避免跑错内容，请重新选择或派生一本。",
+                            "The last dictionary \"%s\" (%d entries, id %s) is stale: %s. "
+                                    + "Pick or derive one again to avoid running the wrong content.",
+                            saved.name, saved.count, saved.fingerprint(),
+                            h.isEmpty()
+                                    ? L.s("文件不存在或不可读", "file missing or unreadable")
+                                    : L.s("文件内容已被改动", "file content changed"));
+                }
+                renderAudit();
+            });
+        }, "wpaforge-dict-restore").start();
+    }
+
+    /** 审计页的「内置生成器」：与破解页同一条实现（先落盘再设为当前字典）。 */
+    private void buildGenericDictFromAudit() {
+        dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO,
+                L.s("内置生成器", "Built-in generator"),
+                L.s("正在编排通用载荷…", "Building the built-in dictionary..."), null);
+        buildGenericDict(true);
+    }
+
 
     /** 收集目录下的 22000 材料文件（只认扩展名，不递归）。 */
     private void scanHcFiles(java.io.File dir, java.util.List<java.io.File> out) {
@@ -3955,20 +4892,17 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 离线校验的入口。
+     * 导入材料的入口：**直接**打开系统文件选择器。
+     *
+     * <p>1.9.44 起不再让用户先过一层「两条通道」的弹窗 —— 抽查显示大多数人
+     * 只是被那道选择挡住。SAF 是唯一不依赖任何存储权限、且任何目录都能取的通道，
+     * 就是它了；「扫描 Download」作为备用路径单独留一行。
      *
      * <p>修复前这里直接 {@code new File("/sdcard/Download").listFiles()}：
      * 在分区存储下（targetSdk 35、未申请 MANAGE_EXTERNAL_STORAGE），应用只能看到
      * **本应用自己写入**的 Download 文件，别人放进去的材料一律不可见；而且
      * {@code listFiles()} 返回 null 时静默跳过，最终统一塌成一句
      * 「没找到 .hc22000 / .22000 文件」—— 用户拿不到任何可执行信息。
-     *
-     * <p>现在把两条通道摆到台面上：
-     * <ol>
-     *   <li><b>系统文件选择器（SAF）</b>—— 唯一不依赖任何存储权限的通道，也是推荐路径；</li>
-     *   <li><b>扫描 Download</b>（尽力而为）—— 仅当文件确实对本应用可见时才有结果，
-     *       扫不到时给出原因而不是一句「没找到」。</li>
-     * </ol>
      */
     private void showOfflinePicker() {
         if (offlineBusy) {
@@ -3976,40 +4910,34 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        if (currentDict == null || currentDict.isEmpty()) {
-            Toast.makeText(this, L.s("字典为空，请先加载或生成字典",
-                    "Dictionary is empty - load or generate one first"), Toast.LENGTH_SHORT).show();
-            return;
-        }
+        pickOfflineFileViaSaf();
+    }
 
-        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg =
-                new io.github.wlmosv_png.wpaforge.ui.NetDialog(
-                        this, L.s("选择材料文件", "Pick a capture file"), null);
-
-        dlg.addItem(L.s("① 用系统文件选择器打开（推荐，不需要存储权限）",
-                        "① Open with the system file picker (recommended, no permission needed)"),
-                d -> pickOfflineFileViaSaf());
-
+    /** 备用通道：扫描 Download（只对「本应用可见的文件」有效，扫不到就说明原因）。 */
+    private void showDownloadScan() {
         final java.util.List<java.io.File> files = new java.util.ArrayList<>();
         scanHcFiles(new java.io.File("/sdcard/Download"), files);
         scanHcFiles(new java.io.File("/sdcard/Download/WPAForge-hc"), files);
         java.util.Collections.sort(files, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
 
+        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg =
+                new io.github.wlmosv_png.wpaforge.ui.NetDialog(
+                        this, L.s("Download 目录里的材料", "Material in Download"), null);
         if (files.isEmpty()) {
             dlg.addHint(L.s(
-                    "② 扫描 Download：没有发现材料。\n"
+                    "没有发现材料。\n"
                             + "Android 11 起，应用只能看到自己写入的 Download 文件；"
-                            + "由其他应用或电脑放进来的材料请走上面第 ① 条。\n"
+                            + "由其他应用或电脑放进来的材料请用上面第 ① 步的选择器。\n"
                             + "已扫描 /sdcard/Download 与 /sdcard/Download/WPAForge-hc。",
-                    "② Scan Download: nothing found.\n"
+                    "Nothing found.\n"
                             + "Since Android 11 an app only sees Download files it wrote itself; "
-                            + "material placed by other apps or a PC must go through ① above.\n"
+                            + "material placed by other apps or a PC must go through the picker "
+                            + "in step 1.\n"
                             + "Scanned /sdcard/Download and /sdcard/Download/WPAForge-hc."));
         } else {
             for (java.io.File f : files) {
                 final java.io.File pick = f;
-                dlg.addItem(L.s("② ", "② ") + f.getName()
-                                + "  (" + Math.max(1, f.length() / 1024) + " KB)",
+                dlg.addItem(f.getName() + "  (" + Math.max(1, f.length() / 1024) + " KB)",
                         d -> runOfflineRead(pick));
             }
         }
@@ -4142,13 +5070,21 @@ public class MainActivity extends Activity {
             case NO_ACCESS:     why = L.s("没有读取授权", "read access was not granted"); break;
             default:            why = err == null ? L.s("读取失败", "read failed") : String.valueOf(err);
         }
+        if (st == io.github.wlmosv_png.wpaforge.audit.OfflineImport.Status.TOO_LARGE
+                && r != null && r.bytes > 0) {
+            why = why + L.s("（实际 " + fmtBytes(r.bytes) + "）",
+                    " (actual " + fmtBytes(r.bytes) + ")");
+        }
+        // 步骤 ①/② 的状态必须跟着走：材料没进来，后面三步不该还停在旧状态。
+        offEntries = null;
+        diagOpen.clear();
+        workbench.onMaterialProblem(name, why);
         lastEntry = null;
         lastReport = null;
-        setVerdict(new io.github.wlmosv_png.wpaforge.audit.OfflineVerdict(
+        setVerdict(verdictOf(
                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.BAD_MATERIAL,
-                offlineFileName, "", "", "", dictNameNow(), dictCount(), 0, 0,
-                System.currentTimeMillis(), "", why));
-        renderOfflineVerdict();
+                null, workbench.dictionary(), 0, 0, "", why));
+        renderAudit();
     }
 
     private void reportOfflineInner(String name,
@@ -4157,13 +5093,6 @@ public class MainActivity extends Activity {
                                     Throwable err) {
         switch (st) {
             case OK:
-                appendLog(L.f("文件: %s", "File: %s", name));
-                appendLog(L.f("材料: 共 %d 条 —— PMKID %d 条、EAPOL %d 条%s",
-                        "Material: %d entries — %d PMKID, %d EAPOL%s",
-                        r.count(), r.pmkid, r.eapol,
-                        r.comments > 0
-                                ? L.f("（另跳过注释 %d 行）", " (%d comment lines skipped)", r.comments)
-                                : ""));
                 break;
             case EMPTY:
                 auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.FAIL,
@@ -4216,24 +5145,41 @@ public class MainActivity extends Activity {
                 return;
         }
 
-        // 走到这里说明解析成功 —— 展示材料信息，多条时让用户挑一条（避免一次跑很久）。
+        // 解析成功：材料进步骤 ①/②，由用户在步骤 ② 里选一条，再在步骤 ④ 开跑。
+        // （旧版在这里弹一个「选哪条」的对话框，把顺序打乱了：用户还没看到材料诊断
+        //   就被要求做选择，选完才第一次见到字段。）
         java.util.List<io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry> entries = r.entries;
-        for (int i = 0; i < entries.size(); i++) {
-            appendLog("  " + (i + 1) + ". " + entries.get(i).label());
-        }
-        if (entries.size() > 1) {
-            io.github.wlmosv_png.wpaforge.ui.NetDialog pick =
-                    new io.github.wlmosv_png.wpaforge.ui.NetDialog(
-                            this, L.f("选择材料（%d 条）", "Pick material (%d)", entries.size()), null);
-            for (io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e : entries) {
-                final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry chosen = e;
-                pick.addItem(e.label(), d -> runOfflineOne(chosen));
+        offEntries = entries;
+        diagOpen.clear();
+        workbench.onMaterialOk(name, r.bytes, r.sha256,
+                r.count(), r.pmkid, r.eapol);
+        auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK, name,
+                L.f("材料就绪: %d 条（PMKID %d / EAPOL %d）",
+                        "Material ready: %d entries (%d PMKID / %d EAPOL)",
+                        r.count(), r.pmkid, r.eapol),
+                L.f("文件: %s\n大小: %s\nSHA-256: %s\n记录数: %d\nPMKID: %d\nEAPOL: %d",
+                        "File: %s\nSize: %s\nSHA-256: %s\nRecords: %d\nPMKID: %d\nEAPOL: %d",
+                        name, fmtBytes(r.bytes),
+                        r.sha256.isEmpty() ? "\u2014" : r.sha256,
+                        r.count(), r.pmkid, r.eapol)
+                        + (r.comments > 0
+                                ? L.f("\n跳过注释行: %d", "\ncomment lines skipped: %d", r.comments)
+                                : ""));
+
+        // 自动选中第一条**可执行**的材料，这样单条材料可以一步开跑；
+        // 多条材料时用户可以在步骤 ② 里改选。
+        int pick = -1;
+        int scan = Math.min(entries.size(), MAX_DIAG_CARDS);
+        for (int i = 0; i < scan; i++) {
+            if (io.github.wlmosv_png.wpaforge.audit.MaterialDoctor
+                    .examine(entries.get(i)).executable) {
+                pick = i;
+                break;
             }
-            pick.setNegative(L.s("取消", "Cancel"), null);
-            pick.show();
-        } else {
-            runOfflineOne(entries.get(0));
         }
+        if (pick < 0) pick = 0;
+        selectMaterialEntry(pick);
+        renderAudit();
     }
 
     /** 从普通文件读材料（仅「扫描 Download」这条尽力而为的路径会用）。 */
@@ -4263,23 +5209,48 @@ public class MainActivity extends Activity {
         return e == null ? "" : (e.isPmkid() ? "PMKID" : "EAPOL");
     }
 
-    /** 组一条结果（各调用点只关心状态与计数，细节在这里收口）。 */
-    private io.github.wlmosv_png.wpaforge.audit.OfflineVerdict verdict(
+    /**
+     * 组一条结果（各调用点只关心状态与计数，细节在这里收口）。
+     *
+     * <p>1.9.44 起把**本次实际使用的字典快照**一并记进结果：名字、来源、内容指纹、
+     * 文件路径与文件指纹。没有指纹的话，事后只能看到「07 通用口令榜 · 3336 条」，
+     * 无法证明这一次跑的到底是哪一份内容。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.OfflineVerdict verdictOf(
             io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State st,
             io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e,
-            String dictName, long dictSize, long tested, long elapsedMs,
-            String hitPassword, String note) {
+            io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap,
+            long tested, long elapsedMs, String hitPassword, String note) {
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = snap == null
+                ? io.github.wlmosv_png.wpaforge.audit.DictSnapshot.none() : snap;
         return new io.github.wlmosv_png.wpaforge.audit.OfflineVerdict(st,
                 offlineFileName, kindOf(e), e == null ? "" : e.ssid,
                 e == null ? "" : io.github.wlmosv_png.wpaforge.audit.Hc22000.hexMac(e.apMac),
-                dictName, dictSize, tested, elapsedMs, System.currentTimeMillis(),
-                hitPassword, note);
+                s.empty() ? dictNameNow() : s.name,
+                s.empty() ? dictCount() : s.count,
+                tested, elapsedMs, System.currentTimeMillis(),
+                hitPassword, note,
+                s.source, s.fingerprint(), s.filePath, s.fileId());
+    }
+
+    /** 已完成候选数占总数的比例；总数未知时给 {@code —}。 */
+    private static String pct(long done, long total) {
+        if (total <= 0) return "\u2014";
+        return String.format(java.util.Locale.ROOT, "%.1f%%", done * 100.0 / total);
     }
 
     /**
-     * 对一条材料跑当前字典。
+     * 对一条材料跑当前字典 —— **先把字典冻结成快照**，再交给引擎。
      *
-     * <p>三段分流，**绝不混为一谈**：
+     * <h3>为什么必须冻结</h3>
+     * 以前这里直接抓 {@code currentDict} 这个字段，而它不是原子的：
+     * 派生字典是后台线程里算完由 {@code ui.post} 换上去的，落盘失败时路径还是空的。
+     * 于是存在「界面已经显示字典 B、本次任务还在跑字典 A」的窗口。
+     * 现在改走 {@link io.github.wlmosv_png.wpaforge.audit.AuditWorkflow#beginRun()}：
+     * 拿到的是一份**不可变副本** + 与界面显示完全一致的内容指纹，
+     * 之后再怎么换字典都动不了这一跑。
+     *
+     * <p>三段分流，<b>绝不混为一谈</b>：
      * <ol>
      *   <li>材料本身不完整 → 直接拒绝执行，结果为 BAD_MATERIAL；</li>
      *   <li>用户停止 → CANCELLED（不是未命中）；</li>
@@ -4287,53 +5258,81 @@ public class MainActivity extends Activity {
      * </ol>
      */
     private void runOfflineOne(final io.github.wlmosv_png.wpaforge.audit.Hc22000.Entry e) {
-        final java.util.List<io.github.wlmosv_png.wpaforge.audit.Candidate> dict = currentDict;
-        if (dict == null || dict.isEmpty()) {
-            Toast.makeText(this, L.s("字典为空", "Dictionary is empty"), Toast.LENGTH_SHORT).show();
+        if (offlineBusy) {
+            Toast.makeText(this, L.s("正在比对，等这一轮结束", "Already running"),
+                    Toast.LENGTH_SHORT).show();
             return;
         }
-        lastEntry = e;
 
-        // ---- 1) 材料诊断 ----
+        // ---- 1) 材料诊断（与步骤 ② 同一份判据） ----
         final io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.Report rep =
                 io.github.wlmosv_png.wpaforge.audit.MaterialDoctor.examine(e);
+        lastEntry = e;
         lastReport = rep;
         if (!rep.executable) {
-            auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.FAIL,
-                    L.s("材料异常，未执行: ", "Material problem, not executed: ") + rep.allIssues());
-            setVerdict(verdict(io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.BAD_MATERIAL,
-                    e, dictNameNow(), dict.size(), 0, 0, "", rep.summary()));
-            renderOfflineVerdict();
+            workbench.selectEntry(workbench.selectedIndex(), false, rep.whyNot());
+            auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.FAIL, e.label(),
+                    L.s("材料异常，未执行: ", "Material problem, not executed: ") + rep.whyNot(),
+                    rep.allIssues());
+            setVerdict(verdictOf(
+                    io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.BAD_MATERIAL,
+                    e, workbench.dictionary(), 0, 0, "", rep.whyNot()));
+            renderAudit();
             return;
         }
 
-        // ---- 2) 起跑 ----
+        // ---- 2) 冻结本次任务（字典只在这里取一次） ----
+        final io.github.wlmosv_png.wpaforge.audit.AuditWorkflow.Frozen frozen =
+                workbench.beginRun();
+        if (frozen == null) {
+            String why = workbench.blocker();
+            Toast.makeText(this, why.isEmpty()
+                            ? L.s("当前无法开始", "Cannot start now") : why,
+                    Toast.LENGTH_LONG).show();
+            renderAudit();
+            return;
+        }
+        final io.github.wlmosv_png.wpaforge.audit.DictSnapshot snap = frozen.snap;
+        final long t0 = System.currentTimeMillis();
+        final long total = frozen.candidateCount();
+        final long step = Math.max(1L, total / 100L);
+
         offlineBusy = true;
         final io.github.wlmosv_png.wpaforge.audit.AuditEngine engine =
                 new io.github.wlmosv_png.wpaforge.audit.AuditEngine();
         runningEngine = engine;
-        refreshOfflineButton();
-        auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO,
-                L.s("开始比对: ", "Comparing: ") + e.label() + " · " + dict.size()
-                        + L.s(" 条候选", " candidates"));
-
-        final long t0 = System.currentTimeMillis();
-        final int every = Math.max(1, dict.size() / 10);
-        final String dName = dictNameNow();
-        final long dSize = dict.size();
+        renderAuditRun();
+        auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO, e.label(),
+                L.s("开始比对：", "Comparing: ") + snap.count + L.s(" 条候选", " candidates"),
+                L.f("材料: %s\n目标 SSID: %s\n材料类型: %s\n字典: %s\n候选数: %d"
+                                + "\n内容指纹: %s\n文件指纹: %s",
+                        "Material: %s\nTarget SSID: %s\nType: %s\nDictionary: %s\n"
+                                + "Candidates: %d\nContent id: %s\nFile id: %s",
+                        e.label(), e.ssid == null ? "" : e.ssid, kindOf(e), snap.name,
+                        snap.count, snap.fingerprint(),
+                        snap.fileId().isEmpty() ? L.s("未落盘", "not on disk") : snap.fileId()));
 
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.AuditEngine.Result[] out = {null};
             final String[] err = {null};
             io.github.wlmosv_png.wpaforge.audit.AuditEngine.Progress cb =
                     new io.github.wlmosv_png.wpaforge.audit.AuditEngine.Progress() {
-                @Override public void onProgress(long tested, long total, String found) {
-                    if (tested % every == 0) {
-                        final long t = tested, n = total;
-                        ui.post(() -> auditLine(
-                                io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.PROGRESS,
-                                t + " / " + n));
-                    }
+                @Override public void onProgress(long tested, long t, String found) {
+                    // 每 ~1% 更新界面进度；每 ~10% 才写一条记录，避免把记录刷爆。
+                    if (tested % step != 0) return;
+                    final long tt = tested, nn = t;
+                    final long el = System.currentTimeMillis() - t0;
+                    ui.post(() -> {
+                        updateLiveProgress(tt, nn, el);
+                        if (tt % (step * 10L) == 0) {
+                            auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.PROGRESS,
+                                    "",
+                                    tt + " / " + nn + "  (" + pct(tt, nn) + ")",
+                                    L.f("已处理 %d / %d 条（%s），耗时 %s",
+                                            "Processed %d / %d (%s), elapsed %s",
+                                            tt, nn, pct(tt, nn), fmtDuration(el)));
+                        }
+                    });
                 }
                 @Override public void onDone(io.github.wlmosv_png.wpaforge.audit.AuditEngine.Result r) {
                     out[0] = r;
@@ -4343,11 +5342,8 @@ public class MainActivity extends Activity {
                 }
             };
             try {
-                if (e.isPmkid()) {
-                    engine.runPmkid(io.github.wlmosv_png.wpaforge.audit.Hc22000.toPmkid(e), dict, cb);
-                } else {
-                    engine.runHandshake(io.github.wlmosv_png.wpaforge.audit.Hc22000.toHandshake(e), dict, cb);
-                }
+                // 走冻结包 —— 「界面显示什么字典，这一跑就用什么字典」在结构上成立。
+                frozen.run(engine, e, cb);
             } catch (Throwable t) {
                 err[0] = String.valueOf(t);
             }
@@ -4358,44 +5354,79 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 try {
                     if (e0 != null || r == null) {
-                        String why = e0 == null ? L.s("引擎没有返回结果", "engine returned nothing") : e0;
+                        String why = e0 == null
+                                ? L.s("引擎没有返回结果", "engine returned nothing") : e0;
                         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.FAIL,
-                                L.s("执行失败: ", "Failed: ") + why);
-                        setVerdict(verdict(
+                                snap.name, L.s("执行失败: ", "Failed: ") + why, why);
+                        setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.FAILED,
-                                e, dName, dSize, r == null ? 0 : r.tested, ms, "", why));
+                                e, snap, r == null ? 0 : r.tested, ms, "", why));
                     } else if (r.cancelled) {
                         // 取消不是未命中 —— 单独一条状态，别糊在一起。
                         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.CANCEL,
-                                L.s("已取消：跑到 ", "Cancelled at ") + r.tested + " / " + dSize
-                                        + L.s(" 条（不能算未命中）", " (this is not a miss)"));
-                        setVerdict(verdict(
+                                snap.name,
+                                L.s("已取消：跑到 ", "Cancelled at ") + r.tested + " / " + snap.count
+                                        + L.s(" 条（不能算未命中）", " (this is not a miss)"),
+                                L.f("已处理 %d / %d 条（%s），耗时 %s",
+                                        "Processed %d / %d (%s), elapsed %s",
+                                        r.tested, snap.count, pct(r.tested, snap.count),
+                                        fmtDuration(ms)));
+                        setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.CANCELLED,
-                                e, dName, dSize, r.tested, ms, "",
+                                e, snap, r.tested, ms, "",
                                 L.s("用户停止", "stopped by user")));
                     } else if (r.hit) {
+                        // 日志里**绝不出现明文口令**：只记位次与耗时。
                         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
-                                L.s("⚡ 命中（字典第 ", "HIT (rank ") + r.hitIndex
-                                        + L.s(" 位，耗时 ", "), took ") + ms + " ms）");
-                        setVerdict(verdict(
+                                snap.name,
+                                L.s("命中（字典第 ", "HIT (rank ") + r.hitIndex
+                                        + L.s(" 位，耗时 ", "), took ") + ms + " ms）",
+                                L.f("字典: %s（内容指纹 %s）\n位次: %d / %d\n耗时: %s\n"
+                                                + "口令明文不写入任何日志，只看结果卡。",
+                                        "Dictionary: %s (content id %s)\nRank: %d / %d\n"
+                                                + "Elapsed: %s\nThe plaintext password is never "
+                                                + "written to any log - read it on the result card.",
+                                        snap.name, snap.fingerprint(), r.hitIndex, snap.count,
+                                        fmtDuration(ms)));
+                        setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.HIT,
-                                e, dName, dSize, r.tested, ms, r.hitPassword, ""));
+                                e, snap, r.tested, ms, r.hitPassword, ""));
                     } else {
                         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN,
+                                snap.name,
                                 L.s("未命中：跑完 ", "No hit: exhausted ") + r.tested
-                                        + L.s(" 条，耗时 ", " entries in ") + ms + " ms");
-                        setVerdict(verdict(
+                                        + L.s(" 条，耗时 ", " entries in ") + ms + " ms",
+                                L.f("字典: %s（内容指纹 %s）\n已跑完 %d / %d 条\n耗时: %s\n"
+                                                + "这只说明本次材料与这本字典的候选集合没有匹配，"
+                                                + "不代表目标密码不存在于其他字典。",
+                                        "Dictionary: %s (content id %s)\nExhausted %d / %d\n"
+                                                + "Elapsed: %s\nThis only means this material and "
+                                                + "this candidate set found no match - the password "
+                                                + "may well exist in another dictionary.",
+                                        snap.name, snap.fingerprint(), r.tested, snap.count,
+                                        fmtDuration(ms)));
+                        setVerdict(verdictOf(
                                 io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.MISS,
-                                e, dName, dSize, r.tested, ms, "", ""));
+                                e, snap, r.tested, ms, "", ""));
                     }
                 } finally {
                     offlineBusy = false;
                     runningEngine = null;
-                    refreshOfflineButton();
+                    workbench.endRun();
+                    renderAudit();
                     renderOfflineVerdict();
                 }
             });
         }, "wpaforge-offline-run").start();
+    }
+
+    /** 运行中刷新「进度」那一行（不重建整张卡）。 */
+    private void updateLiveProgress(long tested, long total, long elapsedMs) {
+        if (auditLive == null) return;
+        auditLive.setText(L.f("进行中: %d / %d（%s） · 已用 %s",
+                "Running: %d / %d (%s) \u00b7 %s",
+                tested, total, pct(tested, total), fmtDuration(elapsedMs)));
+        auditLive.setTextColor(AmberTheme.ACCENT_SOFT);
     }
 
     /**
@@ -4640,6 +5671,19 @@ public class MainActivity extends Activity {
     }
 
     /** 来源代码 → 显示文案 */
+    /**
+     * 审计页的字典来源标签。
+     *
+     * <p>与 {@link #sourceLabel} 分开：字典来源为空时 {@code sourceLabel} 给的是
+     * 「未选择」—— 那是给「破解页那行状态」用的措辞，放到字典快照的「来源」字段上
+     * 会让人以为根本没选字典（真机实测：字典名明明写着「07 通用口令榜」，
+     * 来源却显示「未选择」）。这里明确写「未记录」。
+     */
+    private String auditSourceLabel(String code) {
+        if (code == null || code.isEmpty()) return L.s("未记录", "not recorded");
+        return sourceLabel(code);
+    }
+
     private String sourceLabel(String code) {
         if (SRC_PROFILE.equals(code)) return L.s("画像派生", "profile-derived");
         if (SRC_GENERIC.equals(code)) return L.s("通用弱口令表", "generic weak list");
@@ -4860,6 +5904,10 @@ public class MainActivity extends Activity {
      * 不落地会出现「候选显示正常但一跑就秒结束」。
      */
     private void deriveFromTarget() {
+        deriveFromTarget(false);
+    }
+
+    private void deriveFromTarget(final boolean toAudit) {
         usePlanMode = false; selectedPlan = null;
         if (targetNet == null) {
             Toast.makeText(this, L.s("请先选择目标网络",
@@ -4871,12 +5919,12 @@ public class MainActivity extends Activity {
         // 取的是**本目标**的档案（没有就从默认模板继承，旧口令不继承）。
         final io.github.wlmosv_png.wpaforge.audit.SeedModel seeds = profileForCurrentTarget().seeds;
         final io.github.wlmosv_png.wpaforge.audit.TriedSet tried = triedForCurrentTarget();
-        appendStream(L.f("正在按 SSID「%s」生成定向载荷...",
-                "Deriving candidates from SSID \"%s\"...", ssid));
-        if (!seeds.isEmpty()) {
-            appendStream(L.f("线索: %d 项（%s）", "Hints: %d item(s) (%s)",
-                    seeds.count(), seeds.masked()));
-        }
+        dictReport(toAudit, io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO,
+                L.f("正在按 SSID「%s」生成定向载荷...",
+                        "Deriving candidates from SSID \"%s\"...", ssid),
+                seeds.isEmpty() ? null
+                        : L.f("线索: %d 项（%s）", "Hints: %d item(s) (%s)",
+                              seeds.count(), seeds.masked()));
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
                     io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(targetNet,
@@ -4903,19 +5951,26 @@ public class MainActivity extends Activity {
             final int skipN = skipped;
             ui.post(() -> {
                 applyDict(fresh, nm, path, SRC_PROFILE);
-                appendStream(L.f("定向载荷就绪: %d 发", "Derived %d candidates", fresh.size()));
-                if (skipN > 0) {
-                    appendStream(L.f("已跳过 %d 条本目标试过的候选", "%d already tried, skipped", skipN));
-                }
-                appendStream(r.explanation);
+                dictReport(toAudit, io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
+                        L.f("定向载荷就绪: %d 发", "Derived %d candidates", fresh.size()),
+                        (skipN > 0
+                                ? L.f("已跳过 %d 条本目标试过的候选",
+                                      "%d already tried on this target, skipped", skipN)
+                                : "")
+                                + (r.explanation.isEmpty() ? "" : "\n" + r.explanation));
             });
         }).start();
     }
 
     /** 内置生成器（通用词法），同样先落盘 */
     private void buildGenericDict() {
+        buildGenericDict(false);
+    }
+
+    private void buildGenericDict(final boolean toAudit) {
         usePlanMode = false; selectedPlan = null;
-        appendStream(L.s("正在编排通用载荷...", "Building built-in dictionary..."));
+        dictReport(toAudit, io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO,
+                L.s("正在编排通用载荷…", "Building built-in dictionary..."), null);
         new Thread(() -> {
             io.github.wlmosv_png.wpaforge.audit.DictGenerator g =
                     io.github.wlmosv_png.wpaforge.audit.DictGenerator.quick(200000);
@@ -4925,10 +5980,22 @@ public class MainActivity extends Activity {
             final String stats = renderStats(g.stats());
             ui.post(() -> {
                 applyDict(list, nm, path, SRC_GENERIC);
-                appendStream(L.f("载荷编排完成: %d 发", "Generated %d entries", list.size()));
-                appendStream(stats);
+                dictReport(toAudit, io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
+                        L.f("载荷编排完成: %d 发", "Generated %d entries", list.size()), stats);
             });
         }).start();
+    }
+
+    /**
+     * 字典操作的结果写到哪：破解页走状态流，审计页走「字典操作」频道。
+     *
+     * <p>两边共用同一条派生实现，但**日志不串台** —— 在审计页点派生，
+     * 结果就出现在审计页的字典频道里，不会跑到破解页的状态流上。
+     */
+    private void dictReport(boolean toAudit, io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind,
+                           String text, String detail) {
+        if (toAudit) dictLine(kind, "", text, detail);
+        else appendStream(text);
     }
 
     /** 把 origin->count 渲染成一行可读文本 */
@@ -5006,16 +6073,54 @@ public class MainActivity extends Activity {
         applyDict(list, name, path, "");
     }
 
+    /**
+     * **当前字典的唯一写入口**。
+     *
+     * <p>1.9.44 起这里同时负责三件事，缺一件就会出现「界面显示 A、实际跑 B」：
+     * <ol>
+     *   <li>更新显示字段（名字 / 路径 / 来源 / 跳过条数）；</li>
+     *   <li>更新**工作台快照**（{@link io.github.wlmosv_png.wpaforge.audit.AuditWorkflow}）——
+     *       条数由候选列表本身算出，不接受任何"自报条数"；</li>
+     *   <li>把快照**持久化**，让应用重开后仍能回答"上次用的是哪本字典"。</li>
+     * </ol>
+     * 传空列表时是显式「清空」，工作台与持久层一起清，不会留下半截状态。
+     */
     private void applyDict(java.util.List<Candidate> list, String name, String path, String source) {
-        currentDict = list;
-        currentDictName = name;
+        boolean empty = list == null || list.isEmpty();
+        currentDict = empty ? new java.util.ArrayList<Candidate>() : list;
+        currentDictName = name == null ? "" : name;
         currentDictPath = path == null ? "" : path;
         currentDictSource = source == null ? "" : source;
-        currentDictSkipped = countSkipped(list);
+        currentDictSkipped = empty ? 0 : countSkipped(currentDict);
+
+        if (empty) {
+            workbench.clearDictionary();
+            io.github.wlmosv_png.wpaforge.DictSnapshotStore.clear(this);
+        } else {
+            workbench.setDictionary(currentDictName, currentDictSource, currentDictPath,
+                    currentDict);
+            io.github.wlmosv_png.wpaforge.DictSnapshotStore.save(this, workbench.dictionary());
+        }
+
         updateDictStatus();
         updateConnectDict();
         Toast.makeText(this, L.f("已应用 %d 条", "Applied %d entries",
-                list == null ? 0 : list.size()), Toast.LENGTH_SHORT).show();
+                currentDict.size()), Toast.LENGTH_SHORT).show();
+
+        io.github.wlmosv_png.wpaforge.audit.DictSnapshot s = workbench.dictionary();
+        dictLine(empty ? io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN
+                       : io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
+                s.empty() ? (currentDictName.isEmpty() ? "(unnamed)" : currentDictName) : s.name,
+                empty ? L.s("已清空当前字典", "Current dictionary cleared")
+                      : s.count + L.s(" 条候选 · 内容指纹 ", " entries \u00b7 content id ")
+                        + s.fingerprint(),
+                L.f("名称: %s\n来源: %s\n候选数: %d\n内容指纹: %s\n文件: %s\n文件指纹: %s",
+                        "Name: %s\nSource: %s\nCandidates: %d\nContent id: %s\nFile: %s\nFile id: %s",
+                        s.name.isEmpty() ? "\u2014" : s.name, sourceLabel(s.source), s.count,
+                        s.fingerprint().isEmpty() ? "\u2014" : s.fingerprint(),
+                        s.filePath.isEmpty() ? L.s("未落盘", "not on disk") : s.filePath,
+                        s.fileId().isEmpty() ? "\u2014" : s.fileId()));
+        renderAudit();
     }
 
     /** 从字典文件里挑一个加载 */
@@ -5337,21 +6442,19 @@ public class MainActivity extends Activity {
                             .show();
                     return;
                 }
-                currentDict = rl;
-                currentDictName = e.name;
-                currentDictSource = SRC_FILE;
-                currentDictPath = e.file.getAbsolutePath();
-                currentDictSkipped = countSkipped(rl);
-                updateDictStatus();
-                updateConnectDict();
-                appendLog("已加载 " + e.name + " -> " + rl.size() + L.s(" 条", " entries"));
+                // 统一走 applyDict：显示 + 工作台快照 + 持久化 一处收口。
+                applyDict(rl, e.name, e.file.getAbsolutePath(), SRC_FILE);
                 if (rl.size() >= DICT_LOAD_LIMIT) {
-                    appendLog(L.f("注意: 已达上限 %d 条，后面的没读进来",
-                            "Note: hit the %d limit — the rest was not loaded", DICT_LOAD_LIMIT));
+                    dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN, e.name,
+                            L.f("注意: 已达上限 %d 条，后面的没读进来",
+                                    "Note: hit the %d limit - the rest was not loaded",
+                                    DICT_LOAD_LIMIT), null);
                 }
                 if (rl.size() > 300) {
-                    appendLog(L.f("提示: 约 %s 跑完（实测约 1 秒/条）",
-                        "About %s to finish (~1s per attempt)", humanTime(rl.size())));
+                    dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO, e.name,
+                            L.f("提示: 约 %s 跑完（实测约 1 秒/条）",
+                                    "About %s to finish (~1s per attempt)",
+                                    humanTime(rl.size())), null);
                 }
             });
         }).start();
@@ -5365,6 +6468,10 @@ public class MainActivity extends Activity {
      * 不复制逻辑，避免两边行为漂移。
      */
     private void pickTargetForDerive() {
+        pickTargetForDerive(false);
+    }
+
+    private void pickTargetForDerive(boolean toAudit) {
         if (targetNet != null) {
             new android.app.AlertDialog.Builder(this)
                     .setTitle(L.s("按目标派生", "Derive from target"))
@@ -5372,18 +6479,22 @@ public class MainActivity extends Activity {
                             "Current target: %s\n\nUse it, or pick another?",
                             targetNet.displayName()))
                     .setPositiveButton(L.s("就用这个", "Use this"),
-                            (d, w) -> deriveFromTarget())
+                            (d, w) -> deriveFromTarget(toAudit))
                     .setNeutralButton(L.s("重新选", "Pick another"),
-                            (d, w) -> chooseTargetThenDerive())
+                            (d, w) -> chooseTargetThenDerive(toAudit))
                     .setNegativeButton(L.s("取消", "Cancel"), null)
                     .show();
         } else {
-            chooseTargetThenDerive();
+            chooseTargetThenDerive(toAudit);
         }
     }
 
     /** 选一个加密目标，选完立即派生 */
     private void chooseTargetThenDerive() {
+        chooseTargetThenDerive(false);
+    }
+
+    private void chooseTargetThenDerive(final boolean toAudit) {
         if (lastRecords.isEmpty()) {
             Toast.makeText(this, L.s("还没有扫描结果，请先去观测页",
                     "No scan results yet. Go to the Observe tab first."),
@@ -5411,45 +6522,23 @@ public class MainActivity extends Activity {
                     Prefs.setTarget(this, targetNet.bssid, targetNet.ssid);
                     updateTargetLabel();
                     refreshSkippedForCurrentDict();
-                    deriveFromTarget();
+                    deriveFromTarget(toAudit);
                 })
                 .setNegativeButton(L.s("取消", "Cancel"), null)
                 .show();
     }
 
     /**
-     * 写一条离线校验日志（旧入口保留，等价于 INFO 级）。
+     * 写一条记录到「其他审计操作」频道（历史调用点的兼容入口）。
      *
-     * <p>以前这里是往一个 TextView 里拼字符串：没有时间、没有级别、
-     * 与口令强度评估共用同一个框、只增不减。现在统一走 RunLog，
-     * 由 renderOfflineLog() 负责带时间戳与配色的渲染。
+     * <p>1.9.44 起运行记录分成四个频道。恢复配置、旧派生清理、字典管理页的提示等
+     * 既不属于「离线校验」也不属于「字典操作」，统一落到 {@code other}，
+     * 不再污染离线校验频道；材料导入走 {@code auditLine}，字典操作走 {@code dictLine}。
      */
     private void appendLog(String line) {
-        auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO, line);
-    }
-
-    /** 离线校验频道写一行。 */
-    private void auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind, String text) {
-        runLog.offline.add(System.currentTimeMillis(), kind, text);
-        renderOfflineLog();
-    }
-
-    /** 口令强度评估频道写一行（与离线校验分开）。 */
-    private void strengthLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind kind, String text) {
-        runLog.strength.add(System.currentTimeMillis(), kind, text);
-        renderStrengthLog();
-    }
-
-    /** 级别 -> 颜色。 */
-    private int logColor(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind k) {
-        switch (k) {
-            case OK:       return AmberTheme.OK;
-            case WARN:     return AmberTheme.WARN;
-            case FAIL:     return AmberTheme.DANGER;
-            case CANCEL:   return AmberTheme.ACCENT_SOFT;
-            case PROGRESS: return AmberTheme.TEXT_DIM;
-            default:       return AmberTheme.TERM_FG;
-        }
+        runLog.other.add(System.currentTimeMillis(),
+                io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO, "", line, null);
+        renderChannelRecords();
     }
 
     /**
@@ -5492,18 +6581,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void renderOfflineLog() {
-        renderLog(runLog.offline.snapshot(), auditLog, auditLogScroll,
-                L.s("尚无记录。选一份材料跑一次，这里会显示时间、进度与结论。",
-                        "No entries yet. Pick a capture and run it - progress and verdict show up here."));
-    }
-
-    private void renderStrengthLog() {
-        renderLog(runLog.strength.snapshot(), strengthLog, strengthLogScroll,
-                L.s("尚无记录。输入一个口令点「评估」，这里会显示它在字典里的位次。",
-                        "No entries yet. Type a passphrase and hit Check."));
-    }
-
     /** 请求停止：调真正的 engine.cancel()，并说明「已请求、等退出」，不假报成功。 */
     private void stopOfflineRun() {
         io.github.wlmosv_png.wpaforge.audit.AuditEngine eng = runningEngine;
@@ -5511,19 +6588,6 @@ public class MainActivity extends Activity {
         eng.cancel();
         auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.CANCEL,
                 L.s("已请求停止，等待引擎退出…", "Stop requested, waiting for the engine to exit..."));
-    }
-
-    /** 刷新按钮形态：跑着的时候它是「停止比对」。 */
-    private void refreshOfflineButton() {
-        if (offPick == null) return;
-        if (offlineBusy) {
-            offPick.setText(L.s("停止比对   ■", "Stop   ■"));
-            offPick.setTextColor(AmberTheme.DANGER);
-        } else {
-            offPick.setText(L.s("选择材料文件，跑当前字典   ›",
-                    "Pick a capture file, run the current dictionary   ›"));
-            offPick.setTextColor(TEXT);
-        }
     }
 
     // ---- 结果卡 ----
@@ -5553,12 +6617,12 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 写结果：存模型 + 持久化 + 刷新界面。 */
+    /** 写结果：存模型 + 持久化 + 刷新界面（总览、结果卡、步骤状态一起走）。 */
     private void setVerdict(io.github.wlmosv_png.wpaforge.audit.OfflineVerdict v) {
         lastVerdict = v;
         io.github.wlmosv_png.wpaforge.OfflineRunStore.save(this, v);
         renderOfflineVerdict();
-        refreshAuditOverview();
+        renderAudit();
     }
 
     private View kvRow(String k, String val) {
@@ -5636,7 +6700,13 @@ public class MainActivity extends Activity {
         return box;
     }
 
-    /** 渲染常驻结果卡。 */
+    /**
+     * 渲染常驻结果卡。
+     *
+     * <p>比 1.9.43 多两样东西：**字典来源 + 内容指纹/文件指纹**，以及未命中时的
+     * 明确解释。没有指纹时事后只能看到"07 通用口令榜 · 3336 条"，
+     * 无法回答"这次跑的到底是哪一份内容"。
+     */
     private void renderOfflineVerdict() {
         if (offResult == null) return;
         offResult.removeAllViews();
@@ -5647,7 +6717,7 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
 
         if (!v.hasResult()) {
-            title.setText(L.s("最近结果：还没有跑过", "Last result: none yet"));
+            title.setText(L.s("还没有跑过", "No run yet"));
             title.setTextColor(AmberTheme.TEXT_DIM);
             offResult.addView(title);
             TextView hint = new TextView(this);
@@ -5671,13 +6741,22 @@ public class MainActivity extends Activity {
         String ms = v.materialSummary();
         if (!ms.isEmpty()) mat = mat + "  ·  " + ms;
         offResult.addView(kvRow(L.s("材料", "Material"), mat), topGap(6));
+        offResult.addView(kvRow(L.s("材料摘要", "Digest"), v.materialKind.isEmpty()
+                ? "\u2014" : v.materialKind
+                + (v.ssid.isEmpty() ? "" : " · SSID " + v.ssid)), topGap(3));
         offResult.addView(kvRow(L.s("字典", "Dictionary"),
                 (v.dictName.isEmpty() ? L.s("(未命名)", "(unnamed)") : v.dictName)
                         + "  ·  " + v.dictSize + L.s(" 条", " entries")), topGap(3));
+        offResult.addView(kvRow(L.s("字典来源", "Dict source"),
+                v.dictSource.isEmpty() ? "\u2014" : sourceLabel(v.dictSource)), topGap(3));
+        offResult.addView(kvRow(L.s("字典指纹", "Dict id"),
+                v.dictFingerprint.isEmpty() ? "\u2014" : v.dictFingerprint), topGap(3));
+        offResult.addView(kvRow(L.s("文件指纹", "File id"),
+                v.dictFileId.isEmpty() ? L.s("未落盘", "not on disk") : v.dictFileId), topGap(3));
         offResult.addView(kvRow(L.s("完成", "Tested"),
-                v.tested + " / " + v.dictSize), topGap(3));
+                v.tested + " / " + v.dictSize + "  (" + pct(v.tested, v.dictSize) + ")"), topGap(3));
         offResult.addView(kvRow(L.s("耗时", "Elapsed"), fmtDuration(v.elapsedMs)), topGap(3));
-        offResult.addView(kvRow(L.s("时间", "Finished"), fmtStamp(v.finishedAt)), topGap(3));
+        offResult.addView(kvRow(L.s("完成时间", "Finished"), fmtStamp(v.finishedAt)), topGap(3));
 
         if (!v.note.isEmpty()) {
             TextView n = new TextView(this);
@@ -5692,16 +6771,39 @@ public class MainActivity extends Activity {
             offResult.addView(hitRow(v), topGap(10));
         }
 
+        // 未命中必须解释清楚"这只代表什么"，否则用户会以为密码一定很安全。
+        if (v.state == io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.MISS) {
+            TextView ex = new TextView(this);
+            ex.setText(L.s(
+                    "本次字典中的候选口令均未匹配，不代表目标密码不存在于其他字典"
+                            + "或其他候选集合中。",
+                    "None of the candidates in this dictionary matched. That does not mean the "
+                            + "password is absent from other dictionaries or candidate sets."));
+            ex.setTextSize(AmberTheme.FS_SMALL);
+            ex.setTextColor(TEXT_DIM);
+            ex.setLineSpacing(px(4), 1f);
+            ex.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+            ex.setPadding(px(13), px(11), px(13), px(11));
+            offResult.addView(ex, topGap(8));
+        }
+        if (v.state == io.github.wlmosv_png.wpaforge.audit.OfflineVerdict.State.CANCELLED) {
+            TextView ex = new TextView(this);
+            ex.setText(L.s("这次没有跑完字典，什么结论都下不了 —— 既不是命中，也不是未命中。",
+                    "The dictionary was not exhausted, so nothing can be concluded - it is neither "
+                            + "a hit nor a miss."));
+            ex.setTextSize(AmberTheme.FS_SMALL);
+            ex.setTextColor(TEXT_DIM);
+            ex.setLineSpacing(px(4), 1f);
+            offResult.addView(ex, topGap(8));
+        }
+
+        offResult.addView(kvRow(L.s("结果标识", "Run id"),
+                resultIdOf(v)), topGap(8));
+
         if (lastReport != null) {
             Button detail = rowAction(L.s("查看材料详情", "Material details"));
             detail.setOnClickListener(x -> showMaterialDetail());
             offResult.addView(detail, topGap(10));
-        }
-        if (lastEntry != null && lastEntry.ssid != null && !lastEntry.ssid.isEmpty()) {
-            Button derive = rowAction(L.f("按「%s」派生字典",
-                    "Derive a dictionary for \"%s\"", lastEntry.ssid));
-            derive.setOnClickListener(x -> confirmDeriveFromMaterial());
-            offResult.addView(derive, topGap(2));
         }
         Button clear = rowAction(L.s("清除这条结果", "Clear this result"));
         clear.setOnClickListener(x -> {
@@ -5711,6 +6813,12 @@ public class MainActivity extends Activity {
             renderOfflineVerdict();
         });
         offResult.addView(clear, topGap(2));
+    }
+
+    /** 结果的可追溯标识：状态 + 字典指纹 + 完成时间，三点定位一次运行（不含密码）。 */
+    private static String resultIdOf(io.github.wlmosv_png.wpaforge.audit.OfflineVerdict v) {
+        String id = v.dictFingerprint.isEmpty() ? "--------" : v.dictFingerprint;
+        return v.state.name() + " · " + id + " · " + v.finishedAt;
     }
 
     /** 材料详情弹窗：字段 + 完整度诊断。 */
@@ -5765,54 +6873,63 @@ public class MainActivity extends Activity {
         if (ssid == null || ssid.isEmpty()) return;
         usePlanMode = false;
         selectedPlan = null;
-        appendLog(L.f("正在按材料 SSID「%s」派生…",
-                "Deriving candidates from capture SSID \"%s\"...", ssid));
+        // 线索在**点击那一刻**读一次并固定下来（与「按目标派生」同一条纪律）：
+        // 线程里再读就可能与用户看到的状态不一致。
+        final io.github.wlmosv_png.wpaforge.audit.SeedModel seeds = seedModelForSsid(ssid);
+        dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.INFO,
+                L.s("材料 SSID", "capture SSID"),
+                L.f("正在按材料 SSID「%s」派生…",
+                        "Deriving candidates from capture SSID \"%s\"...", ssid), null);
         new Thread(() -> {
             final io.github.wlmosv_png.wpaforge.core.NetRecord fake =
                     new io.github.wlmosv_png.wpaforge.core.NetRecord(
                             ssid, "", -127, 2437,
                             io.github.wlmosv_png.wpaforge.core.NetRecord.Security.UNKNOWN,
                             false, "");
+            // **必须带 SeedModel**（见 seedModelForSsid 的注释）：SSID 派生在
+            // TargetDictBuilder 里是「seeds != null && seeds.useSsid」才生效的。
+            // 旧实现调的是两参重载（seeds == null），于是「按材料 SSID 派生」
+            // 实际产出的是与 SSID 毫无关系的通用弱口令表。
             final io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.Result r =
                     io.github.wlmosv_png.wpaforge.audit.TargetDictBuilder.build(
-                            fake, Prefs.deriveBudget(this));
+                            fake, Prefs.deriveBudget(this), null, seeds,
+                            io.github.wlmosv_png.wpaforge.audit.CnHot.load(this));
+            // 落盘前**不**按本目标的 triedSet 过滤：材料是从别处抓来的，
+            // 它对应的网络不一定是破解页当前选中的那个；拿别的网络的已试集合
+            // 去剔候选会静默丢料（这正是"界面显示 A、实际跑 B"的一类来源）。
+            final java.util.List<Candidate> fresh =
+                    new java.util.ArrayList<>(r.candidates);
             final String nm = io.github.wlmosv_png.wpaforge.audit.DerivedDicts
                     .targetedName(ssid, "");
-            final int n = r.candidates.size();
+            final String path = saveDictToFile(fresh, nm);
+            final int n = fresh.size();
             ui.post(() -> {
                 if (n == 0) {
-                    auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN,
-                            L.s("派生结果为空，字典保持不变。",
-                                    "Derivation produced nothing; dictionary unchanged."));
+                    // 派生失败/为空：**当前字典原样不动**，不留半截状态。
+                    dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.WARN,
+                            ssid, L.s("派生结果为空，当前字典保持不变。",
+                                    "Derivation produced nothing; dictionary unchanged."), null);
+                    Toast.makeText(this, L.s("派生结果为空，字典保持不变",
+                            "Derivation produced nothing; dictionary unchanged"),
+                            Toast.LENGTH_SHORT).show();
                     return;
                 }
-                applyDict(r.candidates, nm, "", SRC_PROFILE);
-                auditLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK,
-                        L.f("已按「%s」派生 %d 条并替换当前字典。",
-                                "Derived %d candidates from \"%s\"; dictionary replaced.",
-                                n, ssid));
+                applyDict(fresh, nm, path, SRC_PROFILE);
+                dictLine(io.github.wlmosv_png.wpaforge.audit.RunLog.Kind.OK, nm,
+                        L.f("已按「%s」派生 %d 条并替换当前字典（离线校验将使用这一本）",
+                                "Derived %d candidates from \"%s\"; the offline check will use "
+                                        + "this dictionary",
+                                ssid, n),
+                        L.f("文件: %s\n内容指纹: %s\n文件指纹: %s%s",
+                                "File: %s\nContent id: %s\nFile id: %s%s",
+                                path.isEmpty() ? L.s("未落盘（写入失败）",
+                                        "not on disk (write failed)") : path,
+                                workbench.dictionary().fingerprint(),
+                                workbench.dictionary().fileId().isEmpty()
+                                        ? "\u2014" : workbench.dictionary().fileId(),
+                                r.explanation.isEmpty() ? "" : "\n" + r.explanation));
             });
         }, "wpaforge-derive-from-material").start();
-    }
-
-    /** 审计总览：一眼看到当前字典与最近一次结论。 */
-    private void refreshAuditOverview() {
-        if (auditOverview == null) return;
-        StringBuilder sb = new StringBuilder();
-        sb.append(L.s("当前字典: ", "Dictionary: "))
-                .append(currentDictName.isEmpty() ? L.s("未选择", "none") : currentDictName)
-                .append(" · ").append(dictCount()).append(L.s(" 条", " entries"));
-        sb.append("\n").append(L.s("恢复状态: ", "Restore: "))
-                .append(L.s("见下方「恢复状态」", "see Restore state below"));
-        sb.append("\n").append(L.s("最近离线校验: ", "Last offline check: "));
-        if (!lastVerdict.hasResult()) {
-            sb.append(L.s("未跑过", "not run yet"));
-        } else {
-            sb.append(verdictLabel(lastVerdict).replaceAll("^\\S+\\s", ""))
-                    .append(" · ").append(lastVerdict.tested)
-                    .append("/").append(lastVerdict.dictSize);
-        }
-        auditOverview.setText(sb.toString());
     }
 
     // ---------------- 试连页 ----------------
@@ -7188,6 +8305,9 @@ public class MainActivity extends Activity {
                         currentDictPath = t.dictPath == null ? "" : t.dictPath;
                     }
                 }
+                // 权威重建之后必须把工作台一起带上，否则会出现
+                // 「破解页有字典、审计页说没有」这种前后不一致。
+                syncWorkbenchDict();
             } else {
                 TaskQueue.Task t = activeTaskForDisplay();
                 if (t != null) {
@@ -7217,6 +8337,7 @@ public class MainActivity extends Activity {
                                     currentDict = r;
                                     dictSizeShown = r.size();
                                     currentDictName = name;
+                                    syncWorkbenchDict();
                                 }
                                 updateConnectDict();
                                 updateDictStatus();

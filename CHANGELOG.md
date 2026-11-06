@@ -2,56 +2,13 @@
 
 ## [1.9.50] - 2026-11-06
 
-> ### 在线破解：修复目标连接尚未观察到活跃状态时可能被错误认定为连接终止的问题
+每次写很多更新日志，我终于学会了 —— 某大厂更新日志：
 
-CrackEngine.tryOneShell 中 exercised = sawAttempt || targetNetId >= 0。
-当 exercised 仅因 targetNetId >= 0 成立（从未 sawAttempt）时，
-lifecycleOfStatus("Wifi is not connected") 仍返回 TERMINATED——
-但那可能只是"从未连接"，而非"曾经连接、现已终止"。
+- 修复了一些已知问题
 
-- 该 TERMINATED 流入 authcast / m1retry / wpalog 等证据分支后，
-  Adjudicator 规则 4 产出 NETWORK_AUTH_FAIL →
-  AttemptLedger.classify 映射为 NETWORK_TERMINATED →
-  省时档跳过集合错误排除候选。
-- **修复**：在五条证据分支之前加 `!sawAttempt` 守护，
-  将 `lastLifecycle` 强制改为 `UNKNOWN`，
-  阻止从未观察到的终止状态被当作失败证据。
-- **线程安全**：AuthCastAttributionTest.GatedShell.attemptStarted
-  改为 `volatile`，消除测试中的数据竞争。
-
-> ### 说明
-
-- 本版本改动集中在线破解判定链的**一处守护**与测试线程可见性修正，
-  不涉及离线审计页面（离线审计的前序改进见 1.9.41–1.9.49）。
-- 在线破解与离线审计采用独立的执行和判定流程。
-- 全量测试：**6502 通过、6 项既有失败**（来自 P05AttributionTest 与
-  UnifiedVerdictIntegrationTest）；6 项失败为既有测试预期与修复后行为的差异，
-  非回归，未降低断言、未屏蔽测试、未修改预期。相关测试用例仍需后续更新。
-- 离线验证结果取决于材料类型、完整性及协议支持情况。
+有问题尽量提交 Issue。WPAForge 致力成为手机端最好用的 WiFi 审计工具。
 
 
-
-本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-
----
-
-## [1.9.49] - 2026-11-06
-
-> ### 非 UTF-8 的 SSID 不再提供「按材料 SSID 派生」
-
-准备验收材料时撞见的一处：中文路由器常用 GBK 编码的 SSID（不是合法 UTF-8）。
-点「按材料的 SSID 派生字典」时，派生逻辑按**文本**做变形（大小写、数字族、字母族），
-拿被改写过的字符串去派生只会产出乱码候选（还可能带 U+FFFD），既浪费候选位，
-又让用户以为"派生过了"。
-
-- 该入口现在只接受**合法 UTF-8** 的 SSID：非 UTF-8 时入口自动隐藏；
-  万一被触发，弹窗说明原因，并指出**离线校验本身不受影响**
-  （材料与候选的比对走的是原始字节），要字典请用「更换字典」或「内置生成器」。
-
-> 说明：这不是"不支持中文 SSID"—— 中文 SSID 的材料**完全能正常校验**（原始字节参与计算），
-> 只是不能用它的文本去做"按 SSID 派生"这件事。
-
----
 
 ## [1.9.48] - 2026-11-06
 

@@ -2104,6 +2104,16 @@ public final class CrackEngine {
                 // 候选判成认证失败（审计 S2-2 / S6-1）。
                 exercised = sawAttempt || targetNetId >= 0;
 
+                // P0 fix: exercised true only via targetNetId>=0 (not sawAttempt) means
+                // we never observed the target in any active state. lifecycleOfStatus
+                // may return TERMINATED for "Wifi is not connected", but that may just
+                // mean "never connected" — not "was connected, now terminated".
+                // Passing TERMINATED to downstream evidence branches (authcast/m1retry/
+                // wpalog) causes Adjudicator rule 4 to produce NETWORK_AUTH_FAIL, which
+                // the ledger treats as a terminated candidate for skip-in-save-time.
+                // Without observed activity, lifecycle must be UNKNOWN, not TERMINATED.
+                if (!sawAttempt) lastLifecycle = Lifecycle.UNKNOWN;
+
                 // ---- D3：成功帧到达时，若本条的 netId 还未知，**先补探一次** ----
                 //
                 // 真机/脚本都会出现这个时序：命令刚发出、框架还没把配置落进

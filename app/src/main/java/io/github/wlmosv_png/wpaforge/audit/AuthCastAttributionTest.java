@@ -59,7 +59,7 @@ public final class AuthCastAttributionTest {
      */
     static final class GatedShell implements CrackEngine.ShellChannel {
         final String listOut;
-        boolean attemptStarted = false;
+        volatile boolean attemptStarted = false;
         int sc = 0;
         GatedShell(String listOut) { this.listOut = listOut; }
 

@@ -999,6 +999,8 @@ public class MainActivity extends Activity {
     private volatile boolean wpsRootDiagStarted;
     /** 2026-11-08：最近一次扫描完成的时间戳（刷新顶部目标卡用）。 */
     private volatile long wpsScanAt = 0;
+    /** 2026-11-08：扫描是否进行中（区分空态文案：扫描中 vs 未扫描 vs 空结果）。 */
+    private volatile boolean wpsScanning = false;
     /** 2026-11-08：最近一次扫描的失败原因；空=没有失败（由流式 SCAN_OK=0 / ERROR= 填充）。 */
     private volatile String wpsScanFailReason = "";
     /** 扫描进度：一条细的不确定进度线 + 一行阶段文字（替代原来的大转圈）。 */
@@ -1408,6 +1410,10 @@ public class MainActivity extends Activity {
         pageWps.addView(logCard, sectionGap());
 
         refreshWpsProgress();
+        // 2026-11-08：首次进入 WPS 页自动扫描一次 —— 页面本来就是空列表，
+        // 让用户手动点「扫描 AP」再等 14s 不符合直觉；进页就直接发现附近网络，
+        // 扫描中会如实显示「扫描中」，完成后自动列出并选中首个 AP。
+        doWpsScan();
     }
     // 2026-11-08：完整枚举已从生产移除（10^7 不可行 + 内存打满）。旧 mode=4 回退拆半。
     private static final String[] WPS_MODE_ZH = {
@@ -1832,6 +1838,7 @@ public class MainActivity extends Activity {
             return;
         }
         wpsTargets.clear();
+        wpsScanning = true;
         renderWpsTargets();
         wpsCtrlOk = -1;
         wpsScanFailReason = "";
@@ -1932,8 +1939,18 @@ public class MainActivity extends Activity {
                 }
                 if (wpsScanStatus != null) {
                     // 2026-11-08：扫描失败或空结果时如实说明，不再用「0 个」掩盖根因。
-                    if (wpsTargets.isEmpty() && !wpsScanFailReason.isEmpty()) {
-                        wpsScanStatus.setText(wpsScanFailReason);
+                    if (wpsTargets.isEmpty()) {
+                        if (!wpsScanFailReason.isEmpty()) {
+                            wpsScanStatus.setText(wpsScanFailReason);
+                        } else if (Boolean.FALSE.equals(wpsRootOk)) {
+                            wpsScanStatus.setText(L.s("root 不可用：扫描无法通过特权通道执行，请检查 root 授权",
+                                    "root unavailable: scanning needs the privileged channel, check root"));
+                        } else {
+                            // helper 没起 / 超时 / stderr 被吞：stdout 空且无 SCAN_OK=0。
+                            // 最常见是 su 授权弹窗没点，或 app_process 引导失败。
+                            wpsScanStatus.setText(L.s("扫描无返回：可能是 root 授权被拒或通道异常，请授予 root 后重试",
+                                    "no scan output: root grant denied or channel error - grant root and retry"));
+                        }
                         wpsScanStatus.setTextColor(DANGER);
                     } else {
                         wpsScanStatus.setText(L.s("扫描完成：", "Scan done: ") + wpsTargets.size()
@@ -1944,6 +1961,8 @@ public class MainActivity extends Activity {
                     wpsScanStatus.setVisibility(View.VISIBLE);
                 }
                 wpsScanAt = System.currentTimeMillis();
+                wpsScanning = false;
+                renderWpsTargets();
                 refreshWpsPickedMeta();
             });
         }, "wps-scan").start();
@@ -2086,11 +2105,18 @@ public class MainActivity extends Activity {
         }
         if (wpsTargets.isEmpty()) {
             TextView t = new TextView(this);
-            // 2026-11-08：空态文案不再把「扫不到」说成「没有支持 WPS 的 AP」。
-            // 现在列表会保留所有扫到的 AP（含能力未知的），这里只在确实没有候选时出现，
-            // 如实提示去扫描；真实失败原因（权限/定位/节流）由扫描状态行单独给出。
-            t.setText(L.s("尚未选择目标 —— 点上方「扫描 AP」发现附近网络",
-                    "No target yet - tap Scan APs to discover nearby networks"));
+            // 2026-11-08：空态区分扫描中 / 未扫描 / 空结果，避免「点扫描后立刻显示
+            // 尚未选择目标」的误导。扫描要 3 轮 × 4.5s，期间必须显示「扫描中」，
+            // 不能让用户误以为要先手动选目标。
+            if (wpsScanning) {
+                t.setText(L.s("扫描中，请稍候…（附近网络会自动列出，无需手动选择）",
+                        "Scanning… nearby networks will list automatically"));
+            } else if (wpsScanAt <= 0) {
+                t.setText(L.s("尚未扫描 —— 点上方「扫描 AP」发现附近网络",
+                        "Not scanned yet - tap Scan APs to discover nearby networks"));
+            } else {
+                t.setText(L.s("未发现附近网络", "No nearby networks found"));
+            }
             t.setTextSize(AmberTheme.FS_BODY);
             t.setTextColor(TEXT_DIM);
             t.setPadding(px(4), px(10), px(4), px(10));

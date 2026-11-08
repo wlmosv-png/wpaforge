@@ -1550,47 +1550,60 @@ public class MainActivity extends Activity {
         prev.setTextSize(AmberTheme.FS_SMALL);
         prev.setTextColor(AmberTheme.TEXT_DIM);
         prev.setPadding(px(4), px(6), px(4), px(4));
-        prev.setText(L.s("（输入后点「预览」查看解析结果；「保存」把有效候选追加保存）",
-                "(press Preview to see parse result; Save appends valid candidates)"));
+        prev.setText(L.s("（输入后点下方「预览」查看解析结果；「保存」把有效候选追加保存）",
+                "(press Preview below; Save appends valid candidates)"));
+        // 预览按钮嵌在 view 内 —— AlertDialog 的按钮一碰就关框，
+        // 预览要看解析明细，必须在框里完成。
+        final Button prevBtn = btnSecondary(L.s("预览解析结果", "Preview"));
+        prevBtn.setEnabled(false);
+        android.text.TextWatcher tw = new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            public void afterTextChanged(android.text.Editable e) {
+                boolean has = e != null && e.length() > 0;
+                prevBtn.setEnabled(has);
+                if (!has) prev.setText(L.s("（无输入）", "(empty)"));
+            }
+        };
+        input.addTextChangedListener(tw);
+        prevBtn.setOnClickListener(v -> {
+            String text = input.getText() == null ? "" : input.getText().toString();
+            io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Report rep =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCandidates.parse(text);
+            StringBuilder sb = new StringBuilder();
+            sb.append(L.s("原始输入：", "Raw: ")).append(text.length())
+                    .append(L.s(" 字符  有效候选：", " chars | valid: "))
+                    .append(rep.accepted.size())
+                    .append(L.s("  无效：", " | invalid: ")).append(rep.invalidCount)
+                    .append(L.s("  重复：", " | dup: "))
+                    .append(Math.max(0, rep.accepted.size() - new java.util.LinkedHashSet<>(
+                            rep.accepted).size())).append("\n");
+            if (rep.truncated) sb.append(L.s("（输入超限已截断）\n", "(input truncated)\n"));
+            if (!rep.issues.isEmpty()) {
+                sb.append(L.s("\n错误明细（位置 / 原因）：\n", "\nIssues (pos / reason):\n"));
+                int shown = Math.min(rep.issues.size(), 8);
+                for (int i = 0; i < shown; i++) {
+                    io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Issue it = rep.issues.get(i);
+                    sb.append("  #").append(it.pos).append(' ').append(it.reason).append("\n");
+                }
+                if (rep.issues.size() > shown) sb.append(L.s(
+                        "  …还有 " + (rep.issues.size() - shown) + " 条\n",
+                        "  …and " + (rep.issues.size() - shown) + " more\n"));
+            } else {
+                sb.append(L.s("\n无错误：全部可导入。", "\nNo errors: all importable."));
+            }
+            prev.setText(sb.toString());
+        });
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.addView(input);
+        box.addView(prevBtn, topGap(6));
         box.addView(prev);
         new android.app.AlertDialog.Builder(this)
                 .setTitle(L.s("粘贴 PIN 列表（解析后确认）", "Paste PIN list (preview first)"))
                 .setView(box)
                 .setPositiveButton(L.s("保存", "Save"), (d, w) ->
                         wpsImportCommit(input.getText() == null ? "" : input.getText().toString(), true))
-                .setNeutralButton(L.s("预览", "Preview"), (d, w) -> {
-                    String text = input.getText() == null ? "" : input.getText().toString();
-                    io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Report rep =
-                            io.github.wlmosv_png.wpaforge.wps.WpsCandidates.parse(text);
-                    StringBuilder sb = new StringBuilder();
-                    int chars = text.length();
-                    int valid = rep.accepted.size();
-                    int dup = chars > 0 ? Math.max(0, rep.accepted.size() - new java.util.LinkedHashSet<>(
-                            rep.accepted).size()) : 0;
-                    sb.append(L.s("原始输入：", "Raw: ")).append(chars)
-                            .append(L.s(" 字符  有效候选：", " chars | valid: ")).append(valid)
-                            .append(L.s("  无效：", " | invalid: ")).append(rep.invalidCount)
-                            .append(L.s("  重复：", " | dup: ")).append(dup).append("\n");
-                    if (rep.truncated) sb.append(L.s("（输入超限已截断）\n", "(input truncated)\n"));
-                    if (!rep.issues.isEmpty()) {
-                        sb.append(L.s("\n错误明细（位置 / 原因）：\n", "\nIssues (pos / reason):\n"));
-                        int shown = Math.min(rep.issues.size(), 8);
-                        for (int i = 0; i < shown; i++) {
-                            io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Issue it = rep.issues.get(i);
-                            sb.append("  #").append(it.pos).append(' ')
-                                    .append(it.reason).append("\n");
-                        }
-                        if (rep.issues.size() > shown) sb.append(L.s(
-                                "  …还有 " + (rep.issues.size() - shown) + " 条\n",
-                                "  …and " + (rep.issues.size() - shown) + " more\n"));
-                    } else {
-                        sb.append(L.s("\n无错误：全部可导入。", "\nNo errors: all importable."));
-                    }
-                    prev.setText(sb.toString());
-                })
                 .setNegativeButton(L.s("取消", "Cancel"), null)
                 .show();
     }

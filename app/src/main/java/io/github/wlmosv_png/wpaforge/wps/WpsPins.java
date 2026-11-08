@@ -65,18 +65,21 @@ public final class WpsPins {
     }
 
     /**
-     * 完整前 7 位序列（升序），limit 为上限条数（&lt;=0 表示不限）。
-     * 顺序枚举对无锁 AP 有效，但（真实世界中）多数 AP 会在若干次失败后锁定，
-     * 所以调用方必须配合锁定检测。
+     * 完整前 7 位序列（升序），limit 为上限条数。
+     *
+     * <p><b>2026-11-08（第三阶段任务书）：不再作为生产候选路径。</b>
+     * 10^7 条 × ~10s ≈ 3.2 年，物理上不可行；且修复前 <code>limit&lt;=0</code> 会
+     * 真的构造 1000 万条字符串把内存打满。此方法仅保留给**离线测试**，
+     * 并强制受 {@link io.github.wlmosv_png.wpaforge.wps.WpsCandidates#MAX_CANDIDATES}
+     * 硬上限 —— 任何路径都不得突破（不靠 UI 隐藏规避内存风险）。
      */
     public static List<String> enumerate(int limit) {
-        List<String> out = new ArrayList<>();
-        int n = limit <= 0 ? 10000000 : limit;
+        int cap = io.github.wlmosv_png.wpaforge.wps.WpsCandidates.MAX_CANDIDATES;
+        int n = Math.min(limit <= 0 ? cap : limit, cap);
+        List<String> out = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
-            String h = pad7(i);
-            String p = complete(h);
+            String p = complete(pad7(i));
             if (p != null) out.add(p);
-            if (out.size() >= (limit <= 0 ? Integer.MAX_VALUE : limit)) break;
         }
         return out;
     }
@@ -95,8 +98,11 @@ public final class WpsPins {
     public static List<String> enumerateRange(int fromIndex, int count) {
         List<String> out = new ArrayList<>();
         if (count <= 0) return out;
+        // 防御性硬上限（正常不会触发，防止调用方误传巨型 count）
+        int cap = io.github.wlmosv_png.wpaforge.wps.WpsCandidates.MAX_CANDIDATES;
         int start = Math.max(0, fromIndex);
-        for (int i = start; i < start + count && i < 10000000; i++) {
+        int end = start + Math.min(count, cap);
+        for (int i = start; i < end; i++) {
             String p = complete(pad7(i));
             if (p != null) out.add(p);
         }

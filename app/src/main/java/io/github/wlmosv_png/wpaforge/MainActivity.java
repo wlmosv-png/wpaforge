@@ -1934,12 +1934,7 @@ public class MainActivity extends Activity {
                     .append(io.github.wlmosv_png.wpaforge.wps.WpsEngine
                             .human((long) (s.avgMs() * remain)));
         }
-        if (wpsMode == 4) {
-            int remaining = io.github.wlmosv_png.wpaforge.wps.WpsPins.enumerateTotal() - wpsEnumCursor;
-            sb.append(L.s(" · 剩余 ", " · left ")).append(remaining);
-            String eta = io.github.wlmosv_png.wpaforge.wps.WpsEngine.eta(s, remaining);
-            if (eta != null) sb.append(L.s(" · 预计 ", " · eta ")).append(eta);
-        }
+        // 完整枚举已移除；仅剩拆半进度展示
         if (s.suspectCount > 0) {
             sb.append(L.s(" · 疑似命中 ", " \u00b7 suspect ")).append(s.suspectCount)
                     .append(L.s(" 条（证据不足，不算命中）", " (weak evidence, not counted)"));
@@ -2050,22 +2045,12 @@ public class MainActivity extends Activity {
                         runWpsBatch(pins.subList(i, end));
                     }
                 }
-            } else {
-                while (!wpsCancel && wpsRunning) {
-                    java.util.List<String> chunk = io.github.wlmosv_png.wpaforge.wps.WpsPins
-                            .enumerateRange(wpsEnumCursor, WPS_BATCH_SIZE);
-                    if (chunk.isEmpty()) break;
-                    java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Result> crs =
-                            runWpsBatch(chunk);
-                    wpsEnumCursor += io.github.wlmosv_png.wpaforge.wps.WpsBatchPlan.account(chunk, crs).advance;
-                    if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.shouldStop(wpsSession)) break;
-                    if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.shouldBackoff(wpsSession)) {
-                        wpsLog(L.s("[i] 疑似限流，冷却 60 秒…", "[i] possible rate limit — cooling down 60s…"));
-                        for (int i = 0; i < 60 && !wpsCancel; i++) Thread.sleep(1000);
-                        wpsSession.consecutiveKick = 0;
-                        wpsSession.verdict = io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_RUNNING;
-                    }
-                }
+            }
+            // 完整枚举已移除：wpsMode 现在只会是 0..3（拆半或弱 PIN/厂商/导入）。
+            if (wpsMode >= 4) {
+                wpsLog(L.s("[!] 完整枚举已移除，已回退到拆半模式。",
+                        "[!] full enumeration removed; fell back to half-PIN."));
+                wpsMode = 3;
             }
         } catch (Throwable t) {
             wpsLog("[err] " + t);

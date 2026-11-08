@@ -296,6 +296,123 @@ public final class WpsHitJudge {
         return sb.toString();
     }
 
+    // ---------------- 可信等级（供命中详情页三级展示） ----------------
+
+    /** 已确认：必要证据完整，能够证明结果。 */
+    public static final String L_CONFIRMED = "已确认";
+    /** 待验证：观察到了相关事件，但还不能证明完整结果。 */
+    public static final String L_PENDING = "待验证";
+    /** 未确认：缺少关键证据，或结果与本次会话无法建立可靠关联。 */
+    public static final String L_UNCONFIRMED = "未确认";
+
+    /** 缺失证据的键（供 UI 列出"缺了什么"）。 */
+    public static final String MISS_WPS_SUCCESS = "wps_success";      // 协议终局事件（WPS-SUCCESS/M8）
+    public static final String MISS_CONFIG_ATTRIB = "config_attrib";  // 配置归属（该 netId 是否本次新建）
+    public static final String MISS_CREDENTIAL = "credential";       // 凭据存在性（配置里有真口令吗）
+    public static final String MISS_CONNECT = "connect";             // 当前连接是否正常（IP）
+    public static final String MISS_KEEP = "keep";                   // 连接保持观察
+
+    /**
+     * 可信等级：基于结论 + 缺失证据清单。
+     *
+     * <p>任务书要求：不能把超时等同于 PIN 错误，不能把关联等同于 PIN 正确，
+     * 不能把新 netId 等同于凭据交付。SUCCESS 必须严格证据门槛。
+     *
+     * <ul>
+     *   <li>结论 = HIT_CONFIRMED：先把能达到的证据都算上，若仍缺
+     *       WPS-SUCCESS / 凭据存在性 中的关键项 → 降级为「待验证」；</li>
+     *   <li>结论 = HIT_UNVERIFIED：证据不足，一律「待验证」；</li>
+     *   <li>结论 = NOT_TARGET / NO_HIT：未确认。</li>
+     * </ul>
+     *
+     * <p>历史旧记录（无本会话证据）不得自动升级成「已确认」 —— 由
+     * {@link #legacyLevel()} 单独处理。
+     */
+    public static String level(In in) {
+        String v = judge(in);
+        if (C_CONFIRMED.equals(v)) {
+            // 协议终局（M8/WPS-SUCCESS）与凭据存在性，是"已确认"的硬门槛。
+            // 若本观测拿不到 → 只能「待验证」，不得硬报已确认。
+            java.util.List<String> missing = missingEvidence(in, true);
+            if (missing.contains(MISS_WPS_SUCCESS) || missing.contains(MISS_CREDENTIAL)) {
+                return L_PENDING;
+            }
+            return L_CONFIRMED;
+        }
+        if (C_UNVERIFIED.equals(v)) return L_PENDING;
+        return L_UNCONFIRMED;
+    }
+
+    /** 旧版 HIT 记录（无本会话观测）：只能「待验证」，不得自动升级成已确认。 */
+    public static String legacyLevel() {
+        return L_PENDING;
+    }
+
+    /**
+     * 缺失证据清单（中文）。
+     *
+     * @param strict 是否按"已确认"的硬门槛评估（含协议终局/凭据存在性）。
+     */
+    public static java.util.List<String> missingEvidence(In in, boolean strict) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (in == null) {
+            out.add(MISS_WPS_SUCCESS);
+            out.add(MISS_CONFIG_ATTRIB);
+            out.add(MISS_CREDENTIAL);
+            out.add(MISS_CONNECT);
+            out.add(MISS_KEEP);
+            return out;
+        }
+        // 平台无法直接提供这些证据（Android 15 无 WPS API、本文档不读配置）→ 如实列出
+        if (strict) {
+            out.add(MISS_WPS_SUCCESS);      // 本实现不读 supplicant 的 M8/WPS-SUCCESS 事件
+            out.add(MISS_CONFIG_ATTRIB);    // 本实现不做 LIST_NETWORKS 前后对比
+            out.add(MISS_CREDENTIAL);       // 本实现不读取配置里的口令
+        }
+        if (!"COMPLETED".equals(in.state) || in.state.isEmpty()) out.add(MISS_CONNECT);
+        if (!hasValidIp(in.connIp)) out.add(MISS_CONNECT);
+        // 连接保持观察是任务级事实，单帧观测本就不含 → 恒列
+        out.add(MISS_KEEP);
+        return out;
+    }
+
+    /** 缺失证据键 → 中文说明。 */
+    public static String missingLabel(String key, boolean zh) {
+        if (MISS_WPS_SUCCESS.equals(key)) {
+            return zh ? "协议终局证据（WPS-SUCCESS / M8）：本实现不读取 supplicant 事件流"
+                      : "protocol terminal evidence (WPS-SUCCESS/M8): not read";
+        }
+        if (MISS_CONFIG_ATTRIB.equals(key)) {
+            return zh ? "配置归属（该 netId 是否本次会话新建）：未做 LIST_NETWORKS 前后对比"
+                      : "config attribution (netId created this session?): not verified";
+        }
+        if (MISS_CREDENTIAL.equals(key)) {
+            return zh ? "凭据存在性（配置里是否有真口令）：本实现不读取口令"
+                      : "credential presence: not read";
+        }
+        if (MISS_CONNECT.equals(key)) {
+            return zh ? "当前连接正常（IP 有效）：未确认" : "connection normal (valid IP): unconfirmed";
+        }
+        if (MISS_KEEP.equals(key)) {
+            return zh ? "连接保持观察：未做（需任务级观测）" : "connection keep: not observed";
+        }
+        return zh ? ("缺失证据：" + key) : ("missing evidence: " + key);
+    }
+
+    /** 可信等级 → 中文文案（含说明）。 */
+    public static String levelText(String level, boolean zh) {
+        if (L_CONFIRMED.equals(level)) {
+            return zh ? "已确认（必要证据完整，能证明结果）"
+                      : "confirmed (necessary evidence complete)";
+        }
+        if (L_PENDING.equals(level)) {
+            return zh ? "待验证（观察到相关事件，但还不能证明完整结果）"
+                      : "pending (observed events, cannot yet prove full result)";
+        }
+        return zh ? "未确认（缺少关键证据或无法建立可靠关联）"
+                  : "unconfirmed (missing key evidence or unreliable association)";
+    }
+
     // ---------------- internals ----------------
 
     private static void add(StringBuilder sb, String f) {

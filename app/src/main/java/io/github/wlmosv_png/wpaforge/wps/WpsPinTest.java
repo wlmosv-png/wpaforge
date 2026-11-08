@@ -59,6 +59,17 @@ public class WpsPinTest {
         ok("range count<=0 返回空", WpsPins.enumerateRange(0, 0).isEmpty(), "");
         ok("负数起点被夹到 0", "00000000".equals(WpsPins.enumerateRange(-5, 1).get(0)), "");
         ok("枚举总数常量", WpsPins.enumerateTotal() == 10000000, "" + WpsPins.enumerateTotal());
+        // 2026-11-08：完整枚举不再作为生产路径 —— enumerate 必须受硬上限约束，
+        // 任何路径（含 limit<=0）都不得构造一千万条字符串打满内存
+        ok("enumerate(-1) 受硬上限约束（不构造一千万条）",
+                WpsPins.enumerate(-1).size() <= io.github.wlmosv_png.wpaforge.wps.WpsCandidates.MAX_CANDIDATES,
+                "" + WpsPins.enumerate(-1).size());
+        ok("enumerate(超大) 也受上限约束",
+                WpsPins.enumerate(999999999).size() <= io.github.wlmosv_png.wpaforge.wps.WpsCandidates.MAX_CANDIDATES,
+                "" + WpsPins.enumerate(999999999).size());
+        ok("enumerateRange 受上限约束",
+                WpsPins.enumerateRange(0, 999999999).size() <= io.github.wlmosv_png.wpaforge.wps.WpsCandidates.MAX_CANDIDATES,
+                "" + WpsPins.enumerateRange(0, 999999999).size());
 
         System.out.println("== helper 输出契约解析 ==");
         WpsController.Result r = WpsController.parseBatchLine(

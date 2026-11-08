@@ -81,6 +81,19 @@ public final class WpsHitConfirmTest {
         String vUnknown = WpsHitJudge.judge(base(-1));
         ok("confirm=-1 → 仍判命中（读不到 ≠ 失败）", WpsHitJudge.isHit(vUnknown), vUnknown);
 
+        info("③b 复核值的产生口径（读不到 ≠ 掉了）");
+        ok("空回复 → -1（不得当失败）", WpsHelper.confirmOf("") == -1, "" + WpsHelper.confirmOf(""));
+        ok("null → -1", WpsHelper.confirmOf(null) == -1, "" + WpsHelper.confirmOf(null));
+        ok("仍在线 → 1",
+                WpsHelper.confirmOf("wpa_state=COMPLETED\nkey_mgmt=WPA2-PSK") == 1,
+                "" + WpsHelper.confirmOf("wpa_state=COMPLETED\nkey_mgmt=WPA2-PSK"));
+        ok("仍在 WPS → 0",
+                WpsHelper.confirmOf("wpa_state=COMPLETED\nkey_mgmt=WPS") == 0, "");
+        ok("已断开 → 0",
+                WpsHelper.confirmOf("wpa_state=SCANNING\nkey_mgmt=WPA2-PSK") == 0, "");
+        ok("空回复经判定 → 仍算命中（不降级）",
+                WpsHitJudge.isHit(WpsHitJudge.judge(base(WpsHelper.confirmOf("")))), "");
+
         info("④ 生产链路：证据行 → App 解析");
         String line0 = WpsHelper.evidenceLine(stats(0), "12345670");
         info("    " + line0);

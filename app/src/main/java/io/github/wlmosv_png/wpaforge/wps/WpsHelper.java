@@ -753,6 +753,25 @@ public final class WpsHelper {
 
     // ---------------- 命中证据 ----------------
 
+    /**
+     * 600ms 复核帧 → 证据里的 confirm 值。
+     *
+     * <ul>
+     *   <li>{@code 1} 仍 COMPLETED 且非 WPS：命中成立；</li>
+     *   <li>{@code 0} 能读到状态但已经不是「已连上、非 WPS」：连接没稳住 → 降级为疑似；</li>
+     *   <li>{@code -1} 读不到（空回复 / 异常）：**未知**，不得据此降级。</li>
+     * </ul>
+     *
+     * <p>修复前这里把「读不到」也算成 0；因为当时 confirm 不参与判定，
+     * 后果只是日志里多一个 0。现在它进判定，就必须区分「掉了」与「没读到」。
+     */
+    static int confirmOf(String reply) {
+        if (reply == null || reply.trim().isEmpty()) return -1;
+        boolean up = "COMPLETED".equals(field(reply, "wpa_state"))
+                && !"WPS".equals(field(reply, "key_mgmt"));
+        return up ? 1 : 0;
+    }
+
     /** 把已采集的原始事实装进判定输入（判定只在 WpsHitJudge 里做）。 */
     static WpsHitJudge.In evidenceOf(Stats st) {
         WpsHitJudge.In in = new WpsHitJudge.In(
@@ -1020,9 +1039,9 @@ public final class WpsHelper {
                 } catch (Throwable ignored) {
                     s2 = null;
                 }
-                boolean stillUp = s2 != null && "COMPLETED".equals(field(s2, "wpa_state"))
-                        && !"WPS".equals(field(s2, "key_mgmt"));
-                st.hitConfirm = s2 == null ? -1 : (stillUp ? 1 : 0);
+                // 读不到复核 ≠ 复核失败：空回复（控制接口抖了一下）只能记「未知」，
+                // 拿它当「掉了」会把一条协议确认过的命中降级成「疑似」（假阴性）。
+                st.hitConfirm = confirmOf(s2);
                 // 归属优先用复核帧：刚连上时那一帧才最可能带着 ssid / bssid / ip
                 String f2 = (s2 != null && !s2.trim().isEmpty()) ? s2 : s;
                 st.hitState = field(f2, "wpa_state");

@@ -164,6 +164,8 @@ public final class WpsEngine {
         public int consecutiveRejected;
         /** 最近一次结果码，UI 展示用 */
         public String lastResult = "";
+        /** 最近一次尝试的 PIN（UI 与台账都要它；修复前只在日志行里一闪而过） */
+        public String lastPin = "";
         /** 见过真实 WPS 交换（关联 ≥1.5s 且 km=WPS）—— 目标可打的硬证据 */
         public boolean everRealWps;
 
@@ -270,6 +272,7 @@ public final class WpsEngine {
         s.totalMs += a.elapsedMs;
         if (a.maxAssocMs > s.maxAssocMs) s.maxAssocMs = a.maxAssocMs;
         s.lastResult = a.status;
+        s.lastPin = a.pin == null ? "" : a.pin;
 
         // 命中是不可改口的终态：后续任何失败/无关事件都不得覆盖它
         if (V_HIT.equals(s.verdict)) return;

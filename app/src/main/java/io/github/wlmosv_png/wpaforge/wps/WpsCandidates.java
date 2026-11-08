@@ -103,6 +103,16 @@ public final class WpsCandidates {
         return 10000 + 1000;
     }
 
+    /**
+     * 某一阶段的候选总数（**UI 的唯一分母出处**）。
+     *
+     * <p>修复前这个 10000 / 1000 是三目常量写死在 {@code refreshWpsProgress} 里的，
+     * 与引擎真实的阶段游标分属两处，改一处就会不一致。
+     */
+    public static int phaseTotal(int phase) {
+        return phase == 2 ? 1000 : 10000;
+    }
+
     // ---------------- 自定义列表 ----------------
 
     /**

@@ -170,9 +170,11 @@ public class ThemeConsistencyTest {
         // 这里同步换成新名字 —— 断言的本意（每块区域都是一张分组卡）不变。
         // 2026-11-06（1.9.46）：审计页把「①导入 + ②诊断」合成一张材料卡（matCard），
         // 原来的 diagCard 已并入其中。
+        // 2026-11-08（WPS 视觉重构）：WPS 页目标卡/进度卡更名为 targetCard/progCard。
+        // 断言本意「每块区域都是一张分组卡」不变。
         for (String card : new String[]{"radarCard", "barsCard", "chanCard", "adviceBoxRef",
                 "matCard", "dictCard", "runCard", "resultCard", "logCard",
-                "checkCard", "wpsTargetCard", "wpsModeCard", "wpsProgressCard"}) {
+                "checkCard", "targetCard", "wpsModeCard", "progCard"}) {
             ok("MainActivity 有分组卡 " + card, maFull != null && maFull.contains(card));
         }
         ok("筛选片有选中态刷新（renderFilterChips）",

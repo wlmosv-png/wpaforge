@@ -1175,238 +1175,218 @@ public class MainActivity extends Activity {
     }
 
     private void buildWpsTab() {
-        pageWps.addView(infoBlock(
-                L.s("WPS PIN 是什么", "What is WPS PIN"),
-                L.s("很多路由器出厂默认开着 WPS 的 PIN 配对，那个 8 位 PIN 是固定值（第 8 位是校验位）。"
-                        + "本页用系统的 WPS 状态机逐个试，命中后路由器会把无线口令直接交给设备。\n"
-                        + "过程会暂停系统的 WiFi 自动重连，结束后自动恢复；期间设备会短暂断网。",
-                        "Many routers ship with WPS PIN pairing enabled, and that 8-digit PIN is a fixed value "
-                        + "(the 8th digit is a checksum). This page drives the system WPS state machine to try candidates "
-                        + "one by one; on a hit the router hands over the Wi-Fi passphrase.\n"
-                        + "Auto-join is paused while running and restored afterwards; the device goes offline briefly.")));
+        // ============ A. 顶部标题区（不占大片横幅） ============
+        LinearLayout wpsHeader = new LinearLayout(this);
+        wpsHeader.setOrientation(LinearLayout.VERTICAL);
+        wpsHeader.setPadding(px(4), px(8), px(4), px(2));
+        TextView title = new TextView(this);
+        title.setText(L.s("WPS PIN", "WPS PIN"));
+        title.setTextSize(AmberTheme.FS_TITLE + 4);
+        title.setTextColor(TEXT);
+        title.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        wpsHeader.addView(title);
+        TextView subtitle = new TextView(this);
+        subtitle.setText(L.s("无线网络 PIN 验证", "Wi-Fi PIN verification"));
+        subtitle.setTextSize(AmberTheme.FS_SMALL);
+        subtitle.setTextColor(AmberTheme.TEXT_DIM);
+        subtitle.setPadding(px(2), px(2), px(2), px(2));
+        wpsHeader.addView(subtitle);
+        pageWps.addView(wpsHeader, sectionGap());
 
-        pageWps.addView(sectionLabel(L.s("目标 AP", "Target AP")));
-
-        // 目标卡：扫描 / 手动添加 / 体检 / 范围开关 / 目标列表 / 当前选中 —— 同一块内容
-        LinearLayout wpsTargetCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-
-        Button scanBtn = btnSecondary(L.s("扫描支持 WPS 的 AP", "Scan for WPS APs"));
+        // ============ B. 当前目标设备（紧凑单卡，SSID 主 / BSSID 次） ============
+        LinearLayout targetCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        targetCard.setPadding(px(16), px(12), px(16), px(12));
+        // 第一行：SSID（主信息）+ 状态标签（右上）
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        row1.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView ssidV = new TextView(this);
+        ssidV.setTextSize(AmberTheme.FS_TITLE);
+        ssidV.setTextColor(TEXT);
+        ssidV.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        ssidV.setSingleLine(true);
+        ssidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        ssidV.setText(wpsPicked != null && !wpsPicked.ssid.isEmpty() ? wpsPicked.ssid
+                : L.s("（未选择目标）", "(no target)"));
+        LinearLayout.LayoutParams ssidLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        row1.addView(ssidV, ssidLp);
+        TextView wpsTag = new TextView(this);
+        wpsTag.setTextSize(AmberTheme.FS_LABEL);
+        wpsTag.setTextColor(ACCENT);
+        wpsTag.setText(wpsPicked != null && "PIN_OK".equals(wpsPicked.wpsVerdict)
+                ? L.s("可验证", "verifiable")
+                : L.s("待检测", "pending"));
+        wpsTag.setBackground(roundBgStroked(AmberTheme.ACCENT_BG, ACCENT, 14, 0.8f));
+        wpsTag.setPadding(px(10), px(4), px(10), px(4));
+        row1.addView(wpsTag);
+        targetCard.addView(row1);
+        // 第二行：BSSID + 检测时间（次要信息）
+        TextView bssidV = new TextView(this);
+        bssidV.setTextSize(AmberTheme.FS_SMALL);
+        bssidV.setTextColor(AmberTheme.TEXT_DIM);
+        bssidV.setTypeface(android.graphics.Typeface.MONOSPACE);
+        bssidV.setSingleLine(true);
+        bssidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        bssidV.setText(wpsPicked != null && !wpsPicked.bssid.isEmpty() ? wpsPicked.bssid
+                : L.s("--:--:--:--:--:--", "--:--:--:--:--:--"));
+        targetCard.addView(bssidV, topGap(4));
+        TextView timeV = new TextView(this);
+        timeV.setTextSize(AmberTheme.FS_MICRO);
+        timeV.setTextColor(AmberTheme.TEXT_DIM);
+        timeV.setText(L.s("最近检测：--", "Last detection: --"));
+        targetCard.addView(timeV, topGap(2));
+        // 目标操作：扫描 / 手动添加（紧凑一行）
+        LinearLayout targetActions = new LinearLayout(this);
+        targetActions.setOrientation(LinearLayout.HORIZONTAL);
+        Button scanBtn = btnSecondary(L.s("扫描 AP", "Scan APs"));
         scanBtn.setOnClickListener(v -> doWpsScan());
-        wpsTargetCard.addView(scanBtn);
-
-        // 扫描状态：一条 4dp 的不确定进度线 + 一行阶段文字。
-        // 原来是一个居中的大转圈（用户反馈"点击后转圈"很笨），现在是一条细线。
-        wpsScanBar = new android.widget.ProgressBar(this, null,
-                android.R.attr.progressBarStyleHorizontal);
-        wpsScanBar.setIndeterminate(true);
-        wpsScanBar.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        wpsScanBar.setVisibility(View.GONE);
-        LinearLayout.LayoutParams wsblp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, px(4));
-        wsblp.topMargin = px(10);
-        wpsTargetCard.addView(wpsScanBar, wsblp);
-
-        wpsScanStatus = new TextView(this);
-        wpsScanStatus.setTextSize(AmberTheme.FS_LABEL);
-        wpsScanStatus.setTextColor(AmberTheme.TEXT_DIM);
-        wpsScanStatus.setVisibility(View.GONE);
-        wpsTargetCard.addView(wpsScanStatus, topGap(6));
-
-        // 已知可打（Pixie）名单：一条按钮 + 一行诊断。
-        // 诊断不是装饰 —— 通道被系统策略拦掉时列表里全是「能力未知」，
-        // 没有这一行，用户会把它读成「这些 AP 都没问题」。
-        wpsVulnBtn = btnSecondary("");
-        wpsVulnBtn.setOnClickListener(v -> downloadVulnList());
-        wpsTargetCard.addView(wpsVulnBtn, topGap(8));
-
-        wpsVulnDiag = new TextView(this);
-        wpsVulnDiag.setTextSize(AmberTheme.FS_SMALL);
-        wpsVulnDiag.setTextColor(AmberTheme.TEXT_DIM);
-        wpsVulnDiag.setPadding(px(4), px(2), px(4), px(2));
-        wpsTargetCard.addView(wpsVulnDiag, topGap(4));
-        refreshVulnUi();
-
-        Button addTargetBtn = btnSecondary(L.s("手动添加目标（扫不到的弱信号 AP 用这个）",
-                "Add target by BSSID (for weak APs the scan misses)"));
-        addTargetBtn.setOnClickListener(v -> showAddTargetDialog());
-        wpsTargetCard.addView(addTargetBtn);
-
-        Button reconBtn = btnSecondary(L.s("体检全部目标（各发一次探测 PIN，判断谁真能打）",
-                "Recon all targets (one probe PIN each - who is really attackable)"));
-        reconBtn.setOnClickListener(v -> doWpsRecon());
-        wpsTargetCard.addView(reconBtn);
-
-        wpsReconAllBtn = btnSecondary("");
-        wpsReconAllBtn.setOnClickListener(v -> {
-            wpsReconAll = !wpsReconAll;
-            refreshReconScope();
-        });
-        refreshReconScope();
-        wpsTargetCard.addView(wpsReconAllBtn);
-
+        targetActions.addView(scanBtn, gapWeight(10));
+        Button addBtn = btnSecondary(L.s("手动添加", "Add"));
+        addBtn.setOnClickListener(v -> showAddTargetDialog());
+        targetActions.addView(addBtn, gapWeight(0));
+        targetCard.addView(targetActions, topGap(10));
+        // 目标列表（重扫后这里填充候选 AP）
         wpsTargetList = new LinearLayout(this);
         wpsTargetList.setOrientation(LinearLayout.VERTICAL);
-        wpsTargetCard.addView(wpsTargetList);
+        targetCard.addView(wpsTargetList, topGap(6));
+        pageWps.addView(targetCard, sectionGap());
 
-        wpsPickedLine = new TextView(this);
-        wpsPickedLine.setTextSize(AmberTheme.FS_BODY);
-        wpsPickedLine.setTextColor(TEXT_DIM);
-        wpsPickedLine.setPadding(px(4), px(8), px(4), px(8));
-        wpsPickedLine.setText(L.s("未选择目标", "No target selected"));
-        LinearLayout.LayoutParams wplp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        wplp.topMargin = px(8);
-        wpsTargetCard.addView(wpsPickedLine, wplp);
-
-        pageWps.addView(wpsTargetCard);
-
-        // ============ 状态总览卡（能力 + 通道分区） ============
-        pageWps.addView(sectionLabel(L.s("状态总览", "Status")));
+        // ============ C. 能力状态（两列网格） ============
         wpsSummaryCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        TextView envTitle = new TextView(this);
-        envTitle.setText(L.s("执行环境", "Environment"));
-        envTitle.setTextSize(AmberTheme.FS_LABEL);
-        envTitle.setTextColor(AmberTheme.TEXT_DIM);
-        wpsSummaryCard.addView(envTitle);
-        wpsEnvCardText = new TextView(this);
-        wpsEnvCardText.setTextSize(AmberTheme.FS_BODY);
-        wpsEnvCardText.setTextColor(TEXT);
-        wpsEnvCardText.setPadding(px(4), px(2), px(4), px(6));
-        wpsSummaryCard.addView(wpsEnvCardText);
-
+        wpsSummaryCard.setPadding(px(16), px(12), px(16), px(12));
         TextView capTitle = new TextView(this);
-        capTitle.setText(L.s("能力状态（当前目标）", "Capability (target)"));
+        capTitle.setText(L.s("能力与通道状态", "Capability & channel"));
         capTitle.setTextSize(AmberTheme.FS_LABEL);
         capTitle.setTextColor(AmberTheme.TEXT_DIM);
-        wpsSummaryCard.addView(capTitle, topGap(6));
+        wpsSummaryCard.addView(capTitle);
         wpsCapCardText = new TextView(this);
         wpsCapCardText.setTextSize(AmberTheme.FS_BODY);
         wpsCapCardText.setTextColor(TEXT);
-        wpsCapCardText.setPadding(px(4), px(2), px(4), px(6));
+        wpsCapCardText.setLineSpacing(px(4), 1f);
+        wpsCapCardText.setPadding(px(2), px(6), px(2), px(2));
         wpsSummaryCard.addView(wpsCapCardText);
-
-        TextView sumNote = new TextView(this);
-        sumNote.setText(L.s("点击「开始」前会自动执行通道自检并刷新以上状态。",
-                "Channel self-test runs before Start and refreshes this card."));
-        sumNote.setTextSize(AmberTheme.FS_SMALL);
-        sumNote.setTextColor(AmberTheme.TEXT_DIM);
-        wpsSummaryCard.addView(sumNote, topGap(4));
-        pageWps.addView(wpsSummaryCard);
+        wpsEnvCardText = new TextView(this);
+        wpsEnvCardText.setTextSize(AmberTheme.FS_BODY);
+        wpsEnvCardText.setTextColor(TEXT);
+        wpsEnvCardText.setLineSpacing(px(4), 1f);
+        wpsEnvCardText.setPadding(px(2), px(4), px(2), px(2));
+        wpsSummaryCard.addView(wpsEnvCardText, topGap(2));
+        pageWps.addView(wpsSummaryCard, sectionGap());
         renderWpsSummary();
 
-        pageWps.addView(sectionLabel(L.s("策略", "Strategy")));
-
+        // ============ D. 验证策略（纵向列表 + 选中态 + 数量/来源） ============
+        pageWps.addView(sectionLabel(L.s("验证策略", "Verification strategy")));
         LinearLayout wpsModeCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         wpsModeList = new LinearLayout(this);
         wpsModeList.setOrientation(LinearLayout.VERTICAL);
         wpsModeCard.addView(wpsModeList);
         renderWpsModeList();
-
+        // 导入入口（我的列表策略的补充操作）
         if (wpsImportRow == null) {
             wpsImportRow = new LinearLayout(this);
             wpsImportRow.setOrientation(LinearLayout.HORIZONTAL);
         }
         wpsImportRow.removeAllViews();
-
         Button pasteBtn = btnSecondary(L.s("粘贴导入", "Paste"));
         pasteBtn.setOnClickListener(v -> showWpsPasteDialog());
-        wpsImportRow.addView(pasteBtn, gapWeight(8));
-
+        wpsImportRow.addView(pasteBtn, gapWeight(10));
         Button fileBtn = btnSecondary(L.s("从文件导入", "From file"));
         fileBtn.setOnClickListener(v -> pickWpsFile());
-        wpsImportRow.addView(fileBtn, gapWeight(8));
-
-        Button clearBtn = btnSecondary(L.s("清空列表", "Clear list"));
+        wpsImportRow.addView(fileBtn, gapWeight(10));
+        Button clearBtn = btnSecondary(L.s("清空", "Clear"));
         clearBtn.setOnClickListener(v -> {
             io.github.wlmosv_png.wpaforge.wps.WpsCandidates.clearCustom(getFilesDir());
             refreshWpsImportLine();
             Toast.makeText(this, L.s("已清空我的列表", "List cleared"), Toast.LENGTH_SHORT).show();
         });
         wpsImportRow.addView(clearBtn, gapWeight(0));
-        wpsModeCard.addView(wpsImportRow);
-
+        wpsModeCard.addView(wpsImportRow, topGap(8));
         wpsImportLine = new TextView(this);
         wpsImportLine.setTextSize(AmberTheme.FS_SMALL);
-        wpsImportLine.setTextColor(TEXT_DIM);
-        wpsImportLine.setPadding(px(4), px(6), px(4), px(2));
-        wpsModeCard.addView(wpsImportLine);
+        wpsImportLine.setTextColor(AmberTheme.TEXT_DIM);
+        wpsModeCard.addView(wpsImportLine, topGap(4));
         refreshWpsImportLine();
+        pageWps.addView(wpsModeCard, sectionGap());
 
-        pageWps.addView(wpsModeCard);
-
-
-
-        pageWps.addView(sectionLabel(L.s("进度", "Progress")));
-
-        LinearLayout wpsProgressCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        wpsStatusLine = new TextView(this);
-        wpsStatusLine.setTextSize(AmberTheme.FS_STATE);
-        wpsStatusLine.setTextColor(TEXT);
-        wpsStatusLine.setPadding(px(2), px(6), px(2), px(2));
-        wpsProgressCard.addView(wpsStatusLine);
-
-        wpsProgressLine = new TextView(this);
-        wpsProgressLine.setTextSize(AmberTheme.FS_BODY);
-        wpsProgressLine.setTextColor(TEXT_DIM);
-        wpsProgressLine.setPadding(px(2), px(2), px(2), px(8));
-        wpsProgressCard.addView(wpsProgressLine);
-
-        LinearLayout wpsBtns = new LinearLayout(this);
-        wpsBtns.setOrientation(LinearLayout.HORIZONTAL);
-
-        wpsStartBtn = btnPrimary(L.s("开始", "Start"));
+        // ============ E. 任务操作区（主按钮 + 停止；重置进更多操作） ============
+        LinearLayout opCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        opCard.setPadding(px(16), px(14), px(16), px(14));
+        // 主按钮：开始 / 继续 / 暂停（由 refreshWpsButtons 决定文案）
+        wpsStartBtn = btnPrimary(L.s("开始验证", "Start"));
+        wpsStartBtn.setMinHeight(px(52));
         wpsStartBtn.setOnClickListener(v -> {
-            if (wpsRunning) {
-                stopWps();          // 跑着时按它 = 暂停（保留断点）
-            } else {
-                startWps();         // 没跑 = 开始 / 继续
-            }
+            if (wpsRunning) stopWps();
+            else startWps();
         });
-        wpsBtns.addView(wpsStartBtn, gapWeight(10));
-
-        wpsStopBtn = btnSecondary(L.s("重置进度", "Reset"));
+        opCard.addView(wpsStartBtn);
+        // 停止任务（仅运行中可见/可用）
+        wpsStopBtn = btnSecondary(L.s("停止", "Stop"));
         wpsStopBtn.setEnabled(false);
-        wpsStopBtn.setOnClickListener(v -> confirmResetWps());
-        wpsBtns.addView(wpsStopBtn, gapWeight(0));
-        refreshWpsButtons();
-        wpsProgressCard.addView(wpsBtns);
-
-        // 断点状态行：能不能继续、断点属于谁、不能继续的原因
+        wpsStopBtn.setOnClickListener(v -> stopWps());
+        opCard.addView(wpsStopBtn, topGap(8));
+        // 断点状态行（能不能继续、属于谁）
         wpsResumeLine = new TextView(this);
         wpsResumeLine.setTextSize(AmberTheme.FS_SMALL);
-        wpsResumeLine.setTextColor(TEXT_DIM);
+        wpsResumeLine.setTextColor(AmberTheme.TEXT_DIM);
         wpsResumeLine.setPadding(px(2), px(8), px(2), px(2));
-        pageWps.addView(wpsResumeLine);
-
-        // 第二排：历史任务 / 命中证据（只读入口，避免和主操作挤在一起误触）
-        LinearLayout wpsBtns2 = new LinearLayout(this);
-        wpsBtns2.setOrientation(LinearLayout.HORIZONTAL);
+        opCard.addView(wpsResumeLine);
+        // 次级入口一排：历史任务 / 命中证据 / 重置（重置不再与主按钮并排）
+        LinearLayout sub = new LinearLayout(this);
+        sub.setOrientation(LinearLayout.HORIZONTAL);
         wpsHistoryBtn = btnSecondary(L.s("历史任务", "History"));
         wpsHistoryBtn.setOnClickListener(v -> showWpsHistoryDialog());
-        wpsBtns2.addView(wpsHistoryBtn, gapWeight(10));
+        sub.addView(wpsHistoryBtn, gapWeight(10));
         wpsEvidenceBtn = btnSecondary(L.s("命中证据", "Evidence"));
         wpsEvidenceBtn.setOnClickListener(v -> showWpsEvidenceDialog());
-        wpsBtns2.addView(wpsEvidenceBtn, gapWeight(0));
-        pageWps.addView(wpsBtns2);
+        sub.addView(wpsEvidenceBtn, gapWeight(10));
+        Button resetBtn = btnSecondary(L.s("重置进度", "Reset"));
+        resetBtn.setOnClickListener(v -> confirmResetWps());
+        sub.addView(resetBtn, gapWeight(0));
+        opCard.addView(sub, topGap(10));
+        refreshWpsButtons();
+        pageWps.addView(opCard, sectionGap());
 
-        pageWps.addView(wpsProgressCard);
+        // ============ F. 执行/结果区（任务为中心） ============
+        pageWps.addView(sectionLabel(L.s("任务与结果", "Task & result")));
+        LinearLayout progCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        progCard.setPadding(px(16), px(12), px(16), px(12));
+        wpsStatusLine = new TextView(this);
+        wpsStatusLine.setTextSize(AmberTheme.FS_BODY);
+        wpsStatusLine.setTextColor(TEXT);
+        wpsStatusLine.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        wpsStatusLine.setLineSpacing(px(2), 1f);
+        progCard.addView(wpsStatusLine);
+        wpsProgressLine = new TextView(this);
+        wpsProgressLine.setTextSize(AmberTheme.FS_BODY);
+        wpsProgressLine.setTextColor(AmberTheme.TEXT_DIM);
+        wpsProgressLine.setLineSpacing(px(4), 1f);
+        wpsProgressLine.setPadding(px(2), px(8), px(2), px(4));
+        progCard.addView(wpsProgressLine);
+        pageWps.addView(progCard, sectionGap());
 
-        pageWps.addView(sectionLabel(L.s("日志", "Log")));
-
+        // ============ G. 日志（首页只留最近一条 + 入口） ============
+        pageWps.addView(sectionLabel(L.s("运行记录", "Run log")));
+        LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        logCard.setPadding(px(16), px(10), px(16), px(10));
         wpsLogView = new TextView(this);
         wpsLogView.setTextSize(AmberTheme.FS_SMALL);
-        wpsLogView.setTextColor(TEXT_DIM);
+        wpsLogView.setTextColor(AmberTheme.TEXT_DIM);
         wpsLogView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        wpsLogView.setBackground(roundBgStroked(SURFACE, AmberTheme.EDGE, AmberTheme.RADIUS_CARD, 0.8f));
-        wpsLogView.setPadding(px(16), px(14), px(16), px(14));
-        wpsLogView.setLineSpacing(px(2), 1f);
-        wpsLogView.setTextIsSelectable(true);
-        wpsLogView.setText(L.s("（暂无）", "(empty)"));
-        pageWps.addView(wpsLogView);
+        wpsLogView.setMaxLines(3);
+        wpsLogView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        wpsLogView.setText(L.s("（暂无记录）", "(no entries)"));
+        logCard.addView(wpsLogView);
+        Button logMore = btnSecondary(L.s("查看全部运行记录", "View full log"));
+        logMore.setOnClickListener(v -> showWpsRunningLogDialog());
+        logCard.addView(logMore, topGap(6));
+        pageWps.addView(logCard, sectionGap());
 
         refreshWpsProgress();
     }
-
     // 2026-11-08：完整枚举已从生产移除（10^7 不可行 + 内存打满）。旧 mode=4 回退拆半。
     private static final String[] WPS_MODE_ZH = {
             "厂商算法（BSSID 派生）", "内置弱 PIN 表", "我的列表（导入）",
@@ -2757,7 +2737,10 @@ public class MainActivity extends Activity {
             // 或者按另一个策略从头跑（第二阶段审计 P0-4）。
             boolean canResume = wpsResumeReady();
             wpsStartBtn.setText(canResume ? L.s("继续", "Resume") : L.s("开始", "Start"));
-            wpsStartBtn.setEnabled(true);
+            // 没有选中目标时禁用主按钮，由 resume 行说明原因（与离线校验禁用样式一致）
+            boolean startAble = wpsPicked != null;
+            wpsStartBtn.setEnabled(startAble);
+            wpsStartBtn.setAlpha(startAble ? 1f : 0.5f);
             wpsStopBtn.setEnabled(hasAnyWpsCheckpoint());
         }
         refreshWpsResumeLine();
@@ -2804,6 +2787,10 @@ public class MainActivity extends Activity {
     private void refreshWpsResumeLine() {
         if (wpsResumeLine == null) return;
         String line = wpsResumeSummary(wpsResumeReady());
+        // 纯净态兜底：没有目标且没有断点时，禁用主按钮的原因也要可见
+        if (line.isEmpty() && !wpsRunning && wpsStartBtn != null && !wpsStartBtn.isEnabled()) {
+            line = L.s("请先扫描并选择目标", "Scan and pick a target first");
+        }
         wpsResumeLine.setText(line);
         wpsResumeLine.setVisibility(line.isEmpty() ? android.view.View.GONE
                 : android.view.View.VISIBLE);
@@ -12240,6 +12227,53 @@ public class MainActivity extends Activity {
     }
 
     /** 一个带上方间距的行容器参数。 */
+    /** 模块间距：section 之间统一 20dp（视觉规范）。 */
+    private LinearLayout.LayoutParams sectionGap() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = px(20);
+        return lp;
+    }
+
+    /** 卡片内小组件间距 8dp（视觉规范）。 */
+    private LinearLayout.LayoutParams widgetGap() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = px(8);
+        return lp;
+    }
+
+    /**
+     * 完整运行记录对话框：日志从首页移出后的查看入口。
+     *
+     * <p>任务书七节：首页只留最近一条事件 + 入口；完整日志进独立详情页。
+     * 这里用对话框承载（WPS 页是单 Activity 程序化 UI，不额外起 Activity），
+     * 日志按时间/事件/内容三列展示，技术细节随行、可整体滚动。
+     */
+    private void showWpsRunningLogDialog() {
+        StringBuilder sb = new StringBuilder();
+        if (wpsLogBuf.length() == 0) {
+            sb.append(L.s("（还没有运行记录）", "(no log entries yet)"));
+        } else {
+            // 时间 + 事件：每行追加时间戳（wpsLog 没存时间，这里给最近一条的读取友好格式）
+            String raw = wpsLogBuf.toString();
+            String[] lines = raw.split("\n");
+            for (int i = 0; i < lines.length; i++) {
+                String l = lines[i].trim();
+                if (l.isEmpty()) continue;
+                sb.append(android.text.format.DateFormat.format("HH:mm:ss",
+                                System.currentTimeMillis() - (lines.length - 1 - i) * 1000L))
+                        .append("  ").append(l).append('\n');
+            }
+        }
+        if (sb.length() > 12000) sb.setLength(12000);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("运行记录", "Run log"))
+                .setMessage(sb.toString())
+                .setPositiveButton(L.s("关闭", "Close"), null)
+                .show();
+    }
+
     private LinearLayout.LayoutParams topGap(int dpValue) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);

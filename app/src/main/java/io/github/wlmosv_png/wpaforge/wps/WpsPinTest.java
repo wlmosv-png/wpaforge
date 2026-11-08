@@ -275,19 +275,31 @@ public class WpsPinTest {
         ok("verdictText AP_LOCKED 非空", WpsEngine.verdictText(WpsEngine.V_AP_LOCKED, true).length() > 0, "");
 
         System.out.println("== 厂商 PIN 算法（对照 3WiFi Python 版基准）==");
+        // 2026-11-08 变更：24 条无门槛通用变换不再进默认 suggest()
+        //（它们对每台 AP 都产出候选，先验命中概率过低），改由 unprovenTransforms()
+        // 单独提供；suggest() 只含「有 OUI 门槛的厂商算法 + 固定出厂值」。
         java.util.List<WpsVendorPins.Candidate> vp = WpsVendorPins.suggest("5C:A0:02:B5:8F:65", "");
-        ok("能生成候选", vp.size() >= 18, "" + vp.size());
-        ok("首项 18987256（24-bit）", !vp.isEmpty() && "18987256".equals(vp.get(0).pin),
-                vp.isEmpty() ? "empty" : vp.get(0).describe());
-        ok("含 54531574（28-bit）", hasPin(vp, "54531574"), "count=" + vp.size());
-        ok("含 66559252（Reverse byte 24）", hasPin(vp, "66559252"), "");
-        ok("含 46895844（D-Link）", hasPin(vp, "46895844"), "");
-        ok("含 48784900（Inv NIC）", hasPin(vp, "48784900"), "");
-        ok("含 52820236（OUI^NIC）", hasPin(vp, "52820236"), "");
-        ok("含 37974503（NIC*2）", hasPin(vp, "37974503"), "");
-        ok("候选无重复", !hasDup(vp), "");
+        ok("默认候选少而精（无门槛清洗后）", vp.size() >= 0 && vp.size() <= WpsVendorPins.MAX_CANDIDATES,
+                "" + vp.size());
+        // 该 MAC 不命中任何 OUI 门槛，因此默认可能是空的；无门槛候选走独立入口
+        java.util.List<WpsVendorPins.Candidate> gp = WpsVendorPins.unprovenTransforms("5C:A0:02:B5:8F:65");
+        ok("无门槛变换独立入口可用", !gp.isEmpty(), "count=" + gp.size());
+        ok("首项 18987256（24-bit）", hasPin(gp, "18987256"), "" + gp.size());
+        ok("含 54531574（28-bit）", hasPin(gp, "54531574"), "count=" + gp.size());
+        ok("含 66559252（Reverse byte 24）", hasPin(gp, "66559252"), "");
+        ok("含 48784900（Inv NIC）", hasPin(gp, "48784900"), "");
+        ok("含 52820236（OUI^NIC）", hasPin(gp, "52820236"), "");
+        ok("含 37974503（NIC*2）", hasPin(gp, "37974503"), "");
+        // D-Link 算法（有 OUI 门槛）仍然在 suggest() 里给一台真实命中 OUI 的 MAC
+        java.util.List<WpsVendorPins.Candidate> vdDlink = WpsVendorPins.suggest("00:14:D1:11:22:33", "");
+        ok("D-Link OUI 含 22891587（D-Link 算法）", hasPin(vdDlink, "22891587"), "");
+        ok("D-Link OUI 含 56098419（+1）", hasPin(vdDlink, "56098419"), "");
+        ok("候选无重复", !hasDup(vp) && !hasDup(gp), "");
         boolean all8 = true;
         for (WpsVendorPins.Candidate c : vp) {
+            if (c.pin == null || c.pin.length() != 8 || !WpsPins.valid(c.pin)) all8 = false;
+        }
+        for (WpsVendorPins.Candidate c : gp) {
             if (c.pin == null || c.pin.length() != 8 || !WpsPins.valid(c.pin)) all8 = false;
         }
         ok("候选全为合法 8 位 PIN", all8, "");
@@ -297,17 +309,19 @@ public class WpsPinTest {
         ok("OUI 命中时首项为厂商专属算法",
                 !vd.isEmpty() && vd.get(0).viaOui && "22891587".equals(vd.get(0).pin),
                 vd.isEmpty() ? "empty" : vd.get(0).describe());
-        ok("D-Link OUI 仍含裸 24-bit 11228677", hasPin(vd, "11228677"), "");
         ok("D-Link OUI 含 22891587（D-Link 算法）", hasPin(vd, "22891587"), "");
         ok("D-Link OUI 含 56098419（+1）", hasPin(vd, "56098419"), "");
-        ok("OUI 命中时比纯通用更多", vd.size() > vp.size(), vd.size() + " vs " + vp.size());
         ok("OUI 专属标记出现", hasViaOui(vd), "");
+        ok("OUI 命中时比纯通用更多（无门槛独立）",
+                vd.size() + WpsVendorPins.unprovenTransforms("00:14:D1:11:22:33").size() > vp.size(),
+                vd.size() + " vs " + vp.size());
 
         ok("非法 BSSID 返回空", WpsVendorPins.suggest("zz:zz", "").isEmpty(), "");
         ok("短 BSSID 返回空", WpsVendorPins.suggest("0014D1", "").isEmpty(), "");
         ok("带横线也能解析", !WpsVendorPins.suggest("00-14-D1-11-22-33", "").isEmpty(), "");
         ok("generic 子集不含 OUI 专属",
-                WpsVendorPins.suggestGeneric("00:14:D1:11:22:33").size() <= vd.size(), "");
+                WpsVendorPins.suggestGeneric("00:14:D1:11:22:33").size()
+                        <= WpsVendorPins.unprovenTransforms("00:14:D1:11:22:33").size(), "");
 
         System.out.println("== 引擎：WPS 会话优先于「关联短」（核心修复）==");
         WpsEngine.Session sw = new WpsEngine.Session();
@@ -374,9 +388,10 @@ public class WpsPinTest {
                 "12345670\n00000000 11111111\nabc 22222222,33333333\n12345670\n# note 44444444\n1234567\n");
         ok("parseList 去重", pl.size() == new java.util.HashSet<>(pl).size(), "" + pl.size());
         ok("parseList 含 12345670", pl.contains("12345670"), "");
-        // 8 位但校验位不合法（22222222/44444444）→ 按前 7 位重算校验位
-        ok("parseList 修正非法校验位 22222222→22222220", pl.contains("22222220"), "");
-        ok("parseList 含注释里的 44444444→44444440", pl.contains("44444440"), "");
+        // 2026-11-08 变更：8 位但校验位不合法（22222222 / 44444444）→ **原样保留**，
+        // 不再按前 7 位重算校验位（不得悄悄改用户给的值；AP 是否接受由其决定）
+        ok("parseList 原样保留非法校验位 22222222", pl.contains("22222222") && !pl.contains("22222220"), "");
+        ok("parseList 原样保留 44444444", pl.contains("44444444") && !pl.contains("44444440"), "");
         ok("parseList 空输入安全", WpsCandidates.parseList(null).isEmpty(), "");
 
         java.io.File dir = new java.io.File("/tmp/wps-cand-test");

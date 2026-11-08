@@ -45,6 +45,8 @@ public final class WpsEngine {
         public int baseNetId = -1;
         /** 本次是否在目标上见过 km=WPS 会话。 */
         public boolean sawTargetWpsSession;
+        /** 该结果所属任务 ID（空 = 未绑定）。用于「旧任务事件不得改动新任务结果」。 */
+        public String taskId = "";
 
         /** 当前是否真的联网（IP 有效）—— 独立事实，不参与命中结论。 */
         public boolean online() {
@@ -182,6 +184,22 @@ public final class WpsEngine {
         public int baseNetId = -1;
         /** 命中那一刻是否真的联网 —— 独立事实，不参与「是不是命中」的判断。 */
         public boolean hitOnline;
+
+        // ---- HIT 纠错（P0-3）：原始判定与最终修正结果同时保留，绝不删除原始证据 ----
+        /** 本任务的任务 ID（空 = 未绑定；用于隔离旧任务事件）。 */
+        public String taskId = "";
+        /** 原始命中判定（一旦写入永不覆盖，供审计）。 */
+        public String hitOriginalVerdict = "";
+        /** 原始命中 PIN（纠正后仍保留；当前有效 PIN 见 {@link #hitPin}）。 */
+        public String hitOriginalPin = "";
+        /** 是否发生过反证纠正。 */
+        public boolean hitCorrected;
+        /** 纠正后的最新判定（HIT_CONFIRMED 之外的强反证，如 NOT_TARGET）。 */
+        public String hitCorrectedVerdict = "";
+        /** 纠正原因（可读）。 */
+        public String hitCorrectionReason = "";
+        /** 纠正发生时刻（毫秒）。 */
+        public long hitCorrectedAtMs;
         /** 命中时本次是否在**目标**上见过 km=WPS 会话（归属判据的一半）。 */
         public boolean sawTargetWpsSession;
         /**
@@ -276,8 +294,12 @@ public final class WpsEngine {
         s.lastResult = a.status;
         s.lastPin = a.pin == null ? "" : a.pin;
 
-        // 命中是不可改口的终态：后续任何失败/无关事件都不得覆盖它
-        if (V_HIT.equals(s.verdict)) return;
+        // 命中是终态：普通失败/无关事件不得覆盖它。
+        // 但更强的反证（NOT_TARGET，且确属同一任务/同一目标）可以触发重新评估 —— 见 maybeCorrect。
+        if (V_HIT.equals(s.verdict)) {
+            maybeCorrect(s, a);
+            return;
+        }
 
         // 「AP 在跟我们做 WPS」= 出现过 km=WPS 的关联。命中与否都算。
         boolean talking = a.wpsSession || "REJECTED".equals(a.status);
@@ -392,6 +414,57 @@ public final class WpsEngine {
         } else {
             s.verdict = V_RUNNING;
         }
+    }
+
+    /**
+     * HIT 终态的纠错通道（P0-3）。
+     *
+     * <h3>设计（不删除终态保护，只增加受控的反证通道）</h3>
+     * <ul>
+     *   <li><b>普通失败/无关事件</b>（NO_RESPONSE / PIN_REJECTED / TIMEOUT …）：
+     *       不带强反证 → 不动判定（原样保留 HIT）；<\/li>
+     *   <li><b>更强反证</b>：仅当本次结果明确是 {@link WpsHitJudge#C_NOT_TARGET}
+     *       （连接指向**别的网络**），且**确属同一任务/同一目标**时才触发；<\/li>
+     *   <li><b>旧任务事件不得改新任务结果<\/b>：反证必须与当前会话目标一致
+     *       （targetSsid 非空且相等），且 taskId 若双方都非空必须相等；否则整条忽略；<\/li>
+     *   <li><b>原始证据不删除<\/b>：原始判定/PIN 存进 hitOriginalVerdict / hitOriginalPin；<\/li>
+     *   <li><b>原始与修正同时保留<\/b>：hitCorrectedVerdict 记录最新修正结果，
+     *       hitCorrectionReason / hitCorrectedAtMs 记录原因与时间。<\/li>
+     * <\/ul>
+     *
+     * <h3>并发说明<\/h3>
+     * observe() 的调用点全部串行发生在结果回调线程上（batch/单发结果按顺序到达），
+     * 因此纠错读写不需要额外锁；将来若引入并发投递，需要在此方法外加互斥。
+     */
+    static void maybeCorrect(Session s, Attempt a) {
+        if (s == null || a == null) return;
+        if (!WpsHitJudge.C_NOT_TARGET.equals(a.hitVerdict)) return;   // 只认「连到别的网」这一强反证
+        // 归属隔离：旧任务 / 别的目标的证据不得改动本任务结果
+        if (!a.targetSsid.isEmpty() && !s.hitSsid.isEmpty()
+                && !a.targetSsid.equals(s.hitSsid)) return;
+        if (!a.taskId.isEmpty() && !s.taskId.isEmpty() && !a.taskId.equals(s.taskId)) return;
+
+        s.hitCorrected = true;
+        // 原始**判定**（HIT_CONFIRMED 之类），不是会话状态码（HIT）
+        if (s.hitOriginalVerdict.isEmpty()) s.hitOriginalVerdict = s.hitVerdict;
+        if (s.hitOriginalPin.isEmpty()) s.hitOriginalPin = s.hitPin == null ? "" : s.hitPin;
+        s.hitCorrectedVerdict = WpsHitJudge.C_NOT_TARGET;
+        s.hitCorrectionReason = "更强反证：连接指向「" + a.hitSsid + "」，不是目标「"
+                + s.hitSsid + "」→ 撤销命中";
+        s.hitCorrectedAtMs = System.currentTimeMillis();
+        // 撤销命中：回到进行中（可继续），当前有效判定不再渲染成「已命中」
+        s.hitPin = null;
+        s.hitVerdict = WpsHitJudge.C_NOT_TARGET;
+        s.hitWhy = s.hitCorrectionReason;
+        s.verdict = V_RUNNING;
+    }
+
+    /** 纠错摘要（供日志/历史展示；无纠错时为空串）。 */
+    public static String correctionSummary(Session s) {
+        if (s == null || !s.hitCorrected) return "";
+        return "corrected: " + s.hitOriginalVerdict + " -> " + s.hitCorrectedVerdict
+                + " reason=" + s.hitCorrectionReason
+                + " originalPin=" + (s.hitOriginalPin.isEmpty() ? "-" : s.hitOriginalPin);
     }
 
     /** 把命中证据落到会话上（历史台账与 UI 都读它）。 */

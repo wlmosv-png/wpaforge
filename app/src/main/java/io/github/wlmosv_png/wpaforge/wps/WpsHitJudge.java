@@ -70,12 +70,65 @@ public final class WpsHitJudge {
         return C_UNVERIFIED.equals(verdict);
     }
 
+    // ---------------- 复核三态（P0-2） ----------------
+    /** 明确复核成功：复核时仍 COMPLETED 且非 WPS。 */
+    public static final int CONFIRM_PASS = 1;
+    /** 明确复核失败：复核时已断开 / 仍在 WPS。 */
+    public static final int CONFIRM_FAIL = 0;
+    /** 复核未知：读取失败、超时、系统繁忙 —— **不等于 PASS**，也不抹除此前的独立事实。 */
+    public static final int CONFIRM_UNKNOWN = -1;
+
+    /** 复核值 → 三态名（供日志/文案，避免把 -1 说成「通过」）。 */
+    public static String confirmState(int confirm) {
+        if (confirm == CONFIRM_PASS) return "PASS";
+        if (confirm == CONFIRM_FAIL) return "FAIL";
+        return "UNKNOWN";
+    }
+
+    /**
+     * 协议终局成功（M8 / WPS-SUCCESS）是否可被可靠确认。
+     *
+     * <p>当前 supplicant 控制接口不提供该事件，本实现**不伪造**：恒返回 false，
+     * 使 {@link #F_WPS_TERMINAL_SUCCESS} 永不产生，{@link #level} 因此最多到「待验证」。
+     * 一旦将来接入真实事件源，只需改这一处。
+     */
+    public static boolean terminalSuccessKnown(In in) {
+        return false;
+    }
+
     // ---------------- 事实位 ----------------
 
-    /** 事实：AP 在协议层接受了这个 PIN。 */
-    public static final String F_PROTOCOL = "PROTOCOL";
-    /** 事实：凭据已交付并落进系统配置（新 netId + 已连上）。 */
-    public static final String F_CREDENTIAL = "CREDENTIAL";
+    // 2026-11-08（P0-1 证据分层整改）：把「观察到的 WPS 会话」与「协议终局成功」彻底分开。
+    // 旧代码把二者压进一个 F_PROTOCOL 事实位，读起来像「协议成功」，实际只证明
+    // 「见过 km=WPS 关联 + 归属成立 + 复核通过」—— 这正是任务书点名要拆开的地方。
+
+    /** ① 只证明：本次观察到 WPS 相关关联过程（km=WPS）。不代表任何成功。 */
+    public static final String F_WPS_SESSION_OBSERVED = "WPS_SESSION_OBSERVED";
+    /** ② 只证明：该 WPS 会话归属到**目标**（BSSID 对上，且未在别处看到会话）。 */
+    public static final String F_TARGET_SESSION_ATTRIBUTED = "TARGET_SESSION_ATTRIBUTED";
+    /**
+     * ③ 只证明：协议流程到达真正的成功终局（M8 / WPS-SUCCESS）。
+     *
+     * <p><b>当前 supplicant 控制接口不提供该事件的可靠读取</b>（本实现不解析
+     * M8/WPS-SUCCESS），因此该事实**恒不产生** —— 这是诚实的「UNKNOWN」，
+     * 不是「已成功」。任何把 ①② 当成 ③ 的行为都视为缺陷。
+     */
+    public static final String F_WPS_TERMINAL_SUCCESS = "WPS_TERMINAL_SUCCESS";
+    /** ④ 只证明：出现了一个新的网络配置（netId 变化 + 已连上）。不代表由本次任务创建。 */
+    public static final String F_CREDENTIAL_CONFIG_CREATED = "CREDENTIAL_CONFIG_CREATED";
+    /** ⑤ 只证明：当前连接**归属到目标**且已建立（跟随 confirm 三态）。 */
+    public static final String F_TARGET_CONNECTION_CONFIRMED = "TARGET_CONNECTION_CONFIRMED";
+
+    /** 事实：复核状态未知（读不到 ≠ 成功，也 ≠ 失败）。P0-2。 */
+    public static final String F_CONFIRM_UNKNOWN = "CONFIRM_UNKNOWN";
+
+    // ---- 旧常量（向后兼容别名）：语义已收敛到上面的诚实分层，不再自称「协议成功」----
+    /** @deprecated 用 {@link #F_TARGET_SESSION_ATTRIBUTED}；旧名 PROTOCOL 会误导为「协议成功」。 */
+    @Deprecated
+    public static final String F_PROTOCOL = F_TARGET_SESSION_ATTRIBUTED;
+    /** @deprecated 用 {@link #F_CREDENTIAL_CONFIG_CREATED}。 */
+    @Deprecated
+    public static final String F_CREDENTIAL = F_CREDENTIAL_CONFIG_CREATED;
     /** 事实：该配置已持久化（由「新 netId」间接推断，无法直接证实）。 */
     public static final String F_STORED = "STORED";
     /** 事实：此刻真的联网（IP 有效）。 */
@@ -173,10 +226,47 @@ public final class WpsHitJudge {
         // ⑥ 本次要有「跟目标做过 WPS 会话」这件事作陪
         if (!in.sawTargetWpsSession || in.sawWpsSessionElsewhere) return C_UNVERIFIED;
 
-        // ⑦ 600ms 复核
-        if (in.confirm == 0) return C_UNVERIFIED;
+        // ⑦ 600ms 复核（三态：只有明确 FAIL 才降级；UNKNOWN 不降级也不抬升）
+        if (in.confirm == CONFIRM_FAIL) return C_UNVERIFIED;
 
         return C_CONFIRMED;
+    }
+
+    // ---------------- 身份分离与因果（P0-4） ----------------
+
+    /**
+     * 逻辑网络身份是否一致（按 **SSID** 判定）。
+     *
+     * <p>SSID 相同只能证明「同一个名字」，**不能证明是同一个物理 AP** ——
+     * 同名 SSID 可以存在于不同路由器 / 不同 BSSID / 不同频段。
+     */
+    public static boolean logicalIdentityMatches(In in) {
+        if (in == null) return false;
+        if (isBlank(in.targetSsid) || isBlank(in.connSsid)) return false;
+        return in.connSsid.equals(in.targetSsid);
+    }
+
+    /**
+     * 物理 AP 身份是否一致（按 **BSSID** 判定，忽略大小写）。
+     *
+     * <p>只有 BSSID 逐字相同才能证明「同一个物理 AP」。
+     */
+    public static boolean physicalIdentityMatches(In in) {
+        if (in == null) return false;
+        if (isBlank(in.targetBssid) || isBlank(in.connBssid)) return false;
+        return in.connBssid.equalsIgnoreCase(in.targetBssid);
+    }
+
+    /**
+     * 新配置能否被证明「由本次任务创建」。
+     *
+     * <p>仅有「netId 变化」**不足以**证明因果关系：可能是上一次任务、旧配置重新启用、
+     * 系统自动切换、其他并发网络操作。当前实现没有「任务前后配置快照 + 任务 ID + 目标标识
+     * + 事件时间线」的联合证据，因此**恒返回 false** —— 结论保留为未验证，
+     * 绝不把「ID 变了」当成「我建的」。
+     */
+    public static boolean causalityProven(In in) {
+        return false;
     }
 
     /**
@@ -189,13 +279,30 @@ public final class WpsHitJudge {
         boolean attributed = attributed(in);
         boolean connected = "COMPLETED".equals(in.state) && !"WPS".equals(in.keyMgmt)
                 && in.curId >= 0 && in.baseId >= 0 && in.curId != in.baseId;
-        if (connected && attributed && in.sawTargetWpsSession && in.confirm != 0) {
-            add(sb, F_PROTOCOL);
+
+        // ① 观察到 WPS 会话（不代表成功）
+        if (in.sawTargetWpsSession || in.sawWpsSessionElsewhere) {
+            add(sb, F_WPS_SESSION_OBSERVED);
         }
+        // ② 会话归属到目标（不代表协议终局；也不代表成功）
+        if (connected && attributed && in.sawTargetWpsSession && in.confirm != CONFIRM_FAIL) {
+            add(sb, F_TARGET_SESSION_ATTRIBUTED);
+        }
+        // ③ 协议终局成功：当前接口读不到 → 恒不产生（诚实 UNKNOWN）
+        if (terminalSuccessKnown(in)) {
+            add(sb, F_WPS_TERMINAL_SUCCESS);
+        }
+        // ④ 新配置出现（不代表由本次任务创建 → 见 causalityProven）
         if (connected && attributed) {
-            add(sb, F_CREDENTIAL);
+            add(sb, F_CREDENTIAL_CONFIG_CREATED);
             add(sb, F_STORED);
         }
+        // ⑤ 目标连接已确认（跟随 confirm 三态；UNKNOWN 不算 PASS）
+        if (connected && attributed && in.confirm == CONFIRM_PASS) {
+            add(sb, F_TARGET_CONNECTION_CONFIRMED);
+        }
+        // 复核状态未知：独立事实，不抹除上面任何一条
+        if (in.confirm == CONFIRM_UNKNOWN) add(sb, F_CONFIRM_UNKNOWN);
         if (hasValidIp(in.connIp)) add(sb, F_ONLINE);
         return sb.toString();
     }
@@ -276,10 +383,15 @@ public final class WpsHitJudge {
         if (!in.sawTargetWpsSession || in.sawWpsSessionElsewhere) {
             return zh ? "本次没在目标上看到 WPS 会话" : "no WPS session seen on target";
         }
-        if (in.confirm == 0) {
+        if (in.confirm == CONFIRM_FAIL) {
             return zh ? "600ms 后连接已掉（未稳定）" : "dropped within 600ms";
         }
-        return zh ? "全部条件成立" : "all conditions satisfied";
+        if (in.confirm == CONFIRM_UNKNOWN) {
+            return zh ? "复核状态未知（未读到 ≠ 已通过）；协议终局未验证"
+                      : "confirm UNKNOWN (not read != passed); terminal unverified";
+        }
+        return zh ? "归属+会话+复核成立；协议终局仍未经确认" 
+                  : "attributed + session + confirm; terminal still unconfirmed";
     }
 
     /** 证据明细（一行，落到历史与日志里）。 */

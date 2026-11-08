@@ -1975,6 +1975,9 @@ public class MainActivity extends Activity {
         wpsProgressLine.setText(sb.toString());
     }
 
+    /** 拆半长任务已在本次会话确认过（避免每次点开始都弹）。 */
+    private boolean wpsHalfConfirmedOnce;
+
     private void startWps() {
         if (wpsRunning) return;
         if (wpsPicked == null) {
@@ -2002,6 +2005,16 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
             return;
         }
+        // ---- 拆半长任务门槛：仅拆半模式需要（11000 次、以十小时计、可能触发 AP 锁定） ----
+        if (wpsMode == 3 && !wpsHalfConfirmedOnce) {
+            wpsConfirmHalfStart();
+            return;               // 确认框回调里真正启动
+        }
+        doStartWps();
+    }
+
+    /** 真正启动（拆半确认通过后 / 非拆半直接走这里）。 */
+    private void doStartWps() {
         wpsRunning = true;
         wpsCancel = false;
         wpsLogBuf.setLength(0);
@@ -2014,6 +2027,39 @@ public class MainActivity extends Activity {
         refreshWpsProgress();
         final String bssid = wpsPicked.bssid;
         new Thread(() -> runWpsAttack(bssid), "wps-attack").start();
+    }
+
+    /**
+     * 拆半长任务确认框：明示成本与风险，把「长时间运行、可能触发 AP 锁定」
+     * 作为操作门槛，而不是让用户误点开始后挂一宿。
+     */
+    private void wpsConfirmHalfStart() {
+        String cost;
+        double per = 8.0;   // 单次尝试 7~9s，取 8s 作为保守下限
+        double hours = 11000.0 * per / 3600.0;
+        cost = String.format(java.util.Locale.US, "%.0f~%.0f", hours * 0.9, hours * 1.4);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(L.s("启动拆半攻击？", "Start half-PIN attack?"))
+                .setMessage(L.s(
+                        "拆半攻击：穷举前 4 位（10000 次）+ 后 3 位（1000 次），理论覆盖任意合法 8 位 PIN。\n\n"
+                                + "· 预计耗时：约 " + cost + " 小时（单次尝试 7~9 秒，未计退避/中断）\n"
+                                + "· 风险：可能触发 AP 的 WPS 锁定 / 限流，届时需等待或重启路由器\n"
+                                + "· 中断可随时暂停，进度会存档并在下次「继续」\n"
+                                + "· 本机会话证据有限：即使命中，可信等级通常只到「待验证」\n\n"
+                                + "确认运行？",
+                        "Half-PIN: tries 10k prefixes + 1k suffixes "
+                                + "(covers any valid 8-digit PIN).\n\n"
+                                + "· Est. " + cost + "h (7-9s/try, ignoring backoff)\n"
+                                + "· Risk: may trigger AP WPS lock/limit\n"
+                                + "· Pause anytime; progress saved for Resume\n"
+                                + "· Evidence here is limited; hits usually cap at 'pending'\n\n"
+                                + "Run?"))
+                .setPositiveButton(L.s("运行拆半", "Run"), (d, w) -> {
+                    wpsHalfConfirmedOnce = true;
+                    doStartWps();
+                })
+                .setNegativeButton(L.s("取消", "Cancel"), null)
+                .show();
     }
 
     private void stopWps() {

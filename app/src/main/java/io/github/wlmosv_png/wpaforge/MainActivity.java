@@ -1083,6 +1083,31 @@ public class MainActivity extends Activity {
     private io.github.wlmosv_png.wpaforge.wps.WpsLedger.Task wpsTask;
     /** 断点状态行：说清「能不能继续、断点属于谁、为什么不能继续」。 */
     private TextView wpsResumeLine;
+    /** WPS 专项统计（跨进程持久化；每次结果实时累加并原子落盘）。 */
+    private io.github.wlmosv_png.wpaforge.wps.WpsStats wpsStats = new io.github.wlmosv_png.wpaforge.wps.WpsStats();
+
+    /** 台账目录下的统计文件。 */
+    private java.io.File wpsStatsFile() {
+        return new java.io.File(getFilesDir(), "wps/stats.txt");
+    }
+
+    /** 启动/回前台时加载统计（占用我们自己的字段，不覆盖外部）。 */
+    private void wpsStatsLoad() {
+        try {
+            io.github.wlmosv_png.wpaforge.wps.WpsStats loaded = new io.github.wlmosv_png.wpaforge.wps.WpsStatsStore(wpsStatsFile()).load();
+            if (loaded != null && !loaded.empty()) wpsStats = loaded;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 计入一条结果并把统计落盘。 */
+    private void wpsStatsAdd(String status, long elapsedMs) {
+        try {
+            wpsStats.add(status, elapsedMs);
+            new io.github.wlmosv_png.wpaforge.wps.WpsStatsStore(wpsStatsFile()).save(wpsStats);
+        } catch (Throwable ignored) {
+        }
+    }
     private TextView wpsHistoryBtn;
     private TextView wpsEvidenceBtn;
 
@@ -2677,6 +2702,9 @@ public class MainActivity extends Activity {
             sb.append('\n');
         }
         if (all.isEmpty()) sb.append(L.s("（还没有历史任务）", "(no tasks yet)"));
+        // 追加专项统计（全部来自真实落盘的数据；无数据显示「暂无数据」）
+        sb.append('\n').append(L.s("==== 专项统计 ====\n", "==== stats ====\n"))
+                .append(wpsStats.detail(L.s("a", "b").equals("a")));
         new android.app.AlertDialog.Builder(this)
                 .setTitle(L.s("WPS 历史任务", "WPS history"))
                 .setMessage(sb.toString())
@@ -2693,27 +2721,59 @@ public class MainActivity extends Activity {
      */
     private void showWpsEvidenceDialog() {
         io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session se = wpsSession;
+        io.github.wlmosv_png.wpaforge.wps.WpsLedger.Task lastHit =
+                io.github.wlmosv_png.wpaforge.wps.WpsLedger.latestHit(wpsLedger().load());
         StringBuilder sb = new StringBuilder();
-        io.github.wlmosv_png.wpaforge.wps.WpsLedger.Task lastHit = io.github.wlmosv_png.wpaforge.wps.WpsLedger.latestHit(wpsLedger().load());
-        if (se != null && io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(se.verdict)) {
-            sb.append(io.github.wlmosv_png.wpaforge.wps.WpsEngine.evidenceSummary(se));
-        } else if (lastHit != null) {
-            sb.append(L.s("本次没有命中。最近一次命中（历史）：\n",
-                    "No hit this run. Latest historical hit:\n"));
+
+        // 三级可信等级：已确认 / 待验证 / 未确认。
+        boolean zh = L.s("a", "b").equals("a");
+        io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session cur = se;
+        if (cur != null && io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(cur.verdict)) {
+            // 本次会话命中：给出可信等级 + 证据摘要 + 缺失证据清单
+            String lvl = io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.levelField(cur);
+            sb.append(L.s("本次命中 · 可信等级：", "This hit · level: "))
+                    .append(io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.levelText(lvl, zh))
+                    .append('\n');
+            sb.append(io.github.wlmosv_png.wpaforge.wps.WpsEngine.evidenceSummary(cur)).append('\n');
+            // 缺失证据（本实现/Android 15 无法提供的如实列出，不伪造）
+            java.util.List<String> miss = io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.missing(cur);
+            if (!miss.isEmpty()) {
+                sb.append(L.s("\n缺失的证据（不能据此判断完整成功）：\n",
+                        "\nMissing evidence (full success cannot be confirmed without):\n"));
+                for (String m : miss) {
+                    sb.append("  · ").append(
+                            io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.missingLabel(m, zh))
+                            .append('\n');
+                }
+            }
+        } else if (lastHit != null && lastHit.hasHit()) {
+            // 历史命中：不得自动升级成已确认 —— 旧记录无本会话观测证据
+            sb.append(L.s("本次没有命中。最近一次历史命中（可信等级：待验证，非已确认）：\n",
+                    "No hit this run. Latest historical hit (level: pending, not confirmed):\n"));
             sb.append("PIN=").append(lastHit.hitPin).append('\n');
             sb.append("SSID=").append(lastHit.ssid).append("   BSSID=")
                     .append(lastHit.bssid).append('\n');
-            if (lastHit.evidence != null) sb.append(lastHit.evidence);
+            if (lastHit.evidence != null && !lastHit.evidence.isEmpty()) {
+                sb.append(lastHit.evidence).append('\n');
+            } else {
+                sb.append(L.s("（该历史命中没有保存原始证据 —— 旧版本只记了 PIN，无法按新标准核实）",
+                        "(historical hit has no raw evidence — old version stored only PIN)"));
+            }
         } else {
             sb.append(L.s("还没有任何命中记录。", "No hits recorded yet."));
         }
-        sb.append(L.s("\n\n判定含义：\n"
-                        + "· 协议接受 = AP 完成了 WPS 交换（PIN 对）\n"
-                        + "· 凭据交付 = 系统为目标建立了新配置\n"
-                        + "· 当前联网 = 此刻拿到了 IP\n"
-                        + "三者分开记录：没有 IP 不等于 PIN 错。",
-                "\n\nPROTOCOL / CREDENTIAL / ONLINE are recorded separately:"
-                        + " no IP does not mean a wrong PIN."));
+
+        sb.append(L.s("\n\n可信等级说明：\n"
+                        + "· 已确认 = 必要证据完整，能证明结果\n"
+                        + "· 待验证 = 观察到相关事件，但还不能证明完整结果\n"
+                        + "· 未确认 = 缺少关键证据或无法建立可靠关联\n"
+                        + "本机/Android 15 读不到协议终局（WPS-SUCCESS）与凭据存在性，"
+                        + "因此即便归属与二次确认都成立，通常也只会到「待验证」。",
+                "\n\nLEVELS:\n· confirmed = necessary evidence complete\n"
+                        + "· pending = observed but cannot fully prove\n"
+                        + "· unconfirmed = missing key evidence\n"
+                        + "This device/Android 15 cannot read protocol terminal or credential, "
+                        + "so hits usually cap at 'pending'."));
         new android.app.AlertDialog.Builder(this)
                 .setTitle(L.s("命中证据", "Hit evidence"))
                 .setMessage(sb.toString())
@@ -2747,6 +2807,8 @@ public class MainActivity extends Activity {
                             public void onResult(io.github.wlmosv_png.wpaforge.wps.WpsController.Result r) {
                                 io.github.wlmosv_png.wpaforge.wps.WpsEngine.observe(wpsSession,
                                         new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Attempt(r));
+                                // 统计：每次结果实时累计并原子落盘（跨进程可恢复）
+                                wpsStatsAdd(r.status, r.elapsedMs);
                                 // 命中/疑似：证据必须写进日志（修复前证据只进日志文件，
                                 // App 侧既不显示也不解释）
                                 if (r.isSuccess()) {
@@ -12831,6 +12893,7 @@ public class MainActivity extends Activity {
         super.onResume();
         // autojoin 残留恢复：上次若进程被杀 / OOM，可能停在「限制自动重连」
         wpsAutojoinRestore();
+        wpsStatsLoad();
         checkBackgroundStall();
         // 回前台：目标/字典的显示与「权威」对齐一次（后台跑过的任务会在这里补回来）
         restoreSelectionFromAuthority();

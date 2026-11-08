@@ -182,6 +182,8 @@ public final class WpsEngine {
         public int baseNetId = -1;
         /** 命中那一刻是否真的联网 —— 独立事实，不参与「是不是命中」的判断。 */
         public boolean hitOnline;
+        /** 命中时本次是否在**目标**上见过 km=WPS 会话（归属判据的一半）。 */
+        public boolean sawTargetWpsSession;
         /**
          * 疑似命中（证据不足）：只记录，不判命中、不停任务。
          *
@@ -404,6 +406,7 @@ public final class WpsEngine {
         s.hitNetId = a.hitNetId;
         s.baseNetId = a.baseNetId;
         s.hitOnline = WpsHitJudge.hasValidIp(a.hitIp);
+        s.sawTargetWpsSession = a.sawTargetWpsSession;
     }
 
     /** 命中证据一行的可读摘要（写历史台账与日志用）。 */

@@ -413,6 +413,39 @@ public final class WpsHitJudge {
                   : "unconfirmed (missing key evidence or unreliable association)";
     }
 
+    /**
+     * 从引擎会话组装可信等级（供 UI）。
+     * @param s 命中后的会话；null 或未命中 → 未确认
+     */
+    public static String levelField(io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session s) {
+        if (s == null) return L_UNCONFIRMED;
+        if (!io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(s.verdict)) return L_UNCONFIRMED;
+        In in = fromSession(s);
+        // 历史/无归属会话：以 hitVerdict 为主，仍按严格门槛
+        return level(in);
+    }
+
+    /** 从引擎会话组装缺失证据清单（供 UI 命中详情）。 */
+    public static java.util.List<String> missing(io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session s) {
+        if (s == null) return missingEvidence(null, true);
+        return missingEvidence(fromSession(s), true);
+    }
+
+    /** 从引擎会话字段组装判定输入（辅助方法）。 */
+    static In fromSession(io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session s) {
+        In in = new In();
+        in.baseId = s.baseNetId;
+        in.curId = s.hitNetId;
+        in.state = "COMPLETED";   // hitVerdict 成立的前提；此处仅用于缺失证据评估
+        in.keyMgmt = "";          // 无法从 Session 还原，缺失清单不依赖它
+        in.connSsid = s.hitSsid == null ? "" : s.hitSsid;
+        in.connBssid = s.hitBssid == null ? "" : s.hitBssid;
+        in.connIp = s.hitIp == null ? "" : s.hitIp;
+        in.confirm = s.hitConfirm;
+        in.sawTargetWpsSession = s.sawTargetWpsSession;
+        return in;
+    }
+
     // ---------------- internals ----------------
 
     private static void add(StringBuilder sb, String f) {

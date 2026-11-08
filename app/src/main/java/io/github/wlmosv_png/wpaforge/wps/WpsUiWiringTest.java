@@ -47,8 +47,10 @@ public final class WpsUiWiringTest {
                 !ma.contains("wpsEnumCursor += chunk.size()"), "仍存在");
         ok("拆半主循环用 WpsBatchPlan.account", ma.contains("WpsBatchPlan.account(pins, rs)"),
                 "未接线");
-        ok("完整枚举用 WpsBatchPlan.account", ma.contains("WpsBatchPlan.account(chunk, crs)"),
-                "未接线");
+        // 2026-11-08：完整枚举已从生产移除（10^7 不可行 + 内存风险）
+        ok("完整枚举入口已移除",
+                !ma.contains("wpsMode == 4") && !ma.contains("enumerateRange(wpsEnumCursor"),
+                "完整枚举入口仍存在");
         ok("runWpsBatch 返回实际处理结果",
                 ma.contains("private java.util.List<io.github.wlmosv_png.wpaforge.wps."
                         + "WpsController.Result> runWpsBatch("), "签名未改");

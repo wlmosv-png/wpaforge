@@ -1037,6 +1037,48 @@ public class MainActivity extends Activity {
     private String wpsTaskId = "";
     /** 本次运行是否以异常结束（决定台账的终止原因）。 */
     private String wpsFailReason;
+    /** autojoin 恢复标记键：任务开始「限制自动重连」时写 true，恢复后清。 */
+    private static final String KEY_AUTOJOIN_OFF = "wps_autojoin_limited";
+
+    /** 记录「已限制自动重连」（进程被杀后靠它在下次启动时恢复）。 */
+    private void wpsAutojoinMarkLimited() {
+        try {
+            getPreferences(MODE_PRIVATE).edit().putBoolean(KEY_AUTOJOIN_OFF, true).commit();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 清除「已限制」标记（任务正常结束/恢复后）。 */
+    private void wpsAutojoinClearLimited() {
+        try {
+            getPreferences(MODE_PRIVATE).edit().remove(KEY_AUTOJOIN_OFF).commit();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 是否残留「已限制但未恢复」状态（App 冷启动/回前台时检查）。 */
+    private boolean wpsAutojoinIsLimited() {
+        try {
+            return getPreferences(MODE_PRIVATE).getBoolean(KEY_AUTOJOIN_OFF, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 把 autojoin 恢复为「放开」。进程被杀、OOM、任务中断后都可能停在「限制重连」。
+     * 由 onResume 与任务收尾共同调用；幂等。
+     */
+    private void wpsAutojoinRestore() {
+        if (!wpsAutojoinIsLimited()) return;
+        try {
+            io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, true);
+            wpsAutojoinClearLimited();
+            wpsLog(L.s("[i] 已恢复自动重连（上次异常退出遗留）",
+                    "[i] auto-join restored (left over from abnormal exit)"));
+        } catch (Throwable ignored) {
+        }
+    }
     /** 当前任务的台账快照（变更后 upsert）。 */
     private io.github.wlmosv_png.wpaforge.wps.WpsLedger.Task wpsTask;
     /** 断点状态行：说清「能不能继续、断点属于谁、为什么不能继续」。 */
@@ -1572,7 +1614,10 @@ public class MainActivity extends Activity {
         if (wpsLogBuf.length() > 8000) {
             wpsLogBuf.delete(0, wpsLogBuf.length() - 6000);
         }
-        runOnUiThread(() -> wpsLogView.setText(wpsLogBuf.toString()));
+        // WPS 页可能尚未构建（onResume 早于 buildWpsTab）→ wpsLogView 为空时只入缓冲
+        if (wpsLogView != null) {
+            runOnUiThread(() -> wpsLogView.setText(wpsLogBuf.toString()));
+        }
     }
 
     /** 扫描进度：转圈 + 一行阶段文字（不再干等三十秒后突然蹦出来）。 */
@@ -1964,6 +2009,7 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.wps.WpsController.injectSelinux(this);
             wpsLog(L.s("[i] 暂停自动重连…", "[i] pausing auto-join…"));
             io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, false);
+            wpsAutojoinMarkLimited();
 
             // 先把「这个 AP 收不收 PIN」问清楚。AP 自己宣告的 WSC 配置方法
             // 就能决定 PIN 攻击有没有意义，不该靠盲跑 8×20 秒去试。
@@ -2027,6 +2073,7 @@ public class MainActivity extends Activity {
         } finally {
             try {
                 io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, true);
+                wpsAutojoinClearLimited();
                 wpsLog(L.s("[i] 已恢复自动重连", "[i] auto-join restored"));
             } catch (Throwable ignored) {
             }
@@ -12797,6 +12844,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // autojoin 残留恢复：上次若进程被杀 / OOM，可能停在「限制自动重连」
+        wpsAutojoinRestore();
         checkBackgroundStall();
         // 回前台：目标/字典的显示与「权威」对齐一次（后台跑过的任务会在这里补回来）
         restoreSelectionFromAuthority();

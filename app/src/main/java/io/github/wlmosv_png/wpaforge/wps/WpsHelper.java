@@ -35,6 +35,9 @@ public final class WpsHelper {
                 case "selinux":
                     injectSelinux();
                     break;
+                case "selftest":
+                    selftest();
+                    break;
                 case "autojoin":
                     autojoin(args.length > 1 && "on".equalsIgnoreCase(args[1]));
                     break;
@@ -81,7 +84,17 @@ public final class WpsHelper {
      * supplicant 的回包必须被 SELinux 放行，否则表现为「连上了、命令也发了、
      * 就是收不到回复」，而且不报错。规则幂等，重复注入无副作用。
      */
-    static void injectSelinux() {
+    /**
+     * 注入 SELinux 放行规则，并用真实结果支撑「SELINUX=ok」。
+     *
+     * <p>修复前这里无条件打印 {@code SELINUX=ok} —— {@code magiskpolicy} 的退出码
+     * 从不检查，注入被拒/二进制缺失也被吞掉，于是通道失效时用户只会看到
+     * 「一屏 UNKNOWN / LINK_LOST」，看不出是策略问题。
+     *
+     * <p>现在：逐条规则检查退出码，返回 success / degraded / error 三个档位，
+     * 并输出 {@code SELINUX_STATUS=...}（由 App 侧判定通道诊断）。
+     */
+    static String injectSelinux() {
         String[][] rules = {
                 {"allow", "hal_wifi_supplicant_default", "magisk", "unix_dgram_socket", "sendto"},
                 {"allow", "untrusted_app", "hal_wifi_supplicant_default", "unix_dgram_socket",
@@ -89,32 +102,98 @@ public final class WpsHelper {
                 {"allow", "hal_wifi_supplicant_default", "untrusted_app", "unix_dgram_socket",
                         "sendto", "write"},
         };
+        int ok = 0, fail = 0, err = 0;
+        String lastErr = "";
         for (String[] r : rules) {
             try {
                 Process p = Runtime.getRuntime()
                         .exec(new String[]{MAGISKPOLICY, "--live", String.join(" ", r)});
-                p.waitFor();
+                int rc = p.waitFor();
+                if (rc == 0) ok++;
+                else { fail++; lastErr = "magiskpolicy exit=" + rc; }
             } catch (Throwable t) {
-                System.out.println("SELINUX_WARN=" + t);
+                err++;
+                lastErr = String.valueOf(t);
             }
         }
-        System.out.println("SELINUX=ok");
+        // 第一条（supplicant→magisk 回包放行）是最关键的；另两条是辅助。
+        String status;
+        if (ok == rules.length) {
+            status = "SELINUX_STATE=ok";
+        } else if (ok >= 1) {
+            status = "SELINUX_STATE=degraded";   // 关键规则可能已生效，但辅助规则失败
+        } else {
+            status = "SELINUX_STATE=error";
+        }
+        System.out.println(status);
+        if (!lastErr.isEmpty()) System.out.println("SELINUX_WARN=" + lastErr);
+        return status;
+    }
+
+    /**
+     * 通道自检：真正读一次 supplicant 回包，输出结构化诊断。
+     *
+     * <p>修复前通道失效表现为「一屏 UNKNOWN / LINK_LOST」，无法区分
+     * root / socket / SELinux / supplicant / 命令被拒 / 数据格式。
+     * 现在输出 CHANNEL=...（分类来自 {@link io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag}）。
+     */
+    static void selftest() {
+        // root 由 app_process 本身保证能跑；socket 探测
+        boolean socketExists = new java.io.File(SOCK).exists();
+        System.out.println("SOCK_EXISTS=" + (socketExists ? "1" : "0"));
+        Conn c = null;
+        boolean reply = false, refused = false, parse = false;
+        String state = "";
+        try {
+            c = new Conn();
+            String st = c.cmd("STATUS");
+            reply = st != null && !st.trim().isEmpty();
+            refused = st != null && st.trim().startsWith("FAIL");
+            if (reply && !refused) {
+                parse = st.contains("=");
+                state = field(st, "wpa_state");
+            }
+        } catch (Throwable t) {
+            System.out.println("CHANNEL_ERR=" + t);
+        } finally {
+            if (c != null) c.close();
+        }
+        WpsChannelDiag.ChannelObs o = new WpsChannelDiag.ChannelObs();
+        o.rootOk = true;
+        o.socketExists = socketExists;
+        o.selinuxOk = true;   // selinux 由 SELINUX_STATE 单独反映
+        o.replyReceived = reply;
+        o.commandRejected = refused;
+        o.dataParseable = parse;
+        String diag = WpsChannelDiag.judgeChannel(o);
+        System.out.println("CHANNEL=" + diag);
+        System.out.println("CHANNEL_STATE=" + (state.isEmpty() ? "-" : state));
     }
 
     // ---------------- 自动重连刹车 ----------------
 
-    static void autojoin(boolean enable) {
+    /**
+     * 放开/按住 framework 自动重连。
+     *
+     * <p>修复前只打印 {@code AUTOJOIN=on/off}，异常退出时可能遗留「限制重连」状态
+     * 而没有任何恢复提示。现在返回真实结果：{@code true}=命令成功；{@code false}=失败
+     * （App 侧据此决定是否把「未恢复」记进台账并提示用户）。
+     */
+    static boolean autojoin(boolean enable) {
         String cmd = enable
                 ? "cmd wifi stop-restricting-auto-join-to-subscription-id"
                 : "cmd wifi start-restricting-auto-join-to-subscription-id 0";
         try {
             Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
             int code = p.waitFor();
+            boolean okcmd = code == 0;
             System.out.println("AUTOJOIN=" + (enable ? "on" : "off"));
             System.out.println("EXIT=" + code);
+            return okcmd;
         } catch (Throwable t) {
             System.out.println("AUTOJOIN=error");
             System.out.println("ERROR=" + t);
+            return false;
         }
     }
 

@@ -1335,99 +1335,157 @@ public class MainActivity extends Activity {
         wpsImportLine.setVisibility(View.GONE);
         pageWps.addView(wpsModeCard, sectionGap());
 
-        // ============ E. 任务操作区（主按钮 + 停止；重置进更多操作） ============
+        // ============ E. 任务操作区（精致双主键 + 状态横幅 + 单行三功能键） ============
         LinearLayout opCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        opCard.setPadding(px(16), px(14), px(16), px(14));
-        // 主按钮：开始 / 继续 / 暂停（由 refreshWpsButtons 决定文案）
+        opCard.setPadding(px(14), px(12), px(14), px(12));
+
+        // 第一行：双主动作按纽（开始/暂停 占大头，停止占辅助位，并排不臃肿）
+        LinearLayout mainActRow = new LinearLayout(this);
+        mainActRow.setOrientation(LinearLayout.HORIZONTAL);
+        mainActRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
         wpsStartBtn = btnPrimary(L.s("开始验证", "Start"));
-        wpsStartBtn.setMinHeight(px(52));
+        wpsStartBtn.setMinHeight(px(46));
+        wpsStartBtn.setMinimumHeight(px(46));
+        wpsStartBtn.setPadding(px(16), px(10), px(16), px(10));
         wpsStartBtn.setOnClickListener(v -> {
             if (wpsRunning) stopWps();
             else startWps();
         });
-        opCard.addView(wpsStartBtn);
-        // 停止任务（仅运行中可见/可用）
+        LinearLayout.LayoutParams startLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f);
+        startLp.rightMargin = px(10);
+        mainActRow.addView(wpsStartBtn, startLp);
+
         wpsStopBtn = btnSecondary(L.s("停止", "Stop"));
+        wpsStopBtn.setMinHeight(px(46));
+        wpsStopBtn.setMinimumHeight(px(46));
+        wpsStopBtn.setPadding(px(14), px(10), px(14), px(10));
         wpsStopBtn.setEnabled(false);
         wpsStopBtn.setOnClickListener(v -> stopWps());
-        opCard.addView(wpsStopBtn, topGap(8));
-        // 断点状态行（能不能继续、属于谁）
+        mainActRow.addView(wpsStopBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        opCard.addView(mainActRow);
+
+        // 断点状态栏：内凹质感徽标栏（不再直接裸排两行散乱文本）
+        LinearLayout resumeBox = new LinearLayout(this);
+        resumeBox.setOrientation(LinearLayout.VERTICAL);
+        resumeBox.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CHIP));
+        resumeBox.setPadding(px(10), px(8), px(10), px(8));
         wpsResumeLine = new TextView(this);
-        wpsResumeLine.setTextSize(AmberTheme.FS_SMALL);
+        wpsResumeLine.setTextSize(FS_TINY);
         wpsResumeLine.setTextColor(AmberTheme.TEXT_DIM);
-        wpsResumeLine.setPadding(px(2), px(8), px(2), px(2));
-        opCard.addView(wpsResumeLine);
-        // 次级入口一排：历史任务 / 命中证据 / 重置（重置不再与主按钮并排）
+        wpsResumeLine.setLineSpacing(px(2), 1.05f);
+        wpsResumeLine.setTypeface(android.graphics.Typeface.MONOSPACE);
+        resumeBox.addView(wpsResumeLine);
+        LinearLayout.LayoutParams rblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rblp.topMargin = px(10);
+        opCard.addView(resumeBox, rblp);
+
+        // 次级入口：历史任务 / 命中证据 / 重置进度（紧凑单行，内边距收敛，杜绝双行折字）
         LinearLayout sub = new LinearLayout(this);
         sub.setOrientation(LinearLayout.HORIZONTAL);
+        sub.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
         wpsHistoryBtn = btnSecondary(L.s("历史任务", "History"));
+        wpsHistoryBtn.setSingleLine(true);
+        wpsHistoryBtn.setTextSize(FS_TINY);
+        wpsHistoryBtn.setPadding(px(6), px(8), px(6), px(8));
         wpsHistoryBtn.setOnClickListener(v -> showWpsHistoryDialog());
-        sub.addView(wpsHistoryBtn, gapWeight(10));
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        hlp.rightMargin = px(8);
+        sub.addView(wpsHistoryBtn, hlp);
+
         wpsEvidenceBtn = btnSecondary(L.s("命中证据", "Evidence"));
+        wpsEvidenceBtn.setSingleLine(true);
+        wpsEvidenceBtn.setTextSize(FS_TINY);
+        wpsEvidenceBtn.setPadding(px(6), px(8), px(6), px(8));
         wpsEvidenceBtn.setOnClickListener(v -> showWpsEvidenceDialog());
-        sub.addView(wpsEvidenceBtn, gapWeight(10));
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        elp.rightMargin = px(8);
+        sub.addView(wpsEvidenceBtn, elp);
+
         Button resetBtn = btnSecondary(L.s("重置进度", "Reset"));
+        resetBtn.setSingleLine(true);
+        resetBtn.setTextSize(FS_TINY);
+        resetBtn.setPadding(px(6), px(8), px(6), px(8));
         resetBtn.setOnClickListener(v -> confirmResetWps());
-        sub.addView(resetBtn, gapWeight(0));
-        opCard.addView(sub, topGap(10));
+        sub.addView(resetBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        subLp.topMargin = px(10);
+        opCard.addView(sub, subLp);
         refreshWpsButtons();
         pageWps.addView(opCard, sectionGap());
 
-        // ============ F. 执行/结果区（任务为中心） ============
+        // ============ F. 执行与进度卡（清晰的结论头 + 等宽事实度量） ============
         pageWps.addView(sectionLabel(L.s("任务与结果", "Task & result")));
         LinearLayout progCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        progCard.setPadding(px(16), px(12), px(16), px(12));
+        progCard.setPadding(px(14), px(12), px(14), px(12));
+
         wpsStatusLine = new TextView(this);
         wpsStatusLine.setTextSize(AmberTheme.FS_BODY);
         wpsStatusLine.setTextColor(TEXT);
         wpsStatusLine.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                 android.graphics.Typeface.NORMAL));
-        wpsStatusLine.setLineSpacing(px(2), 1f);
+        wpsStatusLine.setLineSpacing(px(3), 1f);
         progCard.addView(wpsStatusLine);
+
+        // 进度与度量数据排版
         wpsProgressLine = new TextView(this);
-        wpsProgressLine.setTextSize(AmberTheme.FS_BODY);
+        wpsProgressLine.setTextSize(FS_TINY);
         wpsProgressLine.setTextColor(AmberTheme.TEXT_DIM);
-        wpsProgressLine.setLineSpacing(px(4), 1f);
-        wpsProgressLine.setPadding(px(2), px(8), px(2), px(4));
+        wpsProgressLine.setTypeface(android.graphics.Typeface.MONOSPACE);
+        wpsProgressLine.setLineSpacing(px(3), 1f);
+        wpsProgressLine.setPadding(px(2), px(6), px(2), px(2));
         progCard.addView(wpsProgressLine);
         pageWps.addView(progCard, sectionGap());
 
-        // ============ G. 运行记录（嵌入式 Linux 终端控制台） ============
+        // ============ G. 运行记录（嵌入式 Linux 终端控制台，消除测量膨胀与空白） ============
         pageWps.addView(sectionLabel(L.s("运行记录", "Run log")));
         LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         logCard.setPadding(px(12), px(10), px(12), px(10));
 
-        // 终端顶栏：控制台标签 + 清空按钮
+        // 终端顶栏：单行控制台标签 + 右侧小巧清空按钮
         LinearLayout termHeader = new LinearLayout(this);
         termHeader.setOrientation(LinearLayout.HORIZONTAL);
         termHeader.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
         TextView termTag = new TextView(this);
         termTag.setText(L.s("● wpa_supplicant 终端控制台", "● wpa_supplicant terminal"));
         termTag.setTextSize(FS_TINY);
         termTag.setTextColor(ACCENT);
+        termTag.setSingleLine(true);
         termTag.setTypeface(android.graphics.Typeface.MONOSPACE);
-        termHeader.addView(termTag, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams tagLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tagLp.rightMargin = px(8);
+        termHeader.addView(termTag, tagLp);
 
-        Button clearLogBtn = btnSecondary(L.s("清空", "Clear"));
+        Button clearLogBtn = new Button(this);
+        clearLogBtn.setText(L.s("清空", "Clear"));
         clearLogBtn.setTextSize(FS_TINY);
-        clearLogBtn.setPadding(px(10), px(2), px(10), px(2));
+        clearLogBtn.setTextColor(TEXT);
+        clearLogBtn.setAllCaps(false);
+        clearLogBtn.setSingleLine(true);
+        clearLogBtn.setMinHeight(0);
+        clearLogBtn.setMinimumHeight(0);
+        clearLogBtn.setStateListAnimator(null);
+        clearLogBtn.setPadding(px(12), px(4), px(12), px(4));
+        clearLogBtn.setBackground(roundBgStroked(BTN_2ND_BG, BTN_2ND_EDGE, AmberTheme.RADIUS_CHIP, 0.8f));
         clearLogBtn.setOnClickListener(v -> {
             wpsLogBuf.setLength(0);
             if (wpsLogView != null) {
                 wpsLogView.setText(L.s("[*] 控制台日志已清空\n", "[*] Console log cleared\n"));
             }
         });
-        termHeader.addView(clearLogBtn);
+        termHeader.addView(clearLogBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         logCard.addView(termHeader);
 
-        // 嵌入式终端滚动窗（固定高度 220dp，黑色背景，触控拦截防滑动冲突）
+        // 嵌入式终端滚动窗（固定高度 220dp，黑色底色，手势拦截）
         wpsLogScroll = new android.widget.ScrollView(this);
         wpsLogScroll.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CARD));
         wpsLogScroll.setPadding(px(10), px(8), px(10), px(8));
         wpsLogScroll.setFillViewport(true);
         wpsLogScroll.setVerticalScrollBarEnabled(true);
         wpsLogScroll.setScrollBarStyle(android.view.View.SCROLLBARS_INSIDE_INSET);
-        wpsLogScroll.setOverScrollMode(android.view.View.OVER_SCROLL_ALWAYS);
         wpsLogScroll.setOnTouchListener((v, e) -> {
             if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
                 v.getParent().requestDisallowInterceptTouchEvent(true);

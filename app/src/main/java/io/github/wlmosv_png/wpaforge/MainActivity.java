@@ -1534,25 +1534,74 @@ public class MainActivity extends Activity {
                       " entries (used by the 'My list' strategy)"));
     }
 
+    /**
+     * 粘贴导入：先解析并**预览结果**（有效 / 无效 / 重复 / 每种无效原因），
+     * 用户确认后才真正保存。修复前是静默保存 —— 8 位非法校验位被悄悄改写、
+     * 长数字串被悄悄丢尾，用户无从知道导入结果对不对。
+     */
     private void showWpsPasteDialog() {
         final EditText input = new EditText(this);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         input.setMinLines(6);
-        input.setHint(L.s("每行一个 PIN，7 位或 8 位都行；校验位不对会自动修正",
-                "One PIN per line; 7 or 8 digits; bad checksum is auto-fixed"));
+        input.setHint(L.s("每行一个 PIN（7 位或 8 位）。8 位但不合法会原样保留并提示，不会悄悄改。",
+                "One PIN per line (7 or 8 digits). Invalid 8-digit values are kept as-is with a note."));
+        final TextView prev = new TextView(this);
+        prev.setTextSize(AmberTheme.FS_SMALL);
+        prev.setTextColor(AmberTheme.TEXT_DIM);
+        prev.setPadding(px(4), px(6), px(4), px(4));
+        prev.setText(L.s("（输入后点「预览」查看解析结果；「保存」把有效候选追加保存）",
+                "(press Preview to see parse result; Save appends valid candidates)"));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(input);
+        box.addView(prev);
         new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("粘贴 PIN 列表（追加）", "Paste PIN list (append)"))
-                .setView(input)
-                .setPositiveButton(L.s("保存", "Save"), (d, w) -> {
-                    int n = io.github.wlmosv_png.wpaforge.wps.WpsCandidates
-                            .saveCustom(getFilesDir(), input.getText().toString(), true);
-                    refreshWpsImportLine();
-                    Toast.makeText(this, L.s("已保存，共 " + n + " 条",
-                            "Saved, " + n + " total"), Toast.LENGTH_SHORT).show();
+                .setTitle(L.s("粘贴 PIN 列表（解析后确认）", "Paste PIN list (preview first)"))
+                .setView(box)
+                .setPositiveButton(L.s("保存", "Save"), (d, w) ->
+                        wpsImportCommit(input.getText() == null ? "" : input.getText().toString(), true))
+                .setNeutralButton(L.s("预览", "Preview"), (d, w) -> {
+                    String text = input.getText() == null ? "" : input.getText().toString();
+                    io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Report rep =
+                            io.github.wlmosv_png.wpaforge.wps.WpsCandidates.parse(text);
+                    StringBuilder sb = new StringBuilder();
+                    int chars = text.length();
+                    int valid = rep.accepted.size();
+                    int dup = chars > 0 ? Math.max(0, rep.accepted.size() - new java.util.LinkedHashSet<>(
+                            rep.accepted).size()) : 0;
+                    sb.append(L.s("原始输入：", "Raw: ")).append(chars)
+                            .append(L.s(" 字符  有效候选：", " chars | valid: ")).append(valid)
+                            .append(L.s("  无效：", " | invalid: ")).append(rep.invalidCount)
+                            .append(L.s("  重复：", " | dup: ")).append(dup).append("\n");
+                    if (rep.truncated) sb.append(L.s("（输入超限已截断）\n", "(input truncated)\n"));
+                    if (!rep.issues.isEmpty()) {
+                        sb.append(L.s("\n错误明细（位置 / 原因）：\n", "\nIssues (pos / reason):\n"));
+                        int shown = Math.min(rep.issues.size(), 8);
+                        for (int i = 0; i < shown; i++) {
+                            io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Issue it = rep.issues.get(i);
+                            sb.append("  #").append(it.pos).append(' ')
+                                    .append(it.reason).append("\n");
+                        }
+                        if (rep.issues.size() > shown) sb.append(L.s(
+                                "  …还有 " + (rep.issues.size() - shown) + " 条\n",
+                                "  …and " + (rep.issues.size() - shown) + " more\n"));
+                    } else {
+                        sb.append(L.s("\n无错误：全部可导入。", "\nNo errors: all importable."));
+                    }
+                    prev.setText(sb.toString());
                 })
                 .setNegativeButton(L.s("取消", "Cancel"), null)
                 .show();
+    }
+
+    /** 预览确认后真正写入。 */
+    private void wpsImportCommit(String text, boolean append) {
+        int n = io.github.wlmosv_png.wpaforge.wps.WpsCandidates
+                .saveCustom(getFilesDir(), text == null ? "" : text, append);
+        refreshWpsImportLine();
+        Toast.makeText(this, L.s("已保存，共 " + n + " 条",
+                "Saved, " + n + " total"), Toast.LENGTH_SHORT).show();
     }
 
     private void pickWpsFile() {
@@ -2019,74 +2068,76 @@ public class MainActivity extends Activity {
             return;
         }
         boolean zh = L.s("a", "b").equals("a");
-        wpsStatusLine.setText(io.github.wlmosv_png.wpaforge.wps.WpsEngine.verdictText(s.verdict, zh)
-                + (s.hitPin != null ? ("  PIN=" + s.hitPin) : ""));
-        StringBuilder sb = new StringBuilder();
-        // 「AP 能力声明」与「命中」是两件不同的事：前者是 AP 在 beacon 里自报的
-        // WSC 配置方法（PIN_OK 只代表「愿意收 PIN」），后者才是协议确认的命中。
-        // 修复前两者都写成「能力 / 命中」，用户很容易把 PIN_OK 读成打下来了。
-        if (s.precheckMethods != null && !s.precheckMethods.isEmpty()) {
-            sb.append(L.s("AP 能力声明 ", "cap ")).append(s.precheck).append(' ')
-                    .append(s.precheckMethods)
-                    .append(L.s("（≠命中）  \u00b7  ", " (not a hit)  \u00b7  "));
-        }
-        if (wpsMode == 3) {
-            // 口径以断点游标为准 = 实际完成的候选数（不再用 helper 回了几条）
-            sb.append(L.s("已完成 ", "done ")).append(s.halfCursor)
-                    .append(L.s(" 次", ""));
+        // 状态行：当前结论 + 命中 PIN（命中才会显示已命中）
+        String verdictTxt = io.github.wlmosv_png.wpaforge.wps.WpsEngine.verdictText(s.verdict, zh);
+        if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(s.verdict)
+                && s.hitPin != null) {
+            // 命中也不伪装成「破解成功」：附可信等级（多数情况只有待验证）
+            String lvl = io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.levelField(s);
+            wpsStatusLine.setText(verdictTxt + "  PIN=" + s.hitPin
+                    + "  · 可信等级：" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                            .levelText(lvl, zh));
         } else {
-            sb.append(L.s("已试 ", "tried ")).append(s.tried)
-                    .append(L.s(" 次", ""));
+            wpsStatusLine.setText(verdictTxt);
         }
+
+        StringBuilder sb = new StringBuilder();
+        // 「AP 能力声明」与「命中」是两件不同的事：前者是 AP 自报的 WSC 能力，
+        // 后者才是协议确认的命中。始终分开显示，避免把“能力”读成“打下来了”。
+        if (s.precheckMethods != null && !s.precheckMethods.isEmpty()) {
+            sb.append(L.s("AP 能力声明：", "AP capability: ")).append(s.precheck)
+                    .append(' ').append(s.precheckMethods)
+                    .append(L.s("（≠命中）\n", " (not a hit)\n"));
+        }
+        // —— 结果分类（区分已确认/待验证/异常，不合并）——
+        sb.append(L.s("已确认结果：", "Confirmed: "));
+        if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(s.verdict)) {
+            sb.append(L.s("1 条（见状态行）\n", "1 (see status line)\n"));
+        } else {
+            sb.append(L.s("0\n", "0\n"));
+        }
+        sb.append(L.s("待验证（疑似命中）：", "Pending (suspect): "))
+                .append(s.suspectCount).append(L.s(" 条\n", "\n"));
+        sb.append(L.s("异常 / 他网连接：", "Abnormal / other-net: "))
+                .append(s.notTargetCount).append(L.s(" 条\n", "\n"));
+        // —— 进度（以实际完成数为准）——
+        if (wpsMode == 3) {
+            int total = io.github.wlmosv_png.wpaforge.wps.WpsCandidates.phaseTotal(s.halfPhase);
+            sb.append(L.s("已完成：", "Done: ")).append(s.halfCursor)
+                    .append(L.s(" / ", " / ")).append(total)
+                    .append(L.s(" 阶段 ", " phase ")).append(s.halfPhase);
+            if (s.halfPhase == 2 && s.halfPrefix != null && !s.halfPrefix.isEmpty()) {
+                sb.append(L.s("  前4位=", "  prefix=")).append(s.halfPrefix);
+            }
+            double rate = io.github.wlmosv_png.wpaforge.wps.WpsEngine.ratePerMin(s);
+            sb.append(L.s("\n平均 ", "\navg ")).append(s.avgMs()).append("ms");
+            int remain = Math.max(0, total - s.halfCursor);
+            sb.append(L.s("  剩余约 ", "  eta "))
+                    .append(io.github.wlmosv_png.wpaforge.wps.WpsEngine
+                            .human((long) (s.avgMs() * remain)));
+        } else {
+            sb.append(L.s("已试：", "Tried: ")).append(s.tried).append(L.s(" 条", ""));
+            double rate = io.github.wlmosv_png.wpaforge.wps.WpsEngine.ratePerMin(s);
+            if (rate > 0) {
+                sb.append(L.s("  ", "  "))
+                        .append(String.format(java.util.Locale.US, "%.1f", rate))
+                        .append(L.s(" 条/分", " /min"));
+            }
+            sb.append(L.s("  平均 ", "  avg ")).append(s.avgMs()).append("ms");
+        }
+        // —— 最近一次 ————
         if (s.lastPin != null && !s.lastPin.isEmpty()) {
-            sb.append(L.s(" · 最近 ", " \u00b7 last ")).append(s.lastPin)
+            sb.append(L.s("\n最近：", "\nlast: ")).append(s.lastPin)
                     .append(' ').append(s.lastResult == null || s.lastResult.isEmpty()
                             ? "?" : s.lastResult);
         }
-        double rate = io.github.wlmosv_png.wpaforge.wps.WpsEngine.ratePerMin(s);
-        if (rate > 0) {
-            sb.append(L.s(" 次 · ", " \u00b7 "))
-                    .append(String.format(java.util.Locale.US, "%.1f", rate))
-                    .append(L.s(" 次/分", " /min"));
-        }
-        sb.append(L.s(" · 平均 ", " \u00b7 avg ")).append(s.avgMs()).append("ms");
-        if (s.everRealWps) {
-            sb.append(L.s(" · ★ 真实 WPS 交换", " \u00b7 \u2605 real WPS exchange"));
-        } else if (s.everWpsSession) {
-            sb.append(L.s(" · 仅瞬时关联（多半未开配对）",
-                    " \u00b7 brief assoc only (likely not pairing)"));
-        }
-        if (s.consecutiveNoResponse > 0) {
-            sb.append(L.s(" · 连续无响应 ", " \u00b7 no-response streak "))
-                    .append(s.consecutiveNoResponse);
-        }
-        if (wpsMode == 3) {
-            // 分母的唯一出处（修复前是写死在这里的三目常量）
-            int total = io.github.wlmosv_png.wpaforge.wps.WpsCandidates.phaseTotal(s.halfPhase);
-            int done = s.halfCursor;
-            int remain = Math.max(0, total - done);
-            sb.append(L.s(" · 阶段", " \u00b7 phase ")).append(s.halfPhase)
-                    .append("/").append(total).append(L.s(" 已试 ", " done "))
-                    .append(done);
-            if (s.halfPhase == 2 && !s.halfPrefix.isEmpty()) {
-                sb.append(L.s(" 前4位=", " prefix=")).append(s.halfPrefix);
-            }
-            sb.append(L.s(" 剩余约 ", " eta "))
-                    .append(io.github.wlmosv_png.wpaforge.wps.WpsEngine
-                            .human((long) (s.avgMs() * remain)));
-        }
-        // 完整枚举已移除；仅剩拆半进度展示
-        if (s.suspectCount > 0) {
-            sb.append(L.s(" · 疑似命中 ", " \u00b7 suspect ")).append(s.suspectCount)
-                    .append(L.s(" 条（证据不足，不算命中）", " (weak evidence, not counted)"));
-        }
-        if (s.notTargetCount > 0) {
-            sb.append(L.s(" · 丢弃他网连接 ", " \u00b7 dropped other-network "))
-                    .append(s.notTargetCount);
-        }
-        if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(s.verdict)) {
-            sb.append('\n').append(io.github.wlmosv_png.wpaforge.wps.WpsEngine
-                    .evidenceSummary(s));
+        sb.append(L.s("\n最近更新：", "\nupdated: "))
+                .append(android.text.format.DateFormat.format("HH:mm:ss",
+                        System.currentTimeMillis()));
+        if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_HIT.equals(s.verdict)
+                && s.hitVerdict != null && !s.hitVerdict.isEmpty()) {
+            sb.append('\n')
+                    .append(io.github.wlmosv_png.wpaforge.wps.WpsEngine.evidenceSummary(s));
         }
         wpsProgressLine.setText(sb.toString());
         // 状态总览卡跟着进度刷新；首次进入页面异步做一次通道自检

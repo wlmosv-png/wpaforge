@@ -1013,6 +1013,7 @@ public class MainActivity extends Activity {
     private Button wpsStartBtn;
     private Button wpsStopBtn;
     private TextView wpsLogView;
+    private android.widget.ScrollView wpsLogScroll;
     private TextView wpsImportLine;
 
     /** 已知可打（Pixie）名单：按钮 + 诊断行 */
@@ -1391,21 +1392,67 @@ public class MainActivity extends Activity {
         progCard.addView(wpsProgressLine);
         pageWps.addView(progCard, sectionGap());
 
-        // ============ G. 日志（首页只留最近一条 + 入口） ============
+        // ============ G. 运行记录（嵌入式 Linux 终端控制台） ============
         pageWps.addView(sectionLabel(L.s("运行记录", "Run log")));
         LinearLayout logCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
-        logCard.setPadding(px(16), px(10), px(16), px(10));
+        logCard.setPadding(px(12), px(10), px(12), px(10));
+
+        // 终端顶栏：控制台标签 + 清空按钮
+        LinearLayout termHeader = new LinearLayout(this);
+        termHeader.setOrientation(LinearLayout.HORIZONTAL);
+        termHeader.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView termTag = new TextView(this);
+        termTag.setText(L.s("● wpa_supplicant 终端控制台", "● wpa_supplicant terminal"));
+        termTag.setTextSize(FS_TINY);
+        termTag.setTextColor(ACCENT);
+        termTag.setTypeface(android.graphics.Typeface.MONOSPACE);
+        termHeader.addView(termTag, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button clearLogBtn = btnSecondary(L.s("清空", "Clear"));
+        clearLogBtn.setTextSize(FS_TINY);
+        clearLogBtn.setPadding(px(10), px(2), px(10), px(2));
+        clearLogBtn.setOnClickListener(v -> {
+            wpsLogBuf.setLength(0);
+            if (wpsLogView != null) {
+                wpsLogView.setText(L.s("[*] 控制台日志已清空\n", "[*] Console log cleared\n"));
+            }
+        });
+        termHeader.addView(clearLogBtn);
+        logCard.addView(termHeader);
+
+        // 嵌入式终端滚动窗（固定高度 220dp，黑色背景，触控拦截防滑动冲突）
+        wpsLogScroll = new android.widget.ScrollView(this);
+        wpsLogScroll.setBackground(roundBgStatic(AmberTheme.SUNKEN, AmberTheme.RADIUS_CARD));
+        wpsLogScroll.setPadding(px(10), px(8), px(10), px(8));
+        wpsLogScroll.setFillViewport(true);
+        wpsLogScroll.setVerticalScrollBarEnabled(true);
+        wpsLogScroll.setScrollBarStyle(android.view.View.SCROLLBARS_INSIDE_INSET);
+        wpsLogScroll.setOverScrollMode(android.view.View.OVER_SCROLL_ALWAYS);
+        wpsLogScroll.setOnTouchListener((v, e) -> {
+            if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                v.getParent().requestDisallowInterceptTouchEvent(true);
+            } else if (e.getAction() == android.view.MotionEvent.ACTION_UP
+                    || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                v.getParent().requestDisallowInterceptTouchEvent(false);
+            }
+            return false;
+        });
+
         wpsLogView = new TextView(this);
-        wpsLogView.setTextSize(AmberTheme.FS_SMALL);
-        wpsLogView.setTextColor(AmberTheme.TEXT_DIM);
+        wpsLogView.setTextSize(FS_TINY);
+        wpsLogView.setTextColor(AmberTheme.OK); // 终端复古绿
         wpsLogView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        wpsLogView.setMaxLines(3);
-        wpsLogView.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        wpsLogView.setText(L.s("（暂无记录）", "(no entries)"));
-        logCard.addView(wpsLogView);
-        Button logMore = btnSecondary(L.s("查看全部运行记录", "View full log"));
-        logMore.setOnClickListener(v -> showWpsRunningLogDialog());
-        logCard.addView(logMore, topGap(6));
+        wpsLogView.setLineSpacing(px(3), 1f);
+        wpsLogView.setTextIsSelectable(true);
+        wpsLogView.setText(wpsLogBuf.length() > 0 ? wpsLogBuf.toString()
+                : L.s("[*] WPS 控制台已就绪\n[*] 等待任务指令...\n",
+                      "[*] WPS console ready\n[*] Waiting for task commands...\n"));
+        wpsLogScroll.addView(wpsLogView);
+
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(220));
+        scrollLp.topMargin = px(6);
+        logCard.addView(wpsLogScroll, scrollLp);
         pageWps.addView(logCard, sectionGap());
 
         refreshWpsProgress();
@@ -1814,7 +1861,12 @@ public class MainActivity extends Activity {
         }
         // WPS 页可能尚未构建（onResume 早于 buildWpsTab）→ wpsLogView 为空时只入缓冲
         if (wpsLogView != null) {
-            runOnUiThread(() -> wpsLogView.setText(wpsLogBuf.toString()));
+            runOnUiThread(() -> {
+                wpsLogView.setText(wpsLogBuf.toString());
+                if (wpsLogScroll != null) {
+                    wpsLogScroll.post(() -> wpsLogScroll.fullScroll(android.view.View.FOCUS_DOWN));
+                }
+            });
         }
     }
 

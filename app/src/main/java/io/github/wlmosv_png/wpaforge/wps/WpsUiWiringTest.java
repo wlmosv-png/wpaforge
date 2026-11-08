@@ -48,9 +48,12 @@ public final class WpsUiWiringTest {
         ok("拆半主循环用 WpsBatchPlan.account", ma.contains("WpsBatchPlan.account(pins, rs)"),
                 "未接线");
         // 2026-11-08：完整枚举已从生产移除（10^7 不可行 + 内存风险）
-        ok("完整枚举入口已移除",
-                !ma.contains("wpsMode == 4") && !ma.contains("enumerateRange(wpsEnumCursor"),
-                "完整枚举入口仍存在");
+        ok("完整枚举已移除", !ma.contains("wpsMode == 4"), "完整枚举入口仍存在");
+        ok("完整枚举不在模式数组", !ma.contains("Full enumeration (10M)"), "模式数组仍含完整枚举");
+        ok("完整枚举不在策略描述", !ma.contains("1000 万种按序穷举"), "策略描述仍含完整枚举");
+        ok("状态总览卡存在", ma.contains("状态总览"), "未接线状态总览");
+        ok("执行环境卡存在", ma.contains("执行环境"), "未接线执行环境");
+        ok("能力状态卡存在", ma.contains("能力状态"), "未接线能力状态");
         ok("runWpsBatch 返回实际处理结果",
                 ma.contains("private java.util.List<io.github.wlmosv_png.wpaforge.wps."
                         + "WpsController.Result> runWpsBatch("), "签名未改");

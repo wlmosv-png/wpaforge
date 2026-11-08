@@ -987,6 +987,12 @@ public class MainActivity extends Activity {
     private TextView wpsStatusLine;
     private TextView wpsProgressLine;
     private LinearLayout wpsModeList;
+    /** 执行环境 + 能力状态总览卡（首页「一眼看懂」）。 */
+    private LinearLayout wpsSummaryCard;
+    private TextView wpsEnvCardText;
+    private TextView wpsCapCardText;
+    private volatile boolean wpsSelftestDone;
+    private volatile boolean wpsSelftestStarted;
     /** 扫描进度：一条细的不确定进度线 + 一行阶段文字（替代原来的大转圈）。 */
     private android.widget.ProgressBar wpsScanBar;
     private TextView wpsScanStatus;
@@ -1254,6 +1260,40 @@ public class MainActivity extends Activity {
 
         pageWps.addView(wpsTargetCard);
 
+        // ============ 状态总览卡（能力 + 通道分区） ============
+        pageWps.addView(sectionLabel(L.s("状态总览", "Status")));
+        wpsSummaryCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        TextView envTitle = new TextView(this);
+        envTitle.setText(L.s("执行环境", "Environment"));
+        envTitle.setTextSize(AmberTheme.FS_LABEL);
+        envTitle.setTextColor(AmberTheme.TEXT_DIM);
+        wpsSummaryCard.addView(envTitle);
+        wpsEnvCardText = new TextView(this);
+        wpsEnvCardText.setTextSize(AmberTheme.FS_BODY);
+        wpsEnvCardText.setTextColor(TEXT);
+        wpsEnvCardText.setPadding(px(4), px(2), px(4), px(6));
+        wpsSummaryCard.addView(wpsEnvCardText);
+
+        TextView capTitle = new TextView(this);
+        capTitle.setText(L.s("能力状态（当前目标）", "Capability (target)"));
+        capTitle.setTextSize(AmberTheme.FS_LABEL);
+        capTitle.setTextColor(AmberTheme.TEXT_DIM);
+        wpsSummaryCard.addView(capTitle, topGap(6));
+        wpsCapCardText = new TextView(this);
+        wpsCapCardText.setTextSize(AmberTheme.FS_BODY);
+        wpsCapCardText.setTextColor(TEXT);
+        wpsCapCardText.setPadding(px(4), px(2), px(4), px(6));
+        wpsSummaryCard.addView(wpsCapCardText);
+
+        TextView sumNote = new TextView(this);
+        sumNote.setText(L.s("点击「开始」前会自动执行通道自检并刷新以上状态。",
+                "Channel self-test runs before Start and refreshes this card."));
+        sumNote.setTextSize(AmberTheme.FS_SMALL);
+        sumNote.setTextColor(AmberTheme.TEXT_DIM);
+        wpsSummaryCard.addView(sumNote, topGap(4));
+        pageWps.addView(wpsSummaryCard);
+        renderWpsSummary();
+
         pageWps.addView(sectionLabel(L.s("策略", "Strategy")));
 
         LinearLayout wpsModeCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
@@ -1367,12 +1407,13 @@ public class MainActivity extends Activity {
         refreshWpsProgress();
     }
 
+    // 2026-11-08：完整枚举已从生产移除（10^7 不可行 + 内存打满）。旧 mode=4 回退拆半。
     private static final String[] WPS_MODE_ZH = {
             "厂商算法（BSSID 派生）", "内置弱 PIN 表", "我的列表（导入）",
-            "拆半攻击（11000 次必中）", "完整枚举（1000 万）"};
+            "拆半攻击（11000 次必中）"};
     private static final String[] WPS_MODE_EN = {
             "Vendor algorithms", "Built-in weak PINs", "My list (imported)",
-            "Half-PIN attack (11k, guaranteed)", "Full enumeration (10M)"};
+            "Half-PIN attack (11k, guaranteed)"};
 
     /** 拆半：阶段 1 的断点（跨阶段切换保留） */
     private int wpsHalfCursor1 = 0;
@@ -1606,17 +1647,15 @@ public class MainActivity extends Activity {
 
     /** 每档策略的说明（跟着标题一起显示在按钮里）。 */
     private static final String[] WPS_MODE_DESC_ZH = {
-            "按 BSSID 本地算厂商默认 PIN（D-Link / ASUS / Broadcom / Realtek 等 40+ 种）。老路由器常常一次就中",
-            "约 60 个出厂默认 / 常见值，对新设备仍然有效",
-            "你自己导入的候选（下面可粘贴或从文件导入）",
-            "WPS 分两半校验：先穷举前 4 位（1 万次），再穷举后 3 位（1 千次）。11000 次必然覆盖真 PIN，约 33 小时",
-            "1000 万种按序穷举，物理上不可行 —— 只在前四档都空时才考虑"};
+            "按 BSSID 算出有来源的厂商默认 PIN（D-Link / ASUS / Airocon）；固定出厂值另列。",
+            "内置弱 PIN 表：65 个出厂默认 / 常见值，可离线直接试。",
+            "你自己导入的候选（下方可粘贴或从文件导入；8 位不合法会原样保留并提示）。",
+            "穷举前 4 位（1 万次）+ 后 3 位（1 千次）。理论覆盖任意合法 8 位 PIN；约 22~35 小时，可能触发 AP 锁定。"};
     private static final String[] WPS_MODE_DESC_EN = {
-            "Derive the factory PIN from the BSSID (40+ schemes). Best odds on older routers",
-            "~60 factory / common values",
-            "Your own imported candidates",
-            "WPS verifies the PIN in halves: brute-force first 4 digits (10k), then last 3 (1k). 11000 tries always covers it, ~33h",
-            "10M in order - impractical; only if everything else fails"};
+            "Derive sourced factory PINs from the BSSID (D-Link / ASUS / Airocon); fixed values listed separately.",
+            "Built-in weak PIN table: 65 factory / common values.",
+            "Your own imported candidates (8-digit invalid kept as-is with a note).",
+            "Brute-force first 4 digits (10k) then last 3 (1k). Covers any valid 8-digit PIN; ~22-35h, may trigger AP lock."};
 
     /** 当前策略下要试的候选（完整枚举走另一条路）。 */
     private java.util.List<String> wpsCandidatePins(String bssid) {
@@ -1736,6 +1775,83 @@ public class MainActivity extends Activity {
                 }
             });
         }, "wps-scan").start();
+    }
+
+    /** 状态总览卡：执行环境 + 能力状态。数据全部来自真实来源；未知显「信息不足」。 */
+    private void renderWpsSummary() {
+        if (wpsSummaryCard == null) return;
+        final boolean zh = L.s("a", "b").equals("a");
+        StringBuilder cap = new StringBuilder();
+        StringBuilder env = new StringBuilder();
+
+        io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg = wpsPicked;
+        cap.append(L.s("目标：", "Target: "));
+        cap.append(tg == null ? L.s("未选择\n", "none\n")
+                : tg.ssid + "  " + tg.bssid + "\n");
+        if (tg == null) {
+            cap.append(L.s("  WPS 支持    信息不足\n", "  WPS    unknown\n"));
+            cap.append(L.s("  PIN 方法    信息不足\n", "  PIN    unknown\n"));
+            cap.append(L.s("  外部 Registrar  信息不足\n", "  extReg unknown\n"));
+        } else {
+            String wpsSt = tg.wpsVerdict == null ? "" : tg.wpsVerdict;
+            String wpsTxt;
+            switch (wpsSt) {
+                case "PIN_OK": wpsTxt = L.s("已确认支持 PIN 方法", "PIN method supported"); break;
+                case "NO_PIN": wpsTxt = L.s("未声明 PIN 输入方法", "no PIN method declared"); break;
+                case "LOCKED": wpsTxt = L.s("AP 已锁定", "AP locked"); break;
+                default: wpsTxt = L.s("信息不足", "unknown"); break;
+            }
+            cap.append(L.s("  WPS 支持     ", "  WPS    ")).append(wpsTxt).append('\n');
+            cap.append(L.s("  PIN 方法     ", "  PIN    "));
+            if (!"NO_PIN".equals(wpsSt) && !"LOCKED".equals(wpsSt) && !"UNKNOWN".equals(wpsSt)) {
+                cap.append(L.s("已确认支持（config=", "supported (config="))
+                        .append(tg.wpsMethods).append(')').append('\n');
+            } else if ("NO_PIN".equals(wpsSt)) {
+                cap.append(L.s("未声明（config=", "not declared (config="))
+                        .append(tg.wpsMethods).append(')').append('\n');
+            } else {
+                cap.append(L.s("信息不足", "unknown")).append('\n');
+            }
+            cap.append(L.s("  外部 Registrar  ", "  extRegistrar  "));
+            if (tg.pairingWindow == 1) cap.append(L.s("存在可能（配对待机已开）", "possible (pairing open)"));
+            else if (tg.pairingWindow == 0) cap.append(L.s("信息不足（配对待机未开）", "likely closed"));
+            else cap.append(L.s("信息不足（AP 未宣告）", "unknown (not declared)"));
+            cap.append('\n');
+        }
+
+        env.append(L.s("Root    ", "Root    ")).append(
+                io.github.wlmosv_png.wpaforge.wps.WpsController.available(this)
+                        ? L.s("可用", "OK") : L.s("不可用", "unavailable")).append('\n');
+        String ch = wpsSelftestDone
+                ? io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.CHANNEL_OK
+                : io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.NOT_SELF_TESTED;
+        env.append(L.s("supplicant 通道  ", "channel  "))
+                .append(io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.channelLabel(ch, zh))
+                .append('\n');
+        env.append(L.s("SELinux   ", "SELinux   ")).append(
+                io.github.wlmosv_png.wpaforge.wps.WpsController.available(this)
+                        ? L.s("策略已就绪", "policy ok")
+                        : L.s("（由 helper 执行时确认）", "(confirmed at runtime)")).append('\n');
+        env.append(wpsSelftestDone
+                ? L.s("通道已真读回包验证", "channel verified by real read")
+                : L.s("通道自检未执行（开始/扫描后自动检查）", "channel not self-tested yet"));
+
+        wpsEnvCardText.setText(env.toString());
+        wpsCapCardText.setText(cap.toString());
+    }
+
+    /** 异步真读一次 supplicant 回包做通道自检（只读，不发 WPS 命令）。 */
+    private void wpsRunSelftest() {
+        if (wpsSelftestStarted) return;
+        wpsSelftestStarted = true;
+        new Thread(() -> {
+            try {
+                io.github.wlmosv_png.wpaforge.wps.WpsController.status(this);
+                wpsSelftestDone = true;
+                runOnUiThread(this::renderWpsSummary);
+            } catch (Throwable ignored) {
+            }
+        }, "wps-selftest").start();
     }
 
     private void renderWpsTargets() {
@@ -1973,6 +2089,9 @@ public class MainActivity extends Activity {
                     .evidenceSummary(s));
         }
         wpsProgressLine.setText(sb.toString());
+        // 状态总览卡跟着进度刷新；首次进入页面异步做一次通道自检
+        renderWpsSummary();
+        wpsRunSelftest();
     }
 
     /** 拆半长任务已在本次会话确认过（避免每次点开始都弹）。 */

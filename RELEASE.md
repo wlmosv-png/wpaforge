@@ -1,5 +1,5 @@
 <!-- GitHub Release 正文。标题填：WPAForge 1.9.49 · 非 UTF-8 SSID 不再提供按材料派生 -->
-<!-- tag: v1.9.49   target: main -->
+<!-- tag: v1.9.50   target: main -->
 
 WPAForge 1.9.49 · 非 UTF-8 SSID 不再提供按材料派生
 

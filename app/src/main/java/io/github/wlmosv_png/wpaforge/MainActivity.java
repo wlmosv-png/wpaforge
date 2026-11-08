@@ -983,7 +983,6 @@ public class MainActivity extends Activity {
 
     private LinearLayout pageWps;
     private LinearLayout wpsTargetList;
-    private TextView wpsPickedLine;
     private TextView wpsStatusLine;
     private TextView wpsProgressLine;
     private LinearLayout wpsModeList;
@@ -2244,8 +2243,7 @@ public class MainActivity extends Activity {
                 }
                 wpsPicked = tg;
                 wpsWarnedBssid = null;      // 换了目标，警告重新计
-                wpsPickedLine.setText(L.s("目标：", "Target: ") + tg.describe()
-                        + "   [" + tg.capLabel(zh) + "]");
+                // 选中信息由顶部目标卡（ssidV + wpsPickedMeta）展示，不再用死字段
                 refreshWpsPickedMeta();
                 refreshWpsButtons();
                 renderWpsTargets();
@@ -2255,8 +2253,7 @@ public class MainActivity extends Activity {
         // 默认选第一个，省一次点击
         if (wpsPicked == null && !wpsTargets.isEmpty()) {
             wpsPicked = wpsTargets.get(0);
-            wpsPickedLine.setText(L.s("目标：", "Target: ") + wpsPicked.describe()
-                    + "   [" + wpsPicked.capLabel(zh) + "]");
+            refreshWpsPickedMeta();
             renderWpsTargets();
         }
     }
@@ -2585,8 +2582,7 @@ public class MainActivity extends Activity {
                             if (!dup) wpsTargets.add(0, t);
                             wpsPicked = t;
                             wpsWarnedBssid = null;
-                            wpsPickedLine.setText(L.s("目标：", "Target: ") + t.describe()
-                                    + "   [" + t.capLabel(true) + "]");
+                            refreshWpsPickedMeta();
                             renderWpsTargets();
                             Toast.makeText(this, L.s("已添加：" + t.capLabel(true),
                                     "Added: " + t.capLabel(false)), Toast.LENGTH_LONG).show();

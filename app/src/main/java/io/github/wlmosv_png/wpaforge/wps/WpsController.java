@@ -153,6 +153,8 @@ public final class WpsController {
         public int pairingWindow = -1;
         /** Device Password ID：4 = PushButton，0 = Default，1 = User-specified，-1 = 未知 */
         public int devPwdId = -1;
+        /** 扫描时是否从 supplicant BSS 表读到过这个 AP（true=读到但 WPS 段缺失/未知；false=BSS 都没查到）。 */
+        public boolean haveBss;
 
         /** 体检结论："" 未体检 / HIT / READY / INSTANT / NOWPS / LOCKED */
         public String recon = "";
@@ -345,6 +347,8 @@ public final class WpsController {
         if (p.length >= 7) t.wpsDevice = p[6];
         if (p.length >= 8) t.pairingWindow = parseInt(p[7], -1);
         if (p.length >= 9) t.devPwdId = parseInt(p[8], -1);
+        // 第 10 段（2026-11-08 扫描修复）：supplicant BSS 表是否真读到过这个 AP。
+        if (p.length >= 10) t.haveBss = "1".equals(p[9]);
         return t;
     }
 

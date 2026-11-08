@@ -993,10 +993,20 @@ public class MainActivity extends Activity {
     private TextView wpsCapCardText;
     private volatile boolean wpsSelftestDone;
     private volatile boolean wpsSelftestStarted;
+    /** 2026-11-08：Root 可用性缓存（true/false；null=还没检测过，主线程不阻塞）。 */
+    private volatile Boolean wpsRootOk;
+    /** 2026-11-08：root 检测是否已启动（避免重复起线程）。 */
+    private volatile boolean wpsRootDiagStarted;
+    /** 2026-11-08：最近一次扫描完成的时间戳（刷新顶部目标卡用）。 */
+    private volatile long wpsScanAt = 0;
+    /** 2026-11-08：最近一次扫描的失败原因；空=没有失败（由流式 SCAN_OK=0 / ERROR= 填充）。 */
+    private volatile String wpsScanFailReason = "";
     /** 扫描进度：一条细的不确定进度线 + 一行阶段文字（替代原来的大转圈）。 */
     private android.widget.ProgressBar wpsScanBar;
     private TextView wpsScanStatus;
     private Button wpsReconAllBtn;
+    /** 2026-11-08：顶部目标卡的信号/频段/扫描时间行（提升为成员，选中后可刷新）。 */
+    private TextView wpsPickedMeta;
     /** 体检是否连「不收外部 PIN」的一起测。默认跳过 —— 实测那批 3/3 打不动。 */
     private boolean wpsReconAll = false;
     private Button wpsStartBtn;
@@ -1077,13 +1087,18 @@ public class MainActivity extends Activity {
      */
     private void wpsAutojoinRestore() {
         if (!wpsAutojoinIsLimited()) return;
-        try {
-            io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, true);
-            wpsAutojoinClearLimited();
-            wpsLog(L.s("[i] 已恢复自动重连（上次异常退出遗留）",
-                    "[i] auto-join restored (left over from abnormal exit)"));
-        } catch (Throwable ignored) {
-        }
+        // 2026-11-08 卡顿修复：残留标记恢复也放后台线程 —— setAutojoin 是同步
+        // root exec（su -c app_process … autojoin on），放在 onResume 主线程会在
+        // 异常退出后首次回前台时卡住界面。
+        new Thread(() -> {
+            try {
+                io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, true);
+                wpsAutojoinClearLimited();
+                wpsLog(L.s("[i] 已恢复自动重连（上次异常退出遗留）",
+                        "[i] auto-join restored (left over from abnormal exit)"));
+            } catch (Throwable ignored) {
+            }
+        }, "wps-autojoin-restore").start();
     }
     /** 当前任务的台账快照（变更后 upsert）。 */
     private io.github.wlmosv_png.wpaforge.wps.WpsLedger.Task wpsTask;
@@ -1223,21 +1238,24 @@ public class MainActivity extends Activity {
         wpsTag.setPadding(px(10), px(4), px(10), px(4));
         row1.addView(wpsTag);
         targetCard.addView(row1);
-        // 第二行：BSSID + 检测时间（次要信息）
+        // 第二行：BSSID + 频段（次要信息）
         TextView bssidV = new TextView(this);
         bssidV.setTextSize(AmberTheme.FS_SMALL);
         bssidV.setTextColor(AmberTheme.TEXT_DIM);
         bssidV.setTypeface(android.graphics.Typeface.MONOSPACE);
         bssidV.setSingleLine(true);
         bssidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        bssidV.setText(wpsPicked != null && !wpsPicked.bssid.isEmpty() ? wpsPicked.bssid
+        bssidV.setText(wpsPicked != null && !wpsPicked.bssid.isEmpty()
+                ? wpsPicked.bssid + "   " + wpsPicked.freq + " MHz"
                 : L.s("--:--:--:--:--:--", "--:--:--:--:--:--"));
         targetCard.addView(bssidV, topGap(4));
-        TextView timeV = new TextView(this);
-        timeV.setTextSize(AmberTheme.FS_MICRO);
-        timeV.setTextColor(AmberTheme.TEXT_DIM);
-        timeV.setText(L.s("最近检测：--", "Last detection: --"));
-        targetCard.addView(timeV, topGap(2));
+        // 第三行：信号强度 + 最近扫描时间（成员字段，选中/扫描后刷新）
+        wpsPickedMeta = new TextView(this);
+        wpsPickedMeta.setTextSize(AmberTheme.FS_MICRO);
+        wpsPickedMeta.setTextColor(AmberTheme.TEXT_DIM);
+        wpsPickedMeta.setText(L.s("信号 -- dBm · 最近扫描：--",
+                "rssi -- dBm · last scan: --"));
+        targetCard.addView(wpsPickedMeta, topGap(2));
         // 目标操作：扫描 / 手动添加（紧凑一行）
         LinearLayout targetActions = new LinearLayout(this);
         targetActions.setOrientation(LinearLayout.HORIZONTAL);
@@ -1309,6 +1327,10 @@ public class MainActivity extends Activity {
         wpsImportLine.setTextColor(AmberTheme.TEXT_DIM);
         wpsModeCard.addView(wpsImportLine, topGap(4));
         refreshWpsImportLine();
+        // 2026-11-08：导入入口不再一直堆在策略区底部 —— 只在选中「我的列表」时由
+        // renderWpsModeList 显示，其余策略保持整洁（导入收敛为独立上下文，不再全局常驻）。
+        wpsImportRow.setVisibility(View.GONE);
+        wpsImportLine.setVisibility(View.GONE);
         pageWps.addView(wpsModeCard, sectionGap());
 
         // ============ E. 任务操作区（主按钮 + 停止；重置进更多操作） ============
@@ -1666,25 +1688,90 @@ public class MainActivity extends Activity {
     private void renderWpsModeList() {
         if (wpsModeList == null) return;
         wpsModeList.removeAllViews();
+        final boolean zh = L.s("a", "b").equals("a");
         for (int i = 0; i < WPS_MODE_ZH.length; i++) {
             final int mode = i;
-            boolean on = (wpsMode == i);
-            Button b = btnSecondary("");
-            b.setText((on ? "● " : "○ ") + L.s(WPS_MODE_ZH[i], WPS_MODE_EN[i])
-                    + "\n" + L.s(WPS_MODE_DESC_ZH[i], WPS_MODE_DESC_EN[i]));
-            b.setBackground(roundBgStroked(on ? ACCENT : SURFACE,
-                    on ? ACCENT : BTN_2ND_EDGE, 18, 0.8f));
-            b.setTextColor(on ? AmberTheme.ON_ACCENT : TEXT);
-            b.setEnabled(!wpsRunning);
-            b.setOnClickListener(v -> {
+            final boolean on = (wpsMode == i);
+            // 紧凑单选行：第一行 = 单选标记 + 策略名 + 状态；第二行 = 一句说明。
+            // 整个策略区由多个 64–84dp 的行组成，不再是大框套小框。
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setBackground(roundBgStroked(on ? AmberTheme.ACCENT_BG : SURFACE,
+                    on ? ACCENT : BTN_2ND_EDGE, 16, 0.8f));
+            row.setPadding(px(14), px(10), px(14), px(10));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.bottomMargin = px(6);
+            row.setLayoutParams(rlp);
+            row.setClickable(true);
+
+            // 第一行：单选标记 + 名称 + 状态胶囊（右）
+            LinearLayout t1 = new LinearLayout(this);
+            t1.setOrientation(LinearLayout.HORIZONTAL);
+            t1.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            TextView dot = new TextView(this);
+            dot.setText(on ? "● " : "○ ");
+            dot.setTextSize(AmberTheme.FS_BODY);
+            dot.setTextColor(on ? ACCENT : AmberTheme.TEXT_DIM);
+            t1.addView(dot);
+            TextView name = new TextView(this);
+            name.setText(L.s(WPS_MODE_ZH[i], WPS_MODE_EN[i]));
+            name.setTextSize(AmberTheme.FS_BODY);
+            name.setTextColor(on ? ACCENT : TEXT);
+            name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            name.setSingleLine(true);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            t1.addView(name, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            TextView state = new TextView(this);
+            state.setText(modeStateLabel(zh, mode));
+            state.setTextSize(FS_TINY);
+            state.setTextColor(on ? AmberTheme.ON_ACCENT : AmberTheme.TEXT_DIM);
+            state.setBackground(roundBg(on ? ACCENT : AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
+            state.setPadding(px(8), px(2), px(8), px(2));
+            t1.addView(state);
+            row.addView(t1);
+
+            // 第二行：一句说明
+            TextView dsc = new TextView(this);
+            dsc.setText(L.s(WPS_MODE_DESC_ZH[i], WPS_MODE_DESC_EN[i]));
+            dsc.setTextSize(FS_TINY);
+            dsc.setTextColor(on ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_DIM);
+            dsc.setPadding(px(2), px(4), px(2), 0);
+            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            dlp.topMargin = px(3);
+            row.addView(dsc, dlp);
+
+            // 点击行为：切策略 + 更新导入区显隐
+            row.setOnClickListener(v -> {
+                if (wpsRunning) return;
                 wpsMode = mode;
                 renderWpsModeList();
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = px(6);
-            wpsModeList.addView(b, lp);
+            wpsModeList.addView(row);
         }
+        // 导入入口只在「我的列表」(mode==2) 选中时展示
+        boolean myList = (wpsMode == 2);
+        if (wpsImportRow != null) wpsImportRow.setVisibility(myList ? View.VISIBLE : View.GONE);
+        if (wpsImportLine != null) wpsImportLine.setVisibility(myList ? View.VISIBLE : View.GONE);
+    }
+
+    /** 策略行的状态胶囊（数据量 / 实际来源）。 */
+    private String modeStateLabel(boolean zh, int mode) {
+        if (mode == 0) {
+            return zh ? "可派生" : "derivable";
+        }
+        if (mode == 1) {
+            int n = io.github.wlmosv_png.wpaforge.wps.WpsCandidates.builtinWeak().size();
+            return zh ? n + " 项" : n + " items";
+        }
+        if (mode == 2) {
+            int n = io.github.wlmosv_png.wpaforge.wps.WpsCandidates
+                    .loadCustom(getFilesDir()).size();
+            return zh ? n + " 条" : n + " rows";
+        }
+        return zh ? "高风险" : "high-risk";
     }
 
     /** 每档策略的说明（跟着标题一起显示在按钮里）。 */
@@ -1747,6 +1834,7 @@ public class MainActivity extends Activity {
         wpsTargets.clear();
         renderWpsTargets();
         wpsCtrlOk = -1;
+        wpsScanFailReason = "";
         wpsScanBusy(true, L.s("扫描中…", "Scanning…"));
         new Thread(() -> {
             loadVulnList();     // 名单：读盘一次 + 进程内缓存
@@ -1790,6 +1878,18 @@ public class MainActivity extends Activity {
                                         final String p = line.substring(9).trim();
                                         runOnUiThread(() -> wpsScanBusy(true,
                                                 L.s("读取能力 ", "capabilities ") + p.replace('_', '/')));
+                                    } else if (line.startsWith("SCAN_OK=")) {
+                                        // 2026-11-08：扫描失败（root 层）如实记录，不让
+                                        // 完成回调用「扫描完成：0 个 AP」掩盖真相。
+                                        if (!"1".equals(line.substring(8).trim())) {
+                                            wpsScanFailReason = L.s("扫描执行失败（supplicant/root 通道异常）",
+                                                    "scan failed (supplicant/root channel error)");
+                                        }
+                                    } else if (line.startsWith("ERROR=")) {
+                                        if (wpsScanFailReason.isEmpty()) {
+                                            wpsScanFailReason = L.s("扫描异常：", "scan error: ")
+                                                    + line.substring(6).trim();
+                                        }
                                     }
                                 }
 
@@ -1804,22 +1904,75 @@ public class MainActivity extends Activity {
                             });
             runOnUiThread(() -> {
                 wpsScanBusy(false, "");
+                // 2026-11-08 扫描修复：终值不再清空流式积累的结果。
+                // 老逻辑 clear()+addAll(list) 用 scan() 的终值覆盖流式 onLine 已收集的
+                // 目标；若 run() 因超时被中断、终值解析不完整，会把扫描到的列表整表
+                // 清空（表现为「扫完 0 个」）。改为增量合并去重：流式已收集的保留，
+                // 漏掉的按 BSSID 补进。
+                java.util.Map<String, io.github.wlmosv_png.wpaforge.wps.WpsController.Target> merged =
+                        new java.util.LinkedHashMap<>();
+                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+                    merged.put(t.bssid, t);
+                }
+                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : list) {
+                    if (!merged.containsKey(t.bssid)) merged.put(t.bssid, t);
+                }
                 wpsTargets.clear();
-                wpsTargets.addAll(list);
-                matchAllTargets();      // scan() 返回的是新解析出的对象，标记要补一遍
+                wpsTargets.addAll(merged.values());
+                matchAllTargets();
                 refreshVulnUi();
                 renderWpsTargets();
-                // 结论写进扫描状态行；「目标」那行只表示当前选中项（语义更清楚）
+                // 结论写进扫描状态行（列表现在含普通 AP + 未知能力 AP，措辞不再说
+                // 「个支持 WPS 的目标」，改成如实报总数与未知数）
+                int unk = 0;
+                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+                    if (t.wpsVerdict == null
+                            || "UNKNOWN".equals(t.wpsVerdict)
+                            || "NO_WPS".equals(t.wpsVerdict)) unk++;
+                }
                 if (wpsScanStatus != null) {
-                    wpsScanStatus.setText(L.s("扫描完成：", "Scan done: ") + list.size()
-                            + L.s(" 个支持 WPS 的目标", " WPS targets"));
+                    // 2026-11-08：扫描失败或空结果时如实说明，不再用「0 个」掩盖根因。
+                    if (wpsTargets.isEmpty() && !wpsScanFailReason.isEmpty()) {
+                        wpsScanStatus.setText(wpsScanFailReason);
+                        wpsScanStatus.setTextColor(DANGER);
+                    } else {
+                        wpsScanStatus.setText(L.s("扫描完成：", "Scan done: ") + wpsTargets.size()
+                                + L.s(" 个 AP（", " APs (") + unk
+                                + L.s(" 未检测到 WPS 信息）", " with no WPS info detected)"));
+                        wpsScanStatus.setTextColor(TEXT);
+                    }
                     wpsScanStatus.setVisibility(View.VISIBLE);
                 }
+                wpsScanAt = System.currentTimeMillis();
+                refreshWpsPickedMeta();
             });
         }, "wps-scan").start();
     }
 
     /** 状态总览卡：执行环境 + 能力状态。数据全部来自真实来源；未知显「信息不足」。 */
+    /** 2026-11-08：刷新顶部目标卡的信号/频段/扫描时间。数据全部来自选中目标与
+     * 扫描时间戳；wpsPickedMeta 为空（页未建）时直接跳过。 */
+    private void refreshWpsPickedMeta() {
+        if (wpsPickedMeta == null) return;
+        if (wpsPicked == null) {
+            wpsPickedMeta.setText(L.s("信号 -- dBm · 最近扫描：--",
+                    "rssi -- dBm · last scan: --"));
+            return;
+        }
+        String sig = wpsPicked.rssi + " dBm";
+        String when = wpsLastScanNote();
+        wpsPickedMeta.setText(L.s("信号 ", "rssi ") + sig + L.s(" · 最近扫描：", " · last scan: ") + when);
+    }
+
+    /** 最近一次扫描的相对时间文案；没扫过返回「--」并如实说明。 */
+    private String wpsLastScanNote() {
+        if (wpsScanAt <= 0) return "--";
+        long sec = (System.currentTimeMillis() - wpsScanAt) / 1000;
+        if (sec < 60) return sec + L.s(" 秒前", "s ago");
+        if (sec < 3600) return (sec / 60) + L.s(" 分钟前", "min ago");
+        return (sec / 3600) + L.s(" 小时前", "h ago");
+    }
+
     private void renderWpsSummary() {
         if (wpsSummaryCard == null) return;
         final boolean zh = L.s("a", "b").equals("a");
@@ -1861,9 +2014,17 @@ public class MainActivity extends Activity {
             cap.append('\n');
         }
 
+        // 2026-11-08 卡顿修复：Root 可用性不再在主线程同步 exec su。
+        // 老代码每次 buildWpsTab 首建都在这跑 2 次 WpsController.available()
+        // （=2 次同步 su -c app_process status），首建 WPS 页共 4 次 root exec，
+        // 点击 WPS 导航明显卡顿。现在主线程只读缓存：null 显示「检测中」，
+        // 真实检测放后台线程（ensureWpsRootDiag），跑完再刷这一行。
+        Boolean rootOk = wpsRootOk;
         env.append(L.s("Root    ", "Root    ")).append(
-                io.github.wlmosv_png.wpaforge.wps.WpsController.available(this)
-                        ? L.s("可用", "OK") : L.s("不可用", "unavailable")).append('\n');
+                rootOk == null
+                        ? L.s("检测中…", "checking…")
+                        : (rootOk ? L.s("可用", "OK") : L.s("不可用", "unavailable"))).append('\n');
+        if (rootOk == null) ensureWpsRootDiag();
         String ch = wpsSelftestDone
                 ? io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.CHANNEL_OK
                 : io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.NOT_SELF_TESTED;
@@ -1871,15 +2032,31 @@ public class MainActivity extends Activity {
                 .append(io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.channelLabel(ch, zh))
                 .append('\n');
         env.append(L.s("SELinux   ", "SELinux   ")).append(
-                io.github.wlmosv_png.wpaforge.wps.WpsController.available(this)
-                        ? L.s("策略已就绪", "policy ok")
-                        : L.s("（由 helper 执行时确认）", "(confirmed at runtime)")).append('\n');
+                rootOk == null
+                        ? L.s("（由 helper 执行时确认）", "(confirmed at runtime)")
+                        : (rootOk ? L.s("策略已就绪", "policy ok")
+                                  : L.s("不可用", "unavailable"))).append('\n');
         env.append(wpsSelftestDone
                 ? L.s("通道已真读回包验证", "channel verified by real read")
                 : L.s("通道自检未执行（开始/扫描后自动检查）", "channel not self-tested yet"));
 
         wpsEnvCardText.setText(env.toString());
         wpsCapCardText.setText(cap.toString());
+    }
+
+    /** 2026-11-08：后台线程检测 root 可用性，只在缓存为空时跑一次。 */
+    private void ensureWpsRootDiag() {
+        if (wpsRootOk != null) return;
+        if (wpsRootDiagStarted) return;
+        wpsRootDiagStarted = true;
+        new Thread(() -> {
+            try {
+                boolean ok = io.github.wlmosv_png.wpaforge.wps.WpsController.available(this);
+                wpsRootOk = ok;
+                runOnUiThread(this::renderWpsSummary);
+            } catch (Throwable ignored) {
+            }
+        }, "wps-root-diag").start();
     }
 
     /** 异步真读一次 supplicant 回包做通道自检（只读，不发 WPS 命令）。 */
@@ -1909,7 +2086,11 @@ public class MainActivity extends Activity {
         }
         if (wpsTargets.isEmpty()) {
             TextView t = new TextView(this);
-            t.setText(L.s("没有扫到支持 WPS 的 AP", "No WPS-capable AP found"));
+            // 2026-11-08：空态文案不再把「扫不到」说成「没有支持 WPS 的 AP」。
+            // 现在列表会保留所有扫到的 AP（含能力未知的），这里只在确实没有候选时出现，
+            // 如实提示去扫描；真实失败原因（权限/定位/节流）由扫描状态行单独给出。
+            t.setText(L.s("尚未选择目标 —— 点上方「扫描 AP」发现附近网络",
+                    "No target yet - tap Scan APs to discover nearby networks"));
             t.setTextSize(AmberTheme.FS_BODY);
             t.setTextColor(TEXT_DIM);
             t.setPadding(px(4), px(10), px(4), px(10));
@@ -2039,6 +2220,7 @@ public class MainActivity extends Activity {
                 wpsWarnedBssid = null;      // 换了目标，警告重新计
                 wpsPickedLine.setText(L.s("目标：", "Target: ") + tg.describe()
                         + "   [" + tg.capLabel(zh) + "]");
+                refreshWpsPickedMeta();
                 refreshWpsButtons();
                 renderWpsTargets();
             });

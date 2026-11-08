@@ -263,10 +263,12 @@ public final class WpsHelper {
                         }
                     }
                     if (flagIdx < 0) continue;
-                    StringBuilder flags = new StringBuilder();
-                    for (int i = flagIdx; i < p.length; i++) flags.append(p[i]);
-                    if (flags.indexOf("[WPS]") < 0) continue;
 
+                    // 2026-11-08 扫描修复：发现期不再要求 capabilities 列含 [WPS] token。
+                    // 很多 AP 驱动/固件不写这个 token，或格式随 ROM 变化 —— 写过严会把
+                    // 整个 list-scan-results 过滤成空（用户实测「扫不到任何 AP」）。
+                    // 是否支持 WPS 交给 caps 阶段用 BSS 的 wps_config_methods 画像判定，
+                    // 发现期只按 BSSID 合法 + SSID 有效收录，宁可列表有噪音也不整表为空。
                     String ssid = join(p, 4, flagIdx);
                     if (ssid.isEmpty()) ssid = "<hidden>";
                     String rssi = p[2].split("\\(")[0];
@@ -320,19 +322,17 @@ public final class WpsHelper {
                 while (id != null && guard++ < 300) {
                     String bssid = bssField(blk, "bssid");
                     if (!bssid.isEmpty() && !found.containsKey(bssid)) {
-                        // 只收带 WPS IE（OUI 00:50:F2 type 04）的。
-                        // BSS 表里绝大多数是没开 WPS 的设备，不过滤的话日志会被
-                        // 上百条 UNKNOWN 淹没（实测 125 条里 90 条是这种噪音）。
-                        String ie = bssField(blk, "ie");
-                        if (ie != null && ie.toLowerCase().contains("0050f204")) {
-                            String ssid = bssField(blk, "ssid");
-                            String lvl = bssField(blk, "level");
-                            String freq = bssField(blk, "freq");
-                            found.put(bssid, new String[]{bssid,
-                                    ssid.isEmpty() ? "<hidden>" : ssid,
-                                    lvl.isEmpty() ? "0" : lvl,
-                                    freq.isEmpty() ? "0" : freq});
-                        }
+                        // 2026-11-08 扫描修复：BSS 补源同样放宽 —— WPS IE（OUI 00:50:F2
+                        // type 04）只作为能力画像的输入，不再当收录门槛。部分驱动/固件
+                        // 的 BSS ie 字段回填不完整，之前会把「扫得到但从 BSS 补不进来」
+                        // 的目标一起丢掉。是否有 WPS 能力由 caps 阶段统一判定。
+                        String ssid = bssField(blk, "ssid");
+                        String lvl = bssField(blk, "level");
+                        String freq = bssField(blk, "freq");
+                        found.put(bssid, new String[]{bssid,
+                                ssid.isEmpty() ? "<hidden>" : ssid,
+                                lvl.isEmpty() ? "0" : lvl,
+                                freq.isEmpty() ? "0" : freq});
                     }
                     String nxt = c.cmd("BSS NEXT-" + id);
                     String nid = bssIdOf(nxt);
@@ -347,7 +347,6 @@ public final class WpsHelper {
             System.out.println("CAP_TOTAL=" + found.size());
             System.out.flush();
             int n = 0;
-            int skippedNoWps = 0;
             for (String[] ap : found.values()) {
                 String verdict = "UNKNOWN";
                 String methods = "";
@@ -368,18 +367,20 @@ public final class WpsHelper {
                         if (cap.length > 5) dpid = cap[5];
                     }
                 }
-                // 兜底：BSS 查得到却没有 WPS 段 → 这个 AP 没开 WPS，不属于目标
-                if (haveBss && "UNKNOWN".equals(verdict)) {
-                    skippedNoWps++;
-                    continue;
-                }
+                // 2026-11-08 扫描修复：不再把「读不到 WPS 段」的目标丢弃。
+                // 之前 BSS 查得到却没有 WPS 段（parseBssCap 返回 null → verdict 仍为
+                // UNKNOWN）就被 continue 掉 —— 这一层正是「扫到 0 个 AP」的元凶之一。
+                // 现在统一输出：verdict=UNKNOWN 表达「未检测到 WPS 信息」，UI 据此显示
+                // 「能力未知 / 待验证」而不是把它当「确定不支持」。haveBss 一并上报，
+                // 供 App 区分「扫到了但 BSS 没回 WPS 段」与「BSS 都没查到」。
                 System.out.println("AP=" + ap[0] + "|" + ap[1] + "|" + ap[2] + "|" + ap[3]
-                        + "|" + verdict + "|" + methods + "|" + dev + "|" + sel + "|" + dpid);
+                        + "|" + verdict + "|" + methods + "|" + dev + "|" + sel + "|" + dpid
+                        + "|" + (haveBss ? "1" : "0"));
                 n++;
-                System.out.println("PROGRESS=" + n + "_" + (found.size() - skippedNoWps));
+                System.out.println("PROGRESS=" + n + "_" + found.size());
                 System.out.flush();
             }
-            System.out.println("SKIP_NO_WPS=" + skippedNoWps);
+            System.out.println("SKIP_NO_WPS=0");
             System.out.println("SCAN_ROUNDS=" + SCAN_ROUNDS);
             System.out.println("AP_COUNT=" + n);
             System.out.println("SCAN_OK=1");

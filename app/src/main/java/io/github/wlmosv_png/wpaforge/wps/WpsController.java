@@ -24,7 +24,13 @@ public final class WpsController {
     /** 一次尝试的结果。 */
     public static final class Result {
         public String pin = "";
-        /** SUCCESS / REJECTED / NO_ASSOC / NO_RESPONSE / TIMEOUT / ERROR */
+        /**
+         * SUCCESS / SUCCESS_UNVERIFIED / REJECTED / PIN_REJECTED / NO_ASSOC /
+         * NO_RESPONSE / HALF_OK / CMD_FAIL / LINK_LOST / TIMEOUT / SKIPPED_INVALID / ERROR
+         *
+         * <p>SUCCESS = 协议确认且目标归属成立（可判命中）；
+         * SUCCESS_UNVERIFIED = 状态像成功但证据不足（只能记疑似）。
+         */
         public String status = "ERROR";
         public long elapsedMs;
         public int assocCount;
@@ -46,6 +52,42 @@ public final class WpsController {
             return "SUCCESS".equals(status);
         }
 
+        /** 状态像成功，但证据不足以判命中（不得渲染成「已命中」）。 */
+        public boolean isUnverified() {
+            return "SUCCESS_UNVERIFIED".equals(status);
+        }
+
+        /** 本次尝试是否产生了任何命中证据（用于 UI 与记账）。 */
+        public boolean hasHitEvidence() {
+            return !hitVerdict.isEmpty();
+        }
+
+        // ---------------- 命中证据（与状态同源，一次尝试一份） ----------------
+
+        /** HIT_CONFIRMED / HIT_UNVERIFIED / NOT_TARGET / NO_HIT。 */
+        public String hitVerdict = "";
+        /** 为什么是这个结论（{@link WpsHitJudge#why}）。 */
+        public String hitWhy = "";
+        /** 可确认的事实位：PROTOCOL / CREDENTIAL / STORED / ONLINE，逗号分隔。 */
+        public String hitFacts = "";
+        /** 命中时的目标 SSID（我们发出去的参照物）。 */
+        public String targetSsid = "";
+        /** 命中时 supplicant 报的「当前连着的」SSID / BSSID / IP。 */
+        public String hitSsid = "";
+        public String hitBssid = "";
+        public String hitIp = "";
+        /** 600ms 复核：1 仍在线 / 0 已掉 / -1 没取到。 */
+        public int hitConfirm = -1;
+        /** 本次是否与**目标**做过 km=WPS 的关联（归属判据的一半）。 */
+        public boolean sawTargetWpsSession;
+        /** 命中帧的 netId 与基线 netId。 */
+        public int hitNetId = -1;
+        public int baseNetId = -1;
+        /** 当前是否真的联网（IP 有效）—— 独立事实，不参与命中结论。 */
+        public boolean online() {
+            return WpsHitJudge.hasValidIp(hitIp);
+        }
+
         /** AP 是否在跟我们做 WPS —— 命中与否都算，这是「可攻击」的判据。 */
         public boolean apIsTalking() {
             return wpsSession || "REJECTED".equals(status)
@@ -65,6 +107,16 @@ public final class WpsController {
             switch (status) {
                 case "SUCCESS":
                     return zh ? "命中" : "HIT";
+                case "SUCCESS_UNVERIFIED":
+                    return zh ? "疑似命中（证据不足）" : "SUSPECT (weak evidence)";
+                case "PIN_REJECTED":
+                    // 修复前这条没有 case，原样打印 "PIN_REJECTED" —— 用户在日志里
+                    // 看到英文内部码，会以为程序出错了。
+                    return zh ? "PIN 被拒（AP 在做 WPS）" : "PIN rejected (AP is doing WPS)";
+                case "HALF_OK":
+                    return zh ? "前 4 位被接受" : "first half accepted";
+                case "SKIPPED_INVALID":
+                    return zh ? "跳过（校验位不合法）" : "skipped (bad checksum)";
                 case "REJECTED":
                     return zh ? "PIN 被拒（AP 在做 WPS）" : "PIN rejected (AP is doing WPS)";
                 case "NO_ASSOC":
@@ -379,7 +431,19 @@ public final class WpsController {
 
     /** 单次 PIN 尝试。 */
     public static Result tryPin(android.content.Context ctx, String bssid, String pin, int tryTimeoutSec) {
-        String out = run(ctx, tryTimeoutSec + 20, null, "pin", bssid, pin, String.valueOf(tryTimeoutSec));
+        return tryPin(ctx, bssid, "", pin, tryTimeoutSec);
+    }
+
+    /**
+     * 单次 PIN 尝试（带目标 SSID）。
+     *
+     * <p>SSID 参与命中归属判定：只认「连上的网络就是目标」才算命中。
+     * 未知时传空串，helper 侧退化为「只用 BSSID 归属」，判不出来记疑似。
+     */
+    public static Result tryPin(android.content.Context ctx, String bssid, String targetSsid,
+                                String pin, int tryTimeoutSec) {
+        String out = run(ctx, tryTimeoutSec + 20, null, "pin", bssid, pin,
+                String.valueOf(tryTimeoutSec), enc(targetSsid));
         return parseOne(out);
     }
 
@@ -388,6 +452,19 @@ public final class WpsController {
      * 命中即返回（helper 侧会 break），剩余候选由调用方续跑。
      */
     public static List<Result> batch(android.content.Context ctx, String bssid,
+                                     List<String> pins, int perTrySec, int budgetSec,
+                                     Listener listener) {
+        return batch(ctx, bssid, "", pins, perTrySec, budgetSec, listener);
+    }
+
+    /**
+     * 批量尝试（带目标 SSID，并合并每条尝试的命中证据）。
+     *
+     * <p>返回的列表长度 = helper **实际处理过的**候选数，不是请求数。
+     * 调用方必须按这个长度推进游标 —— 否则暂停 / 预算耗尽时，
+     * 没跑到的候选会被记成「已跑过」，永远不再尝试。
+     */
+    public static List<Result> batch(android.content.Context ctx, String bssid, String targetSsid,
                                      List<String> pins, int perTrySec, int budgetSec,
                                      Listener listener) {
         List<Result> results = new ArrayList<>();
@@ -399,15 +476,74 @@ public final class WpsController {
             sb.append(pins.get(i));
         }
         String out = run(ctx, budgetSec + 40, listener,
-                "batch", bssid, sb.toString(), String.valueOf(perTrySec), String.valueOf(budgetSec));
-        for (String line : out.split("\n")) {
-            if (line.startsWith("PIN=") && line.contains("RESULT=")) {
-                Result r = parseBatchLine(line);
-                results.add(r);
-                if (listener != null) listener.onResult(r);
+                "batch", bssid, sb.toString(), String.valueOf(perTrySec),
+                String.valueOf(budgetSec), enc(targetSsid));
+        String[] lines = out.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (!line.startsWith("PIN=") || !line.contains("RESULT=")) continue;
+            Result r = parseBatchLine(line);
+            // 紧跟其后的 "HIT …" 行是这条尝试的证据行（值 URL 编码）
+            if (i + 1 < lines.length) {
+                String next = lines[i + 1].trim();
+                if (next.startsWith("HIT ")) applyEvidence(r, next);
             }
+            results.add(r);
+            if (listener != null) listener.onResult(r);
         }
         return results;
+    }
+
+    /** URL 编码（与 helper 侧 {@code enc} 对称）。 */
+    static String enc(String v) {
+        if (v == null) return "";
+        try {
+            return java.net.URLEncoder.encode(v, "UTF-8");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * URL 解码；解不开时**保留原文**（宁可显示成乱码，也不要把证据丢掉）。
+     */
+    static String dec(String v) {
+        if (v == null) return "";
+        try {
+            return java.net.URLDecoder.decode(v, "UTF-8");
+        } catch (Throwable t) {
+            return v;
+        }
+    }
+
+    /**
+     * 把 helper 的证据行合并进结果（纯函数，离线可测）。
+     *
+     * <p>格式：{@code HIT PIN=.. VERDICT=.. TSSID=.. CSSID=.. CBSSID=.. IP=.. CID=..
+     * BASE=.. CONFIRM=.. SESS=.. FACTS=.. WHY=..}，值全部 URL 编码。
+     */
+    static void applyEvidence(Result r, String hitLine) {
+        if (r == null || hitLine == null) return;
+        for (String tok : hitLine.split("\\s+")) {
+            int i = tok.indexOf('=');
+            if (i <= 0) continue;
+            String k = tok.substring(0, i);
+            String v = tok.substring(i + 1);
+            switch (k) {
+                case "VERDICT": r.hitVerdict = dec(v); break;
+                case "WHY": r.hitWhy = dec(v); break;
+                case "FACTS": r.hitFacts = dec(v); break;
+                case "TSSID": r.targetSsid = dec(v); break;
+                case "CSSID": r.hitSsid = dec(v); break;
+                case "CBSSID": r.hitBssid = dec(v); break;
+                case "IP": r.hitIp = dec(v); break;
+                case "CID": r.hitNetId = parseInt(v, -1); break;
+                case "BASE": r.baseNetId = parseInt(v, -1); break;
+                case "CONFIRM": r.hitConfirm = parseInt(v, -1); break;
+                case "SESS": r.sawTargetWpsSession = "1".equals(v); break;
+                default: break;
+            }
+        }
     }
 
     // ---------------- 执行 ----------------
@@ -489,6 +625,26 @@ public final class WpsController {
                 r.m2dToEndMs = parseLong(line.substring(14).trim());
             } else if (line.startsWith("AP_LOCKED=")) {
                 r.apLocked = (int) parseLong(line.substring(10).trim());
+            } else if (line.startsWith("HIT_VERDICT=")) {
+                r.hitVerdict = dec(line.substring(12).trim());
+            } else if (line.startsWith("HIT_WHY=")) {
+                r.hitWhy = dec(line.substring(8).trim());
+            } else if (line.startsWith("HIT_FACTS=")) {
+                r.hitFacts = dec(line.substring(10).trim());
+            } else if (line.startsWith("HIT_SSID=")) {
+                r.hitSsid = dec(line.substring(9).trim());
+            } else if (line.startsWith("HIT_BSSID=")) {
+                r.hitBssid = dec(line.substring(10).trim());
+            } else if (line.startsWith("HIT_IP=")) {
+                r.hitIp = dec(line.substring(7).trim());
+            } else if (line.startsWith("HIT_CONFIRM=")) {
+                r.hitConfirm = parseInt(line.substring(12).trim(), -1);
+            } else if (line.startsWith("HIT_NETID=")) {
+                r.hitNetId = parseInt(line.substring(10).trim(), -1);
+            } else if (line.startsWith("HIT_BASE_NETID=")) {
+                r.baseNetId = parseInt(line.substring(15).trim(), -1);
+            } else if (line.startsWith("HIT_TARGET_SSID=")) {
+                r.targetSsid = dec(line.substring(16).trim());
             }
         }
         if (r.status.isEmpty()) r.status = "ERROR";

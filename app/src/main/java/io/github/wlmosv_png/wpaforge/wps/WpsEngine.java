@@ -31,6 +31,26 @@ public final class WpsEngine {
         /** AP 是否 WPS 锁定：1/0/-1 */
         public final int apLocked;
 
+        // ---- 命中证据（第二阶段；非 final：老构造器不传，留空 = 无证据） ----
+        /** WpsHitJudge 的结论：HIT_CONFIRMED / HIT_UNVERIFIED / NOT_TARGET / NO_HIT。 */
+        public String hitVerdict = "";
+        public String hitWhy = "";
+        public String hitFacts = "";
+        public String targetSsid = "";
+        public String hitSsid = "";
+        public String hitBssid = "";
+        public String hitIp = "";
+        public int hitConfirm = -1;
+        public int hitNetId = -1;
+        public int baseNetId = -1;
+        /** 本次是否在目标上见过 km=WPS 会话。 */
+        public boolean sawTargetWpsSession;
+
+        /** 当前是否真的联网（IP 有效）—— 独立事实，不参与命中结论。 */
+        public boolean online() {
+            return WpsHitJudge.hasValidIp(hitIp);
+        }
+
         public Attempt(String pin, String status, long elapsedMs, int assocCount, long maxAssocMs) {
             this(pin, status, elapsedMs, assocCount, maxAssocMs, false, "");
         }
@@ -63,6 +83,18 @@ public final class WpsEngine {
         public Attempt(WpsController.Result r) {
             this(r.pin, r.status, r.elapsedMs, r.assocCount, r.maxAssocMs,
                     r.wpsSession, r.logKind, r.m2dToEndMs, r.apLocked);
+            // 命中证据随结果一起进来：判定要用它，历史记录也要它
+            this.hitVerdict = r.hitVerdict;
+            this.hitWhy = r.hitWhy;
+            this.hitFacts = r.hitFacts;
+            this.targetSsid = r.targetSsid;
+            this.hitSsid = r.hitSsid;
+            this.hitBssid = r.hitBssid;
+            this.hitIp = r.hitIp;
+            this.hitConfirm = r.hitConfirm;
+            this.hitNetId = r.hitNetId;
+            this.baseNetId = r.baseNetId;
+            this.sawTargetWpsSession = r.sawTargetWpsSession;
         }
     }
 
@@ -135,6 +167,31 @@ public final class WpsEngine {
         /** 见过真实 WPS 交换（关联 ≥1.5s 且 km=WPS）—— 目标可打的硬证据 */
         public boolean everRealWps;
 
+        // ---- 命中证据与终态（第二阶段） ----
+        /** 命中的判定结论与明细（只有 HIT_CONFIRMED 才允许渲染成「已命中」）。 */
+        public String hitVerdict = "";
+        public String hitWhy = "";
+        public String hitFacts = "";
+        public String hitSsid = "";
+        public String hitBssid = "";
+        public String hitIp = "";
+        public int hitConfirm = -1;
+        public int hitNetId = -1;
+        public int baseNetId = -1;
+        /** 命中那一刻是否真的联网 —— 独立事实，不参与「是不是命中」的判断。 */
+        public boolean hitOnline;
+        /**
+         * 疑似命中（证据不足）：只记录，不判命中、不停任务。
+         *
+         * <p>为什么不停：停下来会让「其实是真命中、只是证据没读全」的那一条永远拿不到；
+         * 而继续跑没有任何额外风险 —— 证据已经落进台账，用户看得到。
+         */
+        public int suspectCount;
+        public String suspectPin = "";
+        public String suspectNote = "";
+        /** 被丢弃的「连到别的网络」次数（诊断用：这块以前会误报命中）。 */
+        public int notTargetCount;
+
         // ---- 拆半攻击状态 ----
         /** 拆半阶段：0=未启用 1=找前 4 位 2=找后 3 位 */
         public int halfPhase;
@@ -189,8 +246,16 @@ public final class WpsEngine {
     }
 
     /** 前置画像是否已给出终态（运行时观测不得改口）。 */
+    /**
+     * 是否已经是不该被运行时观测改口的终态。
+     *
+     * <p>修好了第二阶段审计里的「命中可被覆盖」：修复前这里只保护
+     * NO_PIN / AP_LOCKED，任何后来的失败事件都能把 {@code HIT} 改回
+     * {@code RUNNING}（界面于是从「已命中」变回「进行中 PIN=xxx」）。
+     */
     public static boolean presetTerminal(Session s) {
-        return s != null && (V_NO_PIN.equals(s.verdict) || V_AP_LOCKED.equals(s.verdict));
+        return s != null && (V_NO_PIN.equals(s.verdict) || V_AP_LOCKED.equals(s.verdict)
+                || V_HIT.equals(s.verdict));
     }
 
     /**
@@ -206,6 +271,9 @@ public final class WpsEngine {
         if (a.maxAssocMs > s.maxAssocMs) s.maxAssocMs = a.maxAssocMs;
         s.lastResult = a.status;
 
+        // 命中是不可改口的终态：后续任何失败/无关事件都不得覆盖它
+        if (V_HIT.equals(s.verdict)) return;
+
         // 「AP 在跟我们做 WPS」= 出现过 km=WPS 的关联。命中与否都算。
         boolean talking = a.wpsSession || "REJECTED".equals(a.status);
         if (talking) {
@@ -214,10 +282,26 @@ public final class WpsEngine {
             if (a.maxAssocMs >= REAL_WPS_ASSOC_MS) s.everRealWps = true;
         }
 
-        if ("SUCCESS".equals(a.status)) {
-            s.verdict = V_HIT;
-            s.hitPin = a.pin;
-            return;
+        if (a.status.startsWith("SUCCESS")) {
+            // 证据分级：helper 现在只在「归属成立 + 二次确认通过」时才回 SUCCESS。
+            // 这里再做一次守卫 —— 万一证据说不该算命中，就不能算。
+            String v = a.hitVerdict;
+            boolean noEvidence = (v == null || v.isEmpty());
+            if ("SUCCESS".equals(a.status) && (noEvidence || WpsHitJudge.isHit(v))) {
+                s.verdict = V_HIT;
+                s.hitPin = a.pin;
+                recordHitEvidence(s, a);
+                return;
+            }
+            // 记下来，不判命中，也绝不停任务。判定顺序：归属冲突优先 ——
+            // 「连到了别的网络」和「证据没读全」是两件事，不能混成一个计数。
+            if (WpsHitJudge.C_NOT_TARGET.equals(v)) {
+                s.notTargetCount++;
+            } else if ("SUCCESS_UNVERIFIED".equals(a.status) || WpsHitJudge.isUncertain(v)) {
+                s.suspectCount++;
+                s.suspectPin = a.pin;
+                s.suspectNote = a.hitWhy.isEmpty() ? "证据不足" : a.hitWhy;
+            }
         }
         if (presetTerminal(s)) return;
 
@@ -303,6 +387,35 @@ public final class WpsEngine {
         } else {
             s.verdict = V_RUNNING;
         }
+    }
+
+    /** 把命中证据落到会话上（历史台账与 UI 都读它）。 */
+    static void recordHitEvidence(Session s, Attempt a) {
+        s.hitVerdict = a.hitVerdict == null ? "" : a.hitVerdict;
+        s.hitWhy = a.hitWhy == null ? "" : a.hitWhy;
+        s.hitFacts = a.hitFacts == null ? "" : a.hitFacts;
+        s.hitSsid = a.hitSsid == null ? "" : a.hitSsid;
+        s.hitBssid = a.hitBssid == null ? "" : a.hitBssid;
+        s.hitIp = a.hitIp == null ? "" : a.hitIp;
+        s.hitConfirm = a.hitConfirm;
+        s.hitNetId = a.hitNetId;
+        s.baseNetId = a.baseNetId;
+        s.hitOnline = WpsHitJudge.hasValidIp(a.hitIp);
+    }
+
+    /** 命中证据一行的可读摘要（写历史台账与日志用）。 */
+    public static String evidenceSummary(Session s) {
+        if (s == null || !V_HIT.equals(s.verdict)) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append("verdict=").append(s.hitVerdict.isEmpty() ? "HIT_CONFIRMED(legacy)" : s.hitVerdict);
+        sb.append(" connSsid=").append(s.hitSsid.isEmpty() ? "?" : s.hitSsid);
+        sb.append(" connBssid=").append(s.hitBssid.isEmpty() ? "?" : s.hitBssid);
+        sb.append(" ip=").append(s.hitIp.isEmpty() ? "(无)" : s.hitIp);
+        sb.append(" online=").append(s.hitOnline ? 1 : 0);
+        sb.append(" confirm=").append(s.hitConfirm);
+        sb.append(" netId=").append(s.hitNetId).append("/base=").append(s.baseNetId);
+        if (!s.hitFacts.isEmpty()) sb.append(" facts=").append(s.hitFacts);
+        return sb.toString();
     }
 
     public static boolean shouldStop(Session s) {

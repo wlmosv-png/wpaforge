@@ -165,8 +165,14 @@ public class WpsPinTest {
         String[] capW = WpsHelper.parseBssCap("bssid=5c:a0:02:b5:8f:65 | ssid=WIFI-8F65 | wps_config_methods=0x0380");
         ok("0x0380（KEYPAD+按鍵）判 PIN_OK", capW != null && "PIN_OK".equals(capW[0]), capW == null ? "null" : capW[0]);
 
-        String[] capL = WpsHelper.parseBssCap("bssid=aa:bb:cc:dd:ee:ff | wps_config_methods=0x0001");
-        ok("0x0001 LABEL 判 PIN_OK", capL != null && "PIN_OK".equals(capL[0]), capL == null ? "null" : capL[0]);
+        // 2026-11-08 纠正：这条断言原来写的是「0x0001 LABEL 判 PIN_OK」——
+        // 但按 WSC 规范（wps_defs.h）0x0001 是 USBA，LABEL 是 0x0004。
+        // 断言本身把 bug 当成了契约，已按规范纠正并补齐两种位（不是放宽）：
+        //   0x0001（USBA）→ 不是 PIN 能力；0x0004（贴纸 PIN）→ 是 PIN 能力。
+        String[] capU = WpsHelper.parseBssCap("bssid=aa:bb:cc:dd:ee:ff | wps_config_methods=0x0001");
+        ok("0x0001（USBA）判 NO_PIN", capU != null && "NO_PIN".equals(capU[0]), capU == null ? "null" : capU[0]);
+        String[] capL = WpsHelper.parseBssCap("bssid=aa:bb:cc:dd:ee:ff | wps_config_methods=0x0004");
+        ok("0x0004（LABEL 贴纸 PIN）判 PIN_OK", capL != null && "PIN_OK".equals(capL[0]), capL == null ? "null" : capL[0]);
 
         String[] capP = WpsHelper.parseBssCap("bssid=aa:bb:cc:dd:ee:01 | wps_config_methods=0x0080");
         ok("只有 PUSHBUTTON 判 NO_PIN", capP != null && "NO_PIN".equals(capP[0]), capP == null ? "null" : capP[0]);

@@ -1000,12 +1000,15 @@ public class MainActivity extends Activity {
     private volatile Boolean wpsRootOk;
     /** 2026-11-08：root 检测是否已启动（避免重复起线程）。 */
     private volatile boolean wpsRootDiagStarted;
-    /** 2026-11-08：最近一次扫描完成的时间戳（刷新顶部目标卡用）。 */
-    private volatile long wpsScanAt = 0;
-    /** 2026-11-08：扫描是否进行中（区分空态文案：扫描中 vs 未扫描 vs 空结果）。 */
-    private volatile boolean wpsScanning = false;
-    /** 2026-11-08：最近一次扫描的失败原因；空=没有失败（由流式 SCAN_OK=0 / ERROR= 填充）。 */
-    private volatile String wpsScanFailReason = "";
+    /**
+     * 目标与扫描状态的**唯一权威**（2026-11-09 架构升级）。
+     *
+     * <p>原来扫描状态/目标列表/当前选中摊成上面几个裸字段，各处自行推断 ——
+     * 直接造成过"扫描已完成却仍显示待检测"。现在状态只在管理器里迁移，
+     * UI 读 {@link io.github.wlmosv_png.wpaforge.wps.WpsTargetManager#snapshot()}。
+     */
+    private final io.github.wlmosv_png.wpaforge.wps.WpsTargetManager wpsTargetMgr =
+            new io.github.wlmosv_png.wpaforge.wps.WpsTargetManager();
     /** 扫描进度：一条细的不确定进度线 + 一行阶段文字（替代原来的大转圈）。 */
     private android.widget.ProgressBar wpsScanBar;
     private TextView wpsScanStatus;
@@ -1031,9 +1034,6 @@ public class MainActivity extends Activity {
     /** supplicant 控制通道自检：-1 未知 / 0 不通（回包被系统策略拦）/ 1 通 */
     private volatile int wpsCtrlOk = -1;
 
-    private final java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Target> wpsTargets
-            = new java.util.ArrayList<>();
-    private io.github.wlmosv_png.wpaforge.wps.WpsController.Target wpsPicked;
     private io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session wpsSession;
 
     /** 运行状态机（IDLE/RUNNING/STOPPING）——「何时能开始、何时能停、重复点击怎么办」
@@ -1193,8 +1193,8 @@ public class MainActivity extends Activity {
 
     /** 发给 helper 的目标 SSID；未知时留空（「(手动)」这类占位不算）。 */
     private String wpsTargetSsidForMatch() {
-        if (wpsPicked == null || wpsPicked.ssid == null) return "";
-        String v = wpsPicked.ssid.trim();
+        if (wpsTargetMgr.selected() == null || wpsTargetMgr.selected().ssid == null) return "";
+        String v = wpsTargetMgr.selected().ssid.trim();
         if (v.isEmpty() || v.startsWith("(")) return "";
         return v;
     }
@@ -2002,11 +2002,11 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        wpsTargets.clear();
-        wpsScanning = true;
+        wpsTargetMgr.targets().clear();
+        wpsTargetMgr.clearSelection();
+        wpsTargetMgr.beginScan();          // NEVER/DONE/FAILED → SCANNING
         renderWpsTargets();
         wpsCtrlOk = -1;
-        wpsScanFailReason = "";
         wpsScanBusy(true, L.s("扫描中…", "Scanning…"));
         new Thread(() -> {
             loadVulnList();     // 名单：读盘一次 + 进程内缓存
@@ -2028,7 +2028,7 @@ public class MainActivity extends Activity {
                                             t.vuln = io.github.wlmosv_png.wpaforge.wps.VulnWsc
                                                     .match(t.wpsDevice, vulnEntries);
                                             runOnUiThread(() -> {
-                                                wpsTargets.add(t);
+                                                wpsTargetMgr.targets().add(t);
                                                 renderWpsTargets();
                                             });
                                         }
@@ -2054,13 +2054,13 @@ public class MainActivity extends Activity {
                                         // 2026-11-08：扫描失败（root 层）如实记录，不让
                                         // 完成回调用「扫描完成：0 个 AP」掩盖真相。
                                         if (!"1".equals(line.substring(8).trim())) {
-                                            wpsScanFailReason = L.s("扫描执行失败（supplicant/root 通道异常）",
-                                                    "scan failed (supplicant/root channel error)");
+                                            wpsTargetMgr.setError(L.s("扫描执行失败（supplicant/root 通道异常）",
+                                                    "scan failed (supplicant/root channel error)"));
                                         }
                                     } else if (line.startsWith("ERROR=")) {
-                                        if (wpsScanFailReason.isEmpty()) {
-                                            wpsScanFailReason = L.s("扫描异常：", "scan error: ")
-                                                    + line.substring(6).trim();
+                                        if (wpsTargetMgr.lastError().isEmpty()) {
+                                            wpsTargetMgr.setError(L.s("扫描异常：", "scan error: ")
+                                                    + line.substring(6).trim());
                                         }
                                     }
                                 }
@@ -2083,30 +2083,30 @@ public class MainActivity extends Activity {
                 // 漏掉的按 BSSID 补进。
                 java.util.Map<String, io.github.wlmosv_png.wpaforge.wps.WpsController.Target> merged =
                         new java.util.LinkedHashMap<>();
-                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargetMgr.targets()) {
                     merged.put(t.bssid, t);
                 }
                 for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : list) {
                     if (!merged.containsKey(t.bssid)) merged.put(t.bssid, t);
                 }
-                wpsTargets.clear();
-                wpsTargets.addAll(merged.values());
+                wpsTargetMgr.targets().clear();
+                wpsTargetMgr.targets().addAll(merged.values());
                 matchAllTargets();
                 refreshVulnUi();
                 renderWpsTargets();
                 // 结论写进扫描状态行（列表现在含普通 AP + 未知能力 AP，措辞不再说
                 // 「个支持 WPS 的目标」，改成如实报总数与未知数）
                 int unk = 0;
-                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+                for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargetMgr.targets()) {
                     if (t.wpsVerdict == null
                             || "UNKNOWN".equals(t.wpsVerdict)
                             || "NO_WPS".equals(t.wpsVerdict)) unk++;
                 }
                 if (wpsScanStatus != null) {
                     // 2026-11-08：扫描失败或空结果时如实说明，不再用「0 个」掩盖根因。
-                    if (wpsTargets.isEmpty()) {
-                        if (!wpsScanFailReason.isEmpty()) {
-                            wpsScanStatus.setText(wpsScanFailReason);
+                    if (wpsTargetMgr.targets().isEmpty()) {
+                        if (!wpsTargetMgr.lastError().isEmpty()) {
+                            wpsScanStatus.setText(wpsTargetMgr.lastError());
                         } else if (Boolean.FALSE.equals(wpsRootOk)) {
                             wpsScanStatus.setText(L.s("root 不可用：扫描无法通过特权通道执行，请检查 root 授权",
                                     "root unavailable: scanning needs the privileged channel, check root"));
@@ -2118,15 +2118,21 @@ public class MainActivity extends Activity {
                         }
                         wpsScanStatus.setTextColor(DANGER);
                     } else {
-                        wpsScanStatus.setText(L.s("扫描完成：", "Scan done: ") + wpsTargets.size()
+                        wpsScanStatus.setText(L.s("扫描完成：", "Scan done: ") + wpsTargetMgr.targets().size()
                                 + L.s(" 个 AP（", " APs (") + unk
                                 + L.s(" 未检测到 WPS 信息）", " with no WPS info detected)"));
                         wpsScanStatus.setTextColor(TEXT);
                     }
                     wpsScanStatus.setVisibility(View.VISIBLE);
                 }
-                wpsScanAt = System.currentTimeMillis();
-                wpsScanning = false;
+                // 状态机收尾：有错误原因 → FAILED（不替换列表）；否则 → DONE（替换列表+计数）
+                java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Target> snap =
+                        new java.util.ArrayList<>(wpsTargetMgr.targets());
+                if (!wpsTargetMgr.lastError().isEmpty()) {
+                    wpsTargetMgr.failScan(wpsTargetMgr.lastError());
+                } else {
+                    wpsTargetMgr.finishScan(snap, snap.size(), snap.size() - unk);
+                }
                 renderWpsTargets();
                 refreshWpsPickedMeta();
             });
@@ -2146,7 +2152,7 @@ public class MainActivity extends Activity {
     private void refreshWpsPickedMeta() {
         if (wpsPickedMeta == null) return;
         boolean zh = L.s("a", "b").equals("a");
-        if (wpsPicked == null) {
+        if (wpsTargetMgr.selected() == null) {
             if (wpsTargetSsidV != null) {
                 wpsTargetSsidV.setText(L.s("（未选择目标）", "(no target)"));
                 wpsTargetSsidV.setTextColor(TEXT);
@@ -2160,18 +2166,18 @@ public class MainActivity extends Activity {
             return;
         }
         if (wpsTargetSsidV != null) {
-            wpsTargetSsidV.setText(wpsPicked.ssid == null || wpsPicked.ssid.isEmpty()
-                    ? L.s("（隐藏 SSID）", "(hidden SSID)") : wpsPicked.ssid);
+            wpsTargetSsidV.setText(wpsTargetMgr.selected().ssid == null || wpsTargetMgr.selected().ssid.isEmpty()
+                    ? L.s("（隐藏 SSID）", "(hidden SSID)") : wpsTargetMgr.selected().ssid);
             wpsTargetSsidV.setTextColor(TEXT);
         }
         if (wpsTargetBssidV != null) {
-            wpsTargetBssidV.setText(wpsPicked.bssid
-                    + (wpsPicked.freq > 0 ? "   " + wpsPicked.freq + " MHz" : ""));
+            wpsTargetBssidV.setText(wpsTargetMgr.selected().bssid
+                    + (wpsTargetMgr.selected().freq > 0 ? "   " + wpsTargetMgr.selected().freq + " MHz" : ""));
         }
         String when = wpsLastScanNote();
-        wpsPickedMeta.setText(L.s("信号 ", "rssi ") + wpsPicked.rssi + " dBm"
+        wpsPickedMeta.setText(L.s("信号 ", "rssi ") + wpsTargetMgr.selected().rssi + " dBm"
                 + L.s(" · 最近扫描：", " · last scan: ") + when);
-        setWpsCapTag(wpsCapStateOf(wpsPicked));
+        setWpsCapTag(wpsCapStateOf(wpsTargetMgr.selected()));
     }
 
     // ---- 能力标签状态（区分「能力未知」与「已确认不支持」，不再一律叫「待检测」）----
@@ -2226,8 +2232,8 @@ public class MainActivity extends Activity {
 
     /** 最近一次扫描的相对时间文案；没扫过返回「--」并如实说明。 */
     private String wpsLastScanNote() {
-        if (wpsScanAt <= 0) return "--";
-        long sec = (System.currentTimeMillis() - wpsScanAt) / 1000;
+        if (wpsTargetMgr.lastScanAt() <= 0) return "--";
+        long sec = (System.currentTimeMillis() - wpsTargetMgr.lastScanAt()) / 1000;
         if (sec < 60) return sec + L.s(" 秒前", "s ago");
         if (sec < 3600) return (sec / 60) + L.s(" 分钟前", "min ago");
         return (sec / 3600) + L.s(" 小时前", "h ago");
@@ -2239,7 +2245,7 @@ public class MainActivity extends Activity {
         StringBuilder cap = new StringBuilder();
         StringBuilder env = new StringBuilder();
 
-        io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg = wpsPicked;
+        io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg = wpsTargetMgr.selected();
         cap.append(L.s("目标：", "Target: "));
         cap.append(tg == null ? L.s("未选择\n", "none\n")
                 : tg.ssid + "  " + tg.bssid + "\n");
@@ -2344,15 +2350,15 @@ public class MainActivity extends Activity {
             run.setPadding(px(4), 0, px(4), px(8));
             wpsTargetList.addView(run);
         }
-        if (wpsTargets.isEmpty()) {
+        if (wpsTargetMgr.targets().isEmpty()) {
             TextView t = new TextView(this);
             // 2026-11-08：空态区分扫描中 / 未扫描 / 空结果，避免「点扫描后立刻显示
             // 尚未选择目标」的误导。扫描要 3 轮 × 4.5s，期间必须显示「扫描中」，
             // 不能让用户误以为要先手动选目标。
-            if (wpsScanning) {
+            if (wpsTargetMgr.isScanning()) {
                 t.setText(L.s("扫描中，请稍候…（附近网络会自动列出，无需手动选择）",
                         "Scanning… nearby networks will list automatically"));
-            } else if (wpsScanAt <= 0) {
+            } else if (wpsTargetMgr.lastScanAt() <= 0) {
                 t.setText(L.s("尚未扫描 —— 点上方「扫描 AP」发现附近网络",
                         "Not scanned yet - tap Scan APs to discover nearby networks"));
             } else {
@@ -2365,10 +2371,10 @@ public class MainActivity extends Activity {
             return;
         }
         final boolean zh = L.s("a", "b").equals("a");
-        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg : wpsTargets) {
+        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg : wpsTargetMgr.targets()) {
             // 每个目标一张**行卡**：名称一行、地址一行、能力/体检一行，右侧信号与状态胶囊。
             // 原来是一个塞了四行居中文字的大按钮（用户反馈"显示的内容很拉胯"）。
-            boolean on = wpsPicked != null && tg.bssid.equals(wpsPicked.bssid);
+            boolean on = wpsTargetMgr.selected() != null && tg.bssid.equals(wpsTargetMgr.selected().bssid);
             boolean worth = tg.pinWorthTrying();
 
             LinearLayout item = new LinearLayout(this);
@@ -2483,7 +2489,7 @@ public class MainActivity extends Activity {
                             "Task running - pause first"), Toast.LENGTH_SHORT).show();
                     return;
                 }
-                wpsPicked = tg;
+                wpsTargetMgr.select(tg);
                 wpsWarnedBssid = null;      // 换了目标，警告重新计
                 // 选中信息由顶部目标卡（ssidV + wpsPickedMeta）展示，不再用死字段
                 refreshWpsPickedMeta();
@@ -2493,8 +2499,8 @@ public class MainActivity extends Activity {
             wpsTargetList.addView(item);
         }
         // 默认选第一个，省一次点击
-        if (wpsPicked == null && !wpsTargets.isEmpty()) {
-            wpsPicked = wpsTargets.get(0);
+        if (wpsTargetMgr.selected() == null && !wpsTargetMgr.targets().isEmpty()) {
+            wpsTargetMgr.select(wpsTargetMgr.targets().get(0));
             refreshWpsPickedMeta();
             renderWpsTargets();
         }
@@ -2590,7 +2596,7 @@ public class MainActivity extends Activity {
 
     private void startWps() {
         if (wpsRun.isRunning()) return;
-        if (wpsPicked == null) {
+        if (wpsTargetMgr.selected() == null) {
             // 用户反馈的「想继续却每次都弹提示」就是这句话：盘上有断点、
             // 但目标列表是内存对象（重启即空），于是每次点「继续」都被拦。
             // 现在把「断点属于谁、现在还缺什么」一并说清楚。
@@ -2603,14 +2609,14 @@ public class MainActivity extends Activity {
         }
         // 扫描阶段已经问出这个 AP 不收 PIN / 被锁：先拦一次，再点才放行。
         // 以前没有这一步，用户要白等 8 次 × 20 秒才知道打不动。
-        if (!wpsPicked.pinWorthTrying() && !wpsPicked.bssid.equals(wpsWarnedBssid)) {
-            wpsWarnedBssid = wpsPicked.bssid;
+        if (!wpsTargetMgr.selected().pinWorthTrying() && !wpsTargetMgr.selected().bssid.equals(wpsWarnedBssid)) {
+            wpsWarnedBssid = wpsTargetMgr.selected().bssid;
             Toast.makeText(this, L.s(
-                    "该 AP 不会接受外部 PIN（" + wpsPicked.capLabel(true)
-                            + (wpsPicked.wpsMethods.isEmpty() ? "" : "，" + wpsPicked.wpsMethods)
+                    "该 AP 不会接受外部 PIN（" + wpsTargetMgr.selected().capLabel(true)
+                            + (wpsTargetMgr.selected().wpsMethods.isEmpty() ? "" : "，" + wpsTargetMgr.selected().wpsMethods)
                             + "）。\n跑下去基本不可能命中；再点一次「开始」仍然强制运行。",
-                    "This AP does not accept an external PIN (" + wpsPicked.capLabel(false)
-                            + (wpsPicked.wpsMethods.isEmpty() ? "" : ", " + wpsPicked.wpsMethods)
+                    "This AP does not accept an external PIN (" + wpsTargetMgr.selected().capLabel(false)
+                            + (wpsTargetMgr.selected().wpsMethods.isEmpty() ? "" : ", " + wpsTargetMgr.selected().wpsMethods)
                             + ").\nVery unlikely to hit; tap Start again to force."),
                     Toast.LENGTH_LONG).show();
             return;
@@ -2630,12 +2636,12 @@ public class MainActivity extends Activity {
         wpsLogBuf.setLength(0);
         wpsSession = new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session();
         // 台账：开新任务（新任务不覆盖旧任务；命中记录永久保留）
-        wpsTaskStart(wpsPicked.bssid, wpsTargetSsidForMatch(), wpsMode);
+        wpsTaskStart(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode);
         refreshWpsButtons();
         renderWpsTargets();
         renderWpsModeList();
         refreshWpsProgress();
-        final String bssid = wpsPicked.bssid;
+        final String bssid = wpsTargetMgr.selected().bssid;
         new Thread(() -> runWpsAttack(bssid), "wps-attack").start();
     }
 
@@ -2843,11 +2849,11 @@ public class MainActivity extends Activity {
                             loadVulnList();
                             t.vuln = io.github.wlmosv_png.wpaforge.wps.VulnWsc.match(info.device, vulnEntries);
                             boolean dup = false;
-                            for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target x : wpsTargets) {
+                            for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target x : wpsTargetMgr.targets()) {
                                 if (x.bssid.equalsIgnoreCase(b)) dup = true;
                             }
-                            if (!dup) wpsTargets.add(0, t);
-                            wpsPicked = t;
+                            if (!dup) wpsTargetMgr.targets().add(0, t);
+                            wpsTargetMgr.select(t);
                             wpsWarnedBssid = null;
                             refreshWpsPickedMeta();
                             renderWpsTargets();
@@ -2875,7 +2881,7 @@ public class MainActivity extends Activity {
 
     /** 用当前名单重算所有目标的标记。设备名为空的不判 —— 读不到就不标。 */
     private void matchAllTargets() {
-        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargetMgr.targets()) {
             t.vuln = t.wpsDevice.isEmpty() ? null
                     : io.github.wlmosv_png.wpaforge.wps.VulnWsc.match(t.wpsDevice, vulnEntries);
         }
@@ -2892,12 +2898,12 @@ public class MainActivity extends Activity {
         }
         if (wpsVulnDiag == null) return;
         int named = 0, hits = 0;
-        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargets) {
+        for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargetMgr.targets()) {
             if (!t.wpsDevice.isEmpty()) named++;
             if (t.vuln != null) hits++;
         }
         io.github.wlmosv_png.wpaforge.wps.VulnUi.Diag d = io.github.wlmosv_png.wpaforge.wps.VulnUi.diagnose(
-                vulnListExists, entries, wpsTargets.size(), named, hits,
+                vulnListExists, entries, wpsTargetMgr.targets().size(), named, hits,
                 wpsCtrlOk == 1, zhUi());
         wpsVulnDiag.setText(d.text);
         wpsVulnDiag.setTextColor(d.action ? DANGER : AmberTheme.TEXT_DIM);
@@ -2956,7 +2962,7 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        if (wpsTargets.isEmpty()) {
+        if (wpsTargetMgr.targets().isEmpty()) {
             Toast.makeText(this, L.s("请先扫描目标", "Scan targets first"),
                     Toast.LENGTH_SHORT).show();
             return;
@@ -2992,7 +2998,7 @@ public class MainActivity extends Activity {
             java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Target> list =
                     new java.util.ArrayList<>();
             int skipped = 0;
-            for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg : wpsTargets) {
+            for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg : wpsTargetMgr.targets()) {
                 if (!wpsReconAll
                         && ("NO_PIN".equals(tg.wpsVerdict) || "LOCKED".equals(tg.wpsVerdict))) {
                     tg.recon = "SKIP";
@@ -3215,7 +3221,7 @@ public class MainActivity extends Activity {
             boolean canResume = wpsResumeReady();
             wpsStartBtn.setText(canResume ? L.s("继续", "Resume") : L.s("开始", "Start"));
             // 没有选中目标时禁用主按钮，由 resume 行说明原因（与离线校验禁用样式一致）
-            boolean startAble = wpsPicked != null;
+            boolean startAble = wpsTargetMgr.selected() != null;
             wpsStartBtn.setEnabled(startAble);
             wpsStartBtn.setAlpha(startAble ? 1f : 0.5f);
             wpsStopBtn.setText(L.s("停止", "Stop"));
@@ -3253,10 +3259,10 @@ public class MainActivity extends Activity {
      * 不允许出现「按钮说继续、实际从头跑」。
      */
     private boolean wpsResumeReady() {
-        if (wpsPicked == null) return false;
+        if (wpsTargetMgr.selected() == null) return false;
         if (wpsMode != 3) return false;      // 只有拆半模式有断点
         try {
-            return wpsCpStore().loadFor(wpsPicked.bssid, wpsTargetSsidForMatch(), wpsMode).ok();
+            return wpsCpStore().loadFor(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode).ok();
         } catch (Throwable t) {
             return false;
         }
@@ -3294,7 +3300,7 @@ public class MainActivity extends Activity {
                     "checkpoint: " + cp.ssid + " (" + tag + ") mode " + cp.mode
                             + " phase " + cp.phase + " done " + cp.cursor);
             if (ready) return base + L.s(" —— 可以点「继续」", " - press Resume");
-            if (wpsPicked == null) {
+            if (wpsTargetMgr.selected() == null) {
                 return base + L.s("\n当前没有选中目标；扫描并选中 " + cp.ssid + " 后即可继续。",
                         "\nno target selected; scan and pick it to resume.");
             }
@@ -3303,7 +3309,7 @@ public class MainActivity extends Activity {
                                 + "切回该策略才能续跑。",
                         "\ncurrent strategy differs from the checkpoint.");
             }
-            String why = cp.mismatchReason(wpsPicked.bssid, wpsTargetSsidForMatch(), wpsMode, true);
+            String why = cp.mismatchReason(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode, true);
             if (why != null && !why.isEmpty()) return base + "\n" + why;
             return base;
         } catch (Throwable t) {
@@ -3495,7 +3501,7 @@ public class MainActivity extends Activity {
                 + L.s(" 个候选：", " candidates: ") + pins.get(0) + " …");
         java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Result> rs =
                 io.github.wlmosv_png.wpaforge.wps.WpsController.batch(
-                        this, wpsPicked.bssid, wpsTargetSsidForMatch(), pins,
+                        this, wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), pins,
                         WPS_PER_TRY_SEC, WPS_BATCH_BUDGET,
                         new io.github.wlmosv_png.wpaforge.wps.WpsController.Listener() {
                             @Override

@@ -80,8 +80,10 @@ public final class WpsUiWiringTest {
         info("④ 「继续」只在真能续跑时出现");
         ok("按钮判据用 wpsResumeReady", ma.contains("boolean canResume = wpsResumeReady();"),
                 "未接线");
+        // 2026-11-09（WPS 架构升级）：选中目标改由 WpsTargetManager 持有，
+        // wpsPicked → wpsTargetMgr.selected()。断言本意（续跑校验口径一致）不变。
         ok("wpsResumeReady 用同一套 loadFor 校验",
-                ma.contains("loadFor(wpsPicked.bssid, wpsTargetSsidForMatch(), wpsMode)"),
+                ma.contains("loadFor(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode)"),
                 "校验口径不一致");
         ok("老 hasWpsCheckpoint 已移除", !ma.contains("hasWpsCheckpoint()"), "仍有残留");
         ok("存在断点状态行 wpsResumeLine", ma.contains("wpsResumeLine"), "无");
@@ -100,7 +102,7 @@ public final class WpsUiWiringTest {
 
         // ---------------------------------------------------------- 6 台账
         info("⑥ 台账：开任务 / 同步 / 收尾都接线");
-        ok("开任务", ma.contains("wpsTaskStart(wpsPicked.bssid"), "未接线");
+        ok("开任务", ma.contains("wpsTaskStart(wpsTargetMgr.selected().bssid"), "未接线");
         ok("同步进度与最近一条", ma.contains("wpsTaskSync(") , "未接线");
         ok("收尾写状态与原因", ma.contains("wpsTaskFinish("), "未接线");
         ok("命中时写证据到台账", ma.contains("WpsEngine.evidenceSummary(wpsSession)"), "未接线");
@@ -125,7 +127,8 @@ public final class WpsUiWiringTest {
         // ---------------------------------------------------------- 8 证据链接线
         info("⑧ 命中证据链接线");
         ok("批量调用带目标 SSID",
-                ma.contains("this, wpsPicked.bssid, wpsTargetSsidForMatch(), pins,"), "未接线");
+                ma.contains("this, wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), pins,"),
+                "未接线");
         ok("命中日志走证据文案", ma.contains("已命中（协议确认 + 目标归属成立）"), "无");
         ok("疑似命中在日志里说明不判命中",
                 ma.contains("疑似命中（证据不足，已记录、不判命中）"), "无");

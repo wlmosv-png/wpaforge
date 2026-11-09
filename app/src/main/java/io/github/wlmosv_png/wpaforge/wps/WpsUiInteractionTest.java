@@ -99,7 +99,21 @@ public final class WpsUiInteractionTest {
         ok("不出现「必中/guaranteed」",
                 !ma.contains("必中") && !ma.contains("11k, guaranteed"), "仍有");
 
-        // ---------------------------------------------------------- 7 日志
+        // ---------------------------------------------------------- 7 目标/扫描状态机接线
+        info("⑦ 目标与扫描状态由 WpsTargetManager 统一持有（UI 不自行推断）");
+        ok("MainActivity 使用 WpsTargetManager",
+                ma.contains("new io.github.wlmosv_png.wpaforge.wps.WpsTargetManager()"), "未接线");
+        ok("裸布尔 wpsScanning 已移除", !ma.contains("wpsScanning"), "仍有裸字段");
+        ok("裸时间戳 wpsScanAt 已移除", !ma.contains("wpsScanAt"), "仍有裸字段");
+        ok("裸失败原因 wpsScanFailReason 已移除", !ma.contains("wpsScanFailReason"), "仍有裸字段");
+        ok("裸选中字段 wpsPicked 已移除", !ma.contains("WpsController.Target wpsPicked;"), "仍有裸字段");
+        ok("扫描开始走状态机 beginScan", ma.contains("wpsTargetMgr.beginScan()"), "未接线");
+        ok("扫描成功收尾走 finishScan", ma.contains("wpsTargetMgr.finishScan("), "未接线");
+        ok("扫描失败走 failScan", ma.contains("wpsTargetMgr.failScan("), "未接线");
+        ok("选中走 select()", ma.contains("wpsTargetMgr.select("), "未接线");
+        ok("空态读 isScanning()", ma.contains("wpsTargetMgr.isScanning()"), "未接线");
+
+        // ---------------------------------------------------------- 8 日志
         info("⑦ 结构化详细日志");
         ok("日志带时间戳", ma.contains("DateFormat\n                .format(\"HH:mm:ss\""), "无时间戳");
         ok("日志记录任务创建", ma.contains("\"[任务] 创建 \""), "无");

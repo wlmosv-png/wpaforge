@@ -983,6 +983,10 @@ public class MainActivity extends Activity {
 
     private LinearLayout pageWps;
     private LinearLayout wpsTargetList;
+    /** 顶部目标卡的 SSID / BSSID / 能力标签（成员字段，选中目标与扫描完成后刷新）。 */
+    private TextView wpsTargetSsidV;
+    private TextView wpsTargetBssidV;
+    private TextView wpsCapTag;
     private TextView wpsStatusLine;
     private TextView wpsProgressLine;
     private LinearLayout wpsModeList;
@@ -1032,7 +1036,11 @@ public class MainActivity extends Activity {
     private io.github.wlmosv_png.wpaforge.wps.WpsController.Target wpsPicked;
     private io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session wpsSession;
 
-    private volatile boolean wpsRunning = false;
+    /** 运行状态机（IDLE/RUNNING/STOPPING）——「何时能开始、何时能停、重复点击怎么办」
+     *  的唯一权威来源；UI 只查询它，不各自推断。 */
+    private final io.github.wlmosv_png.wpaforge.wps.WpsRunState wpsRun =
+            new io.github.wlmosv_png.wpaforge.wps.WpsRunState();
+    /** 唯一停止信号：执行线程每一步都查它。 */
     private volatile boolean wpsCancel = false;
     /** 策略：false = 弱 PIN 优先；true = 完整枚举 */
     private int wpsMode = 0;
@@ -1192,24 +1200,46 @@ public class MainActivity extends Activity {
     }
 
     private void buildWpsTab() {
-        // ============ A. 顶部标题区（不占大片横幅） ============
+        // ============ A. 顶部标题区（紧凑单行：标题 + 问号帮助；不再占两行横幅） ============
+        // 2026-11-09 UI 整改：原来这里是一个「大标题 + 副标题」两行块，叠加全局
+        // 的 WPAForge 标题后，首屏有效信息被推到很下面。现在压成单行——
+        // 标题在同一行内与「?」帮助入口左右排布，省掉一整个副标题行的纵向空间。
         LinearLayout wpsHeader = new LinearLayout(this);
-        wpsHeader.setOrientation(LinearLayout.VERTICAL);
-        wpsHeader.setPadding(px(4), px(8), px(4), px(2));
+        wpsHeader.setOrientation(LinearLayout.HORIZONTAL);
+        wpsHeader.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        wpsHeader.setPadding(px(2), 0, px(2), 0);
+
         TextView title = new TextView(this);
-        title.setText(L.s("WPS PIN", "WPS PIN"));
-        title.setTextSize(AmberTheme.FS_TITLE + 4);
+        title.setText(L.s("WPS PIN 弱点攻击", "WPS PIN weakness attack"));
+        title.setTextSize(AmberTheme.FS_TITLE + 2);
         title.setTextColor(TEXT);
         title.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                 android.graphics.Typeface.NORMAL));
-        wpsHeader.addView(title);
-        TextView subtitle = new TextView(this);
-        subtitle.setText(L.s("无线网络 PIN 验证", "Wi-Fi PIN verification"));
-        subtitle.setTextSize(AmberTheme.FS_SMALL);
-        subtitle.setTextColor(AmberTheme.TEXT_DIM);
-        subtitle.setPadding(px(2), px(2), px(2), px(2));
-        wpsHeader.addView(subtitle);
-        pageWps.addView(wpsHeader, sectionGap());
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        wpsHeader.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        // 问号帮助入口（与其它页面一致的克制风格：描边小圆钮，不抢眼）
+        TextView helpBtn = new TextView(this);
+        helpBtn.setText("?");
+        helpBtn.setTextSize(AmberTheme.FS_LABEL);
+        helpBtn.setTextColor(ACCENT);
+        helpBtn.setGravity(android.view.Gravity.CENTER);
+        helpBtn.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        helpBtn.setBackground(roundBgStroked(AmberTheme.ACCENT_BG, ACCENT, 999f, 1f));
+        helpBtn.setMinWidth(px(28));
+        helpBtn.setMinHeight(px(28));
+        helpBtn.setPadding(px(8), px(4), px(8), px(4));
+        helpBtn.setOnClickListener(v -> showWpsHelpDialog());
+        wpsHeader.addView(helpBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout.LayoutParams wpsHdrLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wpsHdrLp.topMargin = px(6);
+        pageWps.addView(wpsHeader, wpsHdrLp);
 
         // ============ B. 当前目标设备（紧凑单卡，SSID 主 / BSSID 次） ============
         LinearLayout targetCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
@@ -1218,39 +1248,34 @@ public class MainActivity extends Activity {
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
         row1.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView ssidV = new TextView(this);
-        ssidV.setTextSize(AmberTheme.FS_TITLE);
-        ssidV.setTextColor(TEXT);
-        ssidV.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+        // 2026-11-09 UI 整改：SSID / BSSID / 能力标签全部提升为成员字段 —— 原来它们
+        // 是局部变量，只在 buildWpsTab 建页那一刻写死，之后选中目标/扫描完成都不刷新，
+        // 于是「扫描完成仍显示（未选择目标）/待检测」。现在由 refreshWpsTargetCard() 统一刷新。
+        wpsTargetSsidV = new TextView(this);
+        wpsTargetSsidV.setTextSize(AmberTheme.FS_TITLE);
+        wpsTargetSsidV.setTextColor(TEXT);
+        wpsTargetSsidV.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                 android.graphics.Typeface.NORMAL));
-        ssidV.setSingleLine(true);
-        ssidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        ssidV.setText(wpsPicked != null && !wpsPicked.ssid.isEmpty() ? wpsPicked.ssid
-                : L.s("（未选择目标）", "(no target)"));
+        wpsTargetSsidV.setSingleLine(true);
+        wpsTargetSsidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams ssidLp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        row1.addView(ssidV, ssidLp);
-        TextView wpsTag = new TextView(this);
-        wpsTag.setTextSize(AmberTheme.FS_LABEL);
-        wpsTag.setTextColor(ACCENT);
-        wpsTag.setText(wpsPicked != null && "PIN_OK".equals(wpsPicked.wpsVerdict)
-                ? L.s("可验证", "verifiable")
-                : L.s("待检测", "pending"));
-        wpsTag.setBackground(roundBgStroked(AmberTheme.ACCENT_BG, ACCENT, 14, 0.8f));
-        wpsTag.setPadding(px(10), px(4), px(10), px(4));
-        row1.addView(wpsTag);
+        row1.addView(wpsTargetSsidV, ssidLp);
+
+        wpsCapTag = new TextView(this);
+        wpsCapTag.setTextSize(AmberTheme.FS_LABEL);
+        wpsCapTag.setPadding(px(10), px(4), px(10), px(4));
+        row1.addView(wpsCapTag);
         targetCard.addView(row1);
+
         // 第二行：BSSID + 频段（次要信息）
-        TextView bssidV = new TextView(this);
-        bssidV.setTextSize(AmberTheme.FS_SMALL);
-        bssidV.setTextColor(AmberTheme.TEXT_DIM);
-        bssidV.setTypeface(android.graphics.Typeface.MONOSPACE);
-        bssidV.setSingleLine(true);
-        bssidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        bssidV.setText(wpsPicked != null && !wpsPicked.bssid.isEmpty()
-                ? wpsPicked.bssid + "   " + wpsPicked.freq + " MHz"
-                : L.s("--:--:--:--:--:--", "--:--:--:--:--:--"));
-        targetCard.addView(bssidV, topGap(4));
+        wpsTargetBssidV = new TextView(this);
+        wpsTargetBssidV.setTextSize(AmberTheme.FS_SMALL);
+        wpsTargetBssidV.setTextColor(AmberTheme.TEXT_DIM);
+        wpsTargetBssidV.setTypeface(android.graphics.Typeface.MONOSPACE);
+        wpsTargetBssidV.setSingleLine(true);
+        wpsTargetBssidV.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        targetCard.addView(wpsTargetBssidV, topGap(4));
         // 第三行：信号强度 + 最近扫描时间（成员字段，选中/扫描后刷新）
         wpsPickedMeta = new TextView(this);
         wpsPickedMeta.setTextSize(AmberTheme.FS_MICRO);
@@ -1272,7 +1297,8 @@ public class MainActivity extends Activity {
         wpsTargetList = new LinearLayout(this);
         wpsTargetList.setOrientation(LinearLayout.VERTICAL);
         targetCard.addView(wpsTargetList, topGap(6));
-        pageWps.addView(targetCard, sectionGap());
+        // 首屏压缩：目标卡紧跟标题（10dp），比全局 sectionGap(20dp) 更紧，核心内容更早入屏
+        pageWps.addView(targetCard, topGap(10));
 
         // ============ C. 能力状态（两列网格） ============
         wpsSummaryCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
@@ -1349,7 +1375,7 @@ public class MainActivity extends Activity {
         wpsStartBtn.setMinimumHeight(px(46));
         wpsStartBtn.setPadding(px(16), px(10), px(16), px(10));
         wpsStartBtn.setOnClickListener(v -> {
-            if (wpsRunning) stopWps();
+            if (wpsRun.isRunning()) stopWps();
             else startWps();
         });
         LinearLayout.LayoutParams startLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f);
@@ -1522,10 +1548,10 @@ public class MainActivity extends Activity {
     // 2026-11-08：完整枚举已从生产移除（10^7 不可行 + 内存打满）。旧 mode=4 回退拆半。
     private static final String[] WPS_MODE_ZH = {
             "厂商算法（BSSID 派生）", "内置弱 PIN 表", "我的列表（导入）",
-            "拆半攻击（11000 次必中）"};
+            "拆半攻击（先前 4 位、再后 3 位）"};
     private static final String[] WPS_MODE_EN = {
             "Vendor algorithms", "Built-in weak PINs", "My list (imported)",
-            "Half-PIN attack (11k, guaranteed)"};
+            "Half-PIN attack (prefix then suffix)"};
 
     /** 拆半：阶段 1 的断点（跨阶段切换保留） */
     private int wpsHalfCursor1 = 0;
@@ -1587,6 +1613,14 @@ public class MainActivity extends Activity {
         long now = System.currentTimeMillis();
         wpsTaskId = io.github.wlmosv_png.wpaforge.wps.WpsLedger.newTaskId(bssid, now);
         wpsTask = io.github.wlmosv_png.wpaforge.wps.WpsLedger.start(wpsTaskId, bssid, ssid, mode, now);
+        boolean zh = L.s("a", "b").equals("a");
+        // 结构化：任务创建 —— 任务 ID / 目标身份 / 策略
+        wpsLog(L.s("[任务] 创建 " + wpsTaskId, "[task] created " + wpsTaskId));
+        wpsLog(L.s("[目标] SSID=" + (ssid == null || ssid.isEmpty() ? "(未知)" : ssid)
+                        + "  BSSID=" + bssid,
+                "[target] SSID=" + (ssid == null || ssid.isEmpty() ? "(unknown)" : ssid)
+                        + "  BSSID=" + bssid));
+        wpsLog(L.s("[策略] " + wpsModeLabel(mode), "[strategy] " + wpsModeLabel(mode)));
         if (!wpsLedger().upsert(wpsTask)) {
             wpsLog(L.s("[!] 台账写入失败（历史记录可能不完整）", "[!] ledger write failed"));
         }
@@ -1725,13 +1759,13 @@ public class MainActivity extends Activity {
         box.addView(input);
         box.addView(prevBtn, topGap(6));
         box.addView(prev);
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("粘贴 PIN 列表（解析后确认）", "Paste PIN list (preview first)"))
-                .setView(box)
-                .setPositiveButton(L.s("保存", "Save"), (d, w) ->
-                        wpsImportCommit(input.getText() == null ? "" : input.getText().toString(), true))
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+        io.github.wlmosv_png.wpaforge.ui.NetDialog pasteDlg = new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                L.s("粘贴 PIN 列表（解析后确认）", "Paste PIN list (preview first)"), null);
+        pasteDlg.addView(box);
+        pasteDlg.setPositive(L.s("保存", "Save"), nd ->
+                wpsImportCommit(input.getText() == null ? "" : input.getText().toString(), true));
+        pasteDlg.setNegative(L.s("取消", "Cancel"), null);
+        pasteDlg.show();
     }
 
     /** 预览确认后真正写入。 */
@@ -1869,7 +1903,7 @@ public class MainActivity extends Activity {
 
             // 点击行为：切策略 + 更新导入区显隐
             row.setOnClickListener(v -> {
-                if (wpsRunning) return;
+                if (wpsRun.isRunning()) return;
                 wpsMode = mode;
                 renderWpsModeList();
             });
@@ -1903,12 +1937,14 @@ public class MainActivity extends Activity {
             "按 BSSID 算出有来源的厂商默认 PIN（D-Link / ASUS / Airocon）；固定出厂值另列。",
             "内置弱 PIN 表：65 个出厂默认 / 常见值，可离线直接试。",
             "你自己导入的候选（下方可粘贴或从文件导入；8 位不合法会原样保留并提示）。",
-            "穷举前 4 位（1 万次）+ 后 3 位（1 千次）。理论覆盖任意合法 8 位 PIN；约 22~35 小时，可能触发 AP 锁定。"};
+            "依次穷举前 4 位（1 万次）与后 3 位（1 千次），覆盖合法 8 位 PIN 的取值空间。" +
+            "耗时以十小时计，且可能触发 AP 锁定——不保证成功。"};
     private static final String[] WPS_MODE_DESC_EN = {
             "Derive sourced factory PINs from the BSSID (D-Link / ASUS / Airocon); fixed values listed separately.",
             "Built-in weak PIN table: 65 factory / common values.",
             "Your own imported candidates (8-digit invalid kept as-is with a note).",
-            "Brute-force first 4 digits (10k) then last 3 (1k). Covers any valid 8-digit PIN; ~22-35h, may trigger AP lock."};
+            "Try first 4 digits (10k) then last 3 (1k); spans the valid 8-digit space. " +
+            "Hours-long and may trip AP lock-out - no success guarantee."};
 
     /** 当前策略下要试的候选（完整枚举走另一条路）。 */
     private java.util.List<String> wpsCandidatePins(String bssid) {
@@ -1927,9 +1963,15 @@ public class MainActivity extends Activity {
     }
 
     private void wpsLog(String line) {
-        wpsLogBuf.append(line).append('\n');
-        if (wpsLogBuf.length() > 8000) {
-            wpsLogBuf.delete(0, wpsLogBuf.length() - 6000);
+        // 2026-11-09 日志整改：每行带 HH:mm:ss 时间戳（时间排序可读）；
+        // 加锁是因为后台攻击线程与主线程都会写这段缓冲。
+        String stamp = android.text.format.DateFormat
+                .format("HH:mm:ss", System.currentTimeMillis()).toString();
+        synchronized (wpsLogBuf) {
+            wpsLogBuf.append(stamp).append("  ").append(line).append('\n');
+            if (wpsLogBuf.length() > 16000) {
+                wpsLogBuf.delete(0, wpsLogBuf.length() - 12000);
+            }
         }
         // WPS 页可能尚未构建（onResume 早于 buildWpsTab）→ wpsLogView 为空时只入缓冲
         if (wpsLogView != null) {
@@ -1955,7 +1997,7 @@ public class MainActivity extends Activity {
     }
 
     private void doWpsScan() {
-        if (wpsRunning) {
+        if (wpsRun.isRunning()) {
             Toast.makeText(this, L.s("任务运行中，请先暂停", "Task running - pause first"),
                     Toast.LENGTH_SHORT).show();
             return;
@@ -2094,16 +2136,92 @@ public class MainActivity extends Activity {
     /** 状态总览卡：执行环境 + 能力状态。数据全部来自真实来源；未知显「信息不足」。 */
     /** 2026-11-08：刷新顶部目标卡的信号/频段/扫描时间。数据全部来自选中目标与
      * 扫描时间戳；wpsPickedMeta 为空（页未建）时直接跳过。 */
+    /**
+     * 刷新顶部目标卡（SSID / BSSID / 信号·时间 / 能力标签）。
+     *
+     * <p>2026-11-09 UI 整改：这是「扫描完成仍显示待检测」的根治点。原实现只刷新一行
+     * 元信息，SSID / BSSID / 能力标签都是建页时写死 —— 选了目标也不更新。
+     * 现在四行统一由本方法刷新，并被选中目标、扫描完成、清空目标三处调用。
+     */
     private void refreshWpsPickedMeta() {
         if (wpsPickedMeta == null) return;
+        boolean zh = L.s("a", "b").equals("a");
         if (wpsPicked == null) {
+            if (wpsTargetSsidV != null) {
+                wpsTargetSsidV.setText(L.s("（未选择目标）", "(no target)"));
+                wpsTargetSsidV.setTextColor(TEXT);
+            }
+            if (wpsTargetBssidV != null) {
+                wpsTargetBssidV.setText(L.s("--:--:--:--:--:--", "--:--:--:--:--:--"));
+            }
             wpsPickedMeta.setText(L.s("信号 -- dBm · 最近扫描：--",
                     "rssi -- dBm · last scan: --"));
+            setWpsCapTag(WPS_TAG_NONE);
             return;
         }
-        String sig = wpsPicked.rssi + " dBm";
+        if (wpsTargetSsidV != null) {
+            wpsTargetSsidV.setText(wpsPicked.ssid == null || wpsPicked.ssid.isEmpty()
+                    ? L.s("（隐藏 SSID）", "(hidden SSID)") : wpsPicked.ssid);
+            wpsTargetSsidV.setTextColor(TEXT);
+        }
+        if (wpsTargetBssidV != null) {
+            wpsTargetBssidV.setText(wpsPicked.bssid
+                    + (wpsPicked.freq > 0 ? "   " + wpsPicked.freq + " MHz" : ""));
+        }
         String when = wpsLastScanNote();
-        wpsPickedMeta.setText(L.s("信号 ", "rssi ") + sig + L.s(" · 最近扫描：", " · last scan: ") + when);
+        wpsPickedMeta.setText(L.s("信号 ", "rssi ") + wpsPicked.rssi + " dBm"
+                + L.s(" · 最近扫描：", " · last scan: ") + when);
+        setWpsCapTag(wpsCapStateOf(wpsPicked));
+    }
+
+    // ---- 能力标签状态（区分「能力未知」与「已确认不支持」，不再一律叫「待检测」）----
+    private static final int WPS_TAG_NONE = 0;        // 未选择目标
+    private static final int WPS_TAG_UNKNOWN = 1;     // 未检测到 WPS 信息 / 能力未知
+    private static final int WPS_TAG_OK = 2;          // 声明可接受 PIN
+    private static final int WPS_TAG_NO_PIN = 3;      // 声明不收外部 PIN
+    private static final int WPS_TAG_LOCKED = 4;      // AP 已锁定
+
+    /** 由目标的能力判定结果映射到标签状态（取真实字段，不臆测）。 */
+    private int wpsCapStateOf(io.github.wlmosv_png.wpaforge.wps.WpsController.Target t) {
+        if (t == null) return WPS_TAG_NONE;
+        String v = t.wpsVerdict == null ? "" : t.wpsVerdict;
+        if ("PIN_OK".equals(v)) return WPS_TAG_OK;
+        if ("NO_PIN".equals(v)) return WPS_TAG_NO_PIN;
+        if ("LOCKED".equals(v)) return WPS_TAG_LOCKED;
+        return WPS_TAG_UNKNOWN;
+    }
+
+    /** 设能力标签（颜色/文案随状态；未知≠不支持，如实区分）。 */
+    private void setWpsCapTag(int state) {
+        if (wpsCapTag == null) return;
+        String txt;
+        int fg;
+        switch (state) {
+            case WPS_TAG_OK:
+                txt = L.s("声明可接受 PIN", "declares PIN support");
+                fg = AmberTheme.OK;
+                break;
+            case WPS_TAG_NO_PIN:
+                txt = L.s("不收外部 PIN", "no external PIN");
+                fg = DANGER;
+                break;
+            case WPS_TAG_LOCKED:
+                txt = L.s("AP 已锁定", "AP locked");
+                fg = DANGER;
+                break;
+            case WPS_TAG_UNKNOWN:
+                txt = L.s("能力未知", "capability unknown");
+                fg = AmberTheme.TEXT_DIM;
+                break;
+            default:
+                txt = L.s("未选择", "no target");
+                fg = AmberTheme.TEXT_DIM;
+                break;
+        }
+        wpsCapTag.setText(txt);
+        wpsCapTag.setTextColor(fg);
+        wpsCapTag.setBackground(roundBgStroked(
+                state == WPS_TAG_OK ? AmberTheme.OK_BG : AmberTheme.NEUTRAL_BG, fg, 14, 0.8f));
     }
 
     /** 最近一次扫描的相对时间文案；没扫过返回「--」并如实说明。 */
@@ -2217,7 +2335,7 @@ public class MainActivity extends Activity {
 
     private void renderWpsTargets() {
         wpsTargetList.removeAllViews();
-        if (wpsRunning) {
+        if (wpsRun.isRunning()) {
             TextView run = new TextView(this);
             run.setText(L.s("任务运行中 —— 按「暂停」后可更换目标",
                     "Task running - press Pause to change target"));
@@ -2262,7 +2380,7 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             ilp.bottomMargin = px(8);
             item.setLayoutParams(ilp);
-            if (wpsRunning) item.setAlpha(0.6f);
+            if (wpsRun.isRunning()) item.setAlpha(0.6f);
 
             LinearLayout left = new LinearLayout(this);
             left.setOrientation(LinearLayout.VERTICAL);
@@ -2360,7 +2478,7 @@ public class MainActivity extends Activity {
 
             item.addView(right);
             item.setOnClickListener(v -> {
-                if (wpsRunning) {
+                if (wpsRun.isRunning()) {
                     Toast.makeText(this, L.s("任务运行中，请先暂停再换目标",
                             "Task running - pause first"), Toast.LENGTH_SHORT).show();
                     return;
@@ -2471,7 +2589,7 @@ public class MainActivity extends Activity {
     private boolean wpsHalfConfirmedOnce;
 
     private void startWps() {
-        if (wpsRunning) return;
+        if (wpsRun.isRunning()) return;
         if (wpsPicked == null) {
             // 用户反馈的「想继续却每次都弹提示」就是这句话：盘上有断点、
             // 但目标列表是内存对象（重启即空），于是每次点「继续」都被拦。
@@ -2507,7 +2625,7 @@ public class MainActivity extends Activity {
 
     /** 真正启动（拆半确认通过后 / 非拆半直接走这里）。 */
     private void doStartWps() {
-        wpsRunning = true;
+        wpsRun.requestStart();
         wpsCancel = false;
         wpsLogBuf.setLength(0);
         wpsSession = new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session();
@@ -2530,34 +2648,44 @@ public class MainActivity extends Activity {
         double per = 8.0;   // 单次尝试 7~9s，取 8s 作为保守下限
         double hours = 11000.0 * per / 3600.0;
         cost = String.format(java.util.Locale.US, "%.0f~%.0f", hours * 0.9, hours * 1.4);
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("启动拆半攻击？", "Start half-PIN attack?"))
-                .setMessage(L.s(
-                        "拆半攻击：穷举前 4 位（10000 次）+ 后 3 位（1000 次），理论覆盖任意合法 8 位 PIN。\n\n"
+        io.github.wlmosv_png.wpaforge.ui.NetDialog halfDlg = new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                L.s("启动拆半攻击？", "Start half-PIN attack?"),
+                L.s(
+                        "拆半攻击：依次穷举前 4 位（10000 次）与后 3 位（1000 次），覆盖合法 8 位 PIN 的取值空间。\n\n"
                                 + "· 预计耗时：约 " + cost + " 小时（单次尝试 7~9 秒，未计退避/中断）\n"
                                 + "· 风险：可能触发 AP 的 WPS 锁定 / 限流，届时需等待或重启路由器\n"
-                                + "· 中断可随时暂停，进度会存档并在下次「继续」\n"
-                                + "· 本机会话证据有限：即使命中，可信等级通常只到「待验证」\n\n"
+                                + "· 中断可随时停止，进度会存档并在下次「继续」\n"
+                                + "· 本机会话证据有限：即使命中，可信等级通常只到「待验证」\n"
+                                + "· 不保证成功\n\n"
                                 + "确认运行？",
-                        "Half-PIN: tries 10k prefixes + 1k suffixes "
-                                + "(covers any valid 8-digit PIN).\n\n"
+                        "Half-PIN: try 1st-4th digits (10k) then last 3 (1k), covering the "
+                                + "valid 8-digit space.\n\n"
                                 + "· Est. " + cost + "h (7-9s/try, ignoring backoff)\n"
-                                + "· Risk: may trigger AP WPS lock/limit\n"
-                                + "· Pause anytime; progress saved for Resume\n"
-                                + "· Evidence here is limited; hits usually cap at 'pending'\n\n"
-                                + "Run?"))
-                .setPositiveButton(L.s("运行拆半", "Run"), (d, w) -> {
-                    wpsHalfConfirmedOnce = true;
-                    doStartWps();
-                })
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+                                + "· Risk: may trip AP WPS lock/limit\n"
+                                + "· Stop anytime; progress saved for Resume\n"
+                                + "· Evidence here is limited; hits usually cap at 'pending'\n"
+                                + "· No success guarantee\n\n"
+                                + "Run?"));
+        halfDlg.setPositive(L.s("运行拆半", "Run"), nd -> {
+            wpsHalfConfirmedOnce = true;
+            doStartWps();
+        });
+        halfDlg.setNegative(L.s("取消", "Cancel"), null);
+        halfDlg.show();
     }
 
     private void stopWps() {
-        wpsCancel = true;
-        wpsLog(L.s("[i] 暂停请求已发出，跑完当前这个就收工（进度已存档，下次点「继续」接着跑）…",
-                "[i] Pause requested - finishing the current try (progress saved; press Resume)…"));
+        if (wpsRun.isIdle()) {
+            Toast.makeText(this, L.s("没有正在运行的任务", "No running task"),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!wpsRun.requestStop()) return;    // 已在停止中：重复点击直接忽略
+        wpsCancel = true;                     // 唯一停止信号：执行线程每步都查它
+        wpsLog(L.s("[停止] 请求已发出（状态 → STOPPING）；完成当前这一轮后收工，进度已存档。",
+                "[stop] requested (state -> STOPPING); finishing current try, progress saved."));
+        refreshWpsButtons();                  // 立即反馈「停止中…」
+        refreshWpsProgress();
     }
 
     private void runWpsAttack(String bssid) {
@@ -2576,11 +2704,11 @@ public class MainActivity extends Activity {
                     io.github.wlmosv_png.wpaforge.wps.WpsController.info(this, bssid);
             io.github.wlmosv_png.wpaforge.wps.WpsEngine.precheck(wpsSession, wi);
             boolean zhCap = L.s("a", "b").equals("a");
-            wpsLog("      verdict=" + wi.verdict
+            wpsLog(L.s("[能力] 检测完成 → verdict=" + wi.verdict, "[cap] done -> verdict=" + wi.verdict)
                     + (wi.methods.isEmpty() ? "" : "  config_methods=" + wi.methods)
                     + (wi.locked ? "  locked=1" : "")
                     + (wi.device.isEmpty() ? "" : "  device=" + wi.device));
-            wpsLog("      " + wi.reason(zhCap));
+            wpsLog("        " + wi.reason(zhCap));
             if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.presetTerminal(wpsSession)) {
                 // 走到这里说明用户已经二次确认过：尊重选择，退回运行时兜底
                 wpsLog(L.s("[!] 该目标已被判打不动，按你的要求强制运行（只留运行时判定）。",
@@ -2589,6 +2717,9 @@ public class MainActivity extends Activity {
                 wpsSession.verdict = io.github.wlmosv_png.wpaforge.wps.WpsEngine.V_RUNNING;
             }
 
+            wpsLog(L.s("[阶段] 开始执行策略：" + wpsModeLabel(wpsMode),
+                    "[phase] start strategy: " + wpsModeLabel(wpsMode)));
+            long attackT0 = System.currentTimeMillis();
             if (wpsMode == 3) {
                 runHalfAttack(bssid);
             } else if (wpsMode <= 2) {
@@ -2625,7 +2756,9 @@ public class MainActivity extends Activity {
                 wpsLog(L.s("[i] 已恢复自动重连", "[i] auto-join restored"));
             } catch (Throwable ignored) {
             }
-            wpsRunning = false;
+            // 结构化：任务收尾 —— 耗时 / 最终状态 / 证据等级 / 停止完成
+            wpsLog(L.s("[停止] 执行线程已退出，任务收尾", "[stop] worker exited, finalizing"));
+            wpsRun.workerExited();    // 线程退出 → 回到 IDLE（停止完成）
             // 台账收尾：区分命中 / 用户暂停 / 异常 / 候选跑完（终止原因必须落账）
             if (wpsFailReason != null) {
                 wpsTaskFinish(io.github.wlmosv_png.wpaforge.wps.WpsLedger.ST_FAILED,
@@ -2640,6 +2773,16 @@ public class MainActivity extends Activity {
             } else {
                 wpsTaskFinish(io.github.wlmosv_png.wpaforge.wps.WpsLedger.ST_DONE,
                         L.s("候选跑完", "candidates exhausted"));
+            }
+            // 结构化：最终结果 + 证据等级（只反映真实判定，不美化）
+            if (wpsSession != null) {
+                String lvl = io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.levelField(wpsSession);
+                wpsLog(L.s("[结果] 判定=" + wpsSession.verdict
+                                + "  可信等级=" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                                        .levelText(lvl, zhUi()),
+                        "[result] verdict=" + wpsSession.verdict
+                                + "  level=" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                                        .levelText(lvl, false)));
             }
             runOnUiThread(() -> {
                 refreshWpsButtons();
@@ -2671,13 +2814,13 @@ public class MainActivity extends Activity {
         final EditText in = new EditText(this);
         in.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
         in.setHint(L.s("AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF"));
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("手动添加目标 BSSID", "Add target BSSID"))
-                .setMessage(L.s("同名 SSID 可能有多个 BSSID，行为完全不同；"
-                                + "弱信号那个常常扫不到，用这个直接指定。",
-                        "Same SSID may map to several BSSIDs with different behaviour."))
-                .setView(in)
-                .setPositiveButton(L.s("添加并查能力", "Add & probe"), (d, w) -> {
+        io.github.wlmosv_png.wpaforge.ui.NetDialog addDlg = new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                L.s("手动添加目标 BSSID", "Add target BSSID"),
+                L.s("同名 SSID 可能有多个 BSSID，行为完全不同；"
+                        + "弱信号那个常常扫不到，用这个直接指定。",
+                        "Same SSID may map to several BSSIDs with different behaviour."));
+        addDlg.addView(in);
+        addDlg.setPositive(L.s("添加并查能力", "Add & probe"), nd -> {
                     final String b = in.getText().toString().trim().toLowerCase();
                     if (!b.matches("[0-9a-f]{2}(:[0-9a-f]{2}){5}")) {
                         Toast.makeText(this, L.s("格式不对，要 AA:BB:CC:DD:EE:FF",
@@ -2712,9 +2855,9 @@ public class MainActivity extends Activity {
                                     "Added: " + t.capLabel(false)), Toast.LENGTH_LONG).show();
                         });
                     }, "wps-add-target").start();
-                })
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+        });
+        addDlg.setNegative(L.s("取消", "Cancel"), null);
+        addDlg.show();
     }
 
     // ---------------- 已知可打（Pixie）名单 ----------------
@@ -2808,7 +2951,7 @@ public class MainActivity extends Activity {
      * （说明真的在跑 EAP-WSC 交换）的目标才值得投入几十小时。
      */
     private void doWpsRecon() {
-        if (wpsRunning) {
+        if (wpsRun.isRunning()) {
             Toast.makeText(this, L.s("任务运行中，请先暂停", "Task running - pause first"),
                     Toast.LENGTH_SHORT).show();
             return;
@@ -2818,7 +2961,7 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        wpsRunning = true;
+        wpsRun.requestStart();
         wpsCancel = false;
         wpsLogBuf.setLength(0);
         refreshWpsButtons();
@@ -2921,7 +3064,7 @@ public class MainActivity extends Activity {
                 io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, true);
             } catch (Throwable ignored) {
             }
-            wpsRunning = false;
+            wpsRun.workerExited();
             runOnUiThread(() -> {
                 refreshWpsButtons();
                 renderWpsTargets();
@@ -2978,12 +3121,12 @@ public class MainActivity extends Activity {
         }
         wpsLog(L.s("[i] 拆半攻击：阶段 1 穷举前 4 位（10000 次），阶段 2 穷举后 3 位（1000 次）。",
                 "[i] Half-PIN attack: phase 1 = 10k prefixes, phase 2 = 1k suffixes."));
-        while (!wpsCancel && wpsRunning) {
+        while (!wpsCancel && wpsRun.isRunning()) {
             if (wpsSession.halfPhase == 2) {
                 if (wpsSession.halfPrefix == null || wpsSession.halfPrefix.length() != 4) {
                     // 空前缀进阶段 2：每个候选都是 null（stage2Pin 要求 4 位前缀），
                     // 以前的表现是「静默回退到阶段 1」，而那段前缀被永久跳过 ——
-                    // 拆半「11000 必中」的保证就这样坏了，且没有任何提示。
+                    // 拆半「前4位+后3位全覆盖」的保证就这样坏了，且没有任何提示。
                     wpsLog(L.s("[!] 阶段 2 缺少已确认的前 4 位（断点数据不完整）→ 回阶段 1 重找。",
                             "[!] phase 2 without a confirmed prefix -> back to phase 1"));
                     wpsSession.halfPhase = 1;
@@ -3054,10 +3197,16 @@ public class MainActivity extends Activity {
      */
     private void refreshWpsButtons() {
         if (wpsStartBtn == null) return;
-        if (wpsRunning) {
+        if (wpsRun.isRunning()) {
+            // 2026-11-09 UI 整改（P0）：运行中「停止」必须可用 —— 原来这里是
+            // wpsStopBtn.setEnabled(false)，用户点「停止」根本没反应（按钮禁用），
+            // 只有「开始/暂停」那个大按钮能停。现在两个入口都能停，且带停止中反馈。
             wpsStartBtn.setText(L.s("暂停", "Pause"));
             wpsStartBtn.setEnabled(true);
-            wpsStopBtn.setEnabled(false);
+            wpsStopBtn.setText(wpsRun.isStopping() ? L.s("停止中…", "Stopping…")
+                    : L.s("停止", "Stop"));
+            wpsStopBtn.setEnabled(!wpsRun.isStopping());
+            wpsStopBtn.setAlpha(wpsRun.isStopping() ? 0.5f : 1f);
         } else {
             // 「继续」只在这个按钮**真的能续跑**时才出现：断点存在，且属于当前
             // 选中的目标与当前策略。修复前只看「盘上有没有断点」，于是升级/重启后
@@ -3069,17 +3218,19 @@ public class MainActivity extends Activity {
             boolean startAble = wpsPicked != null;
             wpsStartBtn.setEnabled(startAble);
             wpsStartBtn.setAlpha(startAble ? 1f : 0.5f);
-            wpsStopBtn.setEnabled(hasAnyWpsCheckpoint());
+            wpsStopBtn.setText(L.s("停止", "Stop"));
+            wpsStopBtn.setEnabled(false);
+            wpsStopBtn.setAlpha(0.5f);
         }
         refreshWpsResumeLine();
         if (wpsModeList != null) {
             for (int i = 0; i < wpsModeList.getChildCount(); i++) {
-                wpsModeList.getChildAt(i).setEnabled(!wpsRunning);
+                wpsModeList.getChildAt(i).setEnabled(!wpsRun.isRunning());
             }
         }
         if (wpsTargetList != null) {
             for (int i = 0; i < wpsTargetList.getChildCount(); i++) {
-                wpsTargetList.getChildAt(i).setEnabled(!wpsRunning);
+                wpsTargetList.getChildAt(i).setEnabled(!wpsRun.isRunning());
             }
         }
     }
@@ -3116,7 +3267,7 @@ public class MainActivity extends Activity {
         if (wpsResumeLine == null) return;
         String line = wpsResumeSummary(wpsResumeReady());
         // 纯净态兜底：没有目标且没有断点时，禁用主按钮的原因也要可见
-        if (line.isEmpty() && !wpsRunning && wpsStartBtn != null && !wpsStartBtn.isEnabled()) {
+        if (line.isEmpty() && !wpsRun.isRunning() && wpsStartBtn != null && !wpsStartBtn.isEnabled()) {
             line = L.s("请先扫描并选择目标", "Scan and pick a target first");
         }
         wpsResumeLine.setText(line);
@@ -3184,12 +3335,11 @@ public class MainActivity extends Activity {
                                 + "\nKeeps: task history and hit records.")
                 : L.s("当前没有断点可清。历史记录不受影响。",
                         "No checkpoint to clear. History is untouched.");
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("重置 WPS 进度？", "Reset WPS progress?"))
-                .setMessage(detail)
-                .setPositiveButton(L.s("重置进度", "Reset"), (d, w) -> doResetWps())
-                .setNegativeButton(L.s("取消", "Cancel"), null)
-                .show();
+        io.github.wlmosv_png.wpaforge.ui.NetDialog dlg = new io.github.wlmosv_png.wpaforge.ui.NetDialog(this,
+                L.s("重置 WPS 进度？", "Reset WPS progress?"), detail);
+        dlg.setDanger(L.s("重置进度", "Reset"), nd -> doResetWps());
+        dlg.setNegative(L.s("取消", "Cancel"), null);
+        dlg.show();
     }
 
     /**
@@ -3198,7 +3348,7 @@ public class MainActivity extends Activity {
      * <p>台账（历史任务与命中）永久保留 —— 重置进度不是删历史。
      */
     private void doResetWps() {
-        if (wpsRunning) {
+        if (wpsRun.isRunning()) {
             wpsCancel = true;
         }
         boolean cleared = wpsCpStore().clear();
@@ -3261,11 +3411,8 @@ public class MainActivity extends Activity {
         // 追加专项统计（全部来自真实落盘的数据；无数据显示「暂无数据」）
         sb.append('\n').append(L.s("==== 专项统计 ====\n", "==== stats ====\n"))
                 .append(wpsStats.detail(L.s("a", "b").equals("a")));
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("WPS 历史任务", "WPS history"))
-                .setMessage(sb.toString())
-                .setPositiveButton(L.s("关闭", "Close"), null)
-                .show();
+        // 2026-11-09：改用统一组件 NetDialog（滚动大文本），与其它页风格一致
+        io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this, L.s("WPS 历史任务", "WPS history"), sb.toString());
     }
 
     /**
@@ -3330,11 +3477,7 @@ public class MainActivity extends Activity {
                         + "· unconfirmed = missing key evidence\n"
                         + "This device/Android 15 cannot read protocol terminal or credential, "
                         + "so hits usually cap at 'pending'."));
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("命中证据", "Hit evidence"))
-                .setMessage(sb.toString())
-                .setPositiveButton(L.s("关闭", "Close"), null)
-                .show();
+        io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this, L.s("命中证据", "Hit evidence"), sb.toString());
     }
 
     /**
@@ -4150,6 +4293,84 @@ public class MainActivity extends Activity {
                 .setMessage(sb.toString())
                 .setPositiveButton(L.s("知道了", "OK"), null)
                 .show();
+    }
+
+    /**
+     * WPS PIN 弱点攻击 —— 问号帮助。
+     *
+     * <p>用项目统一的 {@link io.github.wlmosv_png.wpaforge.ui.NetDialog#textInfo} 打开，
+     * 与其它功能页风格一致（不再用默认丑陋弹窗）。内容面向普通用户，不承诺成功率。
+     */
+    private void showWpsHelpDialog() {
+        boolean zh = L.s("a", "b").equals("a");
+        String body = zh
+            ? "1. WPS PIN 是什么\n"
+            + "   WPS（Wi-Fi Protected Setup）是路由器为方便用户连网提供的快捷配对方式。"
+            + "其中一种方式要求输入一个 8 位数字 PIN。\n\n"
+            + "2. PIN 弱点在哪里\n"
+            + "   这 8 位中，第 8 位是前 7 位的校验位，不是随机信息；而且部分厂商会用 MAC 地址、"
+            + "机型等可预测的信息推导出默认 PIN。因此理论上不需要穷举全部一亿种组合。\n\n"
+            + "3. 四种策略分别是什么\n"
+            + "   · 厂商算法：按目标 MAC/机型推导厂商可能使用的默认 PIN（有来源规则）。\n"
+            + "   · 内置弱 PIN 表：常见的出厂默认 / 弱值（约 65 条）。\n"
+            + "   · 我的列表：你自己导入的候选（从文件或粘贴）。\n"
+            + "   · 拆半：先试前 4 位（1 万次）再试后 3 位（1 千次）。次数仍然很大、耗时很长。\n\n"
+            + "4. 每种策略的适用条件与局限\n"
+            + "   厂商算法只对“存在公开可预测规则”的机型有意义；弱 PIN 表只覆盖老设备；"
+            + "导入列表取决于你的数据；拆半耗时长且可能触发路由器限流。"
+            + "没有任何一种能保证成功。\n\n"
+            + "5. 扫描到 WPS，不代表一定能验证\n"
+            + "   “这个路由器广播了 WPS 信息”和“它现在允许我们从外部试 PIN”是两件事。"
+            + "很多路由器默认关闭外部 PIN 输入，或只在按下机身上的 WPS 键后的短窗口内开放。\n\n"
+            + "6. 本机 Root / 通道正常，不代表目标支持相关能力\n"
+            + "   Root 和 supplicant 通道正常，只说明“本机具备执行条件”；"
+            + "目标 AP 是否接受 PIN、是否处于配对待机，是目标自己决定的。\n\n"
+            + "7. 未知 / 未验证 / 失败 / 成功分别代表什么\n"
+            + "   · 未知：还没读到证据，不能下结论。\n"
+            + "   · 未验证：观察到相关迹象，但缺少足够证据证明结果。\n"
+            + "   · 失败：明确被拒或超时等否定结果。\n"
+            + "   · 成功：需要协议层终局证据；本工具通常只能到“已观察到迹象”这一档，"
+            + "不会把普通响应当成成功。\n\n"
+            + "8. AP 可能有锁定与限流\n"
+            + "   连续失败尝试可能让路由器进入 WPS 锁定或限流状态，需要等待或重启路由器。\n\n"
+            + "9. 为什么不能把超时、关联状态当成成功证据\n"
+            + "   关联成功、出现新网络配置、命令返回成功，都可能来自其它原因（例如手机连回了别的网）。"
+            + "它们各自只能证明“发生过某件事”，不能证明“这条 PIN 是对的”。\n\n"
+            + "10. 使用范围\n"
+            + "    仅在你本人拥有、或已获得明确书面授权的网络上使用。"
+            + "对他人网络进行尝试可能违法。\n"
+            : "1. What is WPS PIN\n"
+            + "   WPS is a convenience pairing feature; one mode uses an 8-digit PIN.\n\n"
+            + "2. Where the weakness is\n"
+            + "   The 8th digit is a checksum, and some vendors derive defaults from "
+            + "predictable data (MAC/model). So the full space need not be exhausted.\n\n"
+            + "3. The four strategies\n"
+            + "   Vendor algorithms / built-in weak PIN table / your imported list / half-PIN split.\n\n"
+            + "4. Limits\n"
+            + "   Vendor rules only apply to known models; weak tables cover old gear; "
+            + "your list depends on your data; half-PIN is slow and may trip rate limits. "
+            + "None guarantees success.\n\n"
+            + "5. Seeing WPS does not mean it can be verified\n"
+            + "   Broadcasting WPS info is not the same as accepting external PIN input.\n\n"
+            + "6. Local root/channel OK does not mean the AP supports it\n"
+            + "   It only means your device can run the attempt.\n\n"
+            + "7. Unknown / unverified / failed / success\n"
+            + "   Unknown = no evidence yet; unverified = signs only; failed = denied; "
+            + "success requires protocol-terminal evidence, which this tool usually cannot obtain.\n\n"
+            + "8. APs may lock out or rate-limit\n\n"
+            + "9. Why timeouts / association are not proof\n"
+            + "   They can come from other causes and do not prove the PIN is correct.\n\n"
+            + "10. Scope\n"
+            + "    Use only on networks you own or are explicitly authorised to test.\n";
+
+        try {
+            io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this,
+                    L.s("WPS PIN 弱点攻击 · 说明", "WPS PIN weakness attack · help"), body);
+        } catch (Throwable t) {
+            // 极端情况下退回最简提示，绝不无声失败
+            android.widget.Toast.makeText(this,
+                    L.s("帮助打开失败：" + t, "help failed: " + t), android.widget.Toast.LENGTH_LONG).show();
+        }
     }
 
     private TextView sectionLabel(String s) {
@@ -12607,11 +12828,7 @@ public class MainActivity extends Activity {
             }
         }
         if (sb.length() > 12000) sb.setLength(12000);
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(L.s("运行记录", "Run log"))
-                .setMessage(sb.toString())
-                .setPositiveButton(L.s("关闭", "Close"), null)
-                .show();
+        io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this, L.s("运行记录", "Run log"), sb.toString());
     }
 
     private LinearLayout.LayoutParams topGap(int dpValue) {

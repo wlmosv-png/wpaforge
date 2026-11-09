@@ -194,7 +194,13 @@ public final class WpsFacade {
         s.customSummary = "我的列表 " + customCount + " 条";
 
         // ---------- 按钮矩阵 ----------
-        s.canStart = !runState.isActive() && s.strategyReady;
+        // 2026-11-09 修复（回归）：开始按钮**不得**被"策略可用性"门控。
+        // 之前写成 `&& s.strategyReady`，导致厂商算法无规则 / 「我的列表」为空时
+        // 按钮永久禁用 —— 用户点不动，也看不到任何解释。
+        // 正确语义：只要有目标且不在运行，就可以按「开始」；策略没数据时
+        // startWps() 的**策略预检**会给出结构化结论（"本策略对本目标没有可用数据"），
+        // 这是真实的业务响应，比死按钮更好。
+        s.canStart = !runState.isActive() && !s.selectedBssid.isEmpty();
         s.canStop = runState.isRunning();
         if (runState.isIdle()) {
             s.primaryLabel = resumeReady ? "继续" : "开始";

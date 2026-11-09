@@ -2015,6 +2015,9 @@ public class MainActivity extends Activity {
                 if (wpsTaskMgr().isRunning()) return;
                 wpsMode = mode;
                 renderWpsModeList();
+                // 2026-11-09 修复（回归）：切策略会改变可用性与按钮状态，必须一并刷新
+                refreshWpsButtons();
+                refreshWpsResumeLine();
             });
             wpsModeList.addView(row);
         }
@@ -2235,6 +2238,10 @@ public class MainActivity extends Activity {
                 }
                 renderWpsTargets();
                 refreshWpsPickedMeta();
+                // 2026-11-09 修复（回归）：扫描结束必须显式刷新按钮与断点行 ——
+                // 不依赖"自动选中"这条路径，避免按钮停留在禁用态。
+                refreshWpsButtons();
+                refreshWpsProgress();
             });
         }, "wps-scan").start();
     }
@@ -2674,6 +2681,9 @@ public class MainActivity extends Activity {
         if (wpsTargetMgr.selected() == null && !wpsTargetMgr.targets().isEmpty()) {
             wpsTargetMgr.select(wpsTargetMgr.targets().get(0));
             refreshWpsPickedMeta();
+            // 2026-11-09 修复（回归）：自动选中后必须刷新按钮/断点行，
+            // 否则按钮停留在"无目标"时的禁用态 → 用户点不动「开始」。
+            refreshWpsButtons();
             renderWpsTargets();
         }
     }
@@ -3547,6 +3557,17 @@ public class MainActivity extends Activity {
         // 纯净态兜底：没有目标且没有断点时，禁用主按钮的原因也要可见
         if (line.isEmpty() && !wpsTaskMgr().isRunning() && wpsStartBtn != null && !wpsStartBtn.isEnabled()) {
             line = L.s("请先扫描并选择目标", "Scan and pick a target first");
+        }
+        // 2026-11-09：策略不可用时**提前告知**（按钮仍可点，点了会得到结构化结论）
+        if (!wpsTaskMgr().isActive() && wpsTargetMgr.selected() != null) {
+            io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager.Readiness rd =
+                    wpsStrategyReadiness(wpsMode);
+            if (!rd.ready) {
+                String warn = L.s("当前策略不可用：", "current strategy unavailable: ") + rd.reason(true)
+                        + L.s("（仍可点「开始」—— 会直接给出结论，不会空跑）",
+                              " (Start is still enabled - it will conclude immediately, not run idle)");
+                line = line.isEmpty() ? warn : (line + "\n" + warn);
+            }
         }
         wpsResumeLine.setText(line);
         wpsResumeLine.setVisibility(line.isEmpty() ? android.view.View.GONE

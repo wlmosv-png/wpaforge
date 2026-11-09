@@ -184,6 +184,10 @@ public final class WpsUiStateMatrixTest {
                 s.strategyReason.contains("规则") && !s.strategyReason.contains("不可攻击"), s.strategyReason);
         ok("文案透出策略用途", !s.strategyPurpose.isEmpty(), "");
         ok("运行中才不可切换（此处可切换）", s.strategySwitchable, "");
+        // 2026-11-09 回归防线：策略不可用**不得**把「开始」按钮弄成死键
+        ok("策略不可用但已有目标 → 开始仍可用（点了会给结构化结论）",
+                s.primaryEnabled && s.primaryLabel.contains("开始"), s.primaryLabel);
+        ok("策略不可用原因可见", !s.strategyReason.isEmpty(), "");
 
         st("⑮ 数据导入成功 / ⑯ 部分失败");
         File dir = new File(System.getProperty("java.io.tmpdir"), "wpaforge-mx-" + System.nanoTime());

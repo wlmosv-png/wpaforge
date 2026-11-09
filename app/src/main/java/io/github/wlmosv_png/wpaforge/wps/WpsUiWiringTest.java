@@ -93,7 +93,8 @@ public final class WpsUiWiringTest {
         ok("重置按钮走确认流程", ma.contains("setOnClickListener(v -> confirmResetWps())"),
                 "未接线");
         ok("确认对话框存在", ma.contains("重置 WPS 进度？"), "无");
-        ok("只清断点", ma.contains("wpsCpStore().clear()"), "无");
+        // 2026-11-09（架构升级）：断点清理收敛到 WpsTaskManager，语义不变
+        ok("只清断点", ma.contains("wpsTaskMgr().clearCheckpoint()"), "无");
         ok("不删台账（doResetWps 里没有 deleteTask）",
                 !ma.contains("deleteTask"), "出现了删除历史调用");
         ok("老 resetHalfState（会清空整个 prefs）已删除",

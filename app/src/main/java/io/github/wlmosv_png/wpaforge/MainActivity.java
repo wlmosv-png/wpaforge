@@ -1009,6 +1009,14 @@ public class MainActivity extends Activity {
      */
     private final io.github.wlmosv_png.wpaforge.wps.WpsTargetManager wpsTargetMgr =
             new io.github.wlmosv_png.wpaforge.wps.WpsTargetManager();
+    /** 结构化日志（统一格式 + 有界缓冲 + 导出遮蔽）。 */
+    private final io.github.wlmosv_png.wpaforge.wps.WpsLogManager wpsLogMgr =
+            new io.github.wlmosv_png.wpaforge.wps.WpsLogManager();
+    /** 任务生命周期（运行状态 + 断点归属校验）；断点存储懒加载。 */
+    private io.github.wlmosv_png.wpaforge.wps.WpsTaskManager wpsTaskMgr;
+    /** 证据与纠错留痕（只增不改）。 */
+    private final io.github.wlmosv_png.wpaforge.wps.WpsEvidenceManager wpsEvidenceMgr =
+            new io.github.wlmosv_png.wpaforge.wps.WpsEvidenceManager();
     /** 扫描进度：一条细的不确定进度线 + 一行阶段文字（替代原来的大转圈）。 */
     private android.widget.ProgressBar wpsScanBar;
     private TextView wpsScanStatus;
@@ -1036,10 +1044,6 @@ public class MainActivity extends Activity {
 
     private io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session wpsSession;
 
-    /** 运行状态机（IDLE/RUNNING/STOPPING）——「何时能开始、何时能停、重复点击怎么办」
-     *  的唯一权威来源；UI 只查询它，不各自推断。 */
-    private final io.github.wlmosv_png.wpaforge.wps.WpsRunState wpsRun =
-            new io.github.wlmosv_png.wpaforge.wps.WpsRunState();
     /** 唯一停止信号：执行线程每一步都查它。 */
     private volatile boolean wpsCancel = false;
     /** 策略：false = 弱 PIN 优先；true = 完整枚举 */
@@ -1048,7 +1052,6 @@ public class MainActivity extends Activity {
     private int wpsEnumCursor = 0;
     /** 已经对哪个 BSSID 提示过「这个 AP 打不动」—— 提示一次，再点才放行 */
     private String wpsWarnedBssid = null;
-    private final StringBuilder wpsLogBuf = new StringBuilder();
 
     private static final int WPS_PER_TRY_SEC = 30;      // 单个 PIN 的等待窗口（真 WPS 交换要 ~18s）
     private static final int WPS_BATCH_SIZE = 15;       // 每批条数
@@ -1189,6 +1192,38 @@ public class MainActivity extends Activity {
     /** WPS 任务台账（独立于 HistStore 的密码记录模型）。 */
     private io.github.wlmosv_png.wpaforge.wps.WpsLedgerStore wpsLedger() {
         return new io.github.wlmosv_png.wpaforge.wps.WpsLedgerStore(new java.io.File(getFilesDir(), "wps/ledger.txt"));
+    }
+
+    /**
+     * 组装 UI 只读快照（门面）。UI 渲染只读它，不自行推断业务状态。
+     */
+    private io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState wpsFacadeState() {
+        int cand = 0;
+        try {
+            if (wpsTargetMgr.selected() != null) {
+                cand = wpsMode == 3 ? 0
+                        : io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager
+                                .candidates(wpsMode, wpsTargetMgr.selected().bssid, getFilesDir()).size();
+            }
+        } catch (Throwable ignored) {
+        }
+        String capVerdict = wpsLastCapVerdict;
+        String capLabel = wpsCapTag == null || wpsCapTag.getText() == null
+                ? "" : wpsCapTag.getText().toString();
+        return io.github.wlmosv_png.wpaforge.wps.WpsFacade.snapshot(
+                wpsTargetMgr, wpsTaskMgr().state(), wpsMode, cand,
+                capVerdict, capLabel, false, System.currentTimeMillis());
+    }
+
+    /** 最近一次能力结论（由 setWpsCapTag 记录，供门面透传）。 */
+    private volatile String wpsLastCapVerdict = io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN;
+
+    /** 任务管理器（懒加载：需要 wpsCpStore() 就绪）。 */
+    private io.github.wlmosv_png.wpaforge.wps.WpsTaskManager wpsTaskMgr() {
+        if (wpsTaskMgr == null) {
+            wpsTaskMgr = new io.github.wlmosv_png.wpaforge.wps.WpsTaskManager(wpsCpStore());
+        }
+        return wpsTaskMgr;
     }
 
     /** 发给 helper 的目标 SSID；未知时留空（「(手动)」这类占位不算）。 */
@@ -1344,7 +1379,7 @@ public class MainActivity extends Activity {
         wpsImportRow.addView(fileBtn, gapWeight(10));
         Button clearBtn = btnSecondary(L.s("清空", "Clear"));
         clearBtn.setOnClickListener(v -> {
-            io.github.wlmosv_png.wpaforge.wps.WpsCandidates.clearCustom(getFilesDir());
+            io.github.wlmosv_png.wpaforge.wps.WpsDataManager.clear(getFilesDir());
             refreshWpsImportLine();
             Toast.makeText(this, L.s("已清空我的列表", "List cleared"), Toast.LENGTH_SHORT).show();
         });
@@ -1375,7 +1410,7 @@ public class MainActivity extends Activity {
         wpsStartBtn.setMinimumHeight(px(46));
         wpsStartBtn.setPadding(px(16), px(10), px(16), px(10));
         wpsStartBtn.setOnClickListener(v -> {
-            if (wpsRun.isRunning()) stopWps();
+            if (wpsTaskMgr().isRunning()) stopWps();
             else startWps();
         });
         LinearLayout.LayoutParams startLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f);
@@ -1497,7 +1532,7 @@ public class MainActivity extends Activity {
         clearLogBtn.setPadding(px(12), px(4), px(12), px(4));
         clearLogBtn.setBackground(roundBgStroked(BTN_2ND_BG, BTN_2ND_EDGE, AmberTheme.RADIUS_CHIP, 0.8f));
         clearLogBtn.setOnClickListener(v -> {
-            wpsLogBuf.setLength(0);
+            wpsLogMgr.clear();
             if (wpsLogView != null) {
                 wpsLogView.setText(L.s("[*] 控制台日志已清空\n", "[*] Console log cleared\n"));
             }
@@ -1528,7 +1563,7 @@ public class MainActivity extends Activity {
         wpsLogView.setTypeface(android.graphics.Typeface.MONOSPACE);
         wpsLogView.setLineSpacing(px(3), 1f);
         wpsLogView.setTextIsSelectable(true);
-        wpsLogView.setText(wpsLogBuf.length() > 0 ? wpsLogBuf.toString()
+        wpsLogView.setText(!wpsLogMgr.isEmpty() ? wpsLogMgr.snapshot()
                 : L.s("[*] WPS 控制台已就绪\n[*] 等待任务指令...\n",
                       "[*] WPS console ready\n[*] Waiting for task commands...\n"));
         wpsLogScroll.addView(wpsLogView);
@@ -1578,7 +1613,7 @@ public class MainActivity extends Activity {
             cp.cursor1 = wpsHalfCursor1;
             cp.prefix = wpsSession.halfPrefix;
             cp.updatedAtMs = System.currentTimeMillis();
-            if (!wpsCpStore().save(cp)) {
+            if (!wpsTaskMgr().saveCheckpoint(cp)) {
                 wpsLog(L.s("[!] 断点写入失败 —— 本批进度没落盘（下次会从更早的位置重跑）",
                         "[!] checkpoint write failed - progress not saved"));
             }
@@ -1593,7 +1628,7 @@ public class MainActivity extends Activity {
      * @return 空串 = 成功；否则是**给用户看的原因**（不再静默从头开始）
      */
     private String loadHalfState() {
-        io.github.wlmosv_png.wpaforge.wps.WpsCheckpoint.Parse p = wpsCpStore().loadFor(
+        io.github.wlmosv_png.wpaforge.wps.WpsCheckpoint.Parse p = wpsTaskMgr().loadFor(
                 wpsHalfBssid, wpsHalfSsid, wpsMode);
         if (!p.ok()) return p.error == null ? "断点不可用" : p.error;
         io.github.wlmosv_png.wpaforge.wps.WpsCheckpoint cp = p.cp;
@@ -1621,6 +1656,8 @@ public class MainActivity extends Activity {
                 "[target] SSID=" + (ssid == null || ssid.isEmpty() ? "(unknown)" : ssid)
                         + "  BSSID=" + bssid));
         wpsLog(L.s("[策略] " + wpsModeLabel(mode), "[strategy] " + wpsModeLabel(mode)));
+        // 绑定到任务管理器（断点归属校验用；换目标后不会串进度）
+        wpsTaskMgr().bind(wpsTaskId, bssid, ssid, mode, now);
         if (!wpsLedger().upsert(wpsTask)) {
             wpsLog(L.s("[!] 台账写入失败（历史记录可能不完整）", "[!] ledger write failed"));
         }
@@ -1688,7 +1725,7 @@ public class MainActivity extends Activity {
 
     private void refreshWpsImportLine() {
         if (wpsImportLine == null) return;
-        int n = io.github.wlmosv_png.wpaforge.wps.WpsCandidates.loadCustom(getFilesDir()).size();
+        int n = io.github.wlmosv_png.wpaforge.wps.WpsDataManager.count(getFilesDir());
         wpsImportLine.setText(L.s("我的列表：", "My list: ") + n
                 + L.s(" 条（策略切到「我的列表」时使用）",
                       " entries (used by the 'My list' strategy)"));
@@ -1729,7 +1766,10 @@ public class MainActivity extends Activity {
         prevBtn.setOnClickListener(v -> {
             String text = input.getText() == null ? "" : input.getText().toString();
             io.github.wlmosv_png.wpaforge.wps.WpsCandidates.Report rep =
-                    io.github.wlmosv_png.wpaforge.wps.WpsCandidates.parse(text);
+                    io.github.wlmosv_png.wpaforge.wps.WpsDataManager.parse(text);
+            io.github.wlmosv_png.wpaforge.wps.WpsDataManager.ImportSummary isum =
+                    io.github.wlmosv_png.wpaforge.wps.WpsDataManager
+                            .summarize(rep, L.s("a", "b").equals("a"));
             StringBuilder sb = new StringBuilder();
             sb.append(L.s("原始输入：", "Raw: ")).append(text.length())
                     .append(L.s(" 字符  有效候选：", " chars | valid: "))
@@ -1770,8 +1810,8 @@ public class MainActivity extends Activity {
 
     /** 预览确认后真正写入。 */
     private void wpsImportCommit(String text, boolean append) {
-        int n = io.github.wlmosv_png.wpaforge.wps.WpsCandidates
-                .saveCustom(getFilesDir(), text == null ? "" : text, append);
+        int n = io.github.wlmosv_png.wpaforge.wps.WpsDataManager
+                .save(getFilesDir(), text == null ? "" : text, append);
         refreshWpsImportLine();
         Toast.makeText(this, L.s("已保存，共 " + n + " 条",
                 "Saved, " + n + " total"), Toast.LENGTH_SHORT).show();
@@ -1903,7 +1943,7 @@ public class MainActivity extends Activity {
 
             // 点击行为：切策略 + 更新导入区显隐
             row.setOnClickListener(v -> {
-                if (wpsRun.isRunning()) return;
+                if (wpsTaskMgr().isRunning()) return;
                 wpsMode = mode;
                 renderWpsModeList();
             });
@@ -1948,35 +1988,19 @@ public class MainActivity extends Activity {
 
     /** 当前策略下要试的候选（完整枚举走另一条路）。 */
     private java.util.List<String> wpsCandidatePins(String bssid) {
-        java.util.List<String> out = new java.util.ArrayList<>();
-        if (wpsMode == 0) {
-            for (io.github.wlmosv_png.wpaforge.wps.WpsVendorPins.Candidate c
-                    : io.github.wlmosv_png.wpaforge.wps.WpsVendorPins.suggest(bssid, "")) {
-                out.add(c.pin);
-            }
-        } else if (wpsMode == 1) {
-            out.addAll(io.github.wlmosv_png.wpaforge.wps.WpsCandidates.builtinWeak());
-        } else if (wpsMode == 2) {
-            out.addAll(io.github.wlmosv_png.wpaforge.wps.WpsCandidates.loadCustom(getFilesDir()));
-        }
-        return out;
+        // 2026-11-09 架构升级：候选生成统一走 WpsStrategyManager（登记 + 委托现有实现）
+        return io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager
+                .candidates(wpsMode, bssid, getFilesDir());
     }
 
     private void wpsLog(String line) {
-        // 2026-11-09 日志整改：每行带 HH:mm:ss 时间戳（时间排序可读）；
-        // 加锁是因为后台攻击线程与主线程都会写这段缓冲。
-        String stamp = android.text.format.DateFormat
-                .format("HH:mm:ss", System.currentTimeMillis()).toString();
-        synchronized (wpsLogBuf) {
-            wpsLogBuf.append(stamp).append("  ").append(line).append('\n');
-            if (wpsLogBuf.length() > 16000) {
-                wpsLogBuf.delete(0, wpsLogBuf.length() - 12000);
-            }
-        }
+        // 2026-11-09 架构升级：日志格式/缓冲/裁剪统一由 WpsLogManager 负责
+        //（时间戳、有界缓冲、并发安全都在那边，可离线单测）。
+        wpsLogMgr.log(line);
         // WPS 页可能尚未构建（onResume 早于 buildWpsTab）→ wpsLogView 为空时只入缓冲
         if (wpsLogView != null) {
             runOnUiThread(() -> {
-                wpsLogView.setText(wpsLogBuf.toString());
+                wpsLogView.setText(wpsLogMgr.snapshot());
                 if (wpsLogScroll != null) {
                     wpsLogScroll.post(() -> wpsLogScroll.fullScroll(android.view.View.FOCUS_DOWN));
                 }
@@ -1997,7 +2021,7 @@ public class MainActivity extends Activity {
     }
 
     private void doWpsScan() {
-        if (wpsRun.isRunning()) {
+        if (wpsTaskMgr().isRunning()) {
             Toast.makeText(this, L.s("任务运行中，请先暂停", "Task running - pause first"),
                     Toast.LENGTH_SHORT).show();
             return;
@@ -2199,6 +2223,16 @@ public class MainActivity extends Activity {
 
     /** 设能力标签（颜色/文案随状态；未知≠不支持，如实区分）。 */
     private void setWpsCapTag(int state) {
+        switch (state) {
+            case WPS_TAG_OK: wpsLastCapVerdict =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_PIN_OK; break;
+            case WPS_TAG_NO_PIN: wpsLastCapVerdict =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN; break;
+            case WPS_TAG_LOCKED: wpsLastCapVerdict =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_LOCKED; break;
+            default: wpsLastCapVerdict =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN; break;
+        }
         if (wpsCapTag == null) return;
         String txt;
         int fg;
@@ -2341,7 +2375,7 @@ public class MainActivity extends Activity {
 
     private void renderWpsTargets() {
         wpsTargetList.removeAllViews();
-        if (wpsRun.isRunning()) {
+        if (wpsTaskMgr().isRunning()) {
             TextView run = new TextView(this);
             run.setText(L.s("任务运行中 —— 按「暂停」后可更换目标",
                     "Task running - press Pause to change target"));
@@ -2352,18 +2386,13 @@ public class MainActivity extends Activity {
         }
         if (wpsTargetMgr.targets().isEmpty()) {
             TextView t = new TextView(this);
-            // 2026-11-08：空态区分扫描中 / 未扫描 / 空结果，避免「点扫描后立刻显示
-            // 尚未选择目标」的误导。扫描要 3 轮 × 4.5s，期间必须显示「扫描中」，
-            // 不能让用户误以为要先手动选目标。
-            if (wpsTargetMgr.isScanning()) {
-                t.setText(L.s("扫描中，请稍候…（附近网络会自动列出，无需手动选择）",
-                        "Scanning… nearby networks will list automatically"));
-            } else if (wpsTargetMgr.lastScanAt() <= 0) {
-                t.setText(L.s("尚未扫描 —— 点上方「扫描 AP」发现附近网络",
-                        "Not scanned yet - tap Scan APs to discover nearby networks"));
-            } else {
-                t.setText(L.s("未发现附近网络", "No nearby networks found"));
-            }
+            // 2026-11-09 架构升级：空态文案由 WpsFacade 依状态机决定，UI 不再自行推断
+            //（"扫描完成仍显示待检测"这类错位从此不可能由 UI 拼错导致）。
+            io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState uis = wpsFacadeState();
+            boolean zhUi = L.s("a", "b").equals("a");
+            String hint = zhUi ? uis.emptyHintZh : uis.emptyHintEn;
+            t.setText(hint == null || hint.isEmpty()
+                    ? L.s("未发现附近网络", "No nearby networks found") : hint);
             t.setTextSize(AmberTheme.FS_BODY);
             t.setTextColor(TEXT_DIM);
             t.setPadding(px(4), px(10), px(4), px(10));
@@ -2386,7 +2415,7 @@ public class MainActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             ilp.bottomMargin = px(8);
             item.setLayoutParams(ilp);
-            if (wpsRun.isRunning()) item.setAlpha(0.6f);
+            if (wpsTaskMgr().isRunning()) item.setAlpha(0.6f);
 
             LinearLayout left = new LinearLayout(this);
             left.setOrientation(LinearLayout.VERTICAL);
@@ -2484,7 +2513,7 @@ public class MainActivity extends Activity {
 
             item.addView(right);
             item.setOnClickListener(v -> {
-                if (wpsRun.isRunning()) {
+                if (wpsTaskMgr().isRunning()) {
                     Toast.makeText(this, L.s("任务运行中，请先暂停再换目标",
                             "Task running - pause first"), Toast.LENGTH_SHORT).show();
                     return;
@@ -2595,7 +2624,7 @@ public class MainActivity extends Activity {
     private boolean wpsHalfConfirmedOnce;
 
     private void startWps() {
-        if (wpsRun.isRunning()) return;
+        if (wpsTaskMgr().isRunning()) return;
         if (wpsTargetMgr.selected() == null) {
             // 用户反馈的「想继续却每次都弹提示」就是这句话：盘上有断点、
             // 但目标列表是内存对象（重启即空），于是每次点「继续」都被拦。
@@ -2631,9 +2660,9 @@ public class MainActivity extends Activity {
 
     /** 真正启动（拆半确认通过后 / 非拆半直接走这里）。 */
     private void doStartWps() {
-        wpsRun.requestStart();
+        wpsTaskMgr().beginRun();
         wpsCancel = false;
-        wpsLogBuf.setLength(0);
+        wpsLogMgr.clear();
         wpsSession = new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session();
         // 台账：开新任务（新任务不覆盖旧任务；命中记录永久保留）
         wpsTaskStart(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode);
@@ -2681,12 +2710,12 @@ public class MainActivity extends Activity {
     }
 
     private void stopWps() {
-        if (wpsRun.isIdle()) {
+        if (wpsTaskMgr().isIdle()) {
             Toast.makeText(this, L.s("没有正在运行的任务", "No running task"),
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        if (!wpsRun.requestStop()) return;    // 已在停止中：重复点击直接忽略
+        if (!wpsTaskMgr().requestStop()) return;    // 已在停止中：重复点击直接忽略
         wpsCancel = true;                     // 唯一停止信号：执行线程每步都查它
         wpsLog(L.s("[停止] 请求已发出（状态 → STOPPING）；完成当前这一轮后收工，进度已存档。",
                 "[stop] requested (state -> STOPPING); finishing current try, progress saved."));
@@ -2764,7 +2793,7 @@ public class MainActivity extends Activity {
             }
             // 结构化：任务收尾 —— 耗时 / 最终状态 / 证据等级 / 停止完成
             wpsLog(L.s("[停止] 执行线程已退出，任务收尾", "[stop] worker exited, finalizing"));
-            wpsRun.workerExited();    // 线程退出 → 回到 IDLE（停止完成）
+            wpsTaskMgr().workerExited();    // 线程退出 → 回到 IDLE（停止完成）
             // 台账收尾：区分命中 / 用户暂停 / 异常 / 候选跑完（终止原因必须落账）
             if (wpsFailReason != null) {
                 wpsTaskFinish(io.github.wlmosv_png.wpaforge.wps.WpsLedger.ST_FAILED,
@@ -2957,7 +2986,7 @@ public class MainActivity extends Activity {
      * （说明真的在跑 EAP-WSC 交换）的目标才值得投入几十小时。
      */
     private void doWpsRecon() {
-        if (wpsRun.isRunning()) {
+        if (wpsTaskMgr().isRunning()) {
             Toast.makeText(this, L.s("任务运行中，请先暂停", "Task running - pause first"),
                     Toast.LENGTH_SHORT).show();
             return;
@@ -2967,9 +2996,9 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_SHORT).show();
             return;
         }
-        wpsRun.requestStart();
+        wpsTaskMgr().beginRun();
         wpsCancel = false;
-        wpsLogBuf.setLength(0);
+        wpsLogMgr.clear();
         refreshWpsButtons();
         renderWpsTargets();
         renderWpsModeList();
@@ -3070,7 +3099,7 @@ public class MainActivity extends Activity {
                 io.github.wlmosv_png.wpaforge.wps.WpsController.setAutojoin(this, true);
             } catch (Throwable ignored) {
             }
-            wpsRun.workerExited();
+            wpsTaskMgr().workerExited();
             runOnUiThread(() -> {
                 refreshWpsButtons();
                 renderWpsTargets();
@@ -3127,7 +3156,7 @@ public class MainActivity extends Activity {
         }
         wpsLog(L.s("[i] 拆半攻击：阶段 1 穷举前 4 位（10000 次），阶段 2 穷举后 3 位（1000 次）。",
                 "[i] Half-PIN attack: phase 1 = 10k prefixes, phase 2 = 1k suffixes."));
-        while (!wpsCancel && wpsRun.isRunning()) {
+        while (!wpsCancel && wpsTaskMgr().isRunning()) {
             if (wpsSession.halfPhase == 2) {
                 if (wpsSession.halfPrefix == null || wpsSession.halfPrefix.length() != 4) {
                     // 空前缀进阶段 2：每个候选都是 null（stage2Pin 要求 4 位前缀），
@@ -3203,16 +3232,16 @@ public class MainActivity extends Activity {
      */
     private void refreshWpsButtons() {
         if (wpsStartBtn == null) return;
-        if (wpsRun.isRunning()) {
+        if (wpsTaskMgr().isRunning()) {
             // 2026-11-09 UI 整改（P0）：运行中「停止」必须可用 —— 原来这里是
             // wpsStopBtn.setEnabled(false)，用户点「停止」根本没反应（按钮禁用），
             // 只有「开始/暂停」那个大按钮能停。现在两个入口都能停，且带停止中反馈。
             wpsStartBtn.setText(L.s("暂停", "Pause"));
             wpsStartBtn.setEnabled(true);
-            wpsStopBtn.setText(wpsRun.isStopping() ? L.s("停止中…", "Stopping…")
+            wpsStopBtn.setText(wpsTaskMgr().isStopping() ? L.s("停止中…", "Stopping…")
                     : L.s("停止", "Stop"));
-            wpsStopBtn.setEnabled(!wpsRun.isStopping());
-            wpsStopBtn.setAlpha(wpsRun.isStopping() ? 0.5f : 1f);
+            wpsStopBtn.setEnabled(!wpsTaskMgr().isStopping());
+            wpsStopBtn.setAlpha(wpsTaskMgr().isStopping() ? 0.5f : 1f);
         } else {
             // 「继续」只在这个按钮**真的能续跑**时才出现：断点存在，且属于当前
             // 选中的目标与当前策略。修复前只看「盘上有没有断点」，于是升级/重启后
@@ -3231,12 +3260,12 @@ public class MainActivity extends Activity {
         refreshWpsResumeLine();
         if (wpsModeList != null) {
             for (int i = 0; i < wpsModeList.getChildCount(); i++) {
-                wpsModeList.getChildAt(i).setEnabled(!wpsRun.isRunning());
+                wpsModeList.getChildAt(i).setEnabled(!wpsTaskMgr().isRunning());
             }
         }
         if (wpsTargetList != null) {
             for (int i = 0; i < wpsTargetList.getChildCount(); i++) {
-                wpsTargetList.getChildAt(i).setEnabled(!wpsRun.isRunning());
+                wpsTargetList.getChildAt(i).setEnabled(!wpsTaskMgr().isRunning());
             }
         }
     }
@@ -3262,7 +3291,7 @@ public class MainActivity extends Activity {
         if (wpsTargetMgr.selected() == null) return false;
         if (wpsMode != 3) return false;      // 只有拆半模式有断点
         try {
-            return wpsCpStore().loadFor(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode).ok();
+            return wpsTaskMgr().loadFor(wpsTargetMgr.selected().bssid, wpsTargetSsidForMatch(), wpsMode).ok();
         } catch (Throwable t) {
             return false;
         }
@@ -3273,7 +3302,7 @@ public class MainActivity extends Activity {
         if (wpsResumeLine == null) return;
         String line = wpsResumeSummary(wpsResumeReady());
         // 纯净态兜底：没有目标且没有断点时，禁用主按钮的原因也要可见
-        if (line.isEmpty() && !wpsRun.isRunning() && wpsStartBtn != null && !wpsStartBtn.isEnabled()) {
+        if (line.isEmpty() && !wpsTaskMgr().isRunning() && wpsStartBtn != null && !wpsStartBtn.isEnabled()) {
             line = L.s("请先扫描并选择目标", "Scan and pick a target first");
         }
         wpsResumeLine.setText(line);
@@ -3354,10 +3383,10 @@ public class MainActivity extends Activity {
      * <p>台账（历史任务与命中）永久保留 —— 重置进度不是删历史。
      */
     private void doResetWps() {
-        if (wpsRun.isRunning()) {
+        if (wpsTaskMgr().isRunning()) {
             wpsCancel = true;
         }
-        boolean cleared = wpsCpStore().clear();
+        boolean cleared = wpsTaskMgr().clearCheckpoint();
         wpsHalfCursor1 = 0;
         wpsSession = null;
         wpsEnumCursor = 0;
@@ -3517,10 +3546,14 @@ public class MainActivity extends Activity {
                                 // 命中/疑似：证据必须写进日志（修复前证据只进日志文件，
                                 // App 侧既不显示也不解释）
                                 if (r.isSuccess()) {
+                                    wpsEvidenceMgr.record(wpsTaskId, r.hitVerdict,
+                                            r.hitFacts, r.hitWhy);
                                     wpsLog(L.s("★★★ 已命中（协议确认 + 目标归属成立）：PIN=" + r.pin,
                                             "★★★ HIT (confirmed): " + r.pin));
                                     wpsLog("      " + r.hitWhy + "   facts=" + r.hitFacts);
                                 } else if (r.isUnverified()) {
+                                    wpsEvidenceMgr.record(wpsTaskId, r.hitVerdict,
+                                            r.hitFacts, r.hitWhy);
                                     wpsLog(L.s("· 疑似命中（证据不足，已记录、不判命中）：" + r.pin,
                                             "· suspect (recorded, not a hit): " + r.pin));
                                     wpsLog("      " + r.hitWhy);
@@ -12819,11 +12852,11 @@ public class MainActivity extends Activity {
      */
     private void showWpsRunningLogDialog() {
         StringBuilder sb = new StringBuilder();
-        if (wpsLogBuf.length() == 0) {
+        if (wpsLogMgr.isEmpty()) {
             sb.append(L.s("（还没有运行记录）", "(no log entries yet)"));
         } else {
             // 时间 + 事件：每行追加时间戳（wpsLog 没存时间，这里给最近一条的读取友好格式）
-            String raw = wpsLogBuf.toString();
+            String raw = wpsLogMgr.snapshot();
             String[] lines = raw.split("\n");
             for (int i = 0; i < lines.length; i++) {
                 String l = lines[i].trim();

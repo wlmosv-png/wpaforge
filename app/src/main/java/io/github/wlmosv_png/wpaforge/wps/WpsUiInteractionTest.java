@@ -36,15 +36,16 @@ public final class WpsUiInteractionTest {
 
         // ---------------------------------------------------------- 1 停止按钮
         info("① 停止按钮必须真的能停（P0）");
-        ok("运行状态的唯一权威是 WpsRunState", ma.contains("wpsRun =")
-                && ma.contains("new io.github.wlmosv_png.wpaforge.wps.WpsRunState()"), "未接线");
+        // 2026-11-09（架构升级）：运行状态机被 WpsTaskManager 封装，UI 只经它查询
+        ok("运行状态由 WpsTaskManager 统一持有",
+                ma.contains("wpsTaskMgr().isRunning()") && ma.contains("WpsTaskManager"), "未接线");
         ok("旧的裸布尔 wpsRunning 已移除", !ma.contains("wpsRunning"), "仍存在裸字段");
         ok("停止按钮在运行中可用（不被禁用）",
-                ma.contains("wpsStopBtn.setEnabled(!wpsRun.isStopping())"), "运行中仍被禁用");
-        ok("停止按钮显示「停止中…」", ma.contains("wpsStopBtn.setText(wpsRun.isStopping()"), "无");
-        ok("stopWps 走状态机 requestStop", ma.contains("wpsRun.requestStop()"), "未接线");
+                ma.contains("wpsStopBtn.setEnabled(!wpsTaskMgr().isStopping())"), "运行中仍被禁用");
+        ok("停止按钮显示「停止中…」", ma.contains("wpsStopBtn.setText(wpsTaskMgr().isStopping()"), "无");
+        ok("stopWps 走状态机 requestStop", ma.contains("wpsTaskMgr().requestStop()"), "未接线");
         ok("停止请求写真实取消信号", ma.contains("wpsCancel = true;"), "未设置取消信号");
-        ok("worker 退出复位状态机", ma.contains("wpsRun.workerExited()"), "未复位");
+        ok("worker 退出复位状态机", ma.contains("wpsTaskMgr().workerExited()"), "未复位");
 
         // ---------------------------------------------------------- 2 扫描/能力状态同步
         info("② 扫描完成 / 选中目标后状态标签必须刷新（不再一律「待检测」）");
@@ -60,8 +61,9 @@ public final class WpsUiInteractionTest {
 
         // ---------------------------------------------------------- 3 扫描优先（不阻断）
         info("③ 扫描优先：无目标不阻断页面、不禁用扫描");
-        ok("空态引导去扫描（而非「未选择目标」阻断）",
-                ma.contains("尚未扫描 —— 点上方「扫描 AP」发现附近网络"), "仍是阻断式文案");
+        // 2026-11-09：空态文案移入 WpsFacade（UI 不再自行推断），此处校验接线
+        ok("空态文案由 WpsFacade 提供",
+                ma.contains("wpsFacadeState()"), "仍是 UI 自行推断");
         ok("扫描按钮始终可点（无禁用语句）",
                 !ma.contains("scanBtn.setEnabled(false)"), "扫描按钮被禁用");
         ok("进页自动扫描一次", ma.contains("doWpsScan();"), "未自动扫描");
@@ -111,17 +113,32 @@ public final class WpsUiInteractionTest {
         ok("扫描成功收尾走 finishScan", ma.contains("wpsTargetMgr.finishScan("), "未接线");
         ok("扫描失败走 failScan", ma.contains("wpsTargetMgr.failScan("), "未接线");
         ok("选中走 select()", ma.contains("wpsTargetMgr.select("), "未接线");
-        ok("空态读 isScanning()", ma.contains("wpsTargetMgr.isScanning()"), "未接线");
+        ok("渲染走门面快照（含扫描态）", ma.contains("WpsFacade.UiState"), "未接线");
 
         // ---------------------------------------------------------- 8 日志
         info("⑦ 结构化详细日志");
-        ok("日志带时间戳", ma.contains("DateFormat\n                .format(\"HH:mm:ss\""), "无时间戳");
+        ok("日志委托 WpsLogManager（时间戳/有界缓冲在那边）",
+                ma.contains("wpsLogMgr.log("), "未接线");
         ok("日志记录任务创建", ma.contains("\"[任务] 创建 \""), "无");
         ok("日志记录目标身份", ma.contains("\"[目标] SSID=\""), "无");
         ok("日志记录策略", ma.contains("\"[策略] \""), "无");
         ok("日志记录能力检测", ma.contains("\"[能力] 检测完成"), "无");
         ok("日志记录停止请求", ma.contains("\"[停止] 请求已发出"), "无");
         ok("日志记录最终结果与等级", ma.contains("\"[结果] 判定=\""), "无");
+
+        // ---------------------------------------------------------- 8 第二阶段模块接线
+        info("⑧ 第二阶段模块均有生产调用点");
+        ok("WpsStrategyManager 产出候选",
+                ma.contains("WpsStrategyManager\n                .candidates(")
+                        || ma.contains("WpsStrategyManager.candidates("), "未接线");
+        ok("WpsDataManager 读取条数", ma.contains("WpsDataManager.count("), "未接线");
+        ok("WpsDataManager 保存", ma.contains("WpsDataManager\n                .save(")
+                || ma.contains("WpsDataManager.save("), "未接线");
+        ok("WpsTaskManager 绑定任务", ma.contains("wpsTaskMgr().bind("), "未接线");
+        ok("WpsTaskManager 保存断点", ma.contains("wpsTaskMgr().saveCheckpoint("), "未接线");
+        ok("WpsEvidenceManager 记录判定", ma.contains("wpsEvidenceMgr.record("), "未接线");
+        ok("WpsLogManager 记录日志", ma.contains("wpsLogMgr.log("), "未接线");
+        ok("WpsFacade 组装 UI 快照", ma.contains("WpsFacade.snapshot("), "未接线");
 
         System.out.println();
         System.out.println("=== WpsUiInteractionTest: " + pass + " 通过, " + fail + " 失败 ===");

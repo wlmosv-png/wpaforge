@@ -197,6 +197,35 @@ public final class WpsModulesTest {
         ok("策略标签来自注册表", u2.strategyLabel.contains("弱 PIN"), u2.strategyLabel);
         ok("revision 随运行态变化", u2.revision != u0.revision, "");
 
+        // ============================== 7 WpsUiKit（纯映射）
+        sec("§7 WpsUiKit 纯映射");
+        ok("PIN_OK → CAP_OK",
+                WpsUiKit.capStateOf(WpsCapabilityManager.V_PIN_OK) == WpsUiKit.CAP_OK, "");
+        ok("NO_PIN → CAP_NO_PIN",
+                WpsUiKit.capStateOf(WpsCapabilityManager.V_NO_PIN) == WpsUiKit.CAP_NO_PIN, "");
+        ok("LOCKED → CAP_LOCKED",
+                WpsUiKit.capStateOf(WpsCapabilityManager.V_LOCKED) == WpsUiKit.CAP_LOCKED, "");
+        ok("UNKNOWN → CAP_UNKNOWN",
+                WpsUiKit.capStateOf(WpsCapabilityManager.V_UNKNOWN) == WpsUiKit.CAP_UNKNOWN, "");
+        ok("CONFLICT → CAP_CONFLICT",
+                WpsUiKit.capStateOf(WpsCapabilityManager.V_CONFLICT) == WpsUiKit.CAP_CONFLICT, "");
+        ok("INCOMPLETE → CAP_INCOMPLETE",
+                WpsUiKit.capStateOf(WpsCapabilityManager.V_INCOMPLETE) == WpsUiKit.CAP_INCOMPLETE, "");
+        ok("空串 → CAP_NONE", WpsUiKit.capStateOf("") == WpsUiKit.CAP_NONE, "");
+        ok("往返闭合 CAP_OK",
+                WpsCapabilityManager.V_PIN_OK.equals(WpsUiKit.capVerdictOf(WpsUiKit.CAP_OK)), "");
+        ok("往返闭合 CAP_UNKNOWN",
+                WpsCapabilityManager.V_UNKNOWN.equals(WpsUiKit.capVerdictOf(WpsUiKit.CAP_UNKNOWN)), "");
+        ok("未知文案不含「不支持」",
+                !WpsUiKit.capStateLabel(WpsUiKit.CAP_UNKNOWN, true).contains("不支持"), "");
+        ok("未选择文案", WpsUiKit.capStateLabel(WpsUiKit.CAP_NONE, true).contains("未选择"), "");
+        ok("任何状态都不代表已验证",
+                !WpsUiKit.capStateMeansVerified(WpsUiKit.CAP_OK)
+                        && !WpsUiKit.capStateMeansVerified(WpsUiKit.CAP_UNKNOWN), "");
+        ok("颜色键：OK=绿键", WpsUiKit.capStateColors(WpsUiKit.CAP_OK)[0] == WpsUiKit.COLOR_OK, "");
+        ok("颜色键：NO_PIN=红键",
+                WpsUiKit.capStateColors(WpsUiKit.CAP_NO_PIN)[0] == WpsUiKit.COLOR_DANGER, "");
+
         System.out.println();
         System.out.println("=== WpsModulesTest: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

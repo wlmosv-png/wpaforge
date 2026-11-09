@@ -2211,14 +2211,25 @@ public class MainActivity extends Activity {
     private static final int WPS_TAG_NO_PIN = 3;      // 声明不收外部 PIN
     private static final int WPS_TAG_LOCKED = 4;      // AP 已锁定
 
-    /** 由目标的能力判定结果映射到标签状态（取真实字段，不臆测）。 */
+    /**
+     * 由目标的能力判定结果映射到标签状态（取真实字段，不臆测）。
+     *
+     * <p>2026-11-09 架构升级：结论 → 状态 的映射收敛到 {@link WpsUiKit}（可离线单测），
+     * 本方法只做「kit 状态 → 本地视觉常量」的适配。
+     */
     private int wpsCapStateOf(io.github.wlmosv_png.wpaforge.wps.WpsController.Target t) {
         if (t == null) return WPS_TAG_NONE;
         String v = t.wpsVerdict == null ? "" : t.wpsVerdict;
-        if ("PIN_OK".equals(v)) return WPS_TAG_OK;
-        if ("NO_PIN".equals(v)) return WPS_TAG_NO_PIN;
-        if ("LOCKED".equals(v)) return WPS_TAG_LOCKED;
-        return WPS_TAG_UNKNOWN;
+        switch (io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capStateOf(v)) {
+            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_OK:
+                return WPS_TAG_OK;
+            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_NO_PIN:
+                return WPS_TAG_NO_PIN;
+            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_LOCKED:
+                return WPS_TAG_LOCKED;
+            default:
+                return WPS_TAG_UNKNOWN;
+        }
     }
 
     /** 设能力标签（颜色/文案随状态；未知≠不支持，如实区分）。 */

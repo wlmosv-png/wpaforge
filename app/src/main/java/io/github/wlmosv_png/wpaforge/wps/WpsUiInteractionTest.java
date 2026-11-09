@@ -139,6 +139,9 @@ public final class WpsUiInteractionTest {
         ok("WpsEvidenceManager 记录判定", ma.contains("wpsEvidenceMgr.record("), "未接线");
         ok("WpsLogManager 记录日志", ma.contains("wpsLogMgr.log("), "未接线");
         ok("WpsFacade 组装 UI 快照", ma.contains("WpsFacade.snapshot("), "未接线");
+        ok("WpsUiKit 承担能力状态映射", ma.contains("WpsUiKit.capStateOf("), "未接线");
+        ok("能力结论映射收敛到 WpsUiKit（不再 UI 内联推断）",
+                !ma.contains("equals(v)) return WPS_TAG_OK"), "仍在 UI 内联");
 
         System.out.println();
         System.out.println("=== WpsUiInteractionTest: " + pass + " 通过, " + fail + " 失败 ===");

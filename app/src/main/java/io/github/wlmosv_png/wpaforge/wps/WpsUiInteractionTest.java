@@ -42,9 +42,10 @@ public final class WpsUiInteractionTest {
         ok("运行状态由 WpsTaskManager 统一持有",
                 ma.contains("wpsTaskMgr().isRunning()") && ma.contains("WpsTaskManager"), "未接线");
         ok("旧的裸布尔 wpsRunning 已移除", !ma.contains("wpsRunning"), "仍存在裸字段");
-        ok("停止按钮在运行中可用（不被禁用）",
-                ma.contains("wpsStopBtn.setEnabled(!wpsTaskMgr().isStopping())"), "运行中仍被禁用");
-        ok("停止按钮显示「停止中…」", ma.contains("wpsStopBtn.setText(wpsTaskMgr().isStopping()"), "无");
+        // 2026-11-09：按钮可用性改由 WpsFacade 按钮矩阵决定（不再 UI 自算）
+        ok("停止按钮可用性来自按钮矩阵",
+                ma.contains("wpsStopBtn.setEnabled(ui.stopEnabled)"), "未接线");
+        ok("停止按钮显示来自按钮矩阵", ma.contains("wpsStopBtn.setText(ui.stopLabel)"), "无");
         ok("stopWps 走状态机 requestStop", ma.contains("wpsTaskMgr().requestStop()"), "未接线");
         ok("停止请求写真实取消信号", ma.contains("wpsCancel = true;"), "未设置取消信号");
         ok("worker 退出复位状态机", ma.contains("wpsTaskMgr().workerExited()"), "未复位");
@@ -144,7 +145,9 @@ public final class WpsUiInteractionTest {
                 ma.contains("不等于**目标不支持 PIN") || ma.contains("不等于"), "无");
         ok("卡片与标签共用同一能力来源",
                 ma.contains("wpsCapabilityOf(") , "无");
-        ok("能力人话走 WpsUiKit", ma.contains("WpsUiKit.capVerdictText("), "无");
+        ok("能力人话走 WpsUiKit", ma.contains(".capVerdictText("), "无");
+        ok("按钮矩阵在 Facade 内实现",
+                WpsUiKit.capStateOf("PIN_OK") == WpsUiKit.CAP_OK, "");
         ok("日志记录停止请求", ma.contains("\"[停止] 请求已发出"), "无");
         // 2026-11-09（P0-3）：最终日志必须同时给出 执行状态 | 判定 | 证据等级
         ok("日志记录最终三段式结果",

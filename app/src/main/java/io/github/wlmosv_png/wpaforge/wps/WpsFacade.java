@@ -42,16 +42,55 @@ public final class WpsFacade {
         // —— 策略 ——
         public int strategyMode = -1;
         public String strategyLabel = "";
+        public String strategyPurpose = "";
         public boolean strategyReady;
         public String strategyReason = "";
         /** 当前策略能产出的候选条数。 */
         public int candidateCount;
+        /** 是否需要用户先导入数据才可用。 */
+        public boolean strategyNeedsImport;
+        /** 任务运行中时不允许切换策略。 */
+        public boolean strategySwitchable;
 
-        // —— 能力 ——
+        // —— 能力（展示模型；唯一来源 = WpsCapabilityManager）——
+        /** 内部状态：PIN_OK / NO_PIN / LOCKED / UNKNOWN / INCOMPLETE / CONFLICT。 */
         public String capabilityVerdict = WpsCapabilityManager.V_UNKNOWN;
-        public String capabilityLabel = "";
-        public boolean capabilityVerified;      // 恒 false
+        /** 普通用户可读文案（不透出内部枚举名）。 */
+        public String capabilityText = "";
+        /** 来源文案（root BSS 查询 / 本地 IE 解析 / 无可用来源）。 */
+        public String capabilitySource = "";
+        /** 数据是否完整。 */
+        public boolean capabilityComplete;
+        /** 是否过期。 */
         public boolean capabilityStale;
+        /** 是否冲突。 */
+        public boolean capabilityConflict;
+        /** 采集时间（0 = 无）。 */
+        public long capabilityAtMs;
+        /** 详细诊断（多行，给"能力详情"用；含两通道读取情况）。 */
+        public String capabilityDetail = "";
+
+        // —— 结果（三正交维度）——
+        /** 执行状态名（IDLE/RUNNING/STOPPING/STOPPED/COMPLETED/FAILED）。 */
+        public String resultExec = "IDLE";
+        /** 判定结果（目标层面；"尚未开始" 时为空）。 */
+        public String resultVerdict = "";
+        /** 判定结果人话。 */
+        public String resultVerdictText = "";
+        /** 证据等级人话。 */
+        public String resultLevelText = "";
+
+        // —— 数据（我的列表）——
+        public int customCount;
+        public String customSummary = "";
+
+        // —— 按钮矩阵（由真实任务状态决定，UI 不再自行推断）——
+        public String primaryLabel = "";
+        public boolean primaryEnabled;
+        public String stopLabel = "";
+        public boolean stopEnabled;
+
+        public boolean capabilityVerified;      // 恒 false
 
         /** 修订号：任何上游状态变化都会让它改变；UI 据此决定是否重绘。 */
         public long revision;
@@ -81,11 +120,16 @@ public final class WpsFacade {
                                    WpsRunState runState,
                                    int strategyMode,
                                    int candidateCount,
-                                   String capabilityMode,
-                                   String capabilityLabel,
-                                   boolean capabilityStale,
+                                   WpsCapabilityManager.Capability capability,
+                                   boolean resumeReady,
+                                   String resultVerdict,
+                                   String resultLevelText,
+                                   int customCount,
                                    long nowMs) {
         UiState s = new UiState();
+        boolean zh = true;   // 文案以中文为主；英文由调用方按需取用（保持纯逻辑不引 L）
+
+        // ---------- 扫描 / 目标 ----------
         s.scanState = targets.scanState();
         s.scanning = targets.isScanning();
         s.neverScanned = targets.neverScanned();
@@ -96,30 +140,85 @@ public final class WpsFacade {
         s.lastScanAtMs = targets.lastScanAt();
         s.selectedBssid = targets.selectedBssid();
 
+        // ---------- 任务执行状态 ----------
         s.idle = runState.isIdle();
         s.running = runState.isRunning();
         s.stopping = runState.isStopping();
-        s.execState = runState.label();
         s.terminal = runState.isTerminal();
+        s.execState = runState.label();
+        s.resultExec = runState.label();
 
+        // ---------- 策略 ----------
         s.strategyMode = strategyMode;
         WpsStrategyManager.Strategy st = WpsStrategyManager.of(strategyMode);
-        s.strategyLabel = st == null ? "" : st.label(true);
+        s.strategyLabel = st == null ? "" : st.label(zh);
+        s.strategyPurpose = st == null ? "" : st.description(zh);
         s.candidateCount = candidateCount;
+        s.strategySwitchable = !runState.isActive();
         WpsStrategyManager.Readiness rd = WpsStrategyManager
                 .readiness(strategyMode, candidateCount, !s.selectedBssid.isEmpty());
         s.strategyReady = rd.ready;
         s.strategyReason = rd.reasonZh;
+        s.strategyNeedsImport = (strategyMode == WpsStrategyManager.MODE_CUSTOM && candidateCount <= 0);
 
-        s.capabilityVerdict = capabilityMode == null ? WpsCapabilityManager.V_UNKNOWN : capabilityMode;
-        s.capabilityLabel = capabilityLabel == null ? "" : capabilityLabel;
-        s.capabilityVerified = false;             // 能力检测永远不等于"已验证"
-        s.capabilityStale = capabilityStale;
+        // ---------- 能力（唯一来源） ----------
+        if (capability == null) {
+            s.capabilityVerdict = WpsCapabilityManager.V_UNKNOWN;
+            s.capabilityText = WpsUiKit.capVerdictText(WpsCapabilityManager.V_UNKNOWN, zh);
+            s.capabilitySource = WpsUiKit.capSourceText("", zh);
+            s.capabilityDetail = "（尚未检测）";
+        } else {
+            s.capabilityVerdict = capability.verdict;
+            s.capabilityText = WpsUiKit.capVerdictText(capability.verdict, zh);
+            s.capabilitySource = WpsUiKit.capSourceText(capability.primarySource, zh);
+            s.capabilityStale = capability.stale;
+            s.capabilityConflict = capability.conflict;
+            s.capabilityAtMs = capability.atMs;
+            s.capabilityComplete = WpsCapabilityManager.V_PIN_OK.equals(capability.verdict)
+                    || WpsCapabilityManager.V_NO_PIN.equals(capability.verdict)
+                    || WpsCapabilityManager.V_LOCKED.equals(capability.verdict);
+            s.capabilityDetail = detailOf(capability, nowMs);
+        }
+        s.capabilityVerified = false;   // 能力检测永远不等于"已验证"
 
-        s.canStart = s.idle && s.strategyReady;
-        s.canStop = s.running;
+        // ---------- 结果 ----------
+        s.resultVerdict = resultVerdict == null ? "" : resultVerdict;
+        s.resultVerdictText = s.resultVerdict.isEmpty()
+                ? (s.idle ? "尚未尝试 —— 点「开始验证」才会知道这个目标能不能验证"
+                          : "（进行中）")
+                : WpsEngine.verdictText(s.resultVerdict, zh);
+        s.resultLevelText = resultLevelText == null ? "" : resultLevelText;
 
-        // —— 空态文案：由状态决定，UI 不推断 ——
+        // ---------- 数据 ----------
+        s.customCount = customCount;
+        s.customSummary = "我的列表 " + customCount + " 条";
+
+        // ---------- 按钮矩阵 ----------
+        s.canStart = !runState.isActive() && s.strategyReady;
+        s.canStop = runState.isRunning();
+        if (runState.isIdle()) {
+            s.primaryLabel = resumeReady ? "继续" : "开始";
+            s.primaryEnabled = s.canStart;
+            s.stopLabel = "停止";
+            s.stopEnabled = false;
+        } else if (runState.isRunning()) {
+            s.primaryLabel = "运行中…";
+            s.primaryEnabled = false;
+            s.stopLabel = "停止";
+            s.stopEnabled = true;
+        } else if (runState.isStopping()) {
+            s.primaryLabel = "停止中…";
+            s.primaryEnabled = false;
+            s.stopLabel = "停止中…";
+            s.stopEnabled = false;          // 禁用重复请求
+        } else {                            // STOPPED / COMPLETED / FAILED
+            s.primaryLabel = "重新开始";
+            s.primaryEnabled = s.canStart;
+            s.stopLabel = "停止";
+            s.stopEnabled = false;
+        }
+
+        // ---------- 空态文案 ----------
         if (s.scanning) {
             s.emptyHintZh = "扫描中，请稍候…（附近网络会自动列出，无需手动选择）";
             s.emptyHintEn = "Scanning… nearby networks will list automatically";
@@ -130,8 +229,8 @@ public final class WpsFacade {
             s.emptyHintZh = s.scanError;
             s.emptyHintEn = s.scanError;
         } else if (s.targetCount == 0) {
-            s.emptyHintZh = "未发现附近网络";
-            s.emptyHintEn = "No nearby networks found";
+            s.emptyHintZh = "扫描完成，但附近没有发现网络";
+            s.emptyHintEn = "Scan finished, but no networks found";
         } else {
             s.emptyHintZh = "";
             s.emptyHintEn = "";
@@ -141,7 +240,38 @@ public final class WpsFacade {
                 + (s.running ? 1_000_000L : 0)
                 + (s.stopping ? 2_000_000L : 0)
                 + (s.strategyReady ? 4_000_000L : 0)
-                + (s.capabilityStale ? 8_000_000L : 0);
+                + (s.terminal ? 8_000_000L : 0)
+                + s.customCount;
         return s;
+    }
+
+    /** 能力详情（多行）：两通道读取情况 / BSSID 校验 / 完整性 / 冲突 / 采集时间。 */
+    private static String detailOf(WpsCapabilityManager.Capability c, long nowMs) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("结论：").append(WpsUiKit.capVerdictText(c.verdict, true)).append('\n');
+        sb.append("来源：").append(WpsUiKit.capSourceText(c.primarySource, true)).append('\n');
+        sb.append("通道A(root BSS)：").append(channelLine(c.root)).append('\n');
+        sb.append("通道B(本地 IE)：").append(channelLine(c.localIe)).append('\n');
+        sb.append("目标 BSSID：").append(c.targetBssid.isEmpty() ? "(未知)" : c.targetBssid).append('\n');
+        sb.append("数据完整性：").append(c.conflict ? "冲突"
+                : (c.root != null && c.root.complete) || (c.localIe != null && c.localIe.complete)
+                        ? "至少一条通道完整" : "不完整").append('\n');
+        if (c.atMs > 0 && nowMs > 0) {
+            long ageSec = Math.max(0, (nowMs - c.atMs) / 1000);
+            sb.append("采集时间：").append(ageSec).append(" 秒前")
+                    .append(c.stale ? "（已过期）" : "").append('\n');
+        }
+        if (!c.issues.isEmpty()) sb.append("问题：").append(c.issueSummary());
+        return sb.toString().trim();
+    }
+
+    private static String channelLine(WpsCapabilityManager.Channel ch) {
+        if (ch == null) return "未使用";
+        if (!ch.available) return "不可用";
+        String v = ch.configMethods == WpsIeParser.UNKNOWN
+                ? "未读到 config_methods"
+                : ("config_methods=0x" + Integer.toHexString(ch.configMethods));
+        return (ch.complete ? "完整" : "不完整") + " · " + v
+                + (ch.bssid.isEmpty() ? "" : " · " + ch.bssid);
     }
 }

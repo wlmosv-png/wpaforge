@@ -175,20 +175,23 @@ public final class WpsModulesTest {
         log.clear();
         ok("清空后为空", log.isEmpty(), "");
 
-        // ============================== 6 WpsFacade
-        sec("§6 WpsFacade");
+        // ============================== 6 WpsFacade（视图模型）
+        sec("§6 WpsFacade 视图模型（状态矩阵见 WpsUiStateMatrixTest）");
         WpsTargetManager tgt = new WpsTargetManager();
         WpsRunState run = new WpsRunState();
-        WpsFacade.UiState u0 = WpsFacade.snapshot(tgt, run, 1, 65, null, "", false, 1000L);
+        WpsFacade.UiState u0 = WpsFacade.snapshot(tgt, run, 1, 65, null, false, "", "", 0, 1000L);
         ok("初始 neverScanned", u0.neverScanned, "");
-        ok("初始不能开始（无目标）", !u0.canStart, "");
-        ok("初始不能停止", !u0.canStop, "");
-        ok("空态文案=去扫描", u0.emptyHintZh.contains("尚未扫描"), u0.emptyHintZh);
-        ok("能力默认 UNKNOWN", WpsCapabilityManager.V_UNKNOWN.equals(u0.capabilityVerdict), "");
+        ok("初始不能开始（无目标/无策略可用性）", !u0.canStart, "");
+        ok("IDLE 主按钮=开始", u0.primaryLabel.contains("开始"), u0.primaryLabel);
+        ok("IDLE 主按钮禁用", !u0.primaryEnabled, "");
+        ok("IDLE 停止禁用", !u0.stopEnabled, "");
+        ok("能力默认 UNKNOWN 且文案非空",
+                WpsCapabilityManager.V_UNKNOWN.equals(u0.capabilityVerdict)
+                        && !u0.capabilityText.isEmpty(), u0.capabilityText);
         ok("能力 verified 恒 false", !u0.capabilityVerified, "");
 
         tgt.beginScan();
-        WpsFacade.UiState u1 = WpsFacade.snapshot(tgt, run, 1, 65, null, "", false, 2000L);
+        WpsFacade.UiState u1 = WpsFacade.snapshot(tgt, run, 1, 65, null, false, "", "", 0, 2000L);
         ok("扫描中空态=扫描中", u1.emptyHintZh.contains("扫描中"), u1.emptyHintZh);
 
         WpsController.Target t = new WpsController.Target();
@@ -199,15 +202,24 @@ public final class WpsModulesTest {
         tgt.finishScan(l, 10, 1);
         tgt.select(t);
         run.requestStart();
-        WpsFacade.UiState u2 = WpsFacade.snapshot(tgt, run, 1, 65,
-                WpsCapabilityManager.V_PIN_OK, "声明可接受 PIN（未验证）", false, 3000L);
-        ok("有目标", u2.targetCount == 1, "");
-        ok("已选中", "aa:bb:cc:dd:ee:01".equals(u2.selectedBssid), "");
-        ok("运行中 → canStop", u2.canStop, "");
-        ok("运行中 → 不能开始", !u2.canStart, "");
-        ok("能力标签透传", u2.capabilityLabel.contains("未验证"), u2.capabilityLabel);
-        ok("策略标签来自注册表", u2.strategyLabel.contains("弱 PIN"), u2.strategyLabel);
-        ok("revision 随运行态变化", u2.revision != u0.revision, "");
+        WpsFacade.UiState u2 = WpsFacade.snapshot(tgt, run, 1, 65, null, false, "RUNNING", "未确认", 3, 3000L);
+        ok("RUNNING：主按钮禁用且显示运行中",
+                !u2.primaryEnabled && u2.primaryLabel.contains("运行中"), u2.primaryLabel);
+        ok("RUNNING：停止可用", u2.stopEnabled, "");
+        ok("结果三维独立（执行状态与判定分开）",
+                "RUNNING".equals(u2.resultExec) && "RUNNING".equals(u2.resultVerdict), "");
+        ok("数据条数透出", u2.customCount == 3 && u2.customSummary.contains("3"), u2.customSummary);
+
+        run.requestStop();
+        WpsFacade.UiState u3 = WpsFacade.snapshot(tgt, run, 1, 65, null, false, "RUNNING", "未确认", 3, 4000L);
+        ok("STOPPING：主按钮显示停止中且禁用",
+                !u3.primaryEnabled && u3.primaryLabel.contains("停止中"), u3.primaryLabel);
+        ok("STOPPING：停止键禁用（防重复）", !u3.stopEnabled, "");
+        run.workerExited(WpsRunState.STOPPED);
+        WpsFacade.UiState u4 = WpsFacade.snapshot(tgt, run, 1, 65, null, false, "NO_WINDOW", "未确认", 3, 5000L);
+        ok("STOPPED：可重新开始", u4.primaryLabel.contains("重新开始") && u4.primaryEnabled, u4.primaryLabel);
+        ok("STOPPED：停止禁用", !u4.stopEnabled, "");
+        ok("STOPPED 是终态", u4.terminal && !u4.running, u4.execState);
 
         // ============================== 7 WpsUiKit（纯映射）
         sec("§7 WpsUiKit 纯映射");

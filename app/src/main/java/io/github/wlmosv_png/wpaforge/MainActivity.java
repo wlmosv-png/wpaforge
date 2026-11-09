@@ -1209,12 +1209,19 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        String capVerdict = wpsLastCapVerdict;
-        String capLabel = wpsCapTag == null || wpsCapTag.getText() == null
-                ? "" : wpsCapTag.getText().toString();
+        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability cap =
+                wpsCapabilityOf(wpsTargetMgr.selected());
+        String rv = wpsSession == null ? "" : wpsSession.verdict;
+        String lv = wpsSession == null ? ""
+                : io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                        .levelText(io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                                .levelField(wpsSession), true);
+        boolean canResume = wpsResumeReady();
         return io.github.wlmosv_png.wpaforge.wps.WpsFacade.snapshot(
                 wpsTargetMgr, wpsTaskMgr().state(), wpsMode, cand,
-                capVerdict, capLabel, false, System.currentTimeMillis());
+                cap, canResume, rv, lv,
+                io.github.wlmosv_png.wpaforge.wps.WpsDataManager.count(getFilesDir()),
+                System.currentTimeMillis());
     }
 
     /** 每个 BSSID 的最新能力结论（**唯一来源**：双通道合并结果）。 */
@@ -1243,9 +1250,6 @@ public class MainActivity extends Activity {
             default: return WPS_TAG_UNKNOWN;
         }
     }
-
-    /** 最近一次能力结论（由 setWpsCapTag 记录，供门面透传）。 */
-    private volatile String wpsLastCapVerdict = io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN;
 
     /** 任务管理器（懒加载：需要 wpsCpStore() 就绪）。 */
     private io.github.wlmosv_png.wpaforge.wps.WpsTaskManager wpsTaskMgr() {
@@ -1384,6 +1388,12 @@ public class MainActivity extends Activity {
         wpsEnvCardText.setLineSpacing(px(4), 1f);
         wpsEnvCardText.setPadding(px(2), px(4), px(2), px(2));
         wpsSummaryCard.addView(wpsEnvCardText, topGap(2));
+        // 2026-11-09：长按能力卡 → 能力详情（普通用户、不透出内部枚举名）
+        wpsSummaryCard.setLongClickable(true);
+        wpsSummaryCard.setOnLongClickListener(v -> {
+            showWpsCapabilityDetailDialog();
+            return true;
+        });
         pageWps.addView(wpsSummaryCard, sectionGap());
         renderWpsSummary();
 
@@ -1907,6 +1917,23 @@ public class MainActivity extends Activity {
         return L.s(WPS_MODE_ZH[wpsMode], WPS_MODE_EN[wpsMode]);
     }
 
+    /** 某档策略的真实前置条件（候选数与可用性都来自实际数据）。 */
+    private io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager.Readiness
+            wpsStrategyReadiness(int mode) {
+        int cand = 0;
+        try {
+            if (mode == 3) {
+                cand = 0;   // 拆半不依赖候选列表
+            } else if (wpsTargetMgr.selected() != null) {
+                cand = io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager
+                        .candidates(mode, wpsTargetMgr.selected().bssid, getFilesDir()).size();
+            }
+        } catch (Throwable ignored) {
+        }
+        return io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager
+                .readiness(mode, cand, wpsTargetMgr.selected() != null);
+    }
+
     private void refreshWpsStrategy() {
         renderWpsModeList();
     }
@@ -1951,7 +1978,16 @@ public class MainActivity extends Activity {
             t1.addView(name, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             TextView state = new TextView(this);
-            state.setText(modeStateLabel(zh, mode));
+            // 2026-11-09：状态胶囊由 WpsStrategyManager.Readiness 驱动（真实前置条件）
+            io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager.Readiness mrd =
+                    wpsStrategyReadiness(mode);
+            state.setText(mrd.ready
+                    ? (mode == 3 ? L.s("可用", "ready")
+                                 : L.s(mrd.candidateCount + " 条", mrd.candidateCount + " items"))
+                    : L.s("不可用", "unavailable"));
+            if (!mrd.ready) {
+                state.setText(L.s("不可用", "unavailable"));
+            }
             state.setTextSize(FS_TINY);
             state.setTextColor(on ? AmberTheme.ON_ACCENT : AmberTheme.TEXT_DIM);
             state.setBackground(roundBg(on ? ACCENT : AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
@@ -1961,7 +1997,11 @@ public class MainActivity extends Activity {
 
             // 第二行：一句说明
             TextView dsc = new TextView(this);
-            dsc.setText(L.s(WPS_MODE_DESC_ZH[i], WPS_MODE_DESC_EN[i]));
+            String desc = L.s(WPS_MODE_DESC_ZH[i], WPS_MODE_DESC_EN[i]);
+            io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager.Readiness rd2 =
+                    wpsStrategyReadiness(mode);
+            if (!rd2.ready) desc = L.s("不可用：", "unavailable: ") + rd2.reason(zh) + "\n" + desc;
+            dsc.setText(desc);
             dsc.setTextSize(FS_TINY);
             dsc.setTextColor(on ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_DIM);
             dsc.setPadding(px(2), px(4), px(2), 0);
@@ -2150,11 +2190,17 @@ public class MainActivity extends Activity {
                 renderWpsTargets();
                 // 结论写进扫描状态行（列表现在含普通 AP + 未知能力 AP，措辞不再说
                 // 「个支持 WPS 的目标」，改成如实报总数与未知数）
+                // 2026-11-09：不再读旧字符串；未知条数由**能力模型**统计
                 int unk = 0;
                 for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target t : wpsTargetMgr.targets()) {
-                    if (t.wpsVerdict == null
-                            || "UNKNOWN".equals(t.wpsVerdict)
-                            || "NO_WPS".equals(t.wpsVerdict)) unk++;
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability c =
+                            wpsCapabilityOf(t);
+                    String v = c == null ? "" : c.verdict;
+                    if (v.isEmpty()
+                            || io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN.equals(v)
+                            || io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_INCOMPLETE.equals(v)) {
+                        unk++;
+                    }
                 }
                 if (wpsScanStatus != null) {
                     // 2026-11-08：扫描失败或空结果时如实说明，不再用「0 个」掩盖根因。
@@ -2278,16 +2324,8 @@ public class MainActivity extends Activity {
 
     /** 设能力标签（颜色/文案随状态；未知≠不支持，如实区分）。 */
     private void setWpsCapTag(int state) {
-        switch (state) {
-            case WPS_TAG_OK: wpsLastCapVerdict =
-                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_PIN_OK; break;
-            case WPS_TAG_NO_PIN: wpsLastCapVerdict =
-                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN; break;
-            case WPS_TAG_LOCKED: wpsLastCapVerdict =
-                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_LOCKED; break;
-            default: wpsLastCapVerdict =
-                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN; break;
-        }
+        // 2026-11-09：能力结论的**唯一来源**是 WpsCapabilityManager 缓存（wpsCapByBssid），
+        // 经 WpsFacade/WpsUiKit 提供给 UI；此处不再维护第二份字符串状态。
         if (wpsCapTag == null) return;
         String txt;
         int fg;
@@ -2343,26 +2381,19 @@ public class MainActivity extends Activity {
         cap.append(L.s("目标：", "Target: "));
         cap.append(tg == null ? L.s("（未选择）\n", "(none)\n")
                 : tg.ssid + "  " + tg.bssid + "\n");
+        io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState fui = wpsFacadeState();
         if (tg == null) {
             cap.append(L.s("判定：未知（未选择目标）\n", "verdict: unknown (no target)\n"));
         } else {
-            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability c = wpsCapabilityOf(tg);
-            String v = c == null ? io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN
-                    : c.verdict;
-            cap.append(L.s("判定：", "verdict: "))
-                    .append(io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capVerdictText(v, zh))
-                    .append('\n');
-            cap.append(L.s("来源：", "source: "))
-                    .append(io.github.wlmosv_png.wpaforge.wps.WpsUiKit
-                            .capSourceText(c == null ? "" : c.primarySource, zh))
-                    .append('\n');
-            if (c != null && c.stale) {
+            cap.append(L.s("判定：", "verdict: ")).append(fui.capabilityText).append('\n');
+            cap.append(L.s("来源：", "source: ")).append(fui.capabilitySource).append('\n');
+            if (fui.capabilityStale) {
                 cap.append(L.s("注意：该结论采集已超过 5 分钟，可能过期\n",
                         "note: this reading is older than 5 min\n"));
             }
-            if (c != null && c.conflict) {
-                cap.append(L.s("注意：两条通道结论不一致，未擅自选择\n",
-                        "note: channels disagree - not auto-picked\n"));
+            if (fui.capabilityConflict) {
+                cap.append(L.s("注意：两条通道结论不一致，未擅自选择（长按本卡看详情）\n",
+                        "note: channels disagree - not auto-picked (long-press for detail)\n"));
             }
         }
         cap.append(L.s("※ 「未知」= 没读到 AP 的宣告，**不等于**目标不支持 PIN。\n"
@@ -2421,6 +2452,29 @@ public class MainActivity extends Activity {
 
         wpsEnvCardText.setText(env.toString());
         wpsCapCardText.setText(cap.toString());
+    }
+
+    /**
+     * 能力详情（长按能力卡）。
+     *
+     * <p>用户能自己看到：两通道各自读到什么、BSSID 是否匹配、数据是否完整、
+     * 采集时间、是否冲突、以及"为什么是这个结论"，而不是只看到一个标签。
+     */
+    private void showWpsCapabilityDetailDialog() {
+        io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState ui = wpsFacadeState();
+        StringBuilder sb = new StringBuilder();
+        sb.append(ui.capabilityDetail.isEmpty() ? "（尚未检测）" : ui.capabilityDetail);
+        sb.append('\n');
+        sb.append("【本机通道】\n");
+        sb.append("Root：").append(wpsRootOk == null ? "检测中" : (wpsRootOk ? "可用" : "不可用")).append('\n');
+        sb.append("supplicant 通道：").append(wpsSelftestDone ? "已真读回包验证" : "未自检").append('\n');
+        sb.append('\n');
+        sb.append("【说明】\n");
+        sb.append("· 「能力未知」= 没读到 AP 的宣告，**不等于**目标不支持 PIN\n");
+        sb.append("· 「检测到 PIN 支持声明」**不等于** PIN 已验证可用\n");
+        sb.append("· 能否验证，只看「实际尝试」的结果\n");
+        io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this,
+                L.s("WPS 能力详情", "WPS capability detail"), sb.toString());
     }
 
     /** 2026-11-08：后台线程检测 root 可用性，只在缓存为空时跑一次。 */
@@ -2483,7 +2537,16 @@ public class MainActivity extends Activity {
             // 每个目标一张**行卡**：名称一行、地址一行、能力/体检一行，右侧信号与状态胶囊。
             // 原来是一个塞了四行居中文字的大按钮（用户反馈"显示的内容很拉胯"）。
             boolean on = wpsTargetMgr.selected() != null && tg.bssid.equals(wpsTargetMgr.selected().bssid);
-            boolean worth = tg.pinWorthTrying();
+            // 2026-11-09：列表行也走能力模型（不再从旧 wpsVerdict 推导）
+            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability rowCap =
+                    wpsCapabilityOf(tg);
+            String rowVerdict = rowCap == null
+                    ? io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN
+                    : rowCap.verdict;
+            boolean worth = !io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN
+                    .equals(rowVerdict)
+                    && !io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_LOCKED
+                    .equals(rowVerdict);
 
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.HORIZONTAL);
@@ -2520,7 +2583,8 @@ public class MainActivity extends Activity {
             left.addView(addr, al2);
 
             StringBuilder cap = new StringBuilder();
-            cap.append("[").append(tg.capLabel(zh)).append("]");
+            cap.append("[").append(io.github.wlmosv_png.wpaforge.wps.WpsUiKit
+                    .capVerdictText(rowVerdict, zh)).append("]");
             String rl = tg.reconLabel(zh);
             if (!rl.isEmpty()) {
                 cap.append("  ").append(rl);
@@ -2717,13 +2781,22 @@ public class MainActivity extends Activity {
         }
         // 扫描阶段已经问出这个 AP 不收 PIN / 被锁：先拦一次，再点才放行。
         // 以前没有这一步，用户要白等 8 次 × 20 秒才知道打不动。
-        if (!wpsTargetMgr.selected().pinWorthTrying() && !wpsTargetMgr.selected().bssid.equals(wpsWarnedBssid)) {
+        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability preCap =
+                wpsCapabilityOf(wpsTargetMgr.selected());
+        String preVerdict = preCap == null
+                ? io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN
+                : preCap.verdict;
+        if ((io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN.equals(preVerdict)
+                || io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_LOCKED.equals(preVerdict))
+                && !wpsTargetMgr.selected().bssid.equals(wpsWarnedBssid)) {
             wpsWarnedBssid = wpsTargetMgr.selected().bssid;
             Toast.makeText(this, L.s(
-                    "该 AP 不会接受外部 PIN（" + wpsTargetMgr.selected().capLabel(true)
+                    "该 AP 不会接受外部 PIN（" + io.github.wlmosv_png.wpaforge.wps.WpsUiKit
+                            .capVerdictText(preVerdict, true)
                             + (wpsTargetMgr.selected().wpsMethods.isEmpty() ? "" : "，" + wpsTargetMgr.selected().wpsMethods)
                             + "）。\n跑下去基本不可能命中；再点一次「开始」仍然强制运行。",
-                    "This AP does not accept an external PIN (" + wpsTargetMgr.selected().capLabel(false)
+                    "This AP does not accept an external PIN (" + io.github.wlmosv_png.wpaforge.wps.WpsUiKit
+                            .capVerdictText(preVerdict, false)
                             + (wpsTargetMgr.selected().wpsMethods.isEmpty() ? "" : ", " + wpsTargetMgr.selected().wpsMethods)
                             + ").\nVery unlikely to hit; tap Start again to force."),
                     Toast.LENGTH_LONG).show();
@@ -2833,10 +2906,7 @@ public class MainActivity extends Activity {
                             .combine(bssid, System.currentTimeMillis(), chA, chB);
             final io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability fcap = cap;
             wpsCapByBssid.put(bssid, cap);          // 唯一来源：写入缓存，标签/门面都读它
-            runOnUiThread(() -> {
-                wpsLastCapVerdict = fcap.verdict;
-                setWpsCapTag(wpsUiStateOf(fcap.verdict));
-            });
+            runOnUiThread(() -> setWpsCapTag(wpsUiStateOf(fcap.verdict)));
             wpsLog(L.s("[能力] 双通道合并 → " + cap.verdict + "（" + cap.primarySource + "）：" + cap.reason,
                     "[cap] dual-channel -> " + cap.verdict + " (" + cap.primarySource + "): " + cap.reason));
             if (!cap.issues.isEmpty()) {
@@ -3030,7 +3100,19 @@ public class MainActivity extends Activity {
                                     new io.github.wlmosv_png.wpaforge.wps.WpsController.Target();
                             t.bssid = b;
                             t.ssid = info.ssid.isEmpty() ? "(手动)" : info.ssid;
-                            t.wpsVerdict = info.verdict;
+                            t.wpsVerdict = info.verdict;   // 保留原始字段（诊断用），但不再驱动 UI
+                            // 能力结论统一写入缓存（单一来源）
+                            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel aA =
+                                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.root(
+                                            b, info.mask, -1, -1, info.locked ? 1 : 0, info.device,
+                                            "", System.currentTimeMillis());
+                            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel aB =
+                                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.localIe(
+                                            b, io.github.wlmosv_png.wpaforge.wps.WpsIeParser
+                                                    .parseIeHex(info.ieHex),
+                                            info.ieHex, System.currentTimeMillis());
+                            wpsCapByBssid.put(b, io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
+                                    .combine(b, System.currentTimeMillis(), aA, aB));
                             t.wpsMethods = info.methods;
                             t.wpsDevice = info.device;
                             t.pairingWindow = info.pairingWindow;
@@ -3046,8 +3128,14 @@ public class MainActivity extends Activity {
                             wpsWarnedBssid = null;
                             refreshWpsPickedMeta();
                             renderWpsTargets();
-                            Toast.makeText(this, L.s("已添加：" + t.capLabel(true),
-                                    "Added: " + t.capLabel(false)), Toast.LENGTH_LONG).show();
+                            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability ac =
+                                    wpsCapabilityOf(t);
+                            Toast.makeText(this, L.s("已添加："
+                                            + io.github.wlmosv_png.wpaforge.wps.WpsUiKit
+                                                    .capVerdictText(ac == null ? "" : ac.verdict, true),
+                                    "Added: " + io.github.wlmosv_png.wpaforge.wps.WpsUiKit
+                                            .capVerdictText(ac == null ? "" : ac.verdict, false)),
+                                    Toast.LENGTH_LONG).show();
                         });
                     }, "wps-add-target").start();
         });
@@ -3188,10 +3276,16 @@ public class MainActivity extends Activity {
                     new java.util.ArrayList<>();
             int skipped = 0;
             for (io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg : wpsTargetMgr.targets()) {
+                // 2026-11-09：跳过判据改用**能力模型**（不再读旧 wpsVerdict 字符串）
+                io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability rcap =
+                        wpsCapabilityOf(tg);
+                String rv = rcap == null ? "" : rcap.verdict;
                 if (!wpsReconAll
-                        && ("NO_PIN".equals(tg.wpsVerdict) || "LOCKED".equals(tg.wpsVerdict))) {
+                        && (io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN.equals(rv)
+                        || io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_LOCKED.equals(rv))) {
                     tg.recon = "SKIP";
-                    tg.reconDetail = "NO_PIN".equals(tg.wpsVerdict)
+                    tg.reconDetail = io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN
+                            .equals(rv)
                             ? ("config_methods=" + tg.wpsMethods)
                             : L.s("beacon 报 AP Setup Locked", "locked");
                     skipped++;
@@ -3201,8 +3295,12 @@ public class MainActivity extends Activity {
             }
             // config_methods 不可靠，但可以作为「先测谁」的排序参考：PIN_OK 优先，再按信号
             java.util.Collections.sort(list, (a, b) -> {
-                boolean pa = "PIN_OK".equals(a.wpsVerdict);
-                boolean pb = "PIN_OK".equals(b.wpsVerdict);
+                io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability ca = wpsCapabilityOf(a);
+                io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability cb = wpsCapabilityOf(b);
+                boolean pa = ca != null && io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
+                        .V_PIN_OK.equals(ca.verdict);
+                boolean pb = cb != null && io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
+                        .V_PIN_OK.equals(cb.verdict);
                 if (pa != pb) return pa ? -1 : 1;
                 return b.rssi - a.rssi;
             });
@@ -3392,31 +3490,16 @@ public class MainActivity extends Activity {
      */
     private void refreshWpsButtons() {
         if (wpsStartBtn == null) return;
-        if (wpsTaskMgr().isRunning()) {
-            // 2026-11-09 UI 整改（P0）：运行中「停止」必须可用 —— 原来这里是
-            // wpsStopBtn.setEnabled(false)，用户点「停止」根本没反应（按钮禁用），
-            // 只有「开始/暂停」那个大按钮能停。现在两个入口都能停，且带停止中反馈。
-            wpsStartBtn.setText(L.s("暂停", "Pause"));
-            wpsStartBtn.setEnabled(true);
-            wpsStopBtn.setText(wpsTaskMgr().isStopping() ? L.s("停止中…", "Stopping…")
-                    : L.s("停止", "Stop"));
-            wpsStopBtn.setEnabled(!wpsTaskMgr().isStopping());
-            wpsStopBtn.setAlpha(wpsTaskMgr().isStopping() ? 0.5f : 1f);
-        } else {
-            // 「继续」只在这个按钮**真的能续跑**时才出现：断点存在，且属于当前
-            // 选中的目标与当前策略。修复前只看「盘上有没有断点」，于是升级/重启后
-            // 按钮写着「继续」，点下去先弹「请先扫描并选择目标」，
-            // 或者按另一个策略从头跑（第二阶段审计 P0-4）。
-            boolean canResume = wpsResumeReady();
-            wpsStartBtn.setText(canResume ? L.s("继续", "Resume") : L.s("开始", "Start"));
-            // 没有选中目标时禁用主按钮，由 resume 行说明原因（与离线校验禁用样式一致）
-            boolean startAble = wpsTargetMgr.selected() != null;
-            wpsStartBtn.setEnabled(startAble);
-            wpsStartBtn.setAlpha(startAble ? 1f : 0.5f);
-            wpsStopBtn.setText(L.s("停止", "Stop"));
-            wpsStopBtn.setEnabled(false);
-            wpsStopBtn.setAlpha(0.5f);
-        }
+        // 2026-11-09 架构升级：按钮标签/可用性**全部来自 WpsFacade 的按钮矩阵**
+        //（由真实任务状态 IDLE/RUNNING/STOPPING/STOPPED/COMPLETED/FAILED 决定），
+        // UI 不再自行推断"能不能点"。
+        io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState ui = wpsFacadeState();
+        wpsStartBtn.setText(ui.primaryLabel);
+        wpsStartBtn.setEnabled(ui.primaryEnabled);
+        wpsStartBtn.setAlpha(ui.primaryEnabled ? 1f : 0.5f);
+        wpsStopBtn.setText(ui.stopLabel);
+        wpsStopBtn.setEnabled(ui.stopEnabled);
+        wpsStopBtn.setAlpha(ui.stopEnabled ? 1f : 0.5f);
         refreshWpsResumeLine();
         if (wpsModeList != null) {
             for (int i = 0; i < wpsModeList.getChildCount(); i++) {

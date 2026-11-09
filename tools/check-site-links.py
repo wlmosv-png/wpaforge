@@ -112,10 +112,14 @@ if 'property="og:url"' not in page:
 if "--online" in sys.argv:
     import json, urllib.request
     tok = ""
-    try:
-        tok = open("/data/local/tmp/.gh_token").read().strip()
-    except Exception:
-        pass
+    # 多源回退：任一凭据失效都不会把「拿不到 Release」伪装成通过
+    for _p in ("/data/local/tmp/k.txt", "/data/local/tmp/.gh_token"):
+        try:
+            tok = open(_p).read().strip()
+        except Exception:
+            tok = ""
+        if tok:
+            break
     url = "https://api.github.com/repos/wlmosv-png/wpaforge/releases/tags/v" + name
     req = urllib.request.Request(url)
     if tok:

@@ -129,6 +129,14 @@ public final class WpsUiInteractionTest {
         ok("能力结论唯一来源=能力缓存",
                 ma.contains("wpsCapByBssid.put(") && ma.contains("wpsCapByBssid.get("), "无");
         ok("重新扫描清空能力缓存", ma.contains("wpsCapByBssid.clear()"), "无");
+        ok("策略预检（所有策略同一套判据）", ma.contains("WpsStrategyManager" + NL + "                                .readiness(")
+                || ma.contains("WpsStrategyManager.readiness("), "无");
+        ok("「策略无数据」不再等同于失败",
+                ma.contains("这不代表目标不可攻击"), "无");
+        ok("能力未判定时明确交底",
+                ma.contains("[能力] 未能判定（"), "无");
+        ok("旧含糊文案已移除",
+                !ma.contains("厂商算法对这个 BSSID 没算出结果"), "仍存在");
         ok("日志记录停止请求", ma.contains("\"[停止] 请求已发出"), "无");
         // 2026-11-09（P0-3）：最终日志必须同时给出 执行状态 | 判定 | 证据等级
         ok("日志记录最终三段式结果",

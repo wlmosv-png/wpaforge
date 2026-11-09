@@ -51,6 +51,18 @@ public final class WpsModulesTest {
                 weak.size() == WpsCandidates.builtinWeak().size(), "");
         ok("拆半不产生候选列表", WpsStrategyManager.candidates(3, "x", null).isEmpty(), "");
 
+        info("策略「无数据」≠「目标不可攻击」（用户反馈的误会点）");
+        WpsStrategyManager.Readiness rv = WpsStrategyManager.readiness(0, 0, true);
+        ok("厂商算法 0 候选 → not ready", !rv.ready, "");
+        ok("原因指向规则/序列号，而非「不可攻击」",
+                rv.reasonZh.contains("规则") && !rv.reasonZh.contains("不可攻击"), rv.reasonZh);
+        ok("拆半永远 ready（不依赖数据）",
+                WpsStrategyManager.readiness(3, 0, true).ready, "");
+        ok("内置弱表有数据即 ready",
+                WpsStrategyManager.readiness(1, 65, true).ready, "");
+        ok("我的列表为空 → 原因指向导入",
+                WpsStrategyManager.readiness(2, 0, true).reasonZh.contains("导入"), "");
+
         // ============================== 2 WpsDataManager
         sec("§2 WpsDataManager");
         WpsCandidates.Report rep = WpsDataManager.parse("12345670\n12345678\n123456\nabc");

@@ -1044,6 +1044,8 @@ public class MainActivity extends Activity {
 
     private io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session wpsSession;
 
+    /** 本策略对本目标没有可用数据（预检未通过，未发起任何尝试）。 */
+    private volatile boolean wpsStrategyNoData;
     /** 唯一停止信号：执行线程每一步都查它。 */
     private volatile boolean wpsCancel = false;
     /** 策略：false = 弱 PIN 优先；true = 完整枚举 */
@@ -2704,6 +2706,7 @@ public class MainActivity extends Activity {
     /** 真正启动（拆半确认通过后 / 非拆半直接走这里）。 */
     private void doStartWps() {
         wpsTaskMgr().beginRun();
+        wpsStrategyNoData = false;
         wpsCancel = false;
         wpsLogMgr.clear();
         wpsSession = new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session();
@@ -2805,6 +2808,16 @@ public class MainActivity extends Activity {
             if (!cap.issues.isEmpty()) {
                 wpsLog("[cap] issues: " + cap.issueSummary());
             }
+            // 2026-11-09：能力未知时明确交底 —— 不要把"没判定出来"留给用户去误解
+            if (!io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_PIN_OK.equals(cap.verdict)
+                    && !io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_NO_PIN.equals(cap.verdict)
+                    && !io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_LOCKED.equals(cap.verdict)) {
+                wpsLog(L.s("[能力] 未能判定（" + cap.verdict + "）→ 以实际尝试为准；"
+                                + "若后续全部无响应，结论是「目标未进入配对窗口」，不是「PIN 错误」。",
+                        "[cap] undetermined (" + cap.verdict + ") -> rely on real attempts; "
+                                + "if everything is no-response, the conclusion is "
+                                + "'target not in pairing window', NOT 'wrong PIN'."));
+            }
             boolean zhCap = L.s("a", "b").equals("a");
             // 通道 A 的**原始读取结果**（不再冒充最终结论；最终结论在下面的双通道合并）
             wpsLog(L.s("[能力] 通道A(root) read=" + (wi.readOk ? "OK" : "FAILED")
@@ -2829,11 +2842,26 @@ public class MainActivity extends Activity {
                 runHalfAttack(bssid);
             } else if (wpsMode <= 2) {
                 java.util.List<String> pins = wpsCandidatePins(bssid);
-                if (pins.isEmpty()) {
-                    wpsLog(L.s("[!] 候选为空 —— 厂商算法对这个 BSSID 没算出结果，"
-                                    + "而「我的列表」也还没导入。换个策略或先导入候选。",
-                            "[!] No candidates: vendor algorithms produced nothing for this BSSID "
-                                    + "and no imported list. Switch strategy or import candidates."));
+                // 2026-11-09（用户反馈「厂商算法直接失败」）：统一**策略预检**，
+                // 把"这条策略有没有数据"与"目标能不能打"彻底分开，并且**所有策略**用同一套
+                // 判据与文案 —— 不再出现"厂商算法一上来就失败、拆半却能跑"的错觉。
+                io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager.Readiness rd =
+                        io.github.wlmosv_png.wpaforge.wps.WpsStrategyManager.readiness(
+                                wpsMode, pins.size(), true);
+                wpsLog(L.s("[策略] " + wpsModeLabel(wpsMode) + " | 候选 " + pins.size()
+                                + " | " + (rd.ready ? "可用" : "不可用：" + rd.reason(true)),
+                        "[strategy] " + wpsModeLabel(wpsMode) + " | candidates " + pins.size()
+                                + " | " + (rd.ready ? "ready" : "unavailable: " + rd.reason(false))));
+                if (!rd.ready) {
+                    // 明确区分：策略没数据 ≠ 目标不可攻击、≠ PIN 不可用
+                    wpsStrategyNoData = true;
+                    wpsLog(L.s("[结论] 本策略对本目标没有可用数据（未发起任何尝试）—— "
+                                    + "这不代表目标不可攻击，只是这条策略没有数据；"
+                                    + "换「拆半」或「内置弱 PIN 表」（它们不依赖厂商规则），"
+                                    + "或先导入候选。",
+                            "[conclusion] this strategy has no data for this target "
+                                    + "(no attempt was made). The target may still be attackable - "
+                                    + "switch strategy or import candidates."));
                 } else {
                     wpsLog(L.s("[i] 策略「", "[i] strategy \"") + wpsStrategyName()
                             + L.s("」，候选 ", "\", candidates ") + pins.size() + L.s(" 个", ""));
@@ -2905,6 +2933,17 @@ public class MainActivity extends Activity {
             } else {
                 wpsLog(L.s("[结果] 执行状态=" + execLabel + " | 判定=（无会话）",
                         "[result] exec=" + execLabel + " | verdict=(no session)"));
+            }
+            // 人话结论：明确"不可验证"与"不可攻击/PIN 错"的区别
+            if (wpsStrategyNoData) {
+                wpsLog(L.s("[结论] 策略无数据，未发起任何尝试 → 结果未知（不是失败，也不是 PIN 错）",
+                        "[conclusion] strategy had no data; no attempt made -> unknown "
+                                + "(not a failure, not a wrong PIN)"));
+            } else if (wpsSession != null) {
+                wpsLog(L.s("[结论] " + io.github.wlmosv_png.wpaforge.wps.WpsEngine
+                                .verdictText(wpsSession.verdict, zhUi()),
+                        "[conclusion] " + io.github.wlmosv_png.wpaforge.wps.WpsEngine
+                                .verdictText(wpsSession.verdict, false)));
             }
             runOnUiThread(() -> {
                 refreshWpsButtons();
@@ -4449,9 +4488,14 @@ public class MainActivity extends Activity {
             + "   · 我的列表：你自己导入的候选（从文件或粘贴）。\n"
             + "   · 拆半：先试前 4 位（1 万次）再试后 3 位（1 千次）。次数仍然很大、耗时很长。\n\n"
             + "4. 每种策略的适用条件与局限\n"
-            + "   厂商算法只对“存在公开可预测规则”的机型有意义；弱 PIN 表只覆盖老设备；"
-            + "导入列表取决于你的数据；拆半耗时长且可能触发路由器限流。"
-            + "没有任何一种能保证成功。\n\n"
+            + "   ⚠ 关键区别（两件独立的事）：\n"
+            + "   · 策略能不能跑 = 这条策略**有没有数据**。厂商算法依赖 OUI/序列号规则，"
+            + "我的列表依赖你导入的内容 —— 它们可能一上来就说「无数据」；"
+            + "内置弱 PIN 表与拆半**不依赖任何数据**，所以总能跑。\n"
+            + "   · 目标能不能打 = 目标**是否在配对窗口、是否接受 PIN** —— "
+            + "这跟用哪条策略无关。\n"
+            + "   所以：厂商算法说「无数据」**不代表**目标不可攻击；"
+            + "拆半跑起来**也不代表**目标就能打。\n\n"
             + "5. 扫描到 WPS，不代表一定能验证\n"
             + "   “这个路由器广播了 WPS 信息”和“它现在允许我们从外部试 PIN”是两件事。"
             + "很多路由器默认关闭外部 PIN 输入，或只在按下机身上的 WPS 键后的短窗口内开放。\n\n"

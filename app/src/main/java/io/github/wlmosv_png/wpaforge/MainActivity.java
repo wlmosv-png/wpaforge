@@ -1215,6 +1215,16 @@ public class MainActivity extends Activity {
                 capVerdict, capLabel, false, System.currentTimeMillis());
     }
 
+    /** 能力结论 → 本地标签状态（供双通道合并结果刷新标签）。 */
+    private int wpsUiStateOf(String verdict) {
+        switch (io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capStateOf(verdict)) {
+            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_OK: return WPS_TAG_OK;
+            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_NO_PIN: return WPS_TAG_NO_PIN;
+            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_LOCKED: return WPS_TAG_LOCKED;
+            default: return WPS_TAG_UNKNOWN;
+        }
+    }
+
     /** 最近一次能力结论（由 setWpsCapTag 记录，供门面透传）。 */
     private volatile String wpsLastCapVerdict = io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN;
 
@@ -2749,6 +2759,29 @@ public class MainActivity extends Activity {
             io.github.wlmosv_png.wpaforge.wps.WpsController.Info wi =
                     io.github.wlmosv_png.wpaforge.wps.WpsController.info(this, bssid);
             io.github.wlmosv_png.wpaforge.wps.WpsEngine.precheck(wpsSession, wi);
+            // 2026-11-09 架构升级：双通道能力检测（通道 A=root BSS；通道 B=本地 IE 解析）
+            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel chA =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.root(
+                            bssid, wi.mask, -1, -1, wi.locked ? 1 : 0, wi.device, "", 
+                            System.currentTimeMillis());
+            io.github.wlmosv_png.wpaforge.wps.WpsIeParser.Result ie =
+                    io.github.wlmosv_png.wpaforge.wps.WpsIeParser.parseIeHex(wi.ieHex);
+            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel chB =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.localIe(
+                            bssid, ie, wi.ieHex, System.currentTimeMillis());
+            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability cap =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
+                            .combine(bssid, System.currentTimeMillis(), chA, chB);
+            final io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability fcap = cap;
+            runOnUiThread(() -> {
+                wpsLastCapVerdict = fcap.verdict;
+                setWpsCapTag(wpsUiStateOf(fcap.verdict));
+            });
+            wpsLog(L.s("[能力] 双通道合并 → " + cap.verdict + "（" + cap.primarySource + "）：" + cap.reason,
+                    "[cap] dual-channel -> " + cap.verdict + " (" + cap.primarySource + "): " + cap.reason));
+            if (!cap.issues.isEmpty()) {
+                wpsLog("[cap] issues: " + cap.issueSummary());
+            }
             boolean zhCap = L.s("a", "b").equals("a");
             wpsLog(L.s("[能力] 检测完成 → verdict=" + wi.verdict, "[cap] done -> verdict=" + wi.verdict)
                     + (wi.methods.isEmpty() ? "" : "  config_methods=" + wi.methods)

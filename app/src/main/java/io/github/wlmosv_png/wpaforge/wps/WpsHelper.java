@@ -599,6 +599,8 @@ public final class WpsHelper {
             System.out.println("WPS_LOCKED=" + (apSetupLocked(ie) ? "1" : "0"));
             System.out.println("WPS_SEL_REG=" + (cap2 != null && cap2.length > 4 ? cap2[4] : "-1"));
             System.out.println("WPS_DEV_PWD_ID=" + (cap2 != null && cap2.length > 5 ? cap2[5] : "-1"));
+            // 2026-11-09：一并输出 AP 的 IE 十六进制串，供 App 侧本地解析（双通道之通道 B）
+            System.out.println("WPS_IE=" + enc(field(blk, "ie")));
             System.out.println("WPS_VERDICT=" + cap[0]);
             System.out.println("WPS_OK=1");
         } catch (Throwable t) {

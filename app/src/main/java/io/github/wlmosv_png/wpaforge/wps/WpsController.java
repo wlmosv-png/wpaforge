@@ -359,6 +359,8 @@ public final class WpsController {
         public String device = "";
         public String state = "";
         public String methods = "";
+        /** AP 的 IE 十六进制串（供本地 WPS IE 解析；空 = 未取到）。 */
+        public String ieHex = "";
         public int mask = -1;
         public boolean pinCapable;
         public boolean pbcCapable;
@@ -411,6 +413,7 @@ public final class WpsController {
                 case "WPS_DEV": f.device = v; break;
                 case "WPS_STATE": f.state = v; break;
                 case "WPS_METHODS": f.methods = v; break;
+                case "WPS_IE": f.ieHex = v; break;
                 case "WPS_PIN_CAPABLE": f.pinCapable = "1".equals(v); break;
                 case "WPS_PBC_CAPABLE": f.pbcCapable = "1".equals(v); break;
                 case "WPS_LOCKED": f.locked = "1".equals(v); break;

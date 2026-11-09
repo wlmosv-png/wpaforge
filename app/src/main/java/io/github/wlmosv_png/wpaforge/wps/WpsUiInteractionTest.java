@@ -25,6 +25,8 @@ public final class WpsUiInteractionTest {
 
     private static void info(String s) { System.out.println("  ·    " + s); }
 
+    private static final String NL = "\n";
+
     private static String read(String pkgRelative) throws IOException {
         return new String(Files.readAllBytes(
                 Paths.get(TestPaths.javaSrcRoot() + pkgRelative)), StandardCharsets.UTF_8);
@@ -140,6 +142,9 @@ public final class WpsUiInteractionTest {
         ok("WpsLogManager 记录日志", ma.contains("wpsLogMgr.log("), "未接线");
         ok("WpsFacade 组装 UI 快照", ma.contains("WpsFacade.snapshot("), "未接线");
         ok("WpsUiKit 承担能力状态映射", ma.contains("WpsUiKit.capStateOf("), "未接线");
+        ok("双通道合并接入生产", ma.contains("WpsCapabilityManager" + NL + "                            .combine(")
+                || ma.contains("WpsCapabilityManager.combine("), "未接线");
+        ok("本地 IE 通道接入（通道 B）", ma.contains("WpsIeParser.parseIeHex(wi.ieHex)"), "未接线");
         ok("能力结论映射收敛到 WpsUiKit（不再 UI 内联推断）",
                 !ma.contains("equals(v)) return WPS_TAG_OK"), "仍在 UI 内联");
 

@@ -210,11 +210,10 @@ public final class WpsHitJudge {
         boolean haveConnBssid = !isBlank(in.connBssid);
         boolean haveTargetBssid = !isBlank(in.targetBssid);
 
-        boolean ssidMatch = haveTargetSsid && haveConnSsid && in.connSsid.equals(in.targetSsid);
-        boolean bssidMatch = haveTargetBssid && haveConnBssid
-                && in.connBssid.equalsIgnoreCase(in.targetBssid);
+        boolean ssidMatch = logicalIdentityMatches(in);     // 逻辑身份（按 SSID）
+        boolean bssidMatch = physicalIdentityMatches(in);   // 物理身份（按 BSSID）
 
-        // ④ 归属冲突
+        // ④ 归属冲突（逻辑身份已知且不一致，或逻辑身份未知而物理身份不一致）
         if (haveConnSsid && haveTargetSsid && !ssidMatch) return C_NOT_TARGET;
         if (!haveConnSsid && haveConnBssid && haveTargetBssid && !bssidMatch) {
             return C_NOT_TARGET;

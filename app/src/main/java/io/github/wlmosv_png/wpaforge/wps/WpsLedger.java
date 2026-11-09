@@ -60,6 +60,19 @@ public final class WpsLedger {
         public boolean hitOnline = false;
         /** 连接验证结果（可为空 = 未验证）。 */
         public String connVerify = "";
+        // ---- HIT 纠错（P0-3，2026-11-08）：原始判定与最终修正结果同时保留 ----
+        /** 是否发生过反证纠错。 */
+        public boolean corrected = false;
+        /** 原始命中判定（纠错前）。 */
+        public String originalVerdict = "";
+        /** 原始命中 PIN（纠错后仍保留，供审计）。 */
+        public String originalPin = "";
+        /** 纠正后的判定（如 NOT_TARGET）。 */
+        public String correctedVerdict = "";
+        /** 纠错原因（可读）。 */
+        public String correctionReason = "";
+        /** 纠错时刻（毫秒）。 */
+        public long correctedAtMs = 0;
 
         /** 单行文本（值用 {@link WpsHelper#enc} 编码；不得含换行）。 */
         public String encode() {
@@ -87,6 +100,12 @@ public final class WpsLedger {
                 sb.append(" evidence=").append(WpsHelper.enc(evidence));
                 sb.append(" hitOnline=").append(hitOnline ? 1 : 0);
                 sb.append(" connVerify=").append(WpsHelper.enc(connVerify));
+                sb.append(" corrected=").append(corrected ? 1 : 0);
+                sb.append(" originalVerdict=").append(WpsHelper.enc(originalVerdict));
+                sb.append(" originalPin=").append(WpsHelper.enc(originalPin));
+                sb.append(" correctedVerdict=").append(WpsHelper.enc(correctedVerdict));
+                sb.append(" correctionReason=").append(WpsHelper.enc(correctionReason));
+                sb.append(" correctedAtMs=").append(correctedAtMs);
                 return sb.toString();
             } catch (Throwable t) {
                 return "";
@@ -182,6 +201,24 @@ public final class WpsLedger {
                             break;
                         case "connVerify":
                             t.connVerify = v;
+                            break;
+                        case "corrected":
+                            t.corrected = "1".equals(v) || "true".equalsIgnoreCase(v);
+                            break;
+                        case "originalVerdict":
+                            t.originalVerdict = v;
+                            break;
+                        case "originalPin":
+                            t.originalPin = v;
+                            break;
+                        case "correctedVerdict":
+                            t.correctedVerdict = v;
+                            break;
+                        case "correctionReason":
+                            t.correctionReason = v;
+                            break;
+                        case "correctedAtMs":
+                            t.correctedAtMs = longOr(v, 0L);
                             break;
                         default:
                             break;

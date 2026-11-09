@@ -1626,6 +1626,20 @@ public class MainActivity extends Activity {
                     wpsTask.connVerify = wpsSession.hitOnline
                             ? "ONLINE" : L.s("已连上但当时没拿到 IP", "connected, no IP yet");
                 }
+                // 纠错结果落账（P0-3）：原始判定/PIN 与修正判定同时保留；
+                // 应用重启后从台账读回，不会退回「命中」。
+                if (wpsSession.hitCorrected) {
+                    wpsTask.corrected = true;
+                    wpsTask.originalVerdict = wpsSession.hitOriginalVerdict;
+                    wpsTask.originalPin = wpsSession.hitOriginalPin;
+                    wpsTask.correctedVerdict = wpsSession.hitCorrectedVerdict;
+                    wpsTask.correctionReason = wpsSession.hitCorrectionReason;
+                    wpsTask.correctedAtMs = wpsSession.hitCorrectedAtMs;
+                    // 纠错后当前有效判定是 NOT_TARGET → 不保留为"命中"
+                    wpsTask.hitPin = "";
+                    wpsTask.hitVerdict = wpsSession.hitVerdict;
+                    wpsTask.evidence = io.github.wlmosv_png.wpaforge.wps.WpsEngine.correctionSummary(wpsSession);
+                }
             }
             wpsLedger().upsert(wpsTask);
         } catch (Throwable t) {
@@ -3221,6 +3235,18 @@ public class MainActivity extends Activity {
                         .append(L.s("命中 ", "HIT ")).append(t.hitPin);
                 if (t.evidence != null && !t.evidence.isEmpty()) {
                     sb.append('\n').append("    ").append(t.evidence);
+                }
+            }
+            // 纠错审计行（P0-3）：原始判定与修正结果同时可读；纠正后的任务不再显示为命中
+            if (t.corrected) {
+                sb.append('\n').append("    ⟲ ")
+                        .append(L.s("已纠错：", "corrected: "))
+                        .append(t.originalVerdict).append(" → ").append(t.correctedVerdict);
+                if (t.originalPin != null && !t.originalPin.isEmpty()) {
+                    sb.append("  ").append(L.s("原始 PIN ", "orig PIN ")).append(t.originalPin);
+                }
+                if (t.correctionReason != null && !t.correctionReason.isEmpty()) {
+                    sb.append('\n').append("      ").append(t.correctionReason);
                 }
             } else if (t.hitVerdict != null && !t.hitVerdict.isEmpty()) {
                 sb.append('\n').append("    ").append(t.hitVerdict);

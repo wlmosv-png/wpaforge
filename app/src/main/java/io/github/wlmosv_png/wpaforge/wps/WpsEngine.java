@@ -438,19 +438,39 @@ public final class WpsEngine {
      */
     static void maybeCorrect(Session s, Attempt a) {
         if (s == null || a == null) return;
+        // 幂等：已进入纠错后不再重复处理（防重复回调 / 并发投递导致的状态抖动）。
+        // 需要「再次纠错」的场景不存在 —— 一个 HIT 只可能被一次撤回。
+        if (s.hitCorrected) return;
         if (!WpsHitJudge.C_NOT_TARGET.equals(a.hitVerdict)) return;   // 只认「连到别的网」这一强反证
-        // 归属隔离：旧任务 / 别的目标的证据不得改动本任务结果
-        if (!a.targetSsid.isEmpty() && !s.hitSsid.isEmpty()
-                && !a.targetSsid.equals(s.hitSsid)) return;
-        if (!a.taskId.isEmpty() && !s.taskId.isEmpty() && !a.taskId.equals(s.taskId)) return;
+
+        // 归属隔离（保守化）：**必须有明确证据**证明「同任务」或「同目标」，
+        // 缺字段一律不动 —— 绝不「缺身份 → 默认同目标」。
+        boolean taskKnown = !a.taskId.isEmpty() && !s.taskId.isEmpty();
+        boolean taskSame = taskKnown && a.taskId.equals(s.taskId);
+        boolean taskConflict = taskKnown && !taskSame;
+
+        boolean ssidKnown = !a.targetSsid.isEmpty() && !s.hitSsid.isEmpty();
+        boolean ssidSame = ssidKnown && a.targetSsid.equals(s.hitSsid);
+        boolean ssidConflict = ssidKnown && !ssidSame;
+
+        boolean bssidKnown = !a.hitBssid.isEmpty() && !s.hitBssid.isEmpty();
+        boolean bssidSame = bssidKnown && a.hitBssid.equalsIgnoreCase(s.hitBssid);
+        boolean bssidConflict = bssidKnown && !bssidSame;
+
+        // 任一维度明确冲突 → 属旧任务 / 别的目标 → 拒绝纠错
+        if (taskConflict || ssidConflict) return;
+        // 三个维度都没有「明确相同」的证据 → 保守拒绝（不默认同目标）
+        if (!taskSame && !ssidSame && !bssidSame) return;
 
         s.hitCorrected = true;
         // 原始**判定**（HIT_CONFIRMED 之类），不是会话状态码（HIT）
         if (s.hitOriginalVerdict.isEmpty()) s.hitOriginalVerdict = s.hitVerdict;
         if (s.hitOriginalPin.isEmpty()) s.hitOriginalPin = s.hitPin == null ? "" : s.hitPin;
         s.hitCorrectedVerdict = WpsHitJudge.C_NOT_TARGET;
-        s.hitCorrectionReason = "更强反证：连接指向「" + a.hitSsid + "」，不是目标「"
-                + s.hitSsid + "」→ 撤销命中";
+        s.hitCorrectionReason = "更强反证：连接指向「" + a.hitSsid
+                + (a.hitBssid.isEmpty() ? "" : " / " + a.hitBssid)
+                + "」，不是目标「" + s.hitSsid
+                + (s.hitBssid.isEmpty() ? "" : " / " + s.hitBssid) + "」→ 撤销命中";
         s.hitCorrectedAtMs = System.currentTimeMillis();
         // 撤销命中：回到进行中（可继续），当前有效判定不再渲染成「已命中」
         s.hitPin = null;

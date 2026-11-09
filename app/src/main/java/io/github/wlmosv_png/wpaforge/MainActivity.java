@@ -2247,23 +2247,33 @@ public class MainActivity extends Activity {
      * <p>2026-11-09 架构升级：结论 → 状态 的映射收敛到 {@link WpsUiKit}（可离线单测），
      * 本方法只做「kit 状态 → 本地视觉常量」的适配。
      */
+    /**
+     * 目标的能力结论（**卡片与标签共用同一来源**）。
+     *
+     * <p>优先取运行时双通道结果缓存；没有时用扫描期 config_methods 组通道 A 作临时结论。
+     * 绝不消费 {@code Target.wpsVerdict} 这类"读不到"字符串。
+     */
+    private io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability
+            wpsCapabilityOf(io.github.wlmosv_png.wpaforge.wps.WpsController.Target t) {
+        if (t == null) return null;
+        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability c =
+                wpsCapByBssid.get(t.bssid);
+        if (c != null) return c;
+        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel a =
+                io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.root(
+                        t.bssid, wpsParseConfigMethods(t.wpsMethods),
+                        -1, -1, -1, t.wpsDevice, "", System.currentTimeMillis());
+        return io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
+                .combine(t.bssid, System.currentTimeMillis(), a, null);
+    }
+
     private int wpsCapStateOf(io.github.wlmosv_png.wpaforge.wps.WpsController.Target t) {
         if (t == null) return WPS_TAG_NONE;
         // 2026-11-09（P0-1）：标签**只认能力管理器的结论**（由 config_methods 实际取值决定）。
         // 修复前直接把 t.wpsVerdict 字符串映射成标签 —— 于是 "NO_WPS"（读不到）
         // 会被当成"明确不支持"，且与运行时双通道结论互相矛盾。
-        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability cap =
-                wpsCapByBssid.get(t.bssid);
-        if (cap == null) {
-            // 尚未运行时检测：用扫描期的 config_methods 组通道 A，只作"临时结论"
-            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel a =
-                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.root(
-                            t.bssid, wpsParseConfigMethods(t.wpsMethods),
-                            -1, -1, -1, t.wpsDevice, "", System.currentTimeMillis());
-            cap = io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
-                    .combine(t.bssid, System.currentTimeMillis(), a, null);
-        }
-        return wpsUiStateOf(cap.verdict);
+        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability cap = wpsCapabilityOf(t);
+        return cap == null ? WPS_TAG_NONE : wpsUiStateOf(cap.verdict);
     }
 
     /** 设能力标签（颜色/文案随状态；未知≠不支持，如实区分）。 */
@@ -2324,40 +2334,42 @@ public class MainActivity extends Activity {
         StringBuilder cap = new StringBuilder();
         StringBuilder env = new StringBuilder();
 
+        // 2026-11-09（用户反馈"能跑却说不支持"）：整卡重做。
+        // 旧卡片三行都写「信息不足」，读起来像"不支持"；而且读的是扫描期的 wpsVerdict
+        // （可能与运行时结论不一致）。现在改为**三段分明**：AP 宣告 / 本机环境 / 实际尝试，
+        // 并对"未知"给出明确释义。
         io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg = wpsTargetMgr.selected();
+        cap.append(L.s("【AP 能力状态】AP 自己的宣告\n", "[AP capability] what the AP declares\n"));
         cap.append(L.s("目标：", "Target: "));
-        cap.append(tg == null ? L.s("未选择\n", "none\n")
+        cap.append(tg == null ? L.s("（未选择）\n", "(none)\n")
                 : tg.ssid + "  " + tg.bssid + "\n");
         if (tg == null) {
-            cap.append(L.s("  WPS 支持    信息不足\n", "  WPS    unknown\n"));
-            cap.append(L.s("  PIN 方法    信息不足\n", "  PIN    unknown\n"));
-            cap.append(L.s("  外部 Registrar  信息不足\n", "  extReg unknown\n"));
+            cap.append(L.s("判定：未知（未选择目标）\n", "verdict: unknown (no target)\n"));
         } else {
-            String wpsSt = tg.wpsVerdict == null ? "" : tg.wpsVerdict;
-            String wpsTxt;
-            switch (wpsSt) {
-                case "PIN_OK": wpsTxt = L.s("已确认支持 PIN 方法", "PIN method supported"); break;
-                case "NO_PIN": wpsTxt = L.s("未声明 PIN 输入方法", "no PIN method declared"); break;
-                case "LOCKED": wpsTxt = L.s("AP 已锁定", "AP locked"); break;
-                default: wpsTxt = L.s("信息不足", "unknown"); break;
+            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability c = wpsCapabilityOf(tg);
+            String v = c == null ? io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.V_UNKNOWN
+                    : c.verdict;
+            cap.append(L.s("判定：", "verdict: "))
+                    .append(io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capVerdictText(v, zh))
+                    .append('\n');
+            cap.append(L.s("来源：", "source: "))
+                    .append(io.github.wlmosv_png.wpaforge.wps.WpsUiKit
+                            .capSourceText(c == null ? "" : c.primarySource, zh))
+                    .append('\n');
+            if (c != null && c.stale) {
+                cap.append(L.s("注意：该结论采集已超过 5 分钟，可能过期\n",
+                        "note: this reading is older than 5 min\n"));
             }
-            cap.append(L.s("  WPS 支持     ", "  WPS    ")).append(wpsTxt).append('\n');
-            cap.append(L.s("  PIN 方法     ", "  PIN    "));
-            if (!"NO_PIN".equals(wpsSt) && !"LOCKED".equals(wpsSt) && !"UNKNOWN".equals(wpsSt)) {
-                cap.append(L.s("已确认支持（config=", "supported (config="))
-                        .append(tg.wpsMethods).append(')').append('\n');
-            } else if ("NO_PIN".equals(wpsSt)) {
-                cap.append(L.s("未声明（config=", "not declared (config="))
-                        .append(tg.wpsMethods).append(')').append('\n');
-            } else {
-                cap.append(L.s("信息不足", "unknown")).append('\n');
+            if (c != null && c.conflict) {
+                cap.append(L.s("注意：两条通道结论不一致，未擅自选择\n",
+                        "note: channels disagree - not auto-picked\n"));
             }
-            cap.append(L.s("  外部 Registrar  ", "  extRegistrar  "));
-            if (tg.pairingWindow == 1) cap.append(L.s("存在可能（配对待机已开）", "possible (pairing open)"));
-            else if (tg.pairingWindow == 0) cap.append(L.s("信息不足（配对待机未开）", "likely closed"));
-            else cap.append(L.s("信息不足（AP 未宣告）", "unknown (not declared)"));
-            cap.append('\n');
         }
+        cap.append(L.s("※ 「未知」= 没读到 AP 的宣告，**不等于**目标不支持 PIN。\n"
+                        + "※ 能不能验证，看下面的「实际尝试」，不看这一栏。",
+                "· \"unknown\" = we could not read the AP's declaration; it does NOT mean\n"
+                        + "  PIN is unsupported. Whether it can be verified is decided by\n"
+                        + "  the actual attempts below, not by this line."));
 
         // 2026-11-08 卡顿修复：Root 可用性不再在主线程同步 exec su。
         // 老代码每次 buildWpsTab 首建都在这跑 2 次 WpsController.available()
@@ -2365,6 +2377,8 @@ public class MainActivity extends Activity {
         // 点击 WPS 导航明显卡顿。现在主线程只读缓存：null 显示「检测中」，
         // 真实检测放后台线程（ensureWpsRootDiag），跑完再刷这一行。
         Boolean rootOk = wpsRootOk;
+        env.append(L.s("【执行环境 · 状态总览】本机通道（决定我们能不能去试）\n",
+                "[execution env] local channels (can WE attempt)\n"));
         env.append(L.s("Root    ", "Root    ")).append(
                 rootOk == null
                         ? L.s("检测中…", "checking…")
@@ -2384,6 +2398,26 @@ public class MainActivity extends Activity {
         env.append(wpsSelftestDone
                 ? L.s("通道已真读回包验证", "channel verified by real read")
                 : L.s("通道自检未执行（开始/扫描后自动检查）", "channel not self-tested yet"));
+        env.append('\n');
+        // 第三段：实际尝试 —— 判断"能不能验证"的唯一依据
+        env.append(L.s("\n【实际尝试】判断能否验证的唯一依据\n",
+                "\n[actual attempts] the ONLY basis for verifiability\n"));
+        String execLbl = wpsTaskMgr().state().label();
+        String execHuman;
+        if (io.github.wlmosv_png.wpaforge.wps.WpsRunState.IDLE
+                == wpsTaskMgr().state().state()) {
+            execHuman = L.s("尚未尝试 —— 点「开始验证」才会知道这个目标能不能验证",
+                    "not attempted yet - press Start to find out");
+        } else if (wpsTaskMgr().state().isActive()) {
+            execHuman = L.s("进行中…", "in progress…");
+        } else if (wpsSession != null) {
+            execHuman = io.github.wlmosv_png.wpaforge.wps.WpsEngine
+                    .verdictText(wpsSession.verdict, zh);
+        } else {
+            execHuman = L.s("已结束", "finished");
+        }
+        env.append(L.s("状态：", "state: ")).append(execLbl).append('\n');
+        env.append(L.s("结论：", "verdict: ")).append(execHuman);
 
         wpsEnvCardText.setText(env.toString());
         wpsCapCardText.setText(cap.toString());

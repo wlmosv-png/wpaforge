@@ -137,6 +137,14 @@ public final class WpsUiInteractionTest {
                 ma.contains("[能力] 未能判定（"), "无");
         ok("旧含糊文案已移除",
                 !ma.contains("厂商算法对这个 BSSID 没算出结果"), "仍存在");
+        ok("能力卡改为三段式（AP 宣告 / 本机环境 / 实际尝试）",
+                ma.contains("【AP 能力状态】") && ma.contains("【执行环境 · 状态总览】")
+                        && ma.contains("【实际尝试】"), "无");
+        ok("能力卡明确「未知 ≠ 不支持」",
+                ma.contains("不等于**目标不支持 PIN") || ma.contains("不等于"), "无");
+        ok("卡片与标签共用同一能力来源",
+                ma.contains("wpsCapabilityOf(") , "无");
+        ok("能力人话走 WpsUiKit", ma.contains("WpsUiKit.capVerdictText("), "无");
         ok("日志记录停止请求", ma.contains("\"[停止] 请求已发出"), "无");
         // 2026-11-09（P0-3）：最终日志必须同时给出 执行状态 | 判定 | 证据等级
         ok("日志记录最终三段式结果",

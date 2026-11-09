@@ -238,6 +238,27 @@ public final class WpsModulesTest {
         ok("颜色键：NO_PIN=红键",
                 WpsUiKit.capStateColors(WpsUiKit.CAP_NO_PIN)[0] == WpsUiKit.COLOR_DANGER, "");
 
+        info("能力结论人话（未知绝不写成「不支持」）");
+        for (String v : new String[]{WpsCapabilityManager.V_UNKNOWN,
+                WpsCapabilityManager.V_INCOMPLETE}) {
+            String tv = WpsUiKit.capVerdictText(v, true);
+            // 关键：措辞必须是"没读到/不等于不支持"，而不是断言式否定
+            ok("「" + v + "」文案明确「≠ 不支持」",
+                    tv.contains("不等于不支持") || tv.contains("≠ 不支持"), tv);
+            ok("「" + v + "」文案点明「没读到」",
+                    tv.contains("没读到") || tv.contains("不完整"), tv);
+        }
+        ok("PIN_OK 文案强调「≠ 已验证」",
+                WpsUiKit.capVerdictText(WpsCapabilityManager.V_PIN_OK, true).contains("≠ 已验证"),
+                WpsUiKit.capVerdictText(WpsCapabilityManager.V_PIN_OK, true));
+        ok("NO_PIN 才写「不接受」",
+                WpsUiKit.capVerdictText(WpsCapabilityManager.V_NO_PIN, true).contains("不接受"), "");
+        ok("来源文案：root", WpsUiKit.capSourceText(WpsCapabilityManager.SRC_ROOT, true).contains("root"), "");
+        ok("来源文案：本地 IE",
+                WpsUiKit.capSourceText(WpsCapabilityManager.SRC_LOCAL, true).contains("本地"), "");
+        ok("来源文案：无",
+                WpsUiKit.capSourceText(WpsCapabilityManager.SRC_NONE, true).contains("无"), "");
+
         System.out.println();
         System.out.println("=== WpsModulesTest: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

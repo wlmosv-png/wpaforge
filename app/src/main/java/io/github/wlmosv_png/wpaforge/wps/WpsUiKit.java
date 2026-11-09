@@ -70,6 +70,48 @@ public final class WpsUiKit {
         }
     }
 
+    /**
+     * 能力结论 → **完整人话**（卡片用；比标签长，含"这意味着什么"）。
+     *
+     * <p>措辞原则：**未知/不完整一律写成"没读到"，绝不写成"不支持"**；
+     * 只有 AP 明确宣告才写"不接受"。
+     */
+    public static String capVerdictText(String verdict, boolean zh) {
+        if (verdict == null) verdict = "";
+        switch (verdict) {
+            case WpsCapabilityManager.V_PIN_OK:
+                return zh ? "AP 已宣告可接受 PIN（≠ 已验证）"
+                          : "AP declares PIN accepted (NOT verified)";
+            case WpsCapabilityManager.V_NO_PIN:
+                return zh ? "AP 明确宣告不接受外部 PIN"
+                          : "AP explicitly declines external PIN";
+            case WpsCapabilityManager.V_LOCKED:
+                return zh ? "AP 当前处于 WPS 锁定"
+                          : "AP is WPS-locked";
+            case WpsCapabilityManager.V_CONFLICT:
+                return zh ? "两条通道结论冲突（不擅自选一个）"
+                          : "two channels disagree";
+            case WpsCapabilityManager.V_INCOMPLETE:
+                return zh ? "未知（数据不完整，没读到 ≠ 不支持）"
+                          : "unknown (incomplete data; not-read != unsupported)";
+            default:
+                return zh ? "未知（没读到，不等于不支持）"
+                          : "unknown (not read; not a negative)";
+        }
+    }
+
+    /** 能力来源 → 人话。 */
+    public static String capSourceText(String source, boolean zh) {
+        if (source == null) source = "";
+        if (WpsCapabilityManager.SRC_ROOT.equals(source)) {
+            return zh ? "root BSS 查询" : "root BSS query";
+        }
+        if (WpsCapabilityManager.SRC_LOCAL.equals(source)) {
+            return zh ? "本地 IE 解析" : "local IE parse";
+        }
+        return zh ? "无可用来源" : "no source";
+    }
+
     /** 标签是否表达"已确认可验证"—— **恒 false**：能力检测永远不等于验证通过。 */
     public static boolean capStateMeansVerified(int state) {
         return false;

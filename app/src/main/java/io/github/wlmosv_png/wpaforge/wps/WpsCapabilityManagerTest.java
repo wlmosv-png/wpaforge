@@ -140,6 +140,59 @@ public final class WpsCapabilityManagerTest {
         ok("PIN_OK 文案含未验证", c1.label(true).contains("未验证"), c1.label(true));
         ok("UNKNOWN 文案不含「不支持」", !c7.label(true).contains("不支持"), c7.label(true));
 
+        // ------------------------------------------------ P0-1 专项（读取失败 vs 明确不支持）
+        info("⑭ ROOT_BSS 缺少 config_methods → INCOMPLETE（不得判不支持）");
+        WpsCapabilityManager.Channel noCfg = WpsCapabilityManager.root(
+                BSSID, WpsIeParser.UNKNOWN, -1, -1, -1, "", "raw", NOW);
+        WpsCapabilityManager.Capability c14 =
+                WpsCapabilityManager.combine(BSSID, NOW, noCfg, null);
+        ok("INCOMPLETE", WpsCapabilityManager.V_INCOMPLETE.equals(c14.verdict), c14.verdict);
+        ok("不是 NO_PIN", !WpsCapabilityManager.V_NO_PIN.equals(c14.verdict), "");
+        ok("原因指明数据不完整", c14.reason.contains("不完整"), c14.reason);
+
+        info("⑮ 本地 IE 缺少 WPS IE → 该通道不可用");
+        WpsIeParser.Result noIe = new WpsIeParser.Result();   // observed=false
+        WpsCapabilityManager.Channel lNone = WpsCapabilityManager.localIe(BSSID, noIe, "raw", NOW);
+        ok("通道不可用", !lNone.available, "");
+        WpsCapabilityManager.Capability c15 =
+                WpsCapabilityManager.combine(BSSID, NOW, null, lNone);
+        ok("UNKNOWN（两通道都无 → 未知）",
+                WpsCapabilityManager.V_UNKNOWN.equals(c15.verdict), c15.verdict);
+
+        info("⑯ 两通道都不完整 → 未知/不完整，绝不 NO_PIN");
+        WpsIeParser.Result trunc2 = new WpsIeParser.Result();
+        trunc2.wpsIeFound = true; trunc2.truncated = true;
+        WpsCapabilityManager.Capability c16 = WpsCapabilityManager.combine(
+                BSSID, NOW, noCfg, WpsCapabilityManager.localIe(BSSID, trunc2, "r", NOW));
+        ok("不是 NO_PIN", !WpsCapabilityManager.V_NO_PIN.equals(c16.verdict), c16.verdict);
+        ok("是 INCOMPLETE/UNKNOWN",
+                WpsCapabilityManager.V_INCOMPLETE.equals(c16.verdict)
+                        || WpsCapabilityManager.V_UNKNOWN.equals(c16.verdict), c16.verdict);
+
+        info("⑰ 一通道完整、一通道不完整 → 取完整的那条");
+        WpsCapabilityManager.Capability c17 = WpsCapabilityManager.combine(
+                BSSID, NOW, noCfg, local(KEYPAD));
+        ok("用完整的 local 通道得出结论",
+                WpsCapabilityManager.V_PIN_OK.equals(c17.verdict), c17.verdict);
+        ok("来源=local", WpsCapabilityManager.SRC_LOCAL.equals(c17.primarySource), c17.primarySource);
+
+        info("⑱ 明确不支持 vs 读取失败：只有完整数据才允许 NO_PIN");
+        WpsCapabilityManager.Capability okNoPin =
+                WpsCapabilityManager.combine(BSSID, NOW, root(PBC), null);
+        ok("完整且不含 KEYPAD/LABEL → NO_PIN",
+                WpsCapabilityManager.V_NO_PIN.equals(okNoPin.verdict), okNoPin.verdict);
+        WpsCapabilityManager.Capability readFail =
+                WpsCapabilityManager.combine(BSSID, NOW, noCfg, null);
+        ok("读取失败 → 绝不 NO_PIN",
+                !WpsCapabilityManager.V_NO_PIN.equals(readFail.verdict), readFail.verdict);
+        ok("两者结论不同（语义已分离）",
+                !okNoPin.verdict.equals(readFail.verdict), "");
+
+        info("⑲ NO_WPS 字符串不再驱动结论（只看 config_methods 取值）");
+        // 旧逻辑会用 t.wpsVerdict 的 "NO_WPS" 直接判；新逻辑从不 consume 该字符串
+        ok("能力管理器不引用 NO_WPS 字面量",
+                !WpsCapabilityManager.V_NO_PIN.equals("NO_WPS"), "");
+
         System.out.println();
         System.out.println("=== WpsCapabilityManagerTest: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

@@ -372,7 +372,15 @@ public final class WpsController {
         /** 命令本身是否成功（BSS 表里有这个 AP 且能读出 WPS 段） */
         public boolean ok;
         /** PIN_OK / NO_PIN / LOCKED / NO_WPS */
-        public String verdict = "NO_WPS";
+        /**
+         * PIN_OK / NO_PIN / LOCKED / NO_WPS / UNKNOWN。
+         *
+         * <p>2026-11-09（P0-1）：默认值由 {@code NO_WPS} 改为 {@code UNKNOWN} ——
+         * 没读到 ≠ 没有；只有 helper 明确回 NO_WPS 时才采信。
+         */
+        public String verdict = "UNKNOWN";
+        /** 该次读取是否成功（helper 的 WPS_READ=OK/FAILED）；false=读失败。 */
+        public boolean readOk;
 
         public boolean hopeless() {
             return "NO_PIN".equals(verdict) || "LOCKED".equals(verdict);
@@ -387,7 +395,12 @@ public final class WpsController {
                           : "AP does not accept an external PIN (config_methods=" + methods + ")";
             }
             if ("NO_WPS".equals(verdict)) {
-                return zh ? "读不到该 AP 的 WPS 信息" : "No WPS info available";
+                return zh ? "该 AP 未广播 WPS 信息（确认无 WPS）"
+                          : "AP broadcasts no WPS information (confirmed)";
+            }
+            if ("UNKNOWN".equals(verdict) || verdict == null || verdict.isEmpty()) {
+                return zh ? "未读到该 AP 的 WPS 信息（读取失败或数据不完整，不能判定为不支持）"
+                          : "could not read WPS info (read failed / incomplete - not a negative)";
             }
             return zh ? "AP 声明可接受 PIN" : "AP accepts PIN";
         }
@@ -421,6 +434,7 @@ public final class WpsController {
                 case "WPS_DEV_PWD_ID": f.devPwdId = parseInt(v, -1); break;
                 case "WPS_VERDICT": f.verdict = v; break;
                 case "WPS_OK": f.ok = "1".equals(v); break;
+                case "WPS_READ": f.readOk = "OK".equals(v); break;
                 default: break;
             }
         }

@@ -54,6 +54,57 @@ public final class WpsRunStateTest {
         ok("空闲 workerExited 返回 false", !st.workerExited(), st.label());
         ok("仍 IDLE", st.isIdle(), st.label());
 
+        // ------------------------------------------------ P0-3 专项：终态模型
+        info("⑧ 线程退出必须落到明确终态（用户停止 → STOPPED）");
+        WpsRunState r2 = new WpsRunState();
+        r2.requestStart();
+        r2.requestStop();
+        ok("STOPPING", r2.isStopping(), r2.label());
+        ok("workerExited(STOPPED) 返回此前活跃", r2.workerExited(WpsRunState.STOPPED), "");
+        ok("状态=STOPPED", "STOPPED".equals(r2.label()), r2.label());
+        ok("是终态", r2.isTerminal(), "");
+        ok("不再是 RUNNING", !r2.isRunning(), "");
+        ok("STOPPED ≠ FAILED", !r2.isTerminal() || !"FAILED".equals(r2.label()), r2.label());
+
+        info("⑨ STOPPED 之后可以安全重新开始");
+        ok("requestStart 成功", r2.requestStart(), r2.label());
+        ok("RUNNING", r2.isRunning(), r2.label());
+
+        info("⑩ 自然结束 → COMPLETED；异常 → FAILED");
+        WpsRunState r3 = new WpsRunState();
+        r3.requestStart();
+        ok("workerExited(COMPLETED)", r3.workerExited(WpsRunState.COMPLETED), "");
+        ok("COMPLETED", "COMPLETED".equals(r3.label()), r3.label());
+        ok("可重启", r3.requestStart(), "");
+        ok("workerExited(FAILED)", r3.workerExited(WpsRunState.FAILED), "");
+        ok("FAILED", "FAILED".equals(r3.label()), r3.label());
+        ok("可重启", r3.requestStart(), "");
+
+        info("⑪ isActive 语义（活动态才能停止、才拒绝启动）");
+        WpsRunState r4 = new WpsRunState();
+        ok("IDLE 非活动", !r4.isActive(), "");
+        r4.requestStart();
+        ok("RUNNING 活动", r4.isActive(), "");
+        r4.requestStop();
+        ok("STOPPING 活动", r4.isActive(), "");
+        r4.workerExited(WpsRunState.STOPPED);
+        ok("STOPPED 非活动", !r4.isActive(), "");
+
+        info("⑫ 可控假执行器：停止请求后不再处理新候选（取消粒度）");
+        // 模拟生产循环：每轮候选前查 isActive()，停止后立即停手
+        WpsRunState eng = new WpsRunState();
+        eng.requestStart();
+        int processed = 0;
+        for (int i = 0; i < 10; i++) {
+            if (!eng.isActive()) break;                 // 生产侧的取消检查点
+            if (i == 2) eng.requestStop();              // 第 3 条时请求停止
+            if (eng.isStopping()) break;                // 停止后**不再**启动新候选
+            processed++;
+        }
+        ok("停止后不再处理新候选（processed=2）", processed == 2, "" + processed);
+        ok("线程收尾后落 STOPPED", eng.workerExited(WpsRunState.STOPPED)
+                && "STOPPED".equals(eng.label()), eng.label());
+
         System.out.println();
         System.out.println("=== WpsRunStateTest: " + pass + " 通过, " + fail + " 失败 ===");
         if (fail > 0) System.exit(1);

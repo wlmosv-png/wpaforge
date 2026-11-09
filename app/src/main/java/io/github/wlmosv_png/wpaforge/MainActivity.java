@@ -1215,6 +1215,23 @@ public class MainActivity extends Activity {
                 capVerdict, capLabel, false, System.currentTimeMillis());
     }
 
+    /** 每个 BSSID 的最新能力结论（**唯一来源**：双通道合并结果）。 */
+    private final java.util.Map<String, io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability>
+            wpsCapByBssid = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 解析 {@code wpsMethods} 字符串（"0x2008"）→ int；空/非法 → -1（UNKNOWN）。 */
+    private static int wpsParseConfigMethods(String s) {
+        if (s == null) return -1;
+        String v = s.trim();
+        if (v.isEmpty()) return -1;
+        try {
+            return v.startsWith("0x") || v.startsWith("0X")
+                    ? Integer.parseInt(v.substring(2), 16) : Integer.parseInt(v);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     /** 能力结论 → 本地标签状态（供双通道合并结果刷新标签）。 */
     private int wpsUiStateOf(String verdict) {
         switch (io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capStateOf(verdict)) {
@@ -2039,6 +2056,7 @@ public class MainActivity extends Activity {
         wpsTargetMgr.targets().clear();
         wpsTargetMgr.clearSelection();
         wpsTargetMgr.beginScan();          // NEVER/DONE/FAILED → SCANNING
+        wpsCapByBssid.clear();             // 重新扫描 → 能力缓存过期，清空
         renderWpsTargets();
         wpsCtrlOk = -1;
         wpsScanBusy(true, L.s("扫描中…", "Scanning…"));
@@ -2229,17 +2247,21 @@ public class MainActivity extends Activity {
      */
     private int wpsCapStateOf(io.github.wlmosv_png.wpaforge.wps.WpsController.Target t) {
         if (t == null) return WPS_TAG_NONE;
-        String v = t.wpsVerdict == null ? "" : t.wpsVerdict;
-        switch (io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capStateOf(v)) {
-            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_OK:
-                return WPS_TAG_OK;
-            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_NO_PIN:
-                return WPS_TAG_NO_PIN;
-            case io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_LOCKED:
-                return WPS_TAG_LOCKED;
-            default:
-                return WPS_TAG_UNKNOWN;
+        // 2026-11-09（P0-1）：标签**只认能力管理器的结论**（由 config_methods 实际取值决定）。
+        // 修复前直接把 t.wpsVerdict 字符串映射成标签 —— 于是 "NO_WPS"（读不到）
+        // 会被当成"明确不支持"，且与运行时双通道结论互相矛盾。
+        io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability cap =
+                wpsCapByBssid.get(t.bssid);
+        if (cap == null) {
+            // 尚未运行时检测：用扫描期的 config_methods 组通道 A，只作"临时结论"
+            io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Channel a =
+                    io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.root(
+                            t.bssid, wpsParseConfigMethods(t.wpsMethods),
+                            -1, -1, -1, t.wpsDevice, "", System.currentTimeMillis());
+            cap = io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
+                    .combine(t.bssid, System.currentTimeMillis(), a, null);
         }
+        return wpsUiStateOf(cap.verdict);
     }
 
     /** 设能力标签（颜色/文案随状态；未知≠不支持，如实区分）。 */
@@ -2731,7 +2753,7 @@ public class MainActivity extends Activity {
     }
 
     private void stopWps() {
-        if (wpsTaskMgr().isIdle()) {
+        if (!wpsTaskMgr().isActive()) {
             Toast.makeText(this, L.s("没有正在运行的任务", "No running task"),
                     Toast.LENGTH_SHORT).show();
             return;
@@ -2773,6 +2795,7 @@ public class MainActivity extends Activity {
                     io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
                             .combine(bssid, System.currentTimeMillis(), chA, chB);
             final io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.Capability fcap = cap;
+            wpsCapByBssid.put(bssid, cap);          // 唯一来源：写入缓存，标签/门面都读它
             runOnUiThread(() -> {
                 wpsLastCapVerdict = fcap.verdict;
                 setWpsCapTag(wpsUiStateOf(fcap.verdict));
@@ -2783,11 +2806,14 @@ public class MainActivity extends Activity {
                 wpsLog("[cap] issues: " + cap.issueSummary());
             }
             boolean zhCap = L.s("a", "b").equals("a");
-            wpsLog(L.s("[能力] 检测完成 → verdict=" + wi.verdict, "[cap] done -> verdict=" + wi.verdict)
+            // 通道 A 的**原始读取结果**（不再冒充最终结论；最终结论在下面的双通道合并）
+            wpsLog(L.s("[能力] 通道A(root) read=" + (wi.readOk ? "OK" : "FAILED")
+                            + "  raw_verdict=" + wi.verdict,
+                    "[cap] channelA(root) read=" + (wi.readOk ? "OK" : "FAILED")
+                            + "  raw_verdict=" + wi.verdict)
                     + (wi.methods.isEmpty() ? "" : "  config_methods=" + wi.methods)
                     + (wi.locked ? "  locked=1" : "")
                     + (wi.device.isEmpty() ? "" : "  device=" + wi.device));
-            wpsLog("        " + wi.reason(zhCap));
             if (io.github.wlmosv_png.wpaforge.wps.WpsEngine.presetTerminal(wpsSession)) {
                 // 走到这里说明用户已经二次确认过：尊重选择，退回运行时兜底
                 wpsLog(L.s("[!] 该目标已被判打不动，按你的要求强制运行（只留运行时判定）。",
@@ -2837,7 +2863,13 @@ public class MainActivity extends Activity {
             }
             // 结构化：任务收尾 —— 耗时 / 最终状态 / 证据等级 / 停止完成
             wpsLog(L.s("[停止] 执行线程已退出，任务收尾", "[stop] worker exited, finalizing"));
-            wpsTaskMgr().workerExited();    // 线程退出 → 回到 IDLE（停止完成）
+            // 2026-11-09（P0-3）：线程退出必须落到明确的终态 ——
+            // 用户停止 → STOPPED（**不是失败、不是 PIN 错**）；异常 → FAILED；其余 → COMPLETED
+            int wpsTerminal = wpsFailReason != null
+                    ? io.github.wlmosv_png.wpaforge.wps.WpsRunState.FAILED
+                    : (wpsCancel ? io.github.wlmosv_png.wpaforge.wps.WpsRunState.STOPPED
+                                 : io.github.wlmosv_png.wpaforge.wps.WpsRunState.COMPLETED);
+            wpsTaskMgr().workerExited(wpsTerminal);
             // 台账收尾：区分命中 / 用户暂停 / 异常 / 候选跑完（终止原因必须落账）
             if (wpsFailReason != null) {
                 wpsTaskFinish(io.github.wlmosv_png.wpaforge.wps.WpsLedger.ST_FAILED,
@@ -2853,15 +2885,26 @@ public class MainActivity extends Activity {
                 wpsTaskFinish(io.github.wlmosv_png.wpaforge.wps.WpsLedger.ST_DONE,
                         L.s("候选跑完", "candidates exhausted"));
             }
-            // 结构化：最终结果 + 证据等级（只反映真实判定，不美化）
+            // 2026-11-09（P0-3）：最终日志**同时**输出三个正交维度 ——
+            //   执行状态（任务层面：STOPPED/COMPLETED/FAILED）
+            //   判定结果（目标层面：HIT/RUNNING/NO_PIN/…）
+            //   证据等级（可信度：已确认/待验证/未确认）
+            String execLabel = wpsTaskMgr().state().label();
             if (wpsSession != null) {
                 String lvl = io.github.wlmosv_png.wpaforge.wps.WpsHitJudge.levelField(wpsSession);
-                wpsLog(L.s("[结果] 判定=" + wpsSession.verdict
-                                + "  可信等级=" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
-                                        .levelText(lvl, zhUi()),
-                        "[result] verdict=" + wpsSession.verdict
-                                + "  level=" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
-                                        .levelText(lvl, false)));
+                wpsLog(L.s("[结果] 执行状态=" + execLabel
+                                + " | 判定=" + wpsSession.verdict
+                                + " | 证据等级=" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                                        .levelText(lvl, zhUi())
+                                + ("STOPPED".equals(execLabel) ? "（用户停止，非失败）" : ""),
+                        "[result] exec=" + execLabel
+                                + " | verdict=" + wpsSession.verdict
+                                + " | level=" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
+                                        .levelText(lvl, false)
+                                + ("STOPPED".equals(execLabel) ? " (user-stopped, not failure)" : "")));
+            } else {
+                wpsLog(L.s("[结果] 执行状态=" + execLabel + " | 判定=（无会话）",
+                        "[result] exec=" + execLabel + " | verdict=(no session)"));
             }
             runOnUiThread(() -> {
                 refreshWpsButtons();
@@ -3583,6 +3626,9 @@ public class MainActivity extends Activity {
 
                             @Override
                             public void onResult(io.github.wlmosv_png.wpaforge.wps.WpsController.Result r) {
+                                // 2026-11-09（P0-2）：取消后**不得**再观察/记账/打日志 ——
+                                // 否则"停止"之后仍会新增候选结果与统计。
+                                if (wpsCancel) return;
                                 io.github.wlmosv_png.wpaforge.wps.WpsEngine.observe(wpsSession,
                                         new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Attempt(r));
                                 // 统计：每次结果实时累计并原子落盘（跨进程可恢复）
@@ -3632,7 +3678,11 @@ public class MainActivity extends Activity {
                                 return wpsCancel;
                             }
                         });
-        if (rs.isEmpty() && !wpsCancel) {
+        if (wpsCancel) {
+            // 已取消：立即返回，不做后续同步（收尾由 runWpsAttack 的 finally 负责）
+            return rs;
+        }
+        if (rs.isEmpty()) {
             wpsLog(L.s("[w] 本批没有返回结果（助手进程可能没起来）",
                     "[w] no results from this batch"));
         }

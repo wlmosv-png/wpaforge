@@ -91,9 +91,29 @@ public final class WpsTaskManager {
         return run.requestStop();
     }
 
-    /** 执行线程退出：回到 IDLE。绑定保留（供历史/收尾读），但不代表仍在跑。 */
+    /** 执行线程退出（旧签名：复位 IDLE）。 */
     public boolean workerExited() {
         return run.workerExited();
+    }
+
+    /**
+     * 执行线程退出并落到**终态**（STOPPED/COMPLETED/FAILED）。
+     *
+     * <p>关键：用户停止后必须是 {@link WpsRunState#STOPPED}，不得继续停在 RUNNING，
+     * 也不得把停止当成失败。
+     */
+    public boolean workerExited(int terminal) {
+        return run.workerExited(terminal);
+    }
+
+    /** 是否处于活动状态（RUNNING/STOPPING）。 */
+    public boolean isActive() {
+        return run.isActive();
+    }
+
+    /** 是否处于终态。 */
+    public boolean isTerminal() {
+        return run.isTerminal();
     }
 
     public synchronized Binding binding() {

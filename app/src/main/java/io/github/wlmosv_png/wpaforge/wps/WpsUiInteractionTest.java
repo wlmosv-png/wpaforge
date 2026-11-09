@@ -124,9 +124,19 @@ public final class WpsUiInteractionTest {
         ok("日志记录任务创建", ma.contains("\"[任务] 创建 \""), "无");
         ok("日志记录目标身份", ma.contains("\"[目标] SSID=\""), "无");
         ok("日志记录策略", ma.contains("\"[策略] \""), "无");
-        ok("日志记录能力检测", ma.contains("\"[能力] 检测完成"), "无");
+        // 2026-11-09（P0-1）：不再用单一"检测完成"冒充结论；改为 通道A原始 + 双通道合并
+        ok("日志记录通道A原始读取", ma.contains("\"[能力] 通道A(root) read=\""), "无");
+        ok("能力结论唯一来源=能力缓存",
+                ma.contains("wpsCapByBssid.put(") && ma.contains("wpsCapByBssid.get("), "无");
+        ok("重新扫描清空能力缓存", ma.contains("wpsCapByBssid.clear()"), "无");
         ok("日志记录停止请求", ma.contains("\"[停止] 请求已发出"), "无");
-        ok("日志记录最终结果与等级", ma.contains("\"[结果] 判定=\""), "无");
+        // 2026-11-09（P0-3）：最终日志必须同时给出 执行状态 | 判定 | 证据等级
+        ok("日志记录最终三段式结果",
+                ma.contains("\"[结果] 执行状态=\"") && ma.contains(" | 判定=")
+                        && ma.contains(" | 证据等级="), "无");
+        ok("停止后落到 STOPPED 终态",
+                ma.contains("workerExited(wpsTerminal)") && ma.contains("WpsRunState.STOPPED"), "无");
+        ok("STOPPED 明确标注非失败", ma.contains("（用户停止，非失败）"), "无");
 
         // ---------------------------------------------------------- 8 第二阶段模块接线
         info("⑧ 第二阶段模块均有生产调用点");

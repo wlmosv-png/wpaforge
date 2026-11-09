@@ -34,6 +34,9 @@ public final class WpsFacade {
         public boolean idle;
         public boolean running;
         public boolean stopping;
+        /** 执行状态名（IDLE/RUNNING/STOPPING/STOPPED/COMPLETED/FAILED）。 */
+        public String execState = "IDLE";
+        public boolean terminal;
         public String taskId = "";
 
         // —— 策略 ——
@@ -96,6 +99,8 @@ public final class WpsFacade {
         s.idle = runState.isIdle();
         s.running = runState.isRunning();
         s.stopping = runState.isStopping();
+        s.execState = runState.label();
+        s.terminal = runState.isTerminal();
 
         s.strategyMode = strategyMode;
         WpsStrategyManager.Strategy st = WpsStrategyManager.of(strategyMode);

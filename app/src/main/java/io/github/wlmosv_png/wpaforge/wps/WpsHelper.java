@@ -573,14 +573,29 @@ public final class WpsHelper {
         try {
             c = new Conn();
             String blk = c.cmd("BSS " + bssid);
+            // 2026-11-09（P0-1 根因）：区分「读取失败」与「确实没有 WPS」。
+            // 修复前两者都打 WPS_VERDICT=NO_WPS —— 于是"没读到"被 UI 呈现成
+            // "该 AP 没有 WPS"，属于把未知当否定。
+            boolean readOk = blk != null && !blk.trim().isEmpty()
+                    && !blk.startsWith("FAIL") && !blk.startsWith("UNKNOWN");
             String[] cap = parseBssCap(blk);
             if (cap == null) {
-                // BSS 表里没有它（扫描后没回填），或该 BSS 无 WPS IE
                 System.out.println("WPS_BSSID=" + bssid);
-                System.out.println("WPS_VERDICT=NO_WPS");
+                if (!readOk) {
+                    System.out.println("WPS_READ=FAILED");
+                    System.out.println("WPS_VERDICT=UNKNOWN");   // 读不到 → 未知
+                } else {
+                    String ie0 = bssField(blk, "ie");
+                    boolean wpsIe = ie0 != null && ie0.toLowerCase().contains("0050f204");
+                    System.out.println("WPS_READ=OK");
+                    System.out.println("WPS_IE=" + enc(ie0 == null ? "" : ie0));
+                    // BSS 读到了、但既无 wps_config_methods 也无 WPS IE → 才算"确实没有"
+                    System.out.println("WPS_VERDICT=" + (wpsIe ? "UNKNOWN" : "NO_WPS"));
+                }
                 System.out.println("WPS_OK=0");
                 return;
             }
+            System.out.println("WPS_READ=OK");
             int mask = 0;
             try {
                 mask = cap[1].startsWith("0x") || cap[1].startsWith("0X")
@@ -605,7 +620,8 @@ public final class WpsHelper {
             System.out.println("WPS_OK=1");
         } catch (Throwable t) {
             System.out.println("WPS_BSSID=" + bssid);
-            System.out.println("WPS_VERDICT=NO_WPS");
+            System.out.println("WPS_READ=FAILED");
+            System.out.println("WPS_VERDICT=UNKNOWN");   // 异常 ≠ 没有 WPS
             System.out.println("WPS_OK=0");
             System.out.println("ERROR=" + t);
         } finally {
@@ -745,6 +761,11 @@ public final class WpsHelper {
         try {
             c = new Conn();
             System.out.println("BATCH_START=" + pins.length);
+            // 2026-11-09（P0-2 根因）：批量模式此前**从不 flush** —— stdout 是管道时
+            // 会被缓冲，App 侧读不到任何行，于是"停止"要等整批跑完才可能生效
+            // （实测 STOPPING 后仍跑完 5 个候选 ≈72s）。逐条 flush 后，App 读到此行
+            // 即会检查 isCancelled() 并 destroy 本进程，实现"当条结束即停"。
+            System.out.flush();
             for (String pin : pins) {
                 pin = pin.trim();
                 if (pin.isEmpty()) continue;
@@ -768,6 +789,7 @@ public final class WpsHelper {
                         + " M2D_MS=" + st.m2dToEndMs
                         + " LOCKED=" + st.apLocked);
                 if (!st.hitVerdict.isEmpty()) System.out.println(evidenceLine(st, pin));
+                System.out.flush();      // 每条候选后立即上报，供 App 侧取消判定
                 if ("SUCCESS".equals(st.result)) {
                     hit = 1;
                     break;

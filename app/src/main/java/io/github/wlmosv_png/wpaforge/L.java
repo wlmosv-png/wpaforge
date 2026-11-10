@@ -68,6 +68,14 @@ public final class L {
         return mode;
     }
 
+    /** 语言偏好键。设置页「恢复默认设置」按它把语言退回「跟随系统」。 */
+    public static final String KEY_LANGUAGE = KEY;
+
+    /** 退回「跟随系统」并落盘。 */
+    public static void resetToAuto(Context ctx) {
+        setMode(ctx, AUTO);
+    }
+
     public static boolean isZh() {
         return zh;
     }

@@ -275,6 +275,8 @@ public class MainActivity extends Activity {
     // 试连页组件
 /** 明文备份清理行（只在备份存在时创建）。 */
     private Button plainBakBtn;
+    /** 设置页「破解设置」组里的派生预算行（文字随当前值刷新） */
+    private Button budgetBtn;
     private Button languageBtn;
     private ScrollView mainScroll;
     private TextView connectModeView;
@@ -612,9 +614,13 @@ public class MainActivity extends Activity {
                                 Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    Prefs.setPin(this, v);
-                    Toast.makeText(this, L.s("PIN 已设置", "PIN set"),
-                            Toast.LENGTH_SHORT).show();
+                    // 落盘结果要如实回报：apply() 时代无论如何都提示「已设置」，
+                    // 而 PIN 是安全项，「以为锁上了其实没锁」比报错更糟。
+                    boolean ok = Prefs.setPin(this, v);
+                    Toast.makeText(this, ok
+                                    ? L.s("PIN 已设置", "PIN set")
+                                    : L.s("PIN 未保存（系统拒绝写入）", "PIN not saved (write rejected)"),
+                            Toast.LENGTH_LONG).show();
                 })
                 .setNegativeButton(L.s("取消", "Cancel"), null)
                 .show();
@@ -630,9 +636,11 @@ public class MainActivity extends Activity {
                 .setView(p)
                 .setPositiveButton(L.s("清除", "Remove"), (d, w) -> {
                     if (Prefs.checkPin(this, p.getText().toString())) {
-                        Prefs.clearPin(this);
-                        Toast.makeText(this, L.s("PIN 已清除", "PIN removed"),
-                                Toast.LENGTH_SHORT).show();
+                        boolean ok = Prefs.clearPin(this);
+                        Toast.makeText(this, ok
+                                        ? L.s("PIN 已清除", "PIN removed")
+                                        : L.s("清除未生效（系统拒绝写入）", "Not cleared (write rejected)"),
+                                Toast.LENGTH_LONG).show();
                     } else {
                         Toast.makeText(this, L.s("PIN 错误", "Wrong PIN"),
                                 Toast.LENGTH_SHORT).show();
@@ -7460,8 +7468,8 @@ public class MainActivity extends Activity {
         sb.append(CrackService.isRunning() ? "✓" : "·")
                 .append(L.s(" 前台服务（任务运行时自动开启）\n",
                         " foreground service (starts with the task)\n"));
-        sb.append("·").append(L.s(" 系统深度睡眠白名单：任务启动时自动写入（需要 root）\n",
-                " OS deep-sleep whitelist: written automatically at task start (needs root)\n"));
+        sb.append("·").append(L.s(" 系统深度睡眠白名单：任务启动时自动写入（需要 root）",
+                " OS deep-sleep whitelist: written automatically at task start (needs root)"));
         keepAliveLabel.setText(sb.toString());
     }
 
@@ -13003,9 +13011,13 @@ public class MainActivity extends Activity {
         TextView connHint = new TextView(this);
         connHint.setText(L.s(
                 "· 锁定 AP：同名 SSID 有多个 AP 时，只跟你在破解页选中的那一个打交道（默认交给系统挑）\n"
-                + "· 更换随机 MAC：每次尝试换一个新 MAC，缓解目标 AP 限流；目标若做了 MAC 白名单，开着会连不上",
+                + "· 更换随机 MAC：每次尝试换一个新 MAC，缓解目标 AP 限流；目标若做了 MAC 白名单，开着会连不上\n"
+                + "· 两项都在「下一个任务」开始时读取：正在跑的任务不会中途换参数，"
+                + "再点一次「开始」才生效",
                 "· Pin AP: when several APs share one SSID, talk only to the one you picked\n"
-                + "· Random MAC: a new MAC per attempt eases AP rate limiting; breaks MAC-allowlisted targets"));
+                + "· Random MAC: a new MAC per attempt eases AP rate limiting; breaks MAC-allowlisted targets\n"
+                + "· Both are read when a task starts: a running task keeps the parameters "
+                + "it began with; the change applies on the next Start"));
         connHint.setTextSize(AmberTheme.FS_BODY);
         connHint.setTextColor(TEXT_DIM);
         connHint.setLineSpacing(px(5), 1f);
@@ -13016,19 +13028,36 @@ public class MainActivity extends Activity {
 
         // ---------------- 破解设置 ----------------
         pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));
-        TextView speedInfo = new TextView(this);
-        speedInfo.setText(L.s("破解速度由目标路由器决定，实测约 1 秒/条。",
-                        "Speed depends on the target router. Measured: about 1 second per attempt.")
-                + " "
-                + L.s("手机一次只能连一个网络，无法并行，这是 Android 的限制。",
-                        "A phone can associate with only one network at a time — no parallelism. That is an Android limit."));
-        speedInfo.setTextSize(AmberTheme.FS_BODY);
-        speedInfo.setTextColor(TEXT_DIM);
-        speedInfo.setLineSpacing(px(5), 1f);
-        speedInfo.setBackground(AmberTheme.rowBg(this, dp, AmberTheme.RADIUS_CARD));
-        speedInfo.setPadding(px(AmberTheme.PAD_H), px(AmberTheme.PAD_V),
-                px(AmberTheme.PAD_H), px(AmberTheme.PAD_V));
-        pageSettings.addView(speedInfo);
+        LinearLayout crackCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+
+        // 派生预算：此前 Prefs 里这个键有默认值、有落盘、有生产取用点，
+        // javadoc 还写着「界面可调」—— 但**全工程没有任何地方写它**，
+        // 用户改不了，只能靠改代码。2026-11-10 专项审计发现，这里把入口接上。
+        budgetBtn = rowActionPlain("");
+        budgetBtn.setOnClickListener(v -> showBudgetPicker());
+        crackCard.addView(arrowRow(budgetBtn));
+
+        TextView crackHint = new TextView(this);
+        crackHint.setText(L.s(
+                "· 派生预算：按线索／SSID 现场生成候选的条数上限。\n"
+                + "  实测命中大多落在前 50 条，默认 120 已留余量；调大只是把长尾铺长。\n"
+                + "· 手机一次只能连一个网络、无法并行，这是 Android 的限制；\n"
+                + "  连接受目标响应速度影响：快的 AP 约 1 秒，慢的 5 秒以上。\n"
+                + "· 建议先用目标派生 + 智能排序，几百条往往比十万条有效。",
+                "· Derivation budget: cap on candidates built on the fly from hints / SSID.\n"
+                + "  Most real hits land in the first 50; 120 is already generous —\n"
+                + "  raising it only lengthens the tail.\n"
+                + "· A phone can associate with one network at a time — no parallelism.\n"
+                + "  That is an Android limit; a fast AP takes ~1s, a slow one 5s or more.\n"
+                + "· Prefer target derivation + smart ranking: a few hundred entries\n"
+                + "  usually beat a hundred thousand."));
+        crackHint.setTextSize(AmberTheme.FS_BODY);
+        crackHint.setTextColor(TEXT_DIM);
+        crackHint.setLineSpacing(px(5), 1f);
+        crackCard.addView(groupDivider(8));
+        crackCard.addView(crackHint, topGap(8));
+        pageSettings.addView(crackCard);
+        refreshBudgetRow();
 
         // ---------------- 工具 ----------------
         pageSettings.addView(sectionLabel(L.s("工具", "Tools")));
@@ -13061,6 +13090,14 @@ public class MainActivity extends Activity {
             toolsCard.addView(groupDivider(2));
             toolsCard.addView(plainBakBtn);
         }
+        // 恢复默认设置：只重置**纯偏好**，不动 PIN / 线索 / 目标 / 记录 / 实测速度。
+        // 放进「工具」而不是另开一个只有一行的空分组 —— 它和上面三行同属
+        //「对本机数据做的操作」，语义一致。
+        Button resetDefaults = rowAction(L.s("恢复默认设置", "Restore default settings"));
+        resetDefaults.setOnClickListener(v -> confirmResetDefaults());
+        toolsCard.addView(groupDivider(2));
+        toolsCard.addView(resetDefaults);
+
         pageSettings.addView(toolsCard);
 
         // ---------------- 使用边界 ----------------
@@ -13069,10 +13106,9 @@ public class MainActivity extends Activity {
                 L.s("破解会向目标 AP 发起真实的关联请求。对自有网络是自查，", "WPAForge issues real association requests. On your own network that is a self-audit;")
                 + L.s("对未授权网络是违法行为，且路由器侧会留下失败记录。", "on an unauthorised network it is unlawful, and the AP will log the failures.")));
 
-        pageSettings.addView(infoBlock(L.s("关于速度", "About speed"),
-                L.s("逐条连接受目标响应速度限制，快的 AP 约 1 秒，慢的可能 5 秒以上。", "Each attempt waits on the target. A fast AP takes ~1s, a slow one 5s or more.")
-                + L.s("字典越大耗时越久 —— 建议先用目标派生 + 智能排序，几百条往往比十万条有效。", "Bigger dictionaries take longer — target derivation plus smart ranking makes a few hundred entries beat a hundred thousand.")));
-
+        // 「关于速度」原本在这里与「破解设置」各写一遍，两段内容互相重叠
+        // （都说约 1 秒/条、都说字典越大越慢）。已合并进「破解设置」那张卡 ——
+        // 那里紧挨派生预算，讲「条数 ↔ 耗时」才有上下文。
         // ---------------- 版本 ----------------
         pageSettings.addView(sectionLabel(L.s("版本", "Version")));
         LinearLayout verCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
@@ -13244,6 +13280,109 @@ public class MainActivity extends Activity {
         d.show();
     }
 
+    /** 派生预算行的文字（打开设置页、改完值都走这里）。 */
+    private void refreshBudgetRow() {
+        if (budgetBtn == null) return;
+        final int b = Prefs.deriveBudget(this);
+        budgetBtn.setText(L.f("派生预算 · %d 条（约 %s）",
+                "Derivation budget · %d entries (~%s)", b, Prefs.estimate(this, b)));
+    }
+
+    /**
+     * 派生预算选择器。
+     *
+     * <p>为什么值得给一行：预算**同时**决定「派生能出多少候选」和「这一轮要跑多久」，
+     * 而它在此前只能靠改代码。给档位而不是连续滑块 —— 单条成本以秒计，
+     * 微调没有意义；用户需要的是**看见代价**，所以每个档位都带本机实测估时。
+     */
+    private void showBudgetPicker() {
+        final int cur = Prefs.deriveBudget(this);
+        NetDialog d = new NetDialog(this, L.s("派生预算", "Derivation budget"),
+                L.s("决定「按目标派生」最多生成多少条候选。\n"
+                        + "调大 = 更全，但这一轮耗时同比变长（下面的估时按本机实测速度算）。\n\n"
+                        + "默认 120 条：本机真实命中绝大多数落在前 50 条，120 已是两倍余量。",
+                        "Caps how many candidates target derivation may produce.\n"
+                                + "Bigger = more thorough, but the run takes proportionally longer "
+                                + "(estimates use your own measured speed).\n\n"
+                                + "Default 120: nearly all real hits landed in the first 50."));
+        for (final int v : Prefs.BUDGET_CHOICES) {
+            String label = (v == cur ? "\u2713 " : "")
+                    + L.f("%d 条 · 约 %s", "%d entries · ~%s", v, Prefs.estimate(this, v));
+            d.addItem(label, dd -> applyBudget(v));
+        }
+        if (cur != Prefs.DEFAULT_BUDGET) {
+            d.addItem(L.f("恢复默认（%d 条 · 约 %s）", "Reset to default (%d · ~%s)",
+                            Prefs.DEFAULT_BUDGET, Prefs.estimate(this, Prefs.DEFAULT_BUDGET)),
+                    dd -> applyBudget(Prefs.DEFAULT_BUDGET));
+        }
+        d.setNegative(L.s("关闭", "Close"), null);
+        d.show();
+    }
+
+    /** 落盘派生预算并给出回执。生效时机写在提示里，不静默改变正在跑的任务。 */
+    private void applyBudget(int v) {
+        final int nv = Prefs.clampBudget(v);
+        Prefs.setDeriveBudget(this, nv);
+        refreshBudgetRow();
+        Toast.makeText(this,
+                L.f("派生预算已设为 %d 条（下一个任务生效）",
+                        "Derivation budget set to %d (next task)", nv),
+                Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * 恢复默认设置。
+     *
+     * <p>文案写得这么细，是因为它**长得像「清除数据」**，而两者完全不同：
+     * 这里只把偏好退回出厂值，用户的线索、目标、记录、字典、成果一律不动。
+     * 会重置的键唯一来源是 {@code Prefs.RESET_KEYS}；下面这段文案是给用户看的白话版，
+     * 改那份清单时**必须同步这里**（SettingsPageAuditTest 会比对两边）。
+     */
+    private void confirmResetDefaults() {
+        NetDialog d = new NetDialog(this, L.s("恢复默认设置", "Restore default settings"),
+                L.s("会退回出厂值的（仅偏好）：\n"
+                        + "· 连接选项：锁定 AP / 更换随机 MAC → 关\n"
+                        + "· 派生预算 → 120 条\n"
+                        + "· 多字典：自动连跑 → 关；跨字典去重 → 保守\n"
+                        + "· 语言 → 跟随系统\n"
+                        + "· 字典目录 → 自动选择\n\n"
+                        + "不会被动的：\n"
+                        + "· PIN 锁（安全项，不会被顺手打开）\n"
+                        + "· 目标线索、当前目标\n"
+                        + "· 破解记录、字典文件、任务队列、离线材料\n"
+                        + "· 实测速度统计（那是测量结果，不是设置）\n"
+                        + "· 已建好的多字典计划（按计划各自保存，不受这里影响）\n\n"
+                        + "这是一次偏好重置，不是清除数据。",
+                        "Reset to factory values (preferences only):\n"
+                                + "\u00b7 Connection options: pin AP / random MAC -> off\n"
+                                + "\u00b7 Derivation budget -> 120\n"
+                                + "\u00b7 Multi-dictionary: auto-advance -> off; dedup -> conservative\n"
+                                + "\u00b7 Language -> follow system\n"
+                                + "\u00b7 Dictionary folder -> automatic\n\n"
+                                + "Untouched:\n"
+                                + "\u00b7 PIN lock\n"
+                                + "\u00b7 Hints and current target\n"
+                                + "\u00b7 Crack history, dictionary files, task queue, offline materials\n"
+                                + "\u00b7 Measured speed stats (a measurement, not a setting)\n"
+                                + "\u00b7 Existing multi-dictionary plans (saved per plan)\n\n"
+                                + "This is a preference reset, not a data wipe."));
+        d.setDanger(L.s("恢复默认", "Restore defaults"), dd -> {
+            boolean ok = Prefs.resetToDefaults(this);
+            L.resetToAuto(this);
+            try { io.github.wlmosv_png.wpaforge.audit.DictStore.clearDir(this); }
+            catch (Throwable ignored) {}
+            refreshConnOptions();
+            refreshBudgetRow();
+            refreshLanguageRow();
+            Toast.makeText(this, ok
+                            ? L.s("已恢复默认设置", "Defaults restored")
+                            : L.s("恢复失败（写入被拒）", "Restore failed (write rejected)"),
+                    Toast.LENGTH_SHORT).show();
+        });
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
+    }
+
     private void refreshLanguageRow() {
         if (languageBtn == null) return;
         languageBtn.setText(L.f("语言 · 当前 %s", "Language · currently %s",
@@ -13377,20 +13516,22 @@ public class MainActivity extends Activity {
             sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
             sb.append(L.s(
                     "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
-                    + "实测约 1 秒/条，且进度和暂停都可控。\n"
+                    + "进度与暂停都可控，速度见下方实测值。\n"
                     + "需要设备已 root 并给本应用授权。\n"
                     + "（Shizuku 与免 Root 通道已在 1.9.24 移除：前者每次关联都要借 binder、"
                     + "后者每条候选都要弹一次系统确认框，都撑不起逐条字典遍历。）",
                     "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
-                    + "Measured about 1 second per attempt, with precise progress and pause.\n"
+                    + "Precise progress and pause; see the measured speed below.\n"
                     + "Requires a rooted device with root granted to this app.\n"
                     + "(The Shizuku and root-free channels were removed in 1.9.24: they cannot "
                     + "sustain per-candidate dictionary traversal.)"));
-            sb.append("\n\n").append(L.f("当前实测速度: %s 条/秒",
-                    "Measured: %s per second", Prefs.avgRateLabel(this)));
+            // 口径改成「秒/条」：原先这里写「0.1 条/秒」而上一段静态文案写
+            //「实测约 1 秒/条」，同一张卡上自相矛盾（0.1 条/秒 = 10 秒/条）。
+            sb.append("\n\n").append(L.f("当前实测速度: %s 秒/条",
+                    "Measured: %s s per attempt", Prefs.avgSecLabel(this)));
             if (!Prefs.hasRateSample(this)) {
-                sb.append(L.s("（还没有样本，这是模式默认值）",
-                        " (no samples yet — mode default)"));
+                sb.append(L.s("（还没有样本，这是默认值；跑过一轮后按实测更新）",
+                        " (no samples yet — default; updated after a run)"));
             }
             modeInfo.setText(sb.toString());
             modeInfo.setTextColor(ACCENT);

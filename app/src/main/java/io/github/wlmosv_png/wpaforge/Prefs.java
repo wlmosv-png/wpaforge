@@ -22,7 +22,6 @@ public final class Prefs {
      */
     public static final int MODE_ROOT = 0;
 
-    private static final String K_MODE = "crack_mode";
     private static final String K_PIN = "app_pin_sha256";   // 空表示未设 PIN
     private static final String K_RATE = "avg_rate_ms";     // 平均每条耗时（毫秒）
     private static final String K_RATE_N = "rate_samples";  // 样本数
@@ -43,6 +42,12 @@ public final class Prefs {
      */
     private static final String K_BUDGET = "derive_budget";
     public static final int DEFAULT_BUDGET = 120;
+    /** 可调范围。下限 30：再少就压不到有用候选；上限 2000：超过这个数
+     *  单目标派生已经没有新内容，只是把长尾铺长（旧版铺到 1500 条等于白跑一小时）。 */
+    public static final int BUDGET_MIN = 30;
+    public static final int BUDGET_MAX = 2000;
+    /** 设置页给的档位（不是连续滑块 —— 逐条耗时以秒计，微调没有意义）。 */
+    public static final int[] BUDGET_CHOICES = {60, 120, 300, 600, 1000};
     /** 「字典怎么选」说明是否已看过（只看一次，之后从弹窗里手动打开） */
     private static final String K_DICT_GUIDE = "dict_guide_seen";
     /** 当前目标（线索档案与已试集合都按它分档） */
@@ -144,14 +149,19 @@ public final class Prefs {
 
     /** 派生预算（条）。界面可调，最小 30 最大 2000。 */
     public static int deriveBudget(Context ctx) {
-        int v = sp(ctx).getInt(K_BUDGET, DEFAULT_BUDGET);
-        if (v < 30) return 30;
-        if (v > 2000) return 2000;
+        return clampBudget(sp(ctx).getInt(K_BUDGET, DEFAULT_BUDGET));
+    }
+
+    /** 把任意值收进合法区间。**纯函数**，可以离线单测（见 SettingsPageAuditTest）。 */
+    public static int clampBudget(int v) {
+        if (v < BUDGET_MIN) return BUDGET_MIN;
+        if (v > BUDGET_MAX) return BUDGET_MAX;
         return v;
     }
 
     public static void setDeriveBudget(Context ctx, int v) {
-        sp(ctx).edit().putInt(K_BUDGET, v).apply();
+        if (ctx == null) return;
+        sp(ctx).edit().putInt(K_BUDGET, clampBudget(v)).apply();
     }
 
 
@@ -230,22 +240,60 @@ public final class Prefs {
 
     // ---------------- 破解模式 ----------------
 
-    /** -1 表示「还没设过」，交给自动探测 */
-    private static final int MODE_UNSET = -1;
-
-    /** 自动探测结果缓存。0/1/2 为已定；MODE_UNSET 表示还没探测。 */
-    private static int autoCache = MODE_UNSET;
-
     public static int mode(Context ctx) {
         // 只有 Root 一种执行方式。
         // 老版本可能存过 1（免 Root）/ 2（Shizuku），一律当 Root ——
         // 绝不能因为一个旧值就落到一条已经删掉的通道上，那会表现为「点开始没反应」。
+        //
+        // 2026-11-10：旧的 `crack_mode` 键与 `modeIsManual()` 已删除 ——
+        // 上面这条 return 是唯一的真相来源，再留一个「用户是否手动指定过」
+        // 的读数只会是永远 false 的死代码。
         return MODE_ROOT;
     }
 
-    /** 用户是否手动指定过模式（用于界面提示） */
-    public static boolean modeIsManual(Context ctx) {
-        return sp(ctx).getInt(K_MODE, MODE_UNSET) >= 0;
+    // ---------------- 恢复默认设置 ----------------
+
+    /**
+     * 「恢复默认设置」会重置的键 —— **这是一份契约，不是随手写的清单**。
+     *
+     * <h3>为什么单独抽出来</h3>
+     * 「恢复默认」最容易犯的错是**顺手把用户数据也清了**（目标线索、当前目标、
+     * 破解记录）。所以这里只列**纯偏好**，并且把「不能碰的」也在注释里点名，
+     * 让测试能钉住两头（{@code SettingsPageAuditTest}）。
+     *
+     * <h3>不在此列（有意保留）</h3>
+     * · {@code app_pin_sha256}（K_PIN）—— 安全项，恢复默认不该顺手把锁打开；
+     * · {@code target_seeds} / {@code target_key} / {@code target_label} —— 用户数据；
+     * · {@code run_ordinal_max} —— runId 唯一性的不变式，回退会撞号；
+     * · {@code last_beat_ms} —— 运行期心跳，不是设置；
+     * · {@code avg_rate_ms} / {@code rate_samples} —— **实测**统计，不是用户设置。
+     *
+     * <p>{@code dict_guide_seen} 在列：重置它，「字典怎么选」的首次说明会重新
+     * 出现，符合「恢复默认」的预期。
+     */
+    public static final String[] RESET_KEYS = {
+            K_PIN_BSSID, K_MAC_ROTATE, K_BUDGET, K_SKIP_POLICY, K_PLAN_AUTO, K_DICT_GUIDE,
+    };
+
+    /**
+     * 恢复本类的用户偏好为出厂值。
+     *
+     * <p>实现方式是 **remove 而不是写默认值** —— 这样「默认值改了」以后
+     * 老用户不会因为库里有旧默认值而继续用旧的。写完返回 false 只可能是
+     * 上下文为空。
+     *
+     * <p>用户的字典目录（{@code picked_dict_dir}）与语言（{@code language}）
+     * 由各自的模块负责，调用方一并处理。
+     */
+    public static boolean resetToDefaults(Context ctx) {
+        if (ctx == null) return false;
+        try {
+            SharedPreferences.Editor e = sp(ctx).edit();
+            for (String k : RESET_KEYS) e.remove(k);
+            return e.commit();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ---------------- 应用 PIN 锁 ----------------
@@ -259,15 +307,31 @@ public final class Prefs {
         return !pinHash(ctx).isEmpty();
     }
 
-    /** 设置或修改 PIN（明文进来，存 SHA-256） */
-    public static void setPin(Context ctx, String plain) {
+    /**
+     * 设置或修改 PIN（明文进来，存 SHA-256）。
+     *
+     * <p>返回**是否确认落盘**。这里刻意用 {@code commit()} 而不是 {@code apply()}：
+     * PIN 是设置页里唯一的安全项，「提示成功但其实没写」的代价是用户以为锁上了
+     * 而实际没锁。其余偏好项保持 {@code apply()} —— 它们是可以重复设置的廉价写入。
+     */
+    public static boolean setPin(Context ctx, String plain) {
+        if (ctx == null) return false;
         String h = plain == null ? "" : sha256(plain.trim());
-        sp(ctx).edit().putString(K_PIN, h).apply();
+        try {
+            return sp(ctx).edit().putString(K_PIN, h).commit();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
-    /** 清除 PIN */
-    public static void clearPin(Context ctx) {
-        sp(ctx).edit().remove(K_PIN).apply();
+    /** 清除 PIN。返回是否确认落盘（理由同 {@link #setPin}）。 */
+    public static boolean clearPin(Context ctx) {
+        if (ctx == null) return false;
+        try {
+            return sp(ctx).edit().remove(K_PIN).commit();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** 校验 PIN */
@@ -337,6 +401,18 @@ public final class Prefs {
     public static String avgRateLabel(Context ctx) {
         long ms = avgMsPerItem(ctx);
         return String.format(java.util.Locale.US, "%.1f", 1000.0 / ms);
+    }
+
+    /**
+     * 换算成「秒/条」。
+     *
+     * <p>为什么设置页改用这个口径：同一张卡上既写「实测约 1 秒/条」又写
+     * 「当前实测速度: 0.1 条/秒」（= 10 秒/条），两个数字互相打架，
+     * 用户会当成 bug。而「秒/条」才是用户真正在算的东西（120 条要多久）。
+     */
+    public static String avgSecLabel(Context ctx) {
+        long ms = avgMsPerItem(ctx);
+        return String.format(java.util.Locale.US, "%.1f", ms / 1000.0);
     }
 
     /** 依据平均速度估算一批候选要跑多久 */

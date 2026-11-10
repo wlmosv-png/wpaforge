@@ -2,13 +2,18 @@ package io.github.wlmosv_png.wpaforge;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -4282,6 +4287,9 @@ public class MainActivity extends Activity {
             observeNotice.setVisibility(View.GONE);
             scanner.start();
         }
+        // 页面建完了才演入场（**唯一一处新增调用，且在最后一行**：
+        // 扫描该起还是什么时候起，顺序一点没动）
+        playObserveAssemble();
     }
 
     private static final int FILTER_ALL = 0, FILTER_SECURE = 1,
@@ -5380,6 +5388,284 @@ public class MainActivity extends Activity {
             case WPA2_WPA3: return "WPA2/3(SAE)";
             case OWE: return "OWE";
             default: return L.s("未知", "Unknown");
+        }
+    }
+
+    // ==================== 观测页「铠甲合体」入场 ====================
+    //
+    //   B 充能扫描：一条琥珀光带自上而下扫过整页
+    //   A 装甲拼合：每块卡从 0.92 缩放 + 2° 倾角 + 偏移「插」到位，
+    //              同时四角弹出锁定框、边框亮一下、结束后轻轻一震
+    //   C 卡扣锁死：五个页签依次 1.18→1.0 弹进底座，当前页最后扣上
+    //
+    // 只做可逆的属性动画；四角框/光带/火花全部画在自建的覆盖 View 上。
+    // 任何一步出错就地跳过；2.6s 后无条件复位并摘掉覆盖层。
+
+    private boolean assemblePlayed;
+    private AssembleOverlay assembleOverlay;
+
+    /** 时间轴（毫秒，相对开演）。 */
+    private static final long AS_BAND = 120L, AS_BAND_DUR = 880L;
+    private static final long AS_CARD = 430L, AS_CARD_STEP = 95L, AS_CARD_DUR = 460L;
+
+    private void playObserveAssemble() {
+        if (assemblePlayed || pageObserve == null) return;
+        assemblePlayed = true;
+        try {
+            ViewGroup holder = findViewById(android.R.id.content);
+            if (holder == null) return;
+            java.util.List<View> cards = new java.util.ArrayList<>();
+            for (int i = 0; i < pageObserve.getChildCount() && cards.size() < 5; i++) {
+                View v = pageObserve.getChildAt(i);
+                // 只挑卡片（页面上真正的"装甲块"）：小节标题是 TextView，跳过
+                if (v instanceof LinearLayout) cards.add(v);
+            }
+            java.util.List<View> tabs = new java.util.ArrayList<>();
+            View[] all = {tabObserve, tabAudit, tabConnect, tabWps, tabSettings};
+            for (View t : all) if (t != null) tabs.add(t);
+            if (cards.isEmpty()) return;
+
+            assembleOverlay = new AssembleOverlay(this, cards, tabs);
+            holder.addView(assembleOverlay, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            assembleOverlay.start();
+            // 兜底：无论发生什么，2.6s 后一定复位并摘掉
+            pageObserve.postDelayed(this::endAssemble, 2600L);
+        } catch (Throwable t) {
+            endAssemble();
+        }
+    }
+
+    /** 收工：复位所有被改过的属性并摘掉覆盖层（幂等，可随时被触摸提前调用）。 */
+    private void endAssemble() {
+        final AssembleOverlay ov = assembleOverlay;
+        assembleOverlay = null;
+        try {
+            if (ov != null) {
+                for (View v : ov.cards) resetTransform(v);
+                for (View v : ov.tabs) resetTransform(v);
+                ViewGroup p = (ViewGroup) ov.getParent();
+                if (p != null) p.removeView(ov);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void resetTransform(View v) {
+        try {
+            v.animate().cancel();
+            v.setAlpha(1f);
+            v.setScaleX(1f);
+            v.setScaleY(1f);
+            v.setRotation(0f);
+            v.setTranslationX(0f);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 一块卡「插」到位：缩放 + 倾角 + 偏移 → 归位，末尾补一次极小的回弹。 */
+    private void assembleCard(final View v, int dir) {
+        try {
+            v.setScaleX(0.92f);
+            v.setScaleY(0.92f);
+            v.setRotation(dir * 2.0f);
+            v.setTranslationX(dir * px(16));
+            v.setAlpha(0f);
+            v.animate().alpha(1f).scaleX(1f).scaleY(1f).rotation(0f).translationX(0f)
+                    .setDuration(AS_CARD_DUR)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.7f))
+                    .withEndAction(() -> {
+                        try {
+                            v.animate().scaleX(1.012f).scaleY(1.012f).setDuration(80L)
+                                    .withEndAction(() -> {
+                                        try { v.setScaleX(1f); v.setScaleY(1f); }
+                                        catch (Throwable ignored) {}
+                                    }).start();
+                        } catch (Throwable ignored) {}
+                    })
+                    .start();
+        } catch (Throwable ignored) {
+            resetTransform(v);
+        }
+    }
+
+    /** 一个页签「扣」进底座。 */
+    private void lockTab(View v) {
+        try {
+            v.setScaleX(1.18f);
+            v.setScaleY(1.18f);
+            v.setAlpha(0.40f);
+            v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(190L)
+                    .setInterpolator(new android.view.animation.OvershootInterpolator(3.4f))
+                    .start();
+        } catch (Throwable ignored) {
+            resetTransform(v);
+        }
+    }
+
+    /**
+     * 覆盖层：只负责画「标记」类的特效 —— 光带、四角锁定框、锁定环、页签火花。
+     * 不消费触摸（返回 false），所以点哪还是点哪。
+     */
+    private final class AssembleOverlay extends View {
+
+        final java.util.List<View> cards;
+        final java.util.List<View> tabs;
+        private long t0;
+        private final boolean[] cardDone;
+        private final boolean[] tabDone;
+        private final int[] loc = new int[2];
+        private final int[] myLoc = new int[2];
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rc = new RectF();
+        private android.graphics.LinearGradient band;
+        private float bandH = -1f;
+
+        AssembleOverlay(Context c, java.util.List<View> cards, java.util.List<View> tabs) {
+            super(c);
+            this.cards = cards;
+            this.tabs = tabs;
+            this.cardDone = new boolean[cards.size()];
+            this.tabDone = new boolean[tabs.size()];
+            setClickable(true);
+        }
+
+        void start() {
+            t0 = SystemClock.uptimeMillis();
+            postInvalidateOnAnimation();
+        }
+
+        /** 长按/点击都放行；**按下即收工**（不留"必须看完"）。 */
+        @Override
+        public boolean onTouchEvent(android.view.MotionEvent e) {
+            if (e != null && e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN
+                    && SystemClock.uptimeMillis() - t0 > 250L) {
+                endAssemble();
+            }
+            return false;   // 不消费：这一下照样点到下面的控件
+        }
+
+        /** 把子视图的屏幕位置换算到本覆盖层的坐标系。 */
+        private void rectOf(View v, RectF out) {
+            try {
+                getLocationOnScreen(myLoc);
+                v.getLocationOnScreen(loc);
+                out.set(loc[0] - myLoc[0], loc[1] - myLoc[1],
+                        loc[0] - myLoc[0] + v.getWidth(), loc[1] - myLoc[1] + v.getHeight());
+            } catch (Throwable t) {
+                out.set(0, 0, 0, 0);
+            }
+        }
+
+        @Override
+        protected void onDraw(Canvas cv) {
+            final float w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            final long el = SystemClock.uptimeMillis() - t0;
+            final float d = getResources().getDisplayMetrics().density;
+
+            // ── B 充能扫描：一条琥珀光带自上而下（渐变在本地坐标系建一次，靠 translate 移动）
+            {
+                float bp = (el - AS_BAND) / (float) AS_BAND_DUR;
+                if (bp > -0.05f && bp < 1.12f) {
+                    float y = h * bp;
+                    float bh = 58f * d;
+                    float a = bp < 0.12f ? (bp + 0.05f) / 0.17f
+                            : (bp > 0.88f ? (1.12f - bp) / 0.24f : 1f);
+                    if (a > 0.004f) {
+                        if (band == null || Math.abs(bh - bandH) > 1f) {
+                            bandH = bh;
+                            band = new android.graphics.LinearGradient(0, -bh, 0, bh,
+                                    new int[]{0x00FFB800, 0x2EFFB800, 0xCCFFF3C4, 0x26FFB800, 0x00FFB800},
+                                    new float[]{0f, 0.55f, 0.82f, 0.94f, 1f},
+                                    android.graphics.Shader.TileMode.CLAMP);
+                        }
+                        p.setStyle(Paint.Style.FILL);
+                        p.setShader(band);
+                        p.setAlpha((int) (255 * Math.max(0f, Math.min(1f, a))));
+                        int save = cv.save();
+                        cv.translate(0, y - bh);
+                        cv.drawRect(0, -bh, w, bh, p);
+                        cv.restoreToCount(save);
+                        p.setShader(null);
+                        // 前沿亮线
+                        p.setColor(0xFFFFFFFF);
+                        p.setAlpha((int) (255 * 0.55f * a));
+                        cv.drawRect(0, y - 1.5f * d, w, y + 1.5f * d, p);
+                    }
+                }
+            }
+
+            // ── A 每块卡：到点就起动画，并画四角锁定框 + 一道向外扩的锁定环
+            for (int i = 0; i < cards.size(); i++) {
+                View v = cards.get(i);
+                long st = AS_CARD + i * AS_CARD_STEP;
+                if (!cardDone[i] && el >= st) {
+                    cardDone[i] = true;
+                    assembleCard(v, (i % 2 == 0) ? -1 : 1);
+                }
+                float pr = (el - st) / (float) AS_CARD_DUR;
+                if (pr <= 0f || pr >= 1.25f) continue;
+                rectOf(v, rc);
+                if (rc.width() <= 0) continue;
+                float in = Math.min(1f, pr / 0.18f);
+                float out = pr < 0.72f ? 1f : Math.max(0f, 1f - (pr - 0.72f) / 0.5f);
+                float a = in * out;
+                if (a <= 0.01f) continue;
+                float len = 17f * d, th = 2.6f * d, off = 7f * d;
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                p.setStrokeWidth(th);
+                p.setColor(AmberTheme.ACCENT_SOFT);
+                p.setAlpha((int) (255 * 0.95f * a));
+                float l = rc.left - off, t = rc.top - off, r = rc.right + off, b = rc.bottom + off;
+                // 四角「锁定框」
+                cv.drawLine(l, t, l + len, t, p);
+                cv.drawLine(l, t, l, t + len, p);
+                cv.drawLine(r, t, r - len, t, p);
+                cv.drawLine(r, t, r, t + len, p);
+                cv.drawLine(l, b, l + len, b, p);
+                cv.drawLine(l, b, l, b - len, p);
+                cv.drawLine(r, b, r - len, b, p);
+                cv.drawLine(r, b, r, b - len, p);
+                // 锁定环：向外扩一圈然后消散
+                float grow = 10f * d * (1f - out);
+                p.setStrokeWidth(2.0f * d);
+                p.setColor(AmberTheme.ACCENT);
+                p.setAlpha((int) (255 * 0.55f * out));
+                rc.inset(-off - grow, -off - grow);
+                cv.drawRoundRect(rc, AmberTheme.RADIUS_CARD * d, AmberTheme.RADIUS_CARD * d, p);
+            }
+
+            // ── C 页签：依次扣进底座，底边溅一道火花
+            long tabStart = AS_CARD + cards.size() * AS_CARD_STEP + 260L;
+            for (int i = 0; i < tabs.size(); i++) {
+                View v = tabs.get(i);
+                long st = tabStart + i * 70L;
+                if (!tabDone[i] && el >= st) {
+                    tabDone[i] = true;
+                    lockTab(v);
+                }
+                float pr = (el - st) / 260f;
+                if (pr <= 0f || pr >= 1f) continue;
+                rectOf(v, rc);
+                if (rc.width() <= 0) continue;
+                float a = 1f - pr;
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                p.setStrokeWidth(3.0f * d * (1f - 0.6f * pr));
+                p.setColor(0xFFFFFFFF);
+                p.setAlpha((int) (255 * 0.85f * a));
+                float cxm = (rc.left + rc.right) / 2f;
+                float span = rc.width() * 0.5f * (0.5f + pr);
+                cv.drawLine(cxm - span, rc.bottom, cxm + span, rc.bottom, p);
+                p.setColor(AmberTheme.ACCENT_SOFT);
+                p.setAlpha((int) (255 * 0.5f * a));
+                cv.drawLine(cxm - span * 1.35f, rc.bottom + 3f * d,
+                        cxm + span * 1.35f, rc.bottom + 3f * d, p);
+            }
+
+            boolean done = el > tabStart + tabs.size() * 70L + 300L;
+            if (!done) postInvalidateOnAnimation();
+            else endAssemble();
         }
     }
 

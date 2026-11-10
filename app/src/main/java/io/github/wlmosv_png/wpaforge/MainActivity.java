@@ -998,10 +998,12 @@ public class MainActivity extends Activity {
     private TextView wpsStatusLine;
     private TextView wpsProgressLine;
     private LinearLayout wpsModeList;
-    /** 执行环境 + 能力状态总览卡（首页「一眼看懂」）。 */
+    /** 「能力与通道状态」卡：三行状态（目标宣告 / 本机通道 / 实际尝试）。 */
     private LinearLayout wpsSummaryCard;
-    private TextView wpsEnvCardText;
-    private TextView wpsCapCardText;
+    /** 能力卡三行的值列（2026-11-10：由「三段长文」压成三行状态）。 */
+    private TextView wpsCapValue;
+    private TextView wpsEnvValue;
+    private TextView wpsTryValue;
     private volatile boolean wpsSelftestDone;
     private volatile boolean wpsSelftestStarted;
     /** 2026-11-08：Root 可用性缓存（true/false；null=还没检测过，主线程不阻塞）。 */
@@ -1283,7 +1285,10 @@ public class MainActivity extends Activity {
         LinearLayout wpsHeader = new LinearLayout(this);
         wpsHeader.setOrientation(LinearLayout.HORIZONTAL);
         wpsHeader.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        wpsHeader.setPadding(px(2), 0, px(2), 0);
+        // 2026-11-10：左右内边距从 2dp 调到 16dp —— 与下面各卡片的 PAD_H 对齐。
+        // 之前标题与「?」贴在页面最外沿，比卡片内容宽出约 16dp，
+        // 和被包在卡里的审计页/破解页「?」不在同一条视觉竖线上。
+        wpsHeader.setPadding(px(16), 0, px(16), 0);
 
         TextView title = new TextView(this);
         title.setText(L.s("WPS PIN 弱点攻击", "WPS PIN weakness attack"));
@@ -1296,21 +1301,24 @@ public class MainActivity extends Activity {
         wpsHeader.addView(title, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 问号帮助入口（与其它页面一致的克制风格：描边小圆钮，不抢眼）
-        TextView helpBtn = new TextView(this);
-        helpBtn.setText("?");
-        helpBtn.setTextSize(AmberTheme.FS_LABEL);
-        helpBtn.setTextColor(ACCENT);
-        helpBtn.setGravity(android.view.Gravity.CENTER);
-        helpBtn.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
-                android.graphics.Typeface.NORMAL));
-        helpBtn.setBackground(roundBgStroked(AmberTheme.ACCENT_BG, ACCENT, 999f, 1f));
-        helpBtn.setMinWidth(px(28));
-        helpBtn.setMinHeight(px(28));
-        helpBtn.setPadding(px(8), px(4), px(8), px(4));
-        helpBtn.setOnClickListener(v -> showWpsHelpDialog());
-        wpsHeader.addView(helpBtn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // 「?」说明入口 —— 2026-11-10 与审计页 / 破解页统一。
+        //
+        // 改前这里是「琥珀填充底 + 琥珀描边 + 琥珀字」的圆形小钮：在近黑底上
+        // 又亮又圆，是全页最抢眼的东西，而它只是个「说明」。另外两页用的是
+        // 「弱底 chip + 琥珀自绘问号」，三页必须长得一样 ——
+        // 说明是「查询」不是操作，不该跟主按钮抢第一落点。
+        ImageView wpsHelpBtn = new ImageView(this);
+        wpsHelpBtn.setImageDrawable(DictIcons.sized(DictIcons.Kind.HELP,
+                AmberTheme.ACCENT, dp, 20f));
+        wpsHelpBtn.setContentDescription(L.s("说明", "Help"));
+        // 显式 38×38（DictIcons 没有 intrinsic size，用 WRAP_CONTENT 会被按 0 测量）
+        wpsHelpBtn.setPadding(px(9), px(9), px(9), px(9));
+        wpsHelpBtn.setBackground(roundBg(AmberTheme.CARD_3, AmberTheme.RADIUS_CHIP));
+        LinearLayout.LayoutParams wpsHelpLp = new LinearLayout.LayoutParams(px(38), px(38));
+        wpsHelpLp.leftMargin = px(8);
+        wpsHelpBtn.setLayoutParams(wpsHelpLp);
+        wpsHelpBtn.setOnClickListener(v -> showWpsHelpDialog());
+        wpsHeader.addView(wpsHelpBtn);
 
         LinearLayout.LayoutParams wpsHdrLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1376,7 +1384,7 @@ public class MainActivity extends Activity {
         // 首屏压缩：目标卡紧跟标题（10dp），比全局 sectionGap(20dp) 更紧，核心内容更早入屏
         pageWps.addView(targetCard, topGap(10));
 
-        // ============ C. 能力状态（两列网格） ============
+        // ============ C. 能力与通道状态（三行紧凑状态 + 长按看详情） ============
         wpsSummaryCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
         wpsSummaryCard.setPadding(px(16), px(12), px(16), px(12));
         TextView capTitle = new TextView(this);
@@ -1384,19 +1392,19 @@ public class MainActivity extends Activity {
         capTitle.setTextSize(AmberTheme.FS_LABEL);
         capTitle.setTextColor(AmberTheme.TEXT_DIM);
         wpsSummaryCard.addView(capTitle);
-        wpsCapCardText = new TextView(this);
-        wpsCapCardText.setTextSize(AmberTheme.FS_BODY);
-        wpsCapCardText.setTextColor(TEXT);
-        wpsCapCardText.setLineSpacing(px(4), 1f);
-        wpsCapCardText.setPadding(px(2), px(6), px(2), px(2));
-        wpsSummaryCard.addView(wpsCapCardText);
-        wpsEnvCardText = new TextView(this);
-        wpsEnvCardText.setTextSize(AmberTheme.FS_BODY);
-        wpsEnvCardText.setTextColor(TEXT);
-        wpsEnvCardText.setLineSpacing(px(4), 1f);
-        wpsEnvCardText.setPadding(px(2), px(4), px(2), px(2));
-        wpsSummaryCard.addView(wpsEnvCardText, topGap(2));
-        // 2026-11-09：长按能力卡 → 能力详情（普通用户、不透出内部枚举名）
+        // 2026-11-10：整卡由「三段长文」压成**三行状态**。
+        // 旧版这里要读十几行，用户的原话是「那么多文字，搞得好像很复杂」；
+        // 而其中大半是冗余（目标 SSID/BSSID 上面那张卡已经写了）或同一件事的
+        // 解释（「未知」的释义本来就写在能力文案里）。现在只留
+        //「谁 + 现在什么状态」三行，长解释进长按详情与「?」帮助。
+        wpsCapValue = summaryRow(wpsSummaryCard, L.s("目标宣告", "AP declares"), 8);
+        wpsEnvValue = summaryRow(wpsSummaryCard, L.s("本机通道", "Local channel"), 6);
+        wpsTryValue = summaryRow(wpsSummaryCard, L.s("实际尝试", "Actual attempts"), 6);
+        TextView moreHint = new TextView(this);
+        moreHint.setText(L.s("长按本卡看能力详情", "Long-press for capability detail"));
+        moreHint.setTextSize(AmberTheme.FS_MICRO);
+        moreHint.setTextColor(AmberTheme.TEXT_FAINT);
+        wpsSummaryCard.addView(moreHint, topGap(8));
         wpsSummaryCard.setLongClickable(true);
         wpsSummaryCard.setOnLongClickListener(v -> {
             showWpsCapabilityDetailDialog();
@@ -2254,7 +2262,6 @@ public class MainActivity extends Activity {
         }, "wps-scan").start();
     }
 
-    /** 状态总览卡：执行环境 + 能力状态。数据全部来自真实来源；未知显「信息不足」。 */
     /** 2026-11-08：刷新顶部目标卡的信号/频段/扫描时间。数据全部来自选中目标与
      * 扫描时间戳；wpsPickedMeta 为空（页未建）时直接跳过。 */
     /**
@@ -2381,92 +2388,131 @@ public class MainActivity extends Activity {
         return (sec / 3600) + L.s(" 小时前", "h ago");
     }
 
+    /**
+     * 刷新「能力与通道状态」卡 —— 2026-11-10 由「三段长文」压成**三行状态**。
+     *
+     * <h3>为什么压</h3>
+     * 旧版这一段要读十几行，用户的原话是「底下那些状态那么多文字，搞得好像很复杂」。
+     * 逐条看冗余在哪：
+     *   · 「目标：SSID BSSID」—— 上面那张目标卡已经写了（同一屏重复）；
+     *   · 「※「未知」= 没读到 AP 的宣告，不等于目标不支持 PIN」——
+     *     这句话本来就写在能力文案里（{@code WpsUiKit.capVerdictText} 产出
+     *     「未知（没读到，不等于不支持）」），是同一句说两遍；
+     *   · 「※ 能不能验证看下面的实际尝试」—— 第三行自己就在说这件事；
+     *   · Root / supplicant / SELinux 三行 —— 都是「本机通道」这**一件事**。
+     *
+     * <p>现在只留三行「谁 + 现在什么状态」；长解释进长按详情与「?」帮助。
+     * <b>判定语义一个都没动</b>：三行的值只来自 WpsFacade / WpsChannelDiag /
+     * WpsEngine，WPS 证据规则未被触碰。
+     */
     private void renderWpsSummary() {
         if (wpsSummaryCard == null) return;
         final boolean zh = L.s("a", "b").equals("a");
-        StringBuilder cap = new StringBuilder();
-        StringBuilder env = new StringBuilder();
-
-        // 2026-11-09（用户反馈"能跑却说不支持"）：整卡重做。
-        // 旧卡片三行都写「信息不足」，读起来像"不支持"；而且读的是扫描期的 wpsVerdict
-        // （可能与运行时结论不一致）。现在改为**三段分明**：AP 宣告 / 本机环境 / 实际尝试，
-        // 并对"未知"给出明确释义。
         io.github.wlmosv_png.wpaforge.wps.WpsController.Target tg = wpsTargetMgr.selected();
-        cap.append(L.s("【AP 能力状态】AP 自己的宣告\n", "[AP capability] what the AP declares\n"));
-        cap.append(L.s("目标：", "Target: "));
-        cap.append(tg == null ? L.s("（未选择）\n", "(none)\n")
-                : tg.ssid + "  " + tg.bssid + "\n");
         io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState fui = wpsFacadeState();
-        if (tg == null) {
-            cap.append(L.s("判定：未知（未选择目标）\n", "verdict: unknown (no target)\n"));
-        } else {
-            cap.append(L.s("判定：", "verdict: ")).append(fui.capabilityText).append('\n');
-            cap.append(L.s("来源：", "source: ")).append(fui.capabilitySource).append('\n');
-            if (fui.capabilityStale) {
-                cap.append(L.s("注意：该结论采集已超过 5 分钟，可能过期\n",
-                        "note: this reading is older than 5 min\n"));
-            }
-            if (fui.capabilityConflict) {
-                cap.append(L.s("注意：两条通道结论不一致，未擅自选择（长按本卡看详情）\n",
-                        "note: channels disagree - not auto-picked (long-press for detail)\n"));
+
+        // ── ① AP 自己的宣告（文案与释义同源，不再另起一段 ※ 解释）
+        if (wpsCapValue != null) {
+            if (tg == null) {
+                wpsCapValue.setText(L.s("未知（未选择目标）", "unknown (no target)"));
+                wpsCapValue.setTextColor(AmberTheme.TEXT_DIM);
+            } else {
+                StringBuilder s = new StringBuilder(fui.capabilityText == null
+                        || fui.capabilityText.isEmpty()
+                                ? L.s("未知", "unknown") : fui.capabilityText);
+                if (fui.capabilityStale) {
+                    s.append(L.s(" · 采集已超 5 分钟", " · reading older than 5 min"));
+                }
+                if (fui.capabilityConflict) {
+                    s.append(L.s(" · 两通道结论不一致", " · channels disagree"));
+                }
+                wpsCapValue.setText(s.toString());
+                wpsCapValue.setTextColor(capabilityRowColor(fui));
             }
         }
-        cap.append(L.s("※ 「未知」= 没读到 AP 的宣告，**不等于**目标不支持 PIN。\n"
-                        + "※ 能不能验证，看下面的「实际尝试」，不看这一栏。",
-                "· \"unknown\" = we could not read the AP's declaration; it does NOT mean\n"
-                        + "  PIN is unsupported. Whether it can be verified is decided by\n"
-                        + "  the actual attempts below, not by this line."));
 
-        // 2026-11-08 卡顿修复：Root 可用性不再在主线程同步 exec su。
-        // 老代码每次 buildWpsTab 首建都在这跑 2 次 WpsController.available()
-        // （=2 次同步 su -c app_process status），首建 WPS 页共 4 次 root exec，
-        // 点击 WPS 导航明显卡顿。现在主线程只读缓存：null 显示「检测中」，
-        // 真实检测放后台线程（ensureWpsRootDiag），跑完再刷这一行。
-        Boolean rootOk = wpsRootOk;
-        env.append(L.s("【执行环境 · 状态总览】本机通道（决定我们能不能去试）\n",
-                "[execution env] local channels (can WE attempt)\n"));
-        env.append(L.s("Root    ", "Root    ")).append(
-                rootOk == null
-                        ? L.s("检测中…", "checking…")
-                        : (rootOk ? L.s("可用", "OK") : L.s("不可用", "unavailable"))).append('\n');
+        // ── ② 本机通道：Root 与 supplicant 并成一行
+        //    （2026-11-08 的卡顿修复保持不变：主线程只读缓存，真检测在后台）
+        final Boolean rootOk = wpsRootOk;
         if (rootOk == null) ensureWpsRootDiag();
-        String ch = wpsSelftestDone
-                ? io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.CHANNEL_OK
-                : io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.NOT_SELF_TESTED;
-        env.append(L.s("supplicant 通道  ", "channel  "))
-                .append(io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.channelLabel(ch, zh))
-                .append('\n');
-        env.append(L.s("SELinux   ", "SELinux   ")).append(
-                rootOk == null
-                        ? L.s("（由 helper 执行时确认）", "(confirmed at runtime)")
-                        : (rootOk ? L.s("策略已就绪", "policy ok")
-                                  : L.s("不可用", "unavailable"))).append('\n');
-        env.append(wpsSelftestDone
-                ? L.s("通道已真读回包验证", "channel verified by real read")
-                : L.s("通道自检未执行（开始/扫描后自动检查）", "channel not self-tested yet"));
-        env.append('\n');
-        // 第三段：实际尝试 —— 判断"能不能验证"的唯一依据
-        env.append(L.s("\n【实际尝试】判断能否验证的唯一依据\n",
-                "\n[actual attempts] the ONLY basis for verifiability\n"));
-        String execLbl = wpsTaskMgr().state().label();
-        String execHuman;
-        if (io.github.wlmosv_png.wpaforge.wps.WpsRunState.IDLE
-                == wpsTaskMgr().state().state()) {
-            execHuman = L.s("尚未尝试 —— 点「开始验证」才会知道这个目标能不能验证",
-                    "not attempted yet - press Start to find out");
-        } else if (wpsTaskMgr().state().isActive()) {
-            execHuman = L.s("进行中…", "in progress…");
-        } else if (wpsSession != null) {
-            execHuman = io.github.wlmosv_png.wpaforge.wps.WpsEngine
-                    .verdictText(wpsSession.verdict, zh);
-        } else {
-            execHuman = L.s("已结束", "finished");
+        if (wpsEnvValue != null) {
+            String ch = io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.channelLabel(
+                    wpsSelftestDone
+                            ? io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.CHANNEL_OK
+                            : io.github.wlmosv_png.wpaforge.wps.WpsChannelDiag.NOT_SELF_TESTED,
+                    zh);
+            String s = L.s("Root ", "Root ") + (rootOk == null
+                    ? L.s("检测中…", "checking…")
+                    : (rootOk ? L.s("可用", "OK") : L.s("不可用", "unavailable")))
+                    + " · " + ch;
+            wpsEnvValue.setText(s);
+            wpsEnvValue.setTextColor(rootOk != null && rootOk
+                    ? (wpsSelftestDone ? TEXT : AmberTheme.TEXT_DIM)
+                    : AmberTheme.WARN);
         }
-        env.append(L.s("状态：", "state: ")).append(execLbl).append('\n');
-        env.append(L.s("结论：", "verdict: ")).append(execHuman);
 
-        wpsEnvCardText.setText(env.toString());
-        wpsCapCardText.setText(cap.toString());
+        // ── ③ 实际尝试 —— 判断「能不能验证」的唯一依据。
+        //    这一行**不再带内部枚举名**（旧版直接显示「状态：IDLE」，
+        //    那是 WpsRunState.label() 的日志用字符串，不该出现在界面上）。
+        if (wpsTryValue != null) {
+            String human;
+            int color;
+            if (io.github.wlmosv_png.wpaforge.wps.WpsRunState.IDLE
+                    == wpsTaskMgr().state().state()) {
+                human = L.s("未开始 —— 点「开始验证」才知道这个目标能不能验证",
+                        "not started - press Start to find out");
+                color = AmberTheme.TEXT_DIM;
+            } else if (wpsTaskMgr().state().isActive()) {
+                human = L.s("进行中…", "in progress…");
+                color = ACCENT;
+            } else if (wpsSession != null) {
+                human = io.github.wlmosv_png.wpaforge.wps.WpsEngine
+                        .verdictText(wpsSession.verdict, zh);
+                color = TEXT;
+            } else {
+                human = L.s("已结束", "finished");
+                color = TEXT;
+            }
+            wpsTryValue.setText(human);
+            wpsTryValue.setTextColor(color);
+        }
+    }
+
+    /**
+     * 能力行的颜色。
+     *
+     * <p>只有「已明确」才上色：未知 / 数据不完整一律用弱色 ——
+     * 给未知涂警示色会读成「不支持」，这正是 2026-11-09 那次用户误读的根源。
+     */
+    private int capabilityRowColor(io.github.wlmosv_png.wpaforge.wps.WpsFacade.UiState fui) {
+        int st = io.github.wlmosv_png.wpaforge.wps.WpsUiKit.capStateOf(fui.capabilityVerdict);
+        if (st == io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_OK) return OK_GREEN;
+        if (st == io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_NO_PIN
+                || st == io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_LOCKED
+                || st == io.github.wlmosv_png.wpaforge.wps.WpsUiKit.CAP_CONFLICT) {
+            return AmberTheme.WARN;
+        }
+        return AmberTheme.TEXT_DIM;
+    }
+
+    /** 能力卡里的一行：左固定宽标签（弱色）+ 右值（可换行）。返回**值**那个 TextView。 */
+    private TextView summaryRow(LinearLayout card, String label, int topGapDp) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        TextView lb = new TextView(this);
+        lb.setText(label);
+        lb.setTextSize(AmberTheme.FS_BODY);
+        lb.setTextColor(AmberTheme.TEXT_FAINT);
+        row.addView(lb, new LinearLayout.LayoutParams(px(68),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView v = new TextView(this);
+        v.setTextSize(AmberTheme.FS_BODY);
+        v.setTextColor(TEXT);
+        v.setLineSpacing(px(3), 1f);
+        row.addView(v, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        card.addView(row, topGap(topGapDp));
+        return v;
     }
 
     /**
@@ -2483,10 +2529,12 @@ public class MainActivity extends Activity {
         sb.append("【本机通道】\n");
         sb.append("Root：").append(wpsRootOk == null ? "检测中" : (wpsRootOk ? "可用" : "不可用")).append('\n');
         sb.append("supplicant 通道：").append(wpsSelftestDone ? "已真读回包验证" : "未自检").append('\n');
+        sb.append("SELinux：").append(wpsRootOk == null ? "（由 helper 执行时确认）"
+                : (wpsRootOk ? "策略已就绪" : "不可用")).append('\n');
         sb.append('\n');
         sb.append("【说明】\n");
-        sb.append("· 「能力未知」= 没读到 AP 的宣告，**不等于**目标不支持 PIN\n");
-        sb.append("· 「检测到 PIN 支持声明」**不等于** PIN 已验证可用\n");
+        sb.append("· 「能力未知」= 没读到 AP 的宣告，不等于目标不支持 PIN\n");
+        sb.append("· 「检测到 PIN 支持声明」不等于 PIN 已验证可用\n");
         sb.append("· 能否验证，只看「实际尝试」的结果\n");
         io.github.wlmosv_png.wpaforge.ui.NetDialog.textInfo(this,
                 L.s("WPS 能力详情", "WPS capability detail"), sb.toString());
@@ -2776,7 +2824,7 @@ public class MainActivity extends Activity {
                     .append(io.github.wlmosv_png.wpaforge.wps.WpsEngine.evidenceSummary(s));
         }
         wpsProgressLine.setText(sb.toString());
-        // 状态总览卡跟着进度刷新；首次进入页面异步做一次通道自检
+        // 状态卡跟着进度刷新；首次进入页面异步做一次通道自检
         renderWpsSummary();
         wpsRunSelftest();
     }

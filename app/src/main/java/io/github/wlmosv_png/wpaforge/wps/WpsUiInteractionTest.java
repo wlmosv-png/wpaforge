@@ -88,7 +88,12 @@ public final class WpsUiInteractionTest {
 
         // ---------------------------------------------------------- 5 帮助入口
         info("⑤ 问号帮助入口 + 内容完整");
-        ok("帮助入口存在", ma.contains("wpsHeader.addView(helpBtn"), "无");
+        // 2026-11-10：变量随样式统一改名（helpBtn -> wpsHelpBtn），断言同步；
+        // 并钉住「与审计页 / 破解页同一套」，防止有人再退回琥珀圆钮。
+        ok("帮助入口存在", ma.contains("wpsHeader.addView(wpsHelpBtn"), "无");
+        ok("帮助入口与另两页同一套组件",
+                ma.contains("wpsHelpBtn.setImageDrawable(DictIcons.sized(DictIcons.Kind.HELP,"),
+                "未统一");
         ok("帮助打开方法存在", ma.contains("private void showWpsHelpDialog()"), "无");
         ok("帮助走统一组件", ma.contains("NetDialog.textInfo(this,\n                    L.s(\"WPS PIN 弱点攻击 · 说明\""), "未统一");
         ok("帮助含「WPS PIN 是什么」", ma.contains("1. WPS PIN 是什么"), "缺条目");
@@ -138,11 +143,23 @@ public final class WpsUiInteractionTest {
                 ma.contains("[能力] 未能判定（"), "无");
         ok("旧含糊文案已移除",
                 !ma.contains("厂商算法对这个 BSSID 没算出结果"), "仍存在");
-        ok("能力卡改为三段式（AP 宣告 / 本机环境 / 实际尝试）",
-                ma.contains("【AP 能力状态】") && ma.contains("【执行环境 · 状态总览】")
-                        && ma.contains("【实际尝试】"), "无");
-        ok("能力卡明确「未知 ≠ 不支持」",
-                ma.contains("不等于**目标不支持 PIN") || ma.contains("不等于"), "无");
+        // 2026-11-10：卡面从「三段长文」压成三行，两个旧断言同步改写。
+        ok("能力卡压成三行，不再铺三段长文",
+                ma.contains("wpsCapValue") && ma.contains("wpsEnvValue")
+                        && ma.contains("wpsTryValue")
+                        && !ma.contains("【AP 能力状态】") && !ma.contains("【实际尝试】"),
+                "无");
+        ok("「未知 ≠ 不支持」的释义改由能力文案承载（卡上只说一遍）",
+                ma.contains(".capVerdictText(") && ma.contains("capabilityRowColor("), "无");
+        ok("卡面不再透出内部枚举名（WpsRunState.label 是日志用）",
+                !ma.contains("env.append(L.s(\"状态：\", \"state: \")).append(execLbl)"), "无");
+        ok("「?」入口与审计页 / 破解页同一套（弱底 chip + DictIcons.HELP）",
+                ma.contains("wpsHelpBtn.setImageDrawable(DictIcons.sized(DictIcons.Kind.HELP,")
+                        && ma.contains("wpsHelpBtn.setBackground(roundBg(AmberTheme.CARD_3,")
+                        && !ma.contains("roundBgStroked(AmberTheme.ACCENT_BG, ACCENT, 999f, 1f)"),
+                "无");
+        ok("帮助入口有可访问性描述",
+                ma.contains("wpsHelpBtn.setContentDescription(L.s(\"说明\", \"Help\"))"), "无");
         ok("卡片与标签共用同一能力来源",
                 ma.contains("wpsCapabilityOf(") , "无");
         ok("能力人话走 WpsUiKit", ma.contains(".capVerdictText("), "无");

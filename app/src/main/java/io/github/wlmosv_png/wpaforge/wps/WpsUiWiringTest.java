@@ -51,9 +51,19 @@ public final class WpsUiWiringTest {
         ok("完整枚举已移除", !ma.contains("wpsMode == 4"), "完整枚举入口仍存在");
         ok("完整枚举不在模式数组", !ma.contains("Full enumeration (10M)"), "模式数组仍含完整枚举");
         ok("完整枚举不在策略描述", !ma.contains("1000 万种按序穷举"), "策略描述仍含完整枚举");
-        ok("状态总览卡存在", ma.contains("状态总览"), "未接线状态总览");
-        ok("执行环境卡存在", ma.contains("执行环境"), "未接线执行环境");
-        ok("能力状态卡存在", ma.contains("能力状态"), "未接线能力状态");
+        // 2026-11-10：状态卡由「三段长文」压成三行，断言同步到新形态。
+        // 注意这里是**源码文本扫描**，所以要断言代码里真的还有这些行，
+        // 而不是断言某句注释 —— 注释不改也能假绿，那正是「卡改了测试还绿」。
+        ok("能力与通道状态卡存在（三行值列已接线）",
+                ma.contains("wpsCapValue") && ma.contains("wpsEnvValue")
+                        && ma.contains("wpsTryValue"), "未接线状态卡");
+        ok("三行标签齐备（目标宣告 / 本机通道 / 实际尝试）",
+                ma.contains("目标宣告") && ma.contains("本机通道")
+                        && ma.contains("实际尝试"), "标签缺失");
+        ok("三行由同一个 helper 构建（summaryRow）",
+                ma.contains("private TextView summaryRow("), "缺 helper");
+        ok("旧的「两列网格长文」卡已不在",
+                !ma.contains("wpsCapCardText") && !ma.contains("wpsEnvCardText"), "旧卡仍在");
         ok("runWpsBatch 返回实际处理结果",
                 ma.contains("private java.util.List<io.github.wlmosv_png.wpaforge.wps."
                         + "WpsController.Result> runWpsBatch("), "签名未改");

@@ -348,7 +348,7 @@ neither survives a per-candidate dictionary sweep.
 No Gradle; a two-stage manual chain:
 
 ```sh
-WP_VERSION_CODE=154 WP_VERSION_NAME=1.9.58 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
+WP_VERSION_CODE=155 WP_VERSION_NAME=1.9.59 sh 1-aapt2.sh  # device side: aapt2 resource compile (version set here)
 sh 2-build-dex.sh                                       # desktop side: javac + d8 + signing (needs WP_FORGE_KS*)
 ```
 

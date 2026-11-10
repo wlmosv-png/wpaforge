@@ -113,8 +113,10 @@ public class ObserveAssembleFxTest {
                         && !ma.contains("playAuditAssemble") && !ma.contains("playWpsAssemble")
                         && countOf(ma, "playPageAssemble(index);") == 1);
         ok("每个页面各自只播一次", ma.contains("if (assemblePlayed[index]) return;"));
-        ok("五个页面都覆盖到", ma.contains("private LinearLayout pageOf(int index)")
-                && ma.contains("case 3: return pageWps;"));
+        // 2026-11-10 用户改口：其他页面点进去不要特效，只留冷启动那张页
+        ok("只有冷启动那张页演入场（其余页面直接返回）",
+                ma.contains("if (index != 0) return;")
+                        && ma.contains("private LinearLayout pageOf(int index)"));
         ok("页签卡扣只在冷启动那张页演（不每切一页都抖）",
                 ma.contains("if (index == 0) {") && ma.contains("for (View t : all) if (t != null) tabs.add(t);"));
         ok("没有引入新依赖 / 新 View 类型",

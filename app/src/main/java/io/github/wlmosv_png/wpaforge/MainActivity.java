@@ -1,6 +1,8 @@
 package io.github.wlmosv_png.wpaforge;
 
 import android.Manifest;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -5400,6 +5402,39 @@ public class MainActivity extends Activity {
     // 只做可逆的属性动画；四角框/光带/火花全部画在自建的覆盖 View 上。
     // 任何一步出错就地跳过；2.6s 后无条件复位并摘掉覆盖层。
 
+    /** 运行中状态大字的呼吸动画（「持续输出」最直接的那个信号）。 */
+    private ObjectAnimator runPulse;
+
+    /**
+     * 运行中：让状态大字自己呼吸；非运行：立刻停掉并恢复不透明。
+     *
+     * <p>为什么放在这个控件上：用户要的是「单独控件的持续输出」，
+     * 而「跑没跑」本来就写在状态大字里 —— 让它动起来，不用新增任何控件、
+     * 不改任何布局，扫一眼就知道后台还在咬。
+     */
+    private void setRunPulse(boolean on) {
+        try {
+            if (on) {
+                if (runPulse != null || stateBig == null) return;
+                // 尊重系统动画缩放：关动画时干脆不呼吸（本方法会被周期性调用）
+                if (fxMul() <= 0f) return;
+                runPulse = ObjectAnimator.ofFloat(stateBig, "alpha", 1f, 0.42f);
+                runPulse.setDuration(fxDur(780L));
+                runPulse.setRepeatCount(ValueAnimator.INFINITE);
+                runPulse.setRepeatMode(ValueAnimator.REVERSE);
+                runPulse.setInterpolator(
+                        new android.view.animation.AccelerateDecelerateInterpolator());
+                runPulse.start();
+            } else {
+                if (runPulse != null) {
+                    runPulse.cancel();
+                    runPulse = null;
+                }
+                if (stateBig != null) stateBig.setAlpha(1f);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     /** 每个页面各自只演一次。 */
     private final boolean[] assemblePlayed = new boolean[5];
     private AssembleOverlay assembleOverlay;
@@ -5440,6 +5475,9 @@ public class MainActivity extends Activity {
      * 页签「卡扣」只在冷启动那张页演一次（index 0），免得每切一页页签都抖。
      */
     private void playPageAssemble(int index) {
+        // 只有冷启动那张页演入场（用户要求：其他页面点进去**不要**特效，
+        // 特效集中到单独控件的持续输出上 —— 见 setRunPulse / flashLastLine）。
+        if (index != 0) return;
         if (index < 0 || index >= assemblePlayed.length) return;
         if (assemblePlayed[index]) return;
         assemblePlayed[index] = true;
@@ -10249,6 +10287,13 @@ public class MainActivity extends Activity {
             stateBig.setText(text);
             stateBig.setTextColor(color);
         }
+        // 持续输出信号：跑起来时状态大字自己呼吸（停下来立刻恢复，不留半透明）
+        setRunPulse(st == TaskQueue.State.RUNNING);
+        // 流光的快慢跟**实测**速度挂钩：单条越慢，光带扫得越慢（快慢看得见）
+        if (connectProgress != null) {
+            long perItem = Prefs.avgMsPerItem(this);
+            connectProgress.setFlowPeriodMs(420L + (long) (perItem * 0.09));
+        }
         /*
          * 空态收紧（2026-11-02 用户截图）。
          *
@@ -12705,7 +12750,50 @@ public class MainActivity extends Activity {
                 streamScroll.post(() ->
                         streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
             }
+            flashLastLine();
         }
+    }
+
+    /** 正在闪的那一行的底色 span（同一时刻只留一个，日志刷得再快也不会堆）。 */
+    private Object lastFlashSpan;
+
+    /**
+     * 刚追加的那一行闪一下再褪 —— 攻击流的「持续输出」手感。
+     *
+     * <p>攻击流是**一个 TextView + Spannable**（不是一行一个 View），所以这里用
+     * 底色 span 做高亮：闪完把 span 摘掉。同一时刻只保留一个（新的把旧的摘掉），
+     * 因此即使跑字典时日志刷得很快，开销也是有界的。
+     */
+    private void flashLastLine() {
+        try {
+            final android.text.Spannable buf = streamBuffer;
+            final android.widget.TextView tv = connectStreamView;
+            if (tv == null || buf.length() == 0) return;
+            int end = buf.length();
+            int start = end;
+            while (start > 0 && buf.charAt(start - 1) != '\n') start--;
+            if (end <= start) return;
+            if (lastFlashSpan != null) buf.removeSpan(lastFlashSpan);
+            // 记住这一发的 span 本体：日志刷得快时，上一发的延时回调可能晚到，
+            // 比对身份就能避免它把**新**那一发的高光提前摘掉。
+            final android.text.style.BackgroundColorSpan mine =
+                    new android.text.style.BackgroundColorSpan(0x33FFB800);
+            lastFlashSpan = mine;
+            buf.setSpan(mine, start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            tv.setText(buf, android.widget.TextView.BufferType.SPANNABLE);
+            tv.postDelayed(() -> {
+                try {
+                    if (lastFlashSpan == mine) {
+                        buf.removeSpan(lastFlashSpan);
+                        lastFlashSpan = null;
+                        if (connectStreamView != null) {
+                            connectStreamView.setText(buf,
+                                    android.widget.TextView.BufferType.SPANNABLE);
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }, fxDur(340L));
+        } catch (Throwable ignored) {}
     }
 
     private void appendBuffer(CharSequence line, int color) {

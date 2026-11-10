@@ -93,8 +93,25 @@ public class StagedProgress extends View {
 
     /** 每帧把显示值向目标值靠近的系数（越小越慢越顺） */
     private static final float EASE = 0.18f;
-    /** 流光扫过一整条轨道要多少帧 */
-    private static final float SWEEP_STEP = 0.012f;
+    /**
+     * 流光扫过一整条轨道要多少**毫秒**。
+     *
+     * <p>原来这里是「每帧推进 0.012」，而帧率不是常数 —— 120Hz 屏上光带会跑得
+     * 比 60Hz 快一倍，观感随设备变。现在改成按**时间**推进，再由调用方按实测速度
+     * 设置周期（单条越慢 → 光带越慢），快慢才真的表示"输出速度"。
+     */
+    private float sweepMs = 1390f;
+
+    /** 上一次帧的时刻（按时间推进流光用）。 */
+    private long lastTickMs = 0L;
+
+    /** 流光扫一整条轨道的时长（毫秒）。会被收进 300~2500。 */
+    public void setFlowPeriodMs(long ms) {
+        float v = ms < 300L ? 300f : (ms > 2500L ? 2500f : (float) ms);
+        if (Math.abs(v - sweepMs) < 8f) return;
+        sweepMs = v;
+        ensureAnimating();
+    }
 
     /** 自驱帧循环 */
     private final Runnable tick = new Runnable() {
@@ -114,10 +131,14 @@ public class StagedProgress extends View {
                 }
             }
 
-            // 流光推进（只在未完成时循环）
+            // 流光推进（只在未完成时循环）——按**时间**推进，跟帧率无关
+            long nowMs = android.os.SystemClock.uptimeMillis();
+            float dt = lastTickMs == 0L ? 16f : (nowMs - lastTickMs);
+            lastTickMs = nowMs;
+            if (dt > 100f) dt = 100f;
             if (!done) {
-                sweep += SWEEP_STEP;
-                if (sweep > 1f) sweep = 0f;
+                sweep += dt / sweepMs;
+                if (sweep > 1f) sweep -= 1f;
                 moving = true;
             }
 

@@ -109,8 +109,13 @@ public class ThemeConsistencyTest {
         String styles = read(ROOT + "app/src/main/res/values/styles.xml");
         ok("styles.xml 存在", styles != null);
         if (styles != null) {
-            ok("WPFTheme 继承 Theme.Material.NoActionBar（近黑底）",
-                    styles.contains("<style name=\"WPFTheme\" parent=\"@android:style/Theme.Material.NoActionBar\">"));
+            // 2026-11-10：为 12+ 的启动画面腾位置，公共 item 挪进了 WPFThemeBase，
+            // WPFTheme 变成它的子样式（values-v31 再覆盖启动画面三项）。
+            // 契约改成两条：Base 必须是 Material.NoActionBar，WPFTheme 必须继承 Base。
+            ok("WPFThemeBase 继承 Theme.Material.NoActionBar（近黑底）",
+                    styles.contains("<style name=\"WPFThemeBase\" parent=\"@android:style/Theme.Material.NoActionBar\">"));
+            ok("WPFTheme 继承 WPFThemeBase（公共 item 只有一份）",
+                    styles.contains("<style name=\"WPFTheme\" parent=\"@style/WPFThemeBase\" />"));
             ok("声明了 android:alertDialogTheme（系统弹窗也走同一套）",
                     styles.contains("android:alertDialogTheme\">@style/WPFDialog"));
             ok("对话框强调色是琥珀", styles.contains("<item name=\"android:colorAccent\">@color/wpf_accent</item>"));

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+（API 31）的系统启动画面。
+
+  <h3>为什么必须有这一份</h3>
+  12 之前，进程起来到第一帧之间那段时间是「窗口底色」（windowBackground，纯近黑）。
+  12 起系统会**替你**在这段时间放一张启动画面 —— 如果你不告诉它放什么，
+  它就拿 luncher 图标顶上去：于是用户在 12+ 看到的是「启动器图标」，
+  在 11 及以下看到的是「纯黑一片」，两套观感都不是我们的。
+
+  <h3>为什么只覆盖这三项</h3>
+  资源限定符是「同名整体替换」：这一份 WPFTheme 会把 values/styles.xml 里的
+  整个换掉。所以 parent 必须指向那里定义的 WPFThemeBase —— 公共项（对话框主题、
+  状态栏、文字色……）全在 Base 里，这里只加启动画面三项。
+  漏掉 parent 的后果是 31+ 上对话框主题静默消失（变回平台灰青）。
+  ThemeConsistencyTest 把这条关系钉住了。
+
+  <h3>为什么不做固定时长</h3>
+  300ms 是**系统图标退出动效**的时长提示，不是「强制停留」：
+  系统启动画面在第一帧真正画出来时就会退，这段等待本来就在，动画不额外增加耗时。
+-->
+<resources>
+
+    <style name="WPFTheme" parent="@style/WPFThemeBase">
+        <item name="android:windowSplashScreenBackground">@color/wpf_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/wpf_splash_mark</item>
+        <item name="android:windowSplashScreenAnimationDuration">300</item>
+    </style>
+
+</resources>

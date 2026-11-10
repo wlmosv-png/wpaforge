@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WPAForge 启动标记 —— Android 12+ 的系统启动画面（L0）与冷启动品牌帧（L1）
+  **共用同一份矢量**，所以从系统画面交接到品牌帧时图形是连续的，不会换图。
+
+  画布 288×288 是启动图标的系统规范尺寸：内容要落在中间 2/3（48..240）以内，
+  系统才不会被裁。这里内容占 44..244，边缘是那条装饰弧，安全。
+
+  配色只引用 @color/wpf_accent（= AmberTheme.ACCENT），
+  由 ThemeConsistencyTest 钉住资源值与 Java 常量同值 —— 不在这里写死十六进制。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+
+    <!-- 锁体外环（半透明琥珀，给锁孔留出层次） -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M144,60 A84,84 0 1,1 144,228 A84,84 0 1,1 144,60 Z"
+        android:strokeAlpha="0.55"
+        android:strokeColor="@color/wpf_accent"
+        android:strokeWidth="7" />
+
+    <!-- 锁孔：圆 -->
+    <path
+        android:fillColor="@color/wpf_accent"
+        android:pathData="M144,100 m-26,0 a26,26 0 1,0 52,0 a26,26 0 1,0 -52,0" />
+
+    <!-- 锁孔：向下收窄的槽 -->
+    <path
+        android:fillColor="@color/wpf_accent"
+        android:pathData="M133,138 L155,138 L161,198 L127,198 Z" />
+</vector>

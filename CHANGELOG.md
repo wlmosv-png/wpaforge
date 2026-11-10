@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.9.55] - 2026-11-10
+
+> ### 启动画面（Android 12+）
+
+只动**资源**，Java 一行没改 —— 不碰启动时序，不引入任何等待。
+
+- 新增 `values-v31/styles.xml`：12+ 的系统启动画面改成**近黑底 + 自绘琥珀锁孔**
+  （此前显示的是启动器图标），退出动效 300ms。
+- 新增 `drawable/wpf_splash_mark.xml`（288×288 规范画布，配色引用 `@color/wpf_accent`）。
+- 主题结构重排：公共 item 移入 `WPFThemeBase`，`WPFTheme` 继承它，v31 只覆盖启动画面三项。
+  因为资源限定符是「同名整体替换」—— 不这么做，31+ 上会静默丢掉 `alertDialogTheme`。
+  这条关系由 `ThemeConsistencyTest` 钉住。
+- Android 11 及以下无系统启动画面，行为与改动前完全一致。
+
+---
 ## [1.9.54] - 2026-11-10
 
 > ### WPS PIN 页：帮助入口统一 + 状态卡压成三行

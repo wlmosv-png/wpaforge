@@ -12,8 +12,17 @@
 -->
 <resources>
 
-    <!-- 应用主题：近黑底 + 琥珀强调 -->
-    <style name="WPFTheme" parent="@android:style/Theme.Material.NoActionBar">
+    <!--
+      基线主题：近黑底 + 琥珀强调。**所有版本共用这一份 item 清单。**
+
+      为什么拆出 Base：Android 的资源限定符是「同名整体替换」而不是「逐项合并」——
+      values-v31/styles.xml 里的 WPFTheme 会把这里的 WPFTheme **整个换掉**。
+      如果把 item 直接写在 WPFTheme 里、v31 再写一份带启动画面三项的，
+      31+ 上就会静默丢掉这里的 alertDialogTheme 等项（对话框又变回平台灰青，
+      正是 styles.xml 开头那段注释要防的「两张皮」）。
+      所以：公共项放 Base，v31 只覆盖启动画面相关项。
+    -->
+    <style name="WPFThemeBase" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:colorPrimary">@color/wpf_accent</item>
         <item name="android:colorAccent">@color/wpf_accent</item>
         <item name="android:colorPrimaryDark">@color/wpf_bg</item>
@@ -31,6 +40,9 @@
         <!-- 对话框也走同一套（否则系统弹窗与页面配色不一致） -->
         <item name="android:alertDialogTheme">@style/WPFDialog</item>
     </style>
+
+    <!-- 应用主题（Manifest 里引用的就是它）；12+ 由 values-v31 覆盖出启动画面。 -->
+    <style name="WPFTheme" parent="@style/WPFThemeBase" />
 
     <!--
       对话框主题。

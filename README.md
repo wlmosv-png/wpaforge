@@ -7,7 +7,7 @@
 <sub>多字典计划与自动接力 · 同一网络只试一次 · 现场生成候选 · 逐条真实关联验证 · 内置精选字典，也能用你自己的</sub>
 
 [![Release](https://img.shields.io/github/v/release/wlmosv-png/wpaforge?style=flat-square&color=FFB800&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=FFD54F&labelColor=1C1C24&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wlmosv-png/wpaforge/total?style=flat-square&color=FFD54F&labelColor=1C1C24&cacheSeconds=60)](https://github.com/wlmosv-png/wpaforge/releases/latest/download/WPAForge.apk)
 [![Stars](https://img.shields.io/github/stars/wlmosv-png/wpaforge?style=flat-square&color=E39A28&labelColor=1C1C24)](https://github.com/wlmosv-png/wpaforge/stargazers)
 <br>
 [![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)

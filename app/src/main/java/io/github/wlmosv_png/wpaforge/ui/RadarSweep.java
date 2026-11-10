@@ -122,6 +122,79 @@ public class RadarSweep extends View {
     /** 刻度字底下的色块（与卡片同色）。 */
     private final Paint pPatch = new Paint(Paint.ANTI_ALIAS_FLAG);
 
+    // ================= 入场特效：陨石砸盘（2026-11-10） =================
+    //
+    // 只影响**这一个 View 的绘制**：不碰启动时序、不碰 Scanner、不碰 MainActivity。
+    // 一个进程只播一次（冷启动进观测页那一下）；手一按下立刻结束。
+    /** 进程内只播一次。 */
+    private static boolean introPlayed = false;
+    /** 整段特效时长（毫秒）。 */
+    private static final long INTRO_MS = 1900L;
+    /** 坠落段时长 = 撞击时刻。 */
+    private static final long T_HIT = 340L;
+    /** 特效起点（uptimeMillis）；0 = 不在播。 */
+    private long introStart;
+
+    private final Paint pIntro = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pIntroFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pIntroGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** 撞击闪光的径向渐变（半径变了才重建 —— onDraw 里绝不 new）。 */
+    private android.graphics.RadialGradient flashGrad;
+    private float flashGradR = -1f;
+
+    /** 撞击裂纹：18 条射线的角度与长度（固定伪随机，构造一次）。 */
+    private static final float[] CRACK_A = new float[18];
+    private static final float[] CRACK_L = new float[18];
+    /** 雷电：两条折线，归一化坐标（每段 4 个 float：x0,y0,x1,y1）。 */
+    private static final float[] BOLT1 = {
+            0.10f, 0.06f, 0.30f, 0.30f, 0.30f, 0.30f, 0.24f, 0.46f,
+            0.24f, 0.46f, 0.52f, 0.52f, 0.52f, 0.52f, 0.44f, 0.72f,
+            0.44f, 0.72f, 0.72f, 0.86f,
+    };
+    private static final float[] BOLT2 = {
+            0.92f, 0.12f, 0.74f, 0.34f, 0.74f, 0.34f, 0.84f, 0.48f,
+            0.84f, 0.48f, 0.56f, 0.56f, 0.56f, 0.56f, 0.62f, 0.78f,
+    };
+    /** 雷电的顶点缓冲（复用，不在 onDraw 里分配）。 */
+    private final float[] boltBuf = new float[20];
+    /** 冲击波用的临时矩形（复用）。 */
+    private final RectF introRect = new RectF();
+
+    static {
+        // 固定种子的伪随机：每次启动裂纹长得一样（不闪、不跳、可复现）
+        long s = 0x5DEECE66DL;
+        for (int i = 0; i < CRACK_A.length; i++) {
+            s = s * 6364136223846793005L + 1442695040888963407L;
+            CRACK_A[i] = ((s >>> 33) % 3600) / 10f;              // 0..360 度
+            s = s * 6364136223846793005L + 1442695040888963407L;
+            CRACK_L[i] = 0.42f + ((s >>> 33) % 1000) / 1000f * 0.58f;   // 0.42..1.0
+        }
+    }
+
+    /**
+     * 播放入场特效。一个进程只播一次（冷启动第一次进观测页）。
+     *
+     * <p>放在 {@code onSizeChanged} 里调用 —— 那一刻盘刚量出半径、马上要上屏，
+     * 也正是"砸下来"应该发生的时刻。这样 {@code MainActivity} 一行都不用改。
+     */
+    public void playIntro() {
+        if (introPlayed || introStart > 0) return;
+        introPlayed = true;
+        introStart = SystemClock.uptimeMillis();
+        lastFrame = introStart;
+        kick();
+    }
+
+    /** 手一按下就当场收掉特效（不留"必须看完"的强制感）。 */
+    @Override
+    public boolean onTouchEvent(android.view.MotionEvent e) {
+        if (introStart > 0 && e != null && e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) {
+            introStart = 0;
+            kick();
+        }
+        return super.onTouchEvent(e);
+    }
+
     private float sweepAngle = 0f;
     private boolean spinning = false;
     private long lastFrame = 0;
@@ -237,6 +310,8 @@ public class RadarSweep extends View {
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
+        // 冷启动第一次量出尺寸：这一刻开演（进程内只播一次）
+        playIntro();
         if (pendingTargets || anim.size() == 0) {
             pendingTargets = false;
             anim.clear();
@@ -283,6 +358,29 @@ public class RadarSweep extends View {
         lastFrame = now;
         if (dt > 0.2f) dt = 0.2f;
 
+        // ── 入场特效时基（每次 onDraw 只算一次）
+        float fxT = -1f;
+        if (introStart > 0) {
+            long el = now - introStart;
+            if (el >= INTRO_MS) introStart = 0;
+            else fxT = el;
+        }
+
+        // 撞击瞬间把整个盘"压扁"再弹回（阻尼振荡收敛到 1.0，不会突变）
+        float squash = 1f;
+        float sweepMul = 1f;
+        if (fxT >= 0) {
+            float u = (fxT - T_HIT + 40f) / 560f;
+            if (u < 0f) u = 0f;
+            if (u > 1f) u = 1f;
+            squash = 1f - 0.10f * (float) (Math.exp(-5.2 * u) * Math.cos(16.0 * u));
+            // 扫描线：撞击前 4 倍速，落定后缓降到 1 倍（"能量散尽"）
+            float v = (fxT - T_HIT - 200f) / 700f;
+            if (v < 0f) v = 0f;
+            if (v > 1f) v = 1f;
+            sweepMul = 4f - 3f * (float) (1.0 - Math.pow(1.0 - v, 3.0));
+        }
+
         if (pendingTargets) {
             pendingTargets = false;
             applyTargets();
@@ -292,6 +390,11 @@ public class RadarSweep extends View {
 
         float cx = w / 2f, cy = h / 2f;
         float radius = Math.min(w, h) / 2f - dp(16);
+
+        // 盘面整体承受撞击形变：压扁/回弹只作用在盘上，特效本身不受影响
+        cv.save();
+        if (squash != 1f) cv.scale(1f, squash, cx, cy);
+        if (fxT >= 0) drawIntroScrim(cv, cx, cy, radius, fxT);
 
         // ── 1. 刻度盘：五道信号环 + 细十字轴
         for (int i = 0; i < RING.length; i++) {
@@ -388,12 +491,215 @@ public class RadarSweep extends View {
             cv.drawText(subText, cx, cy + dp(15), pText);
         }
 
+        cv.restore();
+
+        // ── 7. 入场特效（撞击闪白 / 冲击波 / 裂纹 / 雷电 / 余晖）
+        //      画在盘**之上**，但数据点始终照常画在盘里，不遮不挡。
+        //      整段 try/catch：特效出任何问题都当场收掉，绝不影响雷达本身。
+        if (fxT >= 0) {
+            try {
+                drawIntroFx(cv, cx, cy, radius, fxT);
+            } catch (Throwable t) {
+                introStart = 0;
+            }
+        }
+
         if (spinning) {
-            sweepAngle = (sweepAngle + dt * 62f) % 360f;   // 约 5.8 秒一圈
+            sweepAngle = (sweepAngle + dt * 62f * sweepMul) % 360f;   // 约 5.8 秒一圈
         }
         // 只有"还在转"或"还在过渡"时才继续出帧 —— 静止的盘一秒都不重绘
         boolean centerBusy = centerNumeric && Math.abs(centerTarget - centerShown) >= 0.5f;
-        if (spinning || animating || centerBusy) postInvalidateOnAnimation();
+        if (spinning || animating || centerBusy || introStart > 0) postInvalidateOnAnimation();
+    }
+
+    // ==================== 入场特效：陨石砸盘 ====================
+    //
+    // 时间轴（毫秒，相对 introStart）：
+    //   0~340    坠落：夜空压暗 + 流星从右上方加速砸向盘心
+    //   160~400  收束环：一道亮环从 1.55R 极速收进来撞在盘上
+    //   340      撞击：白光炸开 + 盘被压扁回弹 + 18 道裂纹
+    //   380~     冲击波：4 道环向外炸开，每道错开 95ms
+    //   560/840  雷电：两道锯齿闪电，各带双闪
+    //   700~1900 余晖：一道极淡的环慢慢散掉、夜空退去 → 变回原样
+    //
+    // 全部是 drawCircle/drawArc/drawLine/drawLines，预建 Paint、零对象分配。
+
+    /** 坠落段的压暗（夜空）。撞击后很快退掉，盘面亮度回来。 */
+    private void drawIntroScrim(Canvas cv, float cx, float cy, float radius, float t) {
+        float a;
+        if (t < T_HIT) {
+            a = 0.50f * ease(t / (float) T_HIT);
+        } else if (t < T_HIT + 70f) {
+            a = 0.50f;
+        } else {
+            a = 0.50f * (1f - clamp01((t - T_HIT - 70f) / 500f));
+        }
+        if (a <= 0.003f) return;
+        pIntroFill.setStyle(Paint.Style.FILL);
+        pIntroFill.setColor(0xFF000000);
+        pIntroFill.setAlpha((int) (255 * a));
+        cv.drawCircle(cx, cy, radius * 1.62f, pIntroFill);
+    }
+
+    /** 特效主体（画在盘之上；数据点照常画在盘里）。 */
+    private void drawIntroFx(Canvas cv, float cx, float cy, float radius, float t) {
+        final float dp1 = dp(1f);
+
+        // ── ① 坠落：流星本体（头部 + 三层渐细的尾迹）
+        if (t < T_HIT + 40f) {
+            float p = clamp01(t / (float) T_HIT);
+            float k = p * p * p;                       // 加速下落
+            float hx = cx + radius * 2.7f * (1f - k);
+            float hy = cy - radius * 2.3f * (1f - k);
+            float ux = 0.76f, uy = -0.65f;             // 来向（右上方）
+            float tail = radius * (0.42f + 1.25f * p);
+            pIntro.setStyle(Paint.Style.STROKE);
+            pIntro.setStrokeCap(Paint.Cap.ROUND);
+            float[] w = {7f, 4f, 2f};
+            float[] f = {0.30f, 0.65f, 1.0f};
+            float[] al = {0.16f, 0.36f, 0.62f};
+            for (int i = 0; i < w.length; i++) {
+                pIntro.setStrokeWidth(dp(w[i]));
+                pIntro.setColor(AmberTheme.ACCENT_SOFT);
+                pIntro.setAlpha((int) (255 * al[i] * (1f - p * 0.35f)));
+                cv.drawLine(hx, hy, hx + ux * tail * f[i], hy + uy * tail * f[i], pIntro);
+            }
+            pIntroFill.setStyle(Paint.Style.FILL);
+            pIntroFill.setColor(0xFFFFFFFF);
+            pIntroFill.setAlpha((int) (255 * 0.95f * (1f - p * 0.2f)));
+            cv.drawCircle(hx, hy, dp(4.6f), pIntroFill);
+            pIntroFill.setColor(AmberTheme.ACCENT);
+            pIntroFill.setAlpha((int) (255 * 0.30f * (1f - p * 0.3f)));
+            cv.drawCircle(hx, hy, dp(15f), pIntroFill);
+        }
+
+        // ── ② 收束环：从外面极速收进来，正好在撞击时刻落到盘上
+        {
+            float p = clamp01((t - 160f) / 240f);
+            if (p > 0f && p < 1f) {
+                float rr = radius * (1.55f - 0.55f * ease(p));
+                pIntro.setStyle(Paint.Style.STROKE);
+                pIntro.setStrokeWidth(dp(16f - 12f * p));
+                pIntro.setColor(p < 0.75f ? AmberTheme.ACCENT_SOFT : 0xFFFFFFFF);
+                pIntro.setAlpha((int) (255 * (0.25f + 0.70f * p)));
+                cv.drawCircle(cx, cy, rr, pIntro);
+            }
+        }
+
+        // ── ③ 撞击闪光：白光炸开（径向渐变，半径不变就不重建）
+        {
+            float a = spike(t, T_HIT - 20f, T_HIT + 18f, T_HIT + 330f);
+            if (a > 0.004f) {
+                float gr = radius * 1.5f;
+                if (flashGrad == null || Math.abs(gr - flashGradR) > dp1) {
+                    flashGradR = gr;
+                    flashGrad = new android.graphics.RadialGradient(cx, cy, gr,
+                            new int[]{0xFFFFFFFF, 0xB3FFE082, 0x00FFB800},
+                            new float[]{0f, 0.34f, 1f},
+                            android.graphics.Shader.TileMode.CLAMP);
+                }
+                pIntroFill.setStyle(Paint.Style.FILL);
+                pIntroFill.setShader(flashGrad);
+                pIntroFill.setAlpha((int) (255 * a));
+                cv.drawCircle(cx, cy, gr, pIntroFill);
+                pIntroFill.setShader(null);
+            }
+        }
+
+        // ── ④ 裂纹：18 道从盘心射出的火花，随进度拉长并熄灭
+        {
+            float p = clamp01((t - T_HIT) / 420f);
+            if (p > 0f && p < 1f) {
+                pIntro.setStyle(Paint.Style.STROKE);
+                pIntro.setStrokeCap(Paint.Cap.ROUND);
+                pIntro.setStrokeWidth(dp(2.4f - 1.6f * p));
+                pIntro.setColor(p < 0.5f ? 0xFFFFFFFF : AmberTheme.ACCENT_SOFT);
+                pIntro.setAlpha((int) (255 * 0.92f * (1f - p) * (1f - p)));
+                double base = Math.toRadians(0);
+                for (int i = 0; i < CRACK_A.length; i++) {
+                    double a = base + Math.toRadians(CRACK_A[i]);
+                    float r0 = radius * 0.06f;
+                    float r1 = radius * CRACK_L[i] * (0.35f + 0.65f * ease(p));
+                    cv.drawLine(cx + (float) Math.cos(a) * r0, cy + (float) Math.sin(a) * r0,
+                            cx + (float) Math.cos(a) * r1, cy + (float) Math.sin(a) * r1, pIntro);
+                }
+            }
+        }
+
+        // ── ⑤ 冲击波：4 道环向外炸开（越扩越细越淡）
+        for (int i = 0; i < 4; i++) {
+            float t0 = T_HIT + 40f + i * 95f;
+            float p = clamp01((t - t0) / 460f);
+            if (p <= 0f || p >= 1f) continue;
+            float rr = radius * (1.0f + 1.05f * (float) Math.sqrt(p));
+            pIntro.setStyle(Paint.Style.STROKE);
+            pIntro.setStrokeWidth(dp(14f * (1f - p) + 1f));
+            pIntro.setColor(i == 0 ? 0xFFFFFFFF
+                    : (i == 1 ? AmberTheme.ACCENT_SOFT : AmberTheme.ACCENT));
+            pIntro.setAlpha((int) (255 * 0.85f * (1f - p) * (1f - p)));
+            cv.drawCircle(cx, cy, rr, pIntro);
+        }
+
+        // ── ⑥ 雷电：两道锯齿闪电，各带一次双闪
+        drawBolt(cv, cx, cy, radius, BOLT1, t, T_HIT + 220f);
+        drawBolt(cv, cx, cy, radius, BOLT2, t, T_HIT + 500f);
+
+        // ── ⑦ 余晖：一道极淡的环慢慢散掉，把视线交还给盘面
+        {
+            float p = clamp01((t - T_HIT - 360f) / 1100f);
+            if (p > 0f && p < 1f) {
+                pIntro.setStyle(Paint.Style.STROKE);
+                pIntro.setStrokeWidth(dp(3f));
+                pIntro.setColor(AmberTheme.ACCENT);
+                pIntro.setAlpha((int) (255 * 0.30f * (1f - p)));
+                cv.drawCircle(cx, cy, radius * (1.02f + 0.05f * p), pIntro);
+            }
+        }
+    }
+
+    /** 一道锯齿闪电：先一层宽而暗的琥珀辉光，再一层细而亮的白芯；带双闪。 */
+    private void drawBolt(Canvas cv, float cx, float cy, float radius,
+                          float[] bolt, float t, float t0) {
+        float p = clamp01((t - t0) / 130f);
+        if (p <= 0f || p >= 1f) return;
+        // 双闪：0~0.25 亮、0.25~0.45 灭、0.45~0.8 再亮、之后熄灭
+        float flick = p < 0.25f ? 1f : (p < 0.45f ? 0.15f : (p < 0.80f ? 0.75f : 0.1f));
+        float a = flick * (1f - p * 0.6f);
+        if (a <= 0.02f) return;
+        float side = Math.min(cv.getWidth(), cv.getHeight()) * 0.5f + radius * 0.55f;
+        int n = bolt.length / 4;
+        for (int i = 0; i < n; i++) {
+            boltBuf[i * 4] = cx - side + bolt[i * 4] * side * 2f;
+            boltBuf[i * 4 + 1] = cy - side + bolt[i * 4 + 1] * side * 2f;
+            boltBuf[i * 4 + 2] = cx - side + bolt[i * 4 + 2] * side * 2f;
+            boltBuf[i * 4 + 3] = cy - side + bolt[i * 4 + 3] * side * 2f;
+        }
+        pIntro.setStyle(Paint.Style.STROKE);
+        pIntro.setStrokeCap(Paint.Cap.ROUND);
+        pIntro.setColor(AmberTheme.ACCENT);
+        pIntro.setStrokeWidth(dp(7f));
+        pIntro.setAlpha((int) (255 * 0.28f * a));
+        cv.drawLines(boltBuf, 0, n * 4, pIntro);
+        pIntro.setColor(0xFFFFFFFF);
+        pIntro.setStrokeWidth(dp(2.2f));
+        pIntro.setAlpha((int) (255 * 0.95f * a));
+        cv.drawLines(boltBuf, 0, n * 4, pIntro);
+    }
+
+    private static float clamp01(float v) {
+        return v < 0f ? 0f : (v > 1f ? 1f : v);
+    }
+
+    private static float ease(float p) {
+        return 1f - (1f - p) * (1f - p) * (1f - p);
+    }
+
+    /** 尖峰：t0 起亮、peak 处最高、end 处归零。用于「闪光」这种一瞬间的东西。 */
+    private static float spike(float t, float t0, float peak, float end) {
+        if (t <= t0 || t >= end) return 0f;
+        if (t < peak) return clamp01((t - t0) / (peak - t0));
+        float d = (t - peak) / (end - peak);
+        return (1f - d) * (1f - d);
     }
 
     /** 扇区分隔线 + 频段标签（2.4G 在上半圆，5G 在下半圆） */

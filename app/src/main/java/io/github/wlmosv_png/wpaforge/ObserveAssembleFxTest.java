@@ -53,11 +53,14 @@ public class ObserveAssembleFxTest {
         }
 
         System.out.println("-- 不动构建顺序（上一轮的教训）");
-        ok("只插了一次调用", countOf(ma, "playObserveAssemble();") == 1);
-        int iCall = ma.indexOf("playObserveAssemble();");
-        int iStart = ma.indexOf("scanner.start();", ma.indexOf("private void buildObserveTab()"));
-        ok("调用在 buildObserveTab 里、且在 scanner.start() 之后（页面已建完）",
-                iStart > 0 && iCall > iStart);
+        ok("只在 showTab 的「首次建页」分支里插了一次调用",
+                countOf(ma, "playPageAssemble(index);") == 1);
+        int iCall = ma.indexOf("playPageAssemble(index);");
+        int iBuilt = ma.indexOf("pageBuilt[index] = true;");
+        ok("调用紧跟在 pageBuilt 之后（页面已建完，既有初始化顺序没动）",
+                iBuilt > 0 && iCall > iBuilt
+                        && iCall - iBuilt < 200);
+        ok("buildObserveTab 里不再有特效调用", !ma.contains("playObserveAssemble"));
         ok("没有新起线程 / 没有延迟建页",
                 !ma.contains("new Thread(this::buildObserveTab")
                         && !ma.contains("post(this::buildObserveTab"));
@@ -87,17 +90,33 @@ public class ObserveAssembleFxTest {
         ok("光带渐变在本地坐标系建、靠 translate 移动（不每帧重建）",
                 ma.contains("cv.translate(0, y - bh);") && ma.contains("bandH = bh;"));
 
+        System.out.println("-- 与系统动画缩放解耦（用户把系统设成了 0.5×）");
+        ok("读系统缩放并取倒数", ma.contains("Settings.Global.ANIMATOR_DURATION_SCALE")
+                && ma.contains("private float fxMul()"));
+        ok("视图动画时长全部过 fxDur", ma.contains(".setDuration(fxDur(AS_CARD_DUR))")
+                && ma.contains(".setDuration(fxDur(190L))"));
+        ok("覆盖层时间轴同样换算（标记与视图动画才对齐）",
+                ma.contains("* fxMul()"));
+        ok("系统关掉动画时不播（scale≈0 → 直接返回）",
+                ma.contains("if (s < 0.1f) return 0f;") && ma.contains("if (fxMul() <= 0f) return;"));
+
         System.out.println("-- 兜底：最坏情况等于没有特效");
-        ok("有定时强制收工", ma.contains("postDelayed(this::endAssemble, 2600L)"));
+        ok("有定时强制收工（时长同样过缩放换算）",
+                ma.contains("postDelayed(this::endAssemble, fxDur(2600L))"));
         ok("endAssemble 幂等（先取出再置空）",
                 ma.contains("final AssembleOverlay ov = assembleOverlay;")
                         && ma.contains("assembleOverlay = null;"));
-        ok("整段包在 try/catch 里", ma.contains("playObserveAssemble() {")
+        ok("整段包在 try/catch 里", ma.contains("playPageAssemble(int index) {")
                 && ma.contains("        } catch (Throwable t) {\n            endAssemble();\n        }"));
-        ok("只作用于观测页（不碰其它页）",
-                ma.contains("private void playObserveAssemble()")
-                        && !ma.contains("playAuditAssemble") && !ma.contains("playWpsAssemble"));
-        ok("一个进程只播一次", ma.contains("if (assemblePlayed || pageObserve == null) return;"));
+        ok("五个页面共用同一个实现（不再各写一份）",
+                ma.contains("private void playPageAssemble(int index)")
+                        && !ma.contains("playAuditAssemble") && !ma.contains("playWpsAssemble")
+                        && countOf(ma, "playPageAssemble(index);") == 1);
+        ok("每个页面各自只播一次", ma.contains("if (assemblePlayed[index]) return;"));
+        ok("五个页面都覆盖到", ma.contains("private LinearLayout pageOf(int index)")
+                && ma.contains("case 3: return pageWps;"));
+        ok("页签卡扣只在冷启动那张页演（不每切一页都抖）",
+                ma.contains("if (index == 0) {") && ma.contains("for (View t : all) if (t != null) tabs.add(t);"));
         ok("没有引入新依赖 / 新 View 类型",
                 !ma.contains("androidx.") && !ma.contains("new AssembleOverlay(this, cards, tabs)\n                    .setBackground"));
 

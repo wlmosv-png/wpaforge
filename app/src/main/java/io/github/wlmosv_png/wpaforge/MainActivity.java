@@ -956,6 +956,8 @@ public class MainActivity extends Activity {
                 default: buildSettingsTab(); break;
             }
             pageBuilt[index] = true;
+            // 页面建完 → 演一次入场（唯一新增位置；该页的既有初始化顺序一点没动）
+            playPageAssemble(index);
         }
 
         // 只切可见性
@@ -4287,9 +4289,6 @@ public class MainActivity extends Activity {
             observeNotice.setVisibility(View.GONE);
             scanner.start();
         }
-        // 页面建完了才演入场（**唯一一处新增调用，且在最后一行**：
-        // 扫描该起还是什么时候起，顺序一点没动）
-        playObserveAssemble();
     }
 
     private static final int FILTER_ALL = 0, FILTER_SECURE = 1,
@@ -5401,38 +5400,88 @@ public class MainActivity extends Activity {
     // 只做可逆的属性动画；四角框/光带/火花全部画在自建的覆盖 View 上。
     // 任何一步出错就地跳过；2.6s 后无条件复位并摘掉覆盖层。
 
-    private boolean assemblePlayed;
+    /** 每个页面各自只演一次。 */
+    private final boolean[] assemblePlayed = new boolean[5];
     private AssembleOverlay assembleOverlay;
+
+    /**
+     * 系统「动画程序时长缩放」的倒数：0.5× → 2.0、1.0× → 1.0、关动画 → 0。
+     *
+     * <p>为什么需要它：{@code ViewPropertyAnimator} 的时长会被这个缩放除一遍，
+     * 而特效里的「标记」（四角锁定框 / 光带 / 火花）是按墙上时间画的 ——
+     * 两边不同步时，用户在 0.5× 下看到的就是"标记还没结束、卡片已经弹完"。
+     * 把墙上时间也乘上这个系数，两者重新对齐，特效始终按**设计速度**播。
+     */
+    private float fxMul() {
+        try {
+            float s = android.provider.Settings.Global.getFloat(getContentResolver(),
+                    android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f);
+            if (s < 0.1f) return 0f;            // 用户把动画关了：特效一律不播
+            if (s > 2f) s = 2f;
+            return 1f / s;
+        } catch (Throwable t) {
+            return 1f;
+        }
+    }
+
+    /** 设计时长 → 实际时长。 */
+    private long fxDur(long ms) {
+        float m = fxMul();
+        if (m <= 0f) return 0L;
+        return Math.max(40L, (long) (ms * m));
+    }
 
     /** 时间轴（毫秒，相对开演）。 */
     private static final long AS_BAND = 120L, AS_BAND_DUR = 880L;
     private static final long AS_CARD = 430L, AS_CARD_STEP = 95L, AS_CARD_DUR = 460L;
 
-    private void playObserveAssemble() {
-        if (assemblePlayed || pageObserve == null) return;
-        assemblePlayed = true;
+    /**
+     * 某页的「铠甲合体」入场。五个页面共用同一套：光带扫描 + 卡片拼合。
+     * 页签「卡扣」只在冷启动那张页演一次（index 0），免得每切一页页签都抖。
+     */
+    private void playPageAssemble(int index) {
+        if (index < 0 || index >= assemblePlayed.length) return;
+        if (assemblePlayed[index]) return;
+        assemblePlayed[index] = true;
         try {
+            if (fxMul() <= 0f) return;                 // 系统关了动画：不播
+            final LinearLayout page = pageOf(index);
+            if (page == null) return;
             ViewGroup holder = findViewById(android.R.id.content);
             if (holder == null) return;
+
             java.util.List<View> cards = new java.util.ArrayList<>();
-            for (int i = 0; i < pageObserve.getChildCount() && cards.size() < 5; i++) {
-                View v = pageObserve.getChildAt(i);
+            for (int i = 0; i < page.getChildCount() && cards.size() < 5; i++) {
+                View v = page.getChildAt(i);
                 // 只挑卡片（页面上真正的"装甲块"）：小节标题是 TextView，跳过
                 if (v instanceof LinearLayout) cards.add(v);
             }
-            java.util.List<View> tabs = new java.util.ArrayList<>();
-            View[] all = {tabObserve, tabAudit, tabConnect, tabWps, tabSettings};
-            for (View t : all) if (t != null) tabs.add(t);
             if (cards.isEmpty()) return;
+
+            java.util.List<View> tabs = new java.util.ArrayList<>();
+            if (index == 0) {
+                View[] all = {tabObserve, tabAudit, tabConnect, tabWps, tabSettings};
+                for (View t : all) if (t != null) tabs.add(t);
+            }
 
             assembleOverlay = new AssembleOverlay(this, cards, tabs);
             holder.addView(assembleOverlay, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             assembleOverlay.start();
-            // 兜底：无论发生什么，2.6s 后一定复位并摘掉
-            pageObserve.postDelayed(this::endAssemble, 2600L);
+            // 兜底：无论发生什么，时间一到一定复位并摘掉
+            page.postDelayed(this::endAssemble, fxDur(2600L));
         } catch (Throwable t) {
             endAssemble();
+        }
+    }
+
+    private LinearLayout pageOf(int index) {
+        switch (index) {
+            case 0: return pageObserve;
+            case 1: return pageAudit;
+            case 2: return pageConnect;
+            case 3: return pageWps;
+            default: return pageSettings;
         }
     }
 
@@ -5470,11 +5519,11 @@ public class MainActivity extends Activity {
             v.setTranslationX(dir * px(16));
             v.setAlpha(0f);
             v.animate().alpha(1f).scaleX(1f).scaleY(1f).rotation(0f).translationX(0f)
-                    .setDuration(AS_CARD_DUR)
+                    .setDuration(fxDur(AS_CARD_DUR))
                     .setInterpolator(new android.view.animation.DecelerateInterpolator(1.7f))
                     .withEndAction(() -> {
                         try {
-                            v.animate().scaleX(1.012f).scaleY(1.012f).setDuration(80L)
+                            v.animate().scaleX(1.012f).scaleY(1.012f).setDuration(fxDur(80L))
                                     .withEndAction(() -> {
                                         try { v.setScaleX(1f); v.setScaleY(1f); }
                                         catch (Throwable ignored) {}
@@ -5493,7 +5542,7 @@ public class MainActivity extends Activity {
             v.setScaleX(1.18f);
             v.setScaleY(1.18f);
             v.setAlpha(0.40f);
-            v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(190L)
+            v.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(fxDur(190L))
                     .setInterpolator(new android.view.animation.OvershootInterpolator(3.4f))
                     .start();
         } catch (Throwable ignored) {
@@ -5559,7 +5608,10 @@ public class MainActivity extends Activity {
         protected void onDraw(Canvas cv) {
             final float w = getWidth(), h = getHeight();
             if (w <= 0 || h <= 0) return;
-            final long el = SystemClock.uptimeMillis() - t0;
+            // 时间轴走"设计时间"：墙上时间乘 1/scale，才能与上面那些
+            // 已经按 scale 换算过时长的视图动画对齐（0.5× 下两边不同步会很难看）。
+            final long el = (long) ((SystemClock.uptimeMillis() - t0) * fxMul());
+            if (fxMul() <= 0f) { endAssemble(); return; }
             final float d = getResources().getDisplayMetrics().density;
 
             // ── B 充能扫描：一条琥珀光带自上而下（渐变在本地坐标系建一次，靠 translate 移动）

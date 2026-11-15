@@ -128,11 +128,23 @@ if "--online" in sys.argv:
         with urllib.request.urlopen(req, timeout=20) as r:
             d = json.loads(r.read().decode())
         assets = [a["name"] for a in d.get("assets", [])]
-        for want in ("WPAForge-%s.apk" % name, "WPAForge.apk"):
+        # 永久直链用的固定名 —— 必须存在（站点与 README 都指向它）
+        for want in ("WPAForge.apk", "sha256sum.txt"):
             if want in assets:
                 ok("Release 资产存在：%s" % want)
             else:
                 bad("Release v%s 缺资产 %s" % (name, want))
+        # 版本化副本：实际命名是 WPAForge-v<ver>-<code>.apk
+        # （v1.9.50 → WPAForge-v1.9.50-146.apk、v1.9.59 → WPAForge-v1.9.59-155.apk）。
+        # 本检查器原先写的是 WPAForge-<ver>.apk —— 那个名字从未存在过，
+        # 于是 --online 在任何一版上都恒报「缺资产」（2026-11-15 发 1.9.60 时发现）。
+        versioned = [n for n in assets
+                     if n.startswith("WPAForge-v" + name) and n.endswith(".apk")]
+        if versioned:
+            ok("Release 版本化副本存在：%s" % versioned[0])
+        else:
+            bad("Release v%s 缺版本化副本 WPAForge-v%s-<code>.apk（现有：%s）"
+                % (name, name, ", ".join(assets)))
     except Exception as e:
         bad("拿不到 Release v%s：%s" % (name, e))
 

@@ -707,7 +707,13 @@ public class MainActivity extends Activity {
         // 顶部标题条
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        // 方案 A：这一条压扁一点，把纵向空间让给破解页的主区
+        // 方案 A：这一条压扁一点，把纵向空间让给破解页的主区。
+        //
+        // 这里的 34dp 只是**拿不到 insets 时的兜底值**；真正的顶部间距在下面
+        // 由状态栏/刘海 inset 决定（见 root.post 那段）。原因：应用在有些机器上是
+        // edge-to-edge（窗口从屏幕顶起，状态栏压在内容上），在另一些机器上不是
+        // （窗口从状态栏下沿起）。同一个固定 dp 在两种模型下含义不同，
+        // 跨机型就会出现「一台贴状态栏、一台空一大截」。
         header.setPadding(px(22), px(34), px(22), px(2));
         TextView title = new TextView(this);
         title.setText("WPAForge");
@@ -787,9 +793,30 @@ public class MainActivity extends Activity {
                 try {
                     android.view.WindowInsets in = root.getRootWindowInsets();
                     if (in == null || content == null) return;
+
+                    // 顶部：状态栏与刘海取较大者。
+                    // 刘海单独算一遍是必要的 —— 有些机型状态栏比刘海矮，
+                    // 只按状态栏让位会把标题顶进挖孔区。
+                    int top = in.getSystemWindowInsetTop();
+                    if (android.os.Build.VERSION.SDK_INT >= 28
+                            && in.getDisplayCutout() != null) {
+                        top = Math.max(top, in.getDisplayCutout().getSafeInsetTop());
+                    }
+                    // 左右同理：横屏时刘海可能在侧边，标题与外边距都要让开。
+                    int left = in.getSystemWindowInsetLeft();
+                    int right = in.getSystemWindowInsetRight();
+                    if (android.os.Build.VERSION.SDK_INT >= 28
+                            && in.getDisplayCutout() != null) {
+                        left = Math.max(left, in.getDisplayCutout().getSafeInsetLeft());
+                        right = Math.max(right, in.getDisplayCutout().getSafeInsetRight());
+                    }
+                    if (header != null) {
+                        header.setPadding(px(22) + left, top + px(12), px(22) + right, px(2));
+                    }
+
                     int bottom = in.getSystemWindowInsetBottom();
-                    if (bottom > 0) {
-                        content.setPadding(px(16), px(8), px(16), px(32) + bottom);
+                    if (bottom > 0 || left > 0 || right > 0) {
+                        content.setPadding(px(16) + left, px(8), px(16) + right, px(32) + bottom);
                     }
                 } catch (Throwable ignored) {}
             });

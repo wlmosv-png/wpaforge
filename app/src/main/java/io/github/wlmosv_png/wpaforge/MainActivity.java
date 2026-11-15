@@ -469,6 +469,7 @@ public class MainActivity extends Activity {
     private NetRecord targetNet;
     /** 设置页两个连接开关（状态直接写在按钮文案上） */
     private Button connPinBtn, connRotBtn;
+    private Button wpsPauseBtn, wpsPauseSecBtn;
     /** 设置页「保活状态」卡片 */
     private TextView keepAliveLabel;
     private Thread connectThread;
@@ -1067,6 +1068,18 @@ public class MainActivity extends Activity {
     private volatile boolean wpsStrategyNoData;
     /** 唯一停止信号：执行线程每一步都查它。 */
     private volatile boolean wpsCancel = false;
+    /**
+     * PIN 被拒 / 超时后的自动退避（2026-11-15，用户建议）。
+     *
+     * <p>三个东西分工：{@code wpsBackoff} 只负责算「这次之后该等多久」
+     * （纯逻辑、可穷举测试）；{@code wpsPauseUntilMs} 是执行线程读的到点时间；
+     * {@code wpsPauseRemainSec} 给界面显示倒计时。
+     * **绝不复用 {@code wpsCancel}** —— 那个变量决定任务的终止原因，
+     * 借用它会把「自动退避」记成「用户停止」。
+     */
+    private io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff wpsBackoff;
+    private volatile long wpsPauseUntilMs = 0L;
+    private volatile int wpsPauseRemainSec = 0;
     /** 策略：false = 弱 PIN 优先；true = 完整枚举 */
     private int wpsMode = 0;
     /** 完整枚举的断点（已试过的候选条数） */
@@ -2771,7 +2784,12 @@ public class MainActivity extends Activity {
                     + "  · 可信等级：" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
                             .levelText(lvl, zh));
         } else {
-            wpsStatusLine.setText(verdictTxt);
+            // 自动退避期间把倒计时接在状态行后面 —— 用户必须看得出「它没死，
+            // 是在等」，否则会以为卡住然后手动停掉。
+            int remain = wpsPauseRemainSec;
+            wpsStatusLine.setText(remain > 0 && wpsBackoff != null
+                    ? verdictTxt + "  ·  " + wpsBackoff.waitText(remain, zh)
+                    : verdictTxt);
         }
 
         StringBuilder sb = new StringBuilder();
@@ -2890,6 +2908,7 @@ public class MainActivity extends Activity {
         wpsTaskMgr().beginRun();
         wpsStrategyNoData = false;
         wpsCancel = false;
+        wpsBackoffReset();
         wpsLogMgr.clear();
         wpsSession = new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Session();
         // 台账：开新任务（新任务不覆盖旧任务；命中记录永久保留）
@@ -3321,6 +3340,7 @@ public class MainActivity extends Activity {
         }
         wpsTaskMgr().beginRun();
         wpsCancel = false;
+        wpsBackoffReset();
         wpsLogMgr.clear();
         refreshWpsButtons();
         renderWpsTargets();
@@ -3855,6 +3875,8 @@ public class MainActivity extends Activity {
         java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Result> none =
                 new java.util.ArrayList<>();
         if (pins.isEmpty()) return none;
+        // 上一发被拒 / 超时过 → 先停一会儿再发下一批（2026-11-15）
+        if (!wpsBackoffWait()) return none;
         wpsLog(L.s("[i] 尝试 ", "[i] trying ") + pins.size()
                 + L.s(" 个候选：", " candidates: ") + pins.get(0) + " …");
         java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Result> rs =
@@ -3875,6 +3897,22 @@ public class MainActivity extends Activity {
                                         new io.github.wlmosv_png.wpaforge.wps.WpsEngine.Attempt(r));
                                 // 统计：每次结果实时累计并原子落盘（跨进程可恢复）
                                 wpsStatsAdd(r.status, r.elapsedMs);
+                                // 退避（2026-11-15）：被拒 / 超时 → 记一笔，够了就安排暂停。
+                                // 记在**结果**上而不是「发出去的次数」上 ——
+                                // 发出去但没回来（SKIPPED_INVALID）不算 AP 拒我们。
+                                {
+                                    long pauseMs = wpsBackoffOrCreate().observe(r.status);
+                                    if (pauseMs > 0) {
+                                        wpsPauseUntilMs = System.currentTimeMillis() + pauseMs;
+                                        wpsLog(L.s("[退避] 上一条 PIN " + r.status + " —— 暂停 "
+                                                        + wpsBackoffOrCreate().pauseSec()
+                                                        + " 秒再发下一批（规避 AP 的 WPS 锁定窗口；"
+                                                        + "可在设置页关掉）",
+                                                "[backoff] last PIN was " + r.status + ", pausing "
+                                                        + wpsBackoffOrCreate().pauseSec()
+                                                        + " s before the next batch"));
+                                    }
+                                }
                                 // 命中/疑似：证据必须写进日志（修复前证据只进日志文件，
                                 // App 侧既不显示也不解释）
                                 if (r.isSuccess()) {
@@ -13281,6 +13319,85 @@ public class MainActivity extends Activity {
                 : L.s("更换随机 MAC：关（沿用系统策略）", "Random MAC: off (system default)"));
     }
 
+    // ---------------- WPS PIN 退避（2026-11-15）----------------
+
+    /** 开新任务：清空退避计数与到点时间。策略对象下次用时按设置重建。 */
+    private void wpsBackoffReset() {
+        wpsBackoff = null;
+        wpsPauseUntilMs = 0L;
+        wpsPauseRemainSec = 0;
+    }
+
+    /**
+     * 取（必要时按设置创建）退避策略。
+     *
+     * <p>参数只在创建那一刻读一次 —— 与「锁定 AP / 随机 MAC」同一条约定：
+     * 正在跑的任务不中途换参数，改了设置要再点一次「开始」才生效。
+     */
+    private io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff wpsBackoffOrCreate() {
+        io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff b = wpsBackoff;
+        if (b == null) {
+            b = new io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff(
+                    Prefs.wpsPauseOnReject(this), Prefs.wpsPauseSec(this));
+            wpsBackoff = b;
+        }
+        return b;
+    }
+
+    /**
+     * 需要时等满剩余的退避时间；**每 200ms 检查一次停止信号**，
+     * 所以退避期间按「停止」是立刻生效的，不会等满一分钟。
+     *
+     * @return false = 等待期间被停止，调用方必须立刻收工
+     */
+    private boolean wpsBackoffWait() {
+        long until = wpsPauseUntilMs;
+        if (until <= 0L) return true;
+        wpsPauseUntilMs = 0L;
+        while (true) {
+            long remainMs = until - System.currentTimeMillis();
+            if (remainMs <= 0) break;
+            if (wpsCancel || !wpsTaskMgr().isRunning()) {
+                wpsPauseRemainSec = 0;
+                return false;
+            }
+            int sec = (int) Math.max(1L, (remainMs + 999L) / 1000L);
+            if (sec != wpsPauseRemainSec) {
+                wpsPauseRemainSec = sec;
+                runOnUiThread(this::refreshWpsProgress);
+            }
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                wpsPauseRemainSec = 0;
+                return false;
+            }
+        }
+        wpsPauseRemainSec = 0;
+        runOnUiThread(this::refreshWpsProgress);
+        return true;
+    }
+
+    /** 两个退避开关的文案刷新。 */
+    private void refreshWpsPauseOptions() {
+        if (wpsPauseBtn == null || wpsPauseSecBtn == null) return;
+        wpsPauseBtn.setText(Prefs.wpsPauseOnReject(this)
+                ? L.s("被拒 / 超时后暂停：开", "Pause after reject/timeout: on")
+                : L.s("被拒 / 超时后暂停：关", "Pause after reject/timeout: off"));
+        wpsPauseSecBtn.setText(L.s("暂停时长：" + Prefs.wpsPauseSec(this) + " 秒（点一下换档）",
+                "Pause length: " + Prefs.wpsPauseSec(this) + " s (tap to cycle)"));
+    }
+
+    /** 暂停时长按预设档位轮换（当前值不在预设里就回到默认档）。 */
+    private static int nextPauseSec(int cur) {
+        int[] presets = io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff.PRESET_SEC;
+        for (int i = 0; i < presets.length; i++) {
+            if (presets[i] == cur) return presets[(i + 1) % presets.length];
+        }
+        return io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff.DEFAULT_PAUSE_SEC;
+    }
+
     /**
      * 设置页 —— 2026-10-24 重排。
      *
@@ -13499,6 +13616,43 @@ public class MainActivity extends Activity {
         connCard.addView(connHint, topGap(8));
         pageSettings.addView(connCard);
         refreshConnOptions();
+
+        // ---------------- WPS PIN ----------------
+        pageSettings.addView(sectionLabel(L.s("WPS PIN", "WPS PIN")));
+        LinearLayout wpsCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
+        wpsPauseBtn = rowActionPlain("");
+        wpsPauseBtn.setOnClickListener(v -> {
+            Prefs.setWpsPauseOnReject(this, !Prefs.wpsPauseOnReject(this));
+            refreshWpsPauseOptions();
+            Toast.makeText(this, wpsPauseBtn.getText(), Toast.LENGTH_SHORT).show();
+        });
+        wpsCard.addView(arrowRow(wpsPauseBtn));
+        wpsCard.addView(groupDivider(2));
+        wpsPauseSecBtn = rowActionPlain("");
+        wpsPauseSecBtn.setOnClickListener(v -> {
+            Prefs.setWpsPauseSec(this, nextPauseSec(Prefs.wpsPauseSec(this)));
+            refreshWpsPauseOptions();
+            Toast.makeText(this, wpsPauseSecBtn.getText(), Toast.LENGTH_SHORT).show();
+        });
+        wpsCard.addView(arrowRow(wpsPauseSecBtn));
+
+        TextView wpsPauseHint = new TextView(this);
+        wpsPauseHint.setText(L.s(
+                "· 被拒 / 超时后暂停：多数家用 AP 在连续几次 WPS 失败后会锁 WPS "
+                + "一分钟，那段时间继续发是白撞；默认开着，嫌慢可以关。\n"
+                + "· 暂停时长：与目标 AP 的锁定窗口同量级即可；点一下换一档。\n"
+                + "· 暂停期间按「停止」立刻中断，不会等满。",
+                "· Pause after reject/timeout: most home APs lock WPS for a minute "
+                + "after repeated failures; on by default.\n"
+                + "· Pause length: match the AP lockout window; tap to cycle.\n"
+                + "· Stop aborts the pause immediately."));
+        wpsPauseHint.setTextSize(AmberTheme.FS_BODY);
+        wpsPauseHint.setTextColor(TEXT_DIM);
+        wpsPauseHint.setLineSpacing(px(5), 1f);
+        wpsCard.addView(groupDivider(8));
+        wpsCard.addView(wpsPauseHint, topGap(8));
+        pageSettings.addView(wpsCard);
+        refreshWpsPauseOptions();
 
         // ---------------- 破解设置 ----------------
         pageSettings.addView(sectionLabel(L.s("破解设置", "Crack settings")));

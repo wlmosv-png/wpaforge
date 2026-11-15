@@ -1545,12 +1545,66 @@ public final class CrackEngine {
                             "Common causes: su was not granted to this app, or the command is blocked."));
         }
 
-        boolean looksLikeWifi = trimmed.contains("Wifi") || trimmed.contains("Wi-Fi")
-                || trimmed.contains("wlan") || trimmed.contains("connected");
-        p.step((looksLikeWifi ? "✓ " : "? ") + L.s("命令返回看起来像 WiFi 输出", "output looks like Wi-Fi status"));
+        /* 判据**不能只是「像 WiFi 输出」**。
+         * AOSP pie-release 的 WifiShellCommand 只有四条调试命令（见下方子命令探测），
+         * 那种机器上执行 `cmd wifi status` 会把 **help 文本** 打出来，
+         * 而 help 首行恰好是 "Wi-Fi (wifi) commands:" —— 旧判据里的
+         * "Wi-Fi" 一下就命中，于是**在 Android 9 上依然报「通道已接入」**，
+         * 而破解一条都跑不出来。现在要求：排除用法表，且真含状态语义。 */
+        boolean usageText = trimmed.contains("commands:");
+        boolean looksLikeWifi = !usageText
+                && (trimmed.contains("Wifi is ") || trimmed.contains("Wi-Fi is ")
+                    || trimmed.contains("WifiInfo") || trimmed.contains("connected to \""));
+        p.step((looksLikeWifi ? "✓ " : "? ") + L.s("命令返回看起来像 WiFi 状态", "output looks like Wi-Fi status"));
+        if (usageText) {
+            p.step("  " + L.s("→ 返回的是**用法表**，说明本机 `cmd wifi` 没有 status 子命令",
+                    "  -> returned a **usage table**: this device's `cmd wifi` has no status subcommand"));
+        }
         p.step("  " + L.s("耗时 ", "took ") + cost + "ms");
         if (!looksLikeWifi) {
             p.step("  " + L.s("首行: ", "first line: ") + firstLine(trimmed));
+        }
+
+        // --- 3.5 探测破解真正依赖的子命令（2026-11-15 新增）------------------
+        // 为什么必须**运行时探测**，而不是按版本号推：
+        // Android 9（pie）的 WifiShellCommand 只实现了四条命令
+        //（set-ipreach-disconnect / get-ipreach-disconnect /
+        //  set-poll-rssi-interval-msecs / get-poll-rssi-interval-msecs），
+        // **连 status 都没有**，更没有 connect-network 与 forget-network
+        //（AOSP pie-release service/java/com/android/server/wifi/WifiShellCommand.java，
+        //  2026-11-15 实取）。而本引擎整条破解链都建在 connect-network 上。
+        // 探测而不推断的好处：将来哪个 ROM 把子命令收走了，也会在这里报出来。
+        String usage = null;
+        try { usage = shell.exec("cmd wifi", 5000); } catch (Throwable ignored) {}
+        // **探测不到 ≠ 探测表明没有**。
+        // 受限 shell、单元测试的假通道对未知命令都返回空串 —— 那只是「问不到」。
+        // 只有拿到**非空的用法表**才允许下结论；否则一律按「未知」放过，
+        // 免得把整条引擎挡在门外（第一版就是没区分这两件事，门禁当场报 14 条红）。
+        boolean usageKnown = usage != null && usage.trim().length() > 0;
+        boolean hasStatus = usageKnown && usage.contains("status");
+        boolean hasConnect = usageKnown && usage.contains("connect-network");
+        boolean hasForget = usageKnown && usage.contains("forget-network");
+        String unknown = L.s("未知（问不到用法表）", "unknown (no usage table)");
+        p.step((!usageKnown ? "· " : hasStatus ? "✓ " : "✗ ") + L.s("status 子命令: ", "status subcommand: ")
+                + (!usageKnown ? unknown : hasStatus ? L.s("可用", "available") : L.s("本机没有", "missing")));
+        p.step((!usageKnown ? "· " : hasConnect ? "✓ " : "✗ ") + L.s("connect-network 子命令: ",
+                "connect-network subcommand: ")
+                + (!usageKnown ? unknown : hasConnect ? L.s("可用", "available") : L.s("本机没有", "missing")));
+        p.step((!usageKnown ? "· " : hasForget ? "✓ " : "✗ ") + L.s("forget-network 子命令: ",
+                "forget-network subcommand: ")
+                + (!usageKnown ? unknown : hasForget ? L.s("可用", "available") : L.s("本机没有", "missing")));
+        if (usageKnown && (!hasStatus || !hasConnect)) {
+            p.step(L.s("  → 本机 Android 版本的 `cmd wifi` **没有破解所需的子命令**。",
+                    "  -> this Android version's `cmd wifi` lacks the subcommands cracking needs."));
+            p.step(L.s("    实测：Android 9 及更早只开放 4 条调试命令，没有 connect-network。",
+                    "    Measured: Android 9 and earlier expose only 4 debug commands."));
+            return new ChannelProbe(false,
+                    L.s("本机不支持（缺子命令）", "unsupported on this device"),
+                    join(p) + "\n\n" + L.s(
+                            "破解依赖 `cmd wifi connect-network`；本机没有 → 跑不了。\n"
+                                    + "这不是编号的推断，是刚刚在你手机上实测出来的。",
+                            "Cracking needs `cmd wifi connect-network`; this device lacks it.\n"
+                                    + "This is measured on your device just now, not inferred from a version number."));
         }
 
         // --- 4. 判定信号可用性 ---

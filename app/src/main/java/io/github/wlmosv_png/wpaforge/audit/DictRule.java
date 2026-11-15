@@ -39,6 +39,46 @@ public final class DictRule {
         return !start.isEmpty() && !end.isEmpty() && step > 0;
     }
 
+    /**
+     * 前缀列表。**2026-11-14 新增**：{@code 前缀:} 允许用英文逗号、中文逗号、
+     * 分号、竖线或空白分隔多个前缀（如手机号段的 {@code 130,131,138}），
+     * 展开时做笛卡尔积。空值仍然只有一项空串，老规则行为一字不变。
+     */
+    public List<String> prefixes() {
+        return splitMulti(prefix);
+    }
+
+    /** 后缀列表，语义同 {@link #prefixes()}。 */
+    public List<String> suffixes() {
+        return splitMulti(suffix);
+    }
+
+    /** 分隔符切分；全空时返回一个空串项（保证「没有前缀」= 1 种，而不是 0 种）。 */
+    static List<String> splitMulti(String s) {
+        List<String> out = new ArrayList<>();
+        if (s == null) {
+            out.add("");
+            return out;
+        }
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            boolean sep = c == ',' || c == '\uFF0C' || c == ';' || c == '\uFF1B'
+                    || c == '、' || c == '|' || c == ' ' || c == '\t';
+            if (sep) {
+                String t = cur.toString().trim();
+                if (!t.isEmpty()) out.add(t);
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
+        }
+        String t = cur.toString().trim();
+        if (!t.isEmpty()) out.add(t);
+        if (out.isEmpty()) out.add("");
+        return out;
+    }
+
     /** 从规则文本解析（宽容解析，忽略无法识别的行） */
     public static DictRule parse(String text) {
         DictRule r = new DictRule();
@@ -94,7 +134,9 @@ public final class DictRule {
             long s = Long.parseLong(start);
             long e = Long.parseLong(end);
             if (e < s) return 0;
-            return (e - s) / Math.max(1, step) + 1;
+            long base = (e - s) / Math.max(1, step) + 1;
+            // 多前缀/多后缀：条数是笛卡尔积
+            return base * prefixes().size() * suffixes().size();
         } catch (NumberFormatException ex) {
             // 非纯数字的起始/末尾：按字符串长度估算
             return 0;
@@ -111,17 +153,30 @@ public final class DictRule {
         if (!isValid()) return out;
         int limit = max <= 0 ? 100_000 : max;
 
+        List<String> pfx = prefixes();
+        List<String> sfx = suffixes();
+        int combos = Math.max(1, pfx.size() * sfx.size());
+        // 每个「前缀×后缀」组合均分预算。若不平分，55 个号段的手机号规则会
+        // 被上限全吃在第一个号段里，用户抽到的样本全挤在同一段 ——
+        // 那样「抽样」就变成「只看第一个前缀」，与设计意图相反。
+        int perCombo = limit <= combos ? 1 : (limit + combos - 1) / combos;
+
         try {
             long s = Long.parseLong(start);
             long e = Long.parseLong(end);
             int width = start.length();   // 保留前导零
-            for (long i = s; i <= e && out.size() < limit; i += Math.max(1, step)) {
-                String num = pad(i, width);
-                out.add(new Candidate(prefix + num + suffix, Candidate.Origin.DIGITS));
+            for (String p : pfx) {
+                for (String x : sfx) {
+                    int made = 0;
+                    for (long i = s; i <= e && out.size() < limit && made < perCombo;
+                         i += Math.max(1, step), made++) {
+                        out.add(new Candidate(p + pad(i, width) + x, Candidate.Origin.DIGITS));
+                    }
+                }
             }
         } catch (NumberFormatException ex) {
             // 字母/字母数字模式：把起止当作进制进位序列
-            expandAlpha(out, limit);
+            expandAlpha(out, pfx, sfx, perCombo, limit);
         }
         return out;
     }
@@ -136,7 +191,18 @@ public final class DictRule {
      * 字母/字母数字模式：把 start 当起点、end 当终点，按字符表进位。
      * 例：start=aaa end=zzz -> aaa, aab, aac ...
      */
-    private void expandAlpha(List<Candidate> out, int limit) {
+    private void expandAlpha(List<Candidate> out, List<String> pfx, List<String> sfx,
+                            int perCombo, int limit) {
+        for (String p : pfx) {
+            for (String x : sfx) {
+                if (out.size() >= limit) return;
+                expandAlphaOne(out, p, x, perCombo, limit);
+            }
+        }
+    }
+
+    /** 单个「前缀 × 后缀」组合的字母进位展开。 */
+    private void expandAlphaOne(List<Candidate> out, String p, String x, int perCombo, int limit) {
         String charset = L.s("字母", "Letters").equals(mode)
                 ? "abcdefghijklmnopqrstuvwxyz"
                 : "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -147,14 +213,15 @@ public final class DictRule {
             buf[i] = i < start.length() ? start.charAt(i)
                     : charset.charAt(0);
         }
-        int steps = 0;
-        while (out.size() < limit && steps < 10_000_000) {
+        int steps = 0, made = 0;
+        while (out.size() < limit && made < perCombo && steps < 10_000_000) {
             String cur = new String(buf);
             if (end.length() == width) {
                 if (cur.compareTo(end) > 0) break;
             }
-            out.add(new Candidate(prefix + cur + suffix,
+            out.add(new Candidate(p + cur + x,
                     L.s("字母", "Letters").equals(mode) ? Candidate.Origin.LETTERS : Candidate.Origin.ALNUM));
+            made++;
             // 进位
             int pos = width - 1;
             while (pos >= 0) {

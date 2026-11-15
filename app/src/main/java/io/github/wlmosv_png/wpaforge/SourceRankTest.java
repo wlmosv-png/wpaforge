@@ -137,7 +137,8 @@ public class SourceRankTest {
         ok("find() 认得英文名", BuiltinDicts.find("01 Built-in common weak.txt") != null, "");
         ok("find() 不认得无关名字", BuiltinDicts.find("用户自己的表.txt") == null, "");
         ok("扩展档只有字母数字混合", BuiltinDicts.itemsOfTier(BuiltinDicts.TIER_EXT).size() == 1, "");
-        ok("穷举档是三条规则", BuiltinDicts.itemsOfTier(BuiltinDicts.TIER_BRUTE).size() == 3, "");
+        ok("穷举档是五条规则（3 条数字/日期区间 + 2 条手机号段，2026-11-14 加）",
+                BuiltinDicts.itemsOfTier(BuiltinDicts.TIER_BRUTE).size() == 5, "");
         ok("每项都有理由", BuiltinDicts.items().stream()
                 .allMatch(i -> i.reasonZh != null && i.reasonZh.length() > 5), "");
         ok("已删的旧内置不在清单里",

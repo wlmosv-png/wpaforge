@@ -41,6 +41,21 @@ public final class LanProbeExecutor {
         void line(String text);
     }
 
+    /**
+     * 进度条（重复全块字符）。
+     *
+     * <p>**不能用 {@code String.repeat(int)}**：它是 **API 33** 才有的库方法，
+     * 而本项目 minSdk = 26、d8 不做 libcore 反糖 —— 在 Android 8~12 上一调就是
+     * {@code NoSuchMethodError}，而且是运行时才爆（编译期完全看不出来）。
+     * 手写一个循环就够了，没必要为一个进度条抱一个 API 包。
+     */
+    static String bar(int n) {
+        if (n <= 0) return "";
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) sb.append('\u2588');
+        return sb.toString();
+    }
+
     private static final int PING_TIMEOUT_MS = 1500;   // ping -W 毫秒
     /** 单个端口的 TCP connect 超时 */
     private static final int PORT_TIMEOUT_MS = 700;
@@ -137,7 +152,7 @@ public final class LanProbeExecutor {
             done[0] += n;
             int pct = (int) (((double) done[0] / total) * 100);
             if (sink != null) sink.line(String.format(
-                    "[*] 扫描 %s...  %d%% ", ipPrefix(ip), pct) + "\u2588".repeat(Math.max(0, pct / 10)));
+                    "[*] 扫描 %s...  %d%% ", ipPrefix(ip), pct) + bar(Math.max(0, pct / 10)));
         }
 
         // ping 完等一小会儿再读 ARP 表。

@@ -14,6 +14,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 
@@ -36,6 +37,7 @@ import java.util.Map;
 import io.github.wlmosv_png.wpaforge.audit.Candidate;
 import io.github.wlmosv_png.wpaforge.audit.DictRule;
 import io.github.wlmosv_png.wpaforge.audit.BuiltinDicts;
+import io.github.wlmosv_png.wpaforge.audit.BuiltinMerge;
 import io.github.wlmosv_png.wpaforge.audit.DictSources;
 import io.github.wlmosv_png.wpaforge.audit.DerivedDicts;
 import io.github.wlmosv_png.wpaforge.audit.DictStore;
@@ -44,6 +46,7 @@ import io.github.wlmosv_png.wpaforge.audit.DictTrash;
 import io.github.wlmosv_png.wpaforge.audit.AttemptLedger;
 import io.github.wlmosv_png.wpaforge.audit.TriedSet;
 import io.github.wlmosv_png.wpaforge.audit.PlanFilterStats;
+import io.github.wlmosv_png.wpaforge.audit.PhoneSegs;
 import io.github.wlmosv_png.wpaforge.audit.TaskQueue;
 import io.github.wlmosv_png.wpaforge.audit.SourceRank;
 import io.github.wlmosv_png.wpaforge.ui.NetDialog;
@@ -168,6 +171,22 @@ public class DictActivity extends Activity {
     }
 
     private int px(float v) { return Math.round(v * dp); }
+
+    /**
+     * 字节数 → 人读的体积，**单位跟着量级走**。
+     *
+     * <p>原来顶部统计写死成 MB 取整，30 本字典合起来约 175 KB 就被显示成
+     * 「0 MB」—— 数字没错，但看起来像 bug。字典是文本，KB 级才是常态。
+     */
+    static String sizeText(long bytes) {
+        if (bytes <= 0) return "0 B";
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024L * 1024) return (bytes / 1024) + " KB";
+        if (bytes < 1024L * 1024 * 100) {
+            return String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0);
+        }
+        return (bytes / 1024 / 1024) + " MB";
+    }
 
     private void buildUi() {
         LinearLayout root = new LinearLayout(this);
@@ -738,19 +757,39 @@ public class DictActivity extends Activity {
      * <p>上一版这个按钮打开的是 12 项的大杂烩（新建/导入/下载/搜索/合并/刷新/换目录/清空…），
      * 用户点「添加」看到「清空全部字典」是会害怕的。管理类动作挪到「管理」里。
      */
+    /**
+     * 添加字典（2026-11-15 按**意图**重排）。
+     *
+     * <p>原来 8 项平铺，且是按「我们怎么实现」排的（建表 / 建规则 / 生成…），
+     * 外加上一行用文字假装分节的「── 管理 ──」。现在分三组、每组给一句人话标题，
+     * 组内按实际使用频率排：**先「从别处拿一本」，再「自己造一本」，最后「高级」**。
+     * 所有动作一个没少、名字没改，只是不再让用户读完 8 行才能做决定。
+     */
     private void showAddMenu() {
         NetDialog d = new NetDialog(this, L.s("添加字典", "Add dictionary"), null);
-        d.addItem(L.s("新建普通表（手写）", "New plain list (hand-written)"),
-                dd -> dialogNewPlain());
-        d.addItem(L.s("新建规则（区间批量生成）", "New rule (range-generated)"),
-                dd -> dialogNewRule());
+
+        d.addHint(L.s("从别处拿一本", "Get one from somewhere else"));
         d.addItem(L.s("从手机导入文件", "Import a file from the device"),
                 dd -> pickFile());
-        d.addItem(L.s("在线字典来源", "Online dictionary sources"),
-                dd -> showOnlineSources());
         d.addItem(L.s("插入内置字典", "Restore built-in dictionaries"),
                 dd -> releaseBuiltin());
-        d.addItem(L.s("── 管理 ──", "── Manage ──"), dd -> showActionSheet());
+        d.addItem(L.s("在线字典来源", "Online dictionary sources"),
+                dd -> showOnlineSources());
+
+        d.addHint(L.s("自己造一本", "Build one yourself"));
+        d.addItem(L.s("按手机号段生成字典", "Generate from mobile segments"),
+                dd -> dialogNewPhoneDict());
+        d.addItem(L.s("生成精华包（内置去重合并）", "Build essential pack (de-duplicated)"),
+                dd -> buildEssentialPack());
+        d.addItem(L.s("手写一张表", "Hand-write a list"),
+                dd -> dialogNewPlain());
+
+        d.addHint(L.s("高级与整理", "Advanced and housekeeping"));
+        d.addItem(L.s("新建规则（按区间批量生成）", "New rule (range-generated)"),
+                dd -> dialogNewRule());
+        d.addItem(L.s("管理字典（合并 / 清空 / 回收站）", "Manage (merge / clear / trash)"),
+                dd -> showActionSheet());
+
         d.setNegative(L.s("取消", "Cancel"), null);
         d.show();
     }
@@ -1157,10 +1196,10 @@ public class DictActivity extends Activity {
         }
         statLabel.setText(selectMode
                 ? L.s("已选 " + selected.size() + " 本", selected.size() + " selected")
-                : L.s("共 " + entries.size() + " 个字典 · " + (totalBytes / 1024 / 1024)
-                                + " MB · 跑过 " + triedN + " 本",
-                        entries.size() + " dictionaries · " + (totalBytes / 1024 / 1024)
-                                + " MB · " + triedN + " tried"));
+                : L.s("共 " + entries.size() + " 本 · " + sizeText(totalBytes)
+                                + " · 跑过 " + triedN + " 本",
+                        entries.size() + " dictionaries · " + sizeText(totalBytes)
+                                + " · " + triedN + " tried"));
 
         if (entries.isEmpty()) {
             TextView empty = new TextView(this);
@@ -1383,18 +1422,59 @@ public class DictActivity extends Activity {
         row.addView(filterChip(L.s("未跑 " + (total - triedN), "Untried " + (total - triedN)),
                 Filter.UNTRIED), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // 排序不再和筛选并排：排 4 个同形 chip 会让「这是筛还是排」变得不可判。
+        // 收成一个按钮（右侧对齐），点开只列排序方式 —— 选项一个没少。
         TextView sp = new TextView(this);
-        sp.setText(L.s("排序", "Sort"));
-        sp.setTextSize(AmberTheme.FS_SMALL);
-        sp.setTextColor(AmberTheme.TEXT_FAINT);
-        sp.setPadding(px(6), 0, px(6), 0);
+        sp.setText("");
         row.addView(sp, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        row.addView(sortChip(L.s("命中率", "Hit rate"), SortBy.HITS));
-        row.addView(sortChip(L.s("大小", "Size"), SortBy.SIZE));
-        row.addView(sortChip(L.s("名称", "Name"), SortBy.NAME));
-        row.addView(sortChip(L.s("最近", "Recent"), SortBy.RECENT));
+        row.addView(sortButton());
         return row;
+    }
+
+    /** 排序入口按钮：显示当前排序方式，点开换一种。 */
+    private Button sortButton() {
+        Button b = miniChip(L.s("排序：" + sortName(sortBy) + " ▾",
+                        "Sort: " + sortNameEn(sortBy) + " ▾"),
+                AmberTheme.TEXT_DIM, AmberTheme.CARD_3);
+        b.setOnClickListener(v -> showSortPicker());
+        return b;
+    }
+
+    /** 排序方式选择表。 */
+    private void showSortPicker() {
+        NetDialog d = new NetDialog(this, L.s("排序方式", "Sort by"), null);
+        d.addItem(L.s("命中率（跑得多的在前）", "Hit rate (most tried first)"),
+                dd -> pickSort(SortBy.HITS));
+        d.addItem(L.s("最近跑过（新在前）", "Recently used"),
+                dd -> pickSort(SortBy.RECENT));
+        d.addItem(L.s("体积（大的在前）", "Size (largest first)"),
+                dd -> pickSort(SortBy.SIZE));
+        d.addItem(L.s("名称", "Name"), dd -> pickSort(SortBy.NAME));
+        d.setNegative(L.s("取消", "Cancel"), null);
+        d.show();
+    }
+
+    private void pickSort(SortBy sb) {
+        sortBy = sb;
+        refresh();
+    }
+
+    private static String sortName(SortBy sb) {
+        switch (sb) {
+            case RECENT: return "最近";
+            case SIZE:   return "体积";
+            case NAME:   return "名称";
+            default:     return "命中率";
+        }
+    }
+
+    private static String sortNameEn(SortBy sb) {
+        switch (sb) {
+            case RECENT: return "recent";
+            case SIZE:   return "size";
+            case NAME:   return "name";
+            default:     return "hit rate";
+        }
     }
 
     private Button filterChip(String label, Filter f) {
@@ -1403,17 +1483,6 @@ public class DictActivity extends Activity {
                 on ? ACCENT : AmberTheme.CARD_3);
         b.setOnClickListener(v -> {
             filter = f;
-            refresh();
-        });
-        return b;
-    }
-
-    private Button sortChip(String label, SortBy sb) {
-        boolean on = sortBy == sb;
-        Button b = miniChip(label, on ? AmberTheme.ON_ACCENT : AmberTheme.TEXT_DIM,
-                on ? ACCENT : AmberTheme.CARD_3);
-        b.setOnClickListener(v -> {
-            sortBy = sb;
             refresh();
         });
         return b;
@@ -1653,15 +1722,20 @@ public class DictActivity extends Activity {
     }
 
     /** 状态徽标：这一本跑了没跑、跑了多少 —— 本 App 最该一眼看到的信息 */
+    /**
+     * 行尾状态徽标。**没有信息就不显示**（2026-11-15）。
+     *
+     * <p>原来「没跑过」在每一行都出现 —— 30 本里 29 本都是它，属于零信息量的负向文案：
+     * 既把标题挤得无处可放（真机上副行被硬裁成「平均 :」），又让唯一那条「命中 67/83」
+     * 淹没在一屏灰字里。现在只有**跑过**的行才有徽标，返回 null 由调用方跳过。
+     */
     private TextView statusBadge(DictStore.Entry e) {
         int[] p = progress.get(e.file.getAbsolutePath());
+        if (p == null) return null;
         TextView tv = new TextView(this);
         tv.setTextSize(AmberTheme.FS_LABEL);
         tv.setPadding(px(2), 0, px(2), 0);
-        if (p == null) {
-            tv.setText(L.s("没跑过", "new"));
-            tv.setTextColor(AmberTheme.TEXT_FAINT);
-        } else if (p[1] > 0 && p[0] >= p[1]) {
+        if (p[1] > 0 && p[0] >= p[1]) {
             tv.setText(L.s("✓ 跑过", "✓ done"));
             tv.setTextColor(AmberTheme.OK);
         } else {
@@ -1714,6 +1788,8 @@ public class DictActivity extends Activity {
         meta.setTextSize(AmberTheme.FS_LABEL);
         meta.setTextColor(AmberTheme.TEXT_FAINT);
         meta.setSingleLine(true);
+        // 副行字段一多会溢出被硬裁（真机截成「平均 :」）—— 明确用省略号收尾
+        meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         mlp.topMargin = px(2);
@@ -1722,7 +1798,8 @@ public class DictActivity extends Activity {
         box.addView(col, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        box.addView(statusBadge(e));
+        TextView badge = statusBadge(e);
+        if (badge != null) box.addView(badge);
 
         ImageView more = new ImageView(this);
         more.setImageDrawable(DictIcons.sized(DictIcons.Kind.MORE, AmberTheme.TEXT_DIM, dp, 18f));
@@ -2361,6 +2438,192 @@ public class DictActivity extends Activity {
             }).start();
         });
         dlg.show();
+    }
+
+    /**
+     * 把内置核心档合并去重成一份「精华包」（2026-11-15）。
+     *
+     * <p>为什么值得单独一个入口：7 本核心档头部高度重叠（{@code 12345678} 同时在 8 本里），
+     * 合计约 1.35 万条、**并集只有约 1.08 万条**。运行期靠 {@code triedSet} 去重不彻底 ——
+     * 它只收「已证实为错」的候选，在拿不到候选级证据的目标上，重复的头部会被每本各试一遍。
+     * 合并一次能省掉两成在线时间，而且**原始 7 本一条不动**（你单独用某本、或改过某本都不受影响）。
+     *
+     * <p>取自**磁盘上已释放**的文件而不是 assets：你改过的内容才是你真正会跑的。
+     */
+    private void buildEssentialPack() {
+        final File dir = DictStore.defaultDir(this);
+        new Thread(() -> {
+            java.util.List<io.github.wlmosv_png.wpaforge.audit.BuiltinDicts.Item> books =
+                    BuiltinMerge.mergeableCore();
+            BuiltinMerge.Out out = BuiltinMerge.merge(books, BuiltinMerge.dirSource(dir));
+            String msg;
+            if (out.keptCount() <= 0) {
+                msg = L.s("没找到可合并的内置字典 —— 先到「插入内置字典」释放一次",
+                        "No built-in dictionaries found — restore them first");
+            } else {
+                File f = new File(dir, BuiltinMerge.mergedName());
+                boolean ok = DictStore.save(f, out.lines);
+                msg = ok
+                        ? L.s("已生成 " + f.getName() + "：" + out.rawCount + " 条 → "
+                                + out.keptCount() + " 条，去掉重复 " + out.duplicates()
+                                + " 条（"
+                                + String.format(java.util.Locale.US, "%.1f", out.dupPercent())
+                                + "%），" + PhoneSegs.estimateText(out.keptCount()),
+                            "Built " + f.getName() + ": " + out.rawCount + " -> "
+                                + out.keptCount() + " entries")
+                        : L.s("生成失败", "Build failed");
+            }
+            final String m = msg;
+            ui.post(() -> {
+                Toast.makeText(this, m, Toast.LENGTH_LONG).show();
+                refresh();
+            });
+        }, "wpaforge-merge").start();
+    }
+
+    /**
+     * 按手机号段生成字典（2026-11-14 新增）。
+     *
+     * <p>为什么不让用户自己写规则：手机号的规模必须先算账 ——
+     * 一个号段（前 7 位）× 后 4 位 = 1 万条 ≈ 在线 1.9 小时；
+     * 54 个号段 × 后 8 位 = 54 亿条 ≈ 在线 114 年。
+     * 所以这里把「条数 / 预计耗时 / 能不能在线跑」实时摆在按钮上方，
+     * 用户按创建之前就知道自己在承诺什么。
+     *
+     * <p>号段只取前 7 位（{@link PhoneSegs#extractSeg7}），完整号码永远不会
+     * 被写进字典文件。
+     *
+     * <p>没填号段时可填「屋主大致年龄」，按公开号段启用年份挑最接近的 3 段
+     * （见 {@link PhoneSegs#forAge}）—— 这一路必然是 54 亿量级，只能离线。
+     */
+    private void dialogNewPhoneDict() {
+        NetDialog dlg = new NetDialog(this, L.s("按手机号段生成字典", "Generate from mobile segments"),
+                L.s("号段从你自己/家人的号码来，只保留前 7 位。",
+                        "Segments come from numbers you already have; only the first 7 digits are kept."));
+        EditText nameEt = dlg.addField(L.s("名称", "Name"), L.s("手机号字典", "phone dict"));
+        EditText segEt  = dlg.addField(L.s("号段（前 7 位，可空）", "Segments (7 digits, optional)"),
+                "1380512,1390512");
+        segEt.setInputType(InputType.TYPE_CLASS_TEXT);
+        EditText ageEt  = dlg.addField(L.s("屋主大致年龄（可空）", "Owner's rough age (optional)"), "40");
+        ageEt.setInputType(InputType.TYPE_CLASS_NUMBER);
+
+        CheckBox fast = new CheckBox(this);
+        fast.setText(L.s("只跑后 4 位高频形态（快）", "Only common 4-digit tails (fast)"));
+        fast.setTextColor(TEXT);
+        fast.setTextSize(AmberTheme.FS_SMALL);
+        fast.setChecked(true);
+        dlg.addView(fast);
+
+        TextView prev = new TextView(this);
+        prev.setTextSize(AmberTheme.FS_SMALL);
+        prev.setTextColor(ACCENT);
+        prev.setPadding(px(4), px(8), px(4), px(4));
+        dlg.addView(prev);
+
+        final int nowYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR);
+
+        Runnable upd = () -> {
+            List<String> segs = new ArrayList<>(PhoneSegs.extractSeg7(segEt.getText().toString()));
+            boolean fromAge = false;
+            if (segs.isEmpty()) {
+                int age = 0;
+                try { age = Integer.parseInt(ageEt.getText().toString().trim()); }
+                catch (Exception ignored) {}
+                if (age > 0) {
+                    List<PhoneSegs.Seg> win = PhoneSegs.forAge(age, nowYear);
+                    for (int i = 0; i < win.size() && i < 3; i++) segs.add(win.get(i).p3);
+                    fromAge = !segs.isEmpty();
+                }
+            }
+            if (segs.isEmpty()) {
+                prev.setText(L.s("还没号段 —— 填一个本地号段，或填屋主年龄自动挑",
+                        "No segments yet — enter a local one, or an age to pick for you"));
+                return;
+            }
+            long entries = phoneEntries(segs, fast.isChecked(), nowYear);
+            StringBuilder sb = new StringBuilder();
+            sb.append(L.s("号段 ", "segments ")).append(segs.size());
+            if (fromAge) sb.append(L.s("（按年龄挑）", " (picked by age)"));
+            sb.append("  ·  ").append(DictRule.formatCount(entries)).append(L.s(" 条", " entries"));
+            sb.append("  ·  ").append(PhoneSegs.estimateText(entries));
+            sb.append("\n").append(PhoneSegs.onlineFeasible(entries)
+                    ? L.s("可以在线跑", "runnable online")
+                    : L.s("在线跑不完 —— 建好后用导出交给 PC 显卡", "Too large online — export it for a PC GPU"));
+            prev.setText(sb.toString());
+        };
+
+        android.text.TextWatcher w = new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence c, int a, int b, int d) {}
+            public void onTextChanged(CharSequence c, int a, int b, int d) {}
+            public void afterTextChanged(android.text.Editable e) { upd.run(); }
+        };
+        segEt.addTextChangedListener(w);
+        ageEt.addTextChangedListener(w);
+        fast.setOnCheckedChangeListener((btn, checked) -> upd.run());
+        upd.run();
+
+        dlg.setNegative(L.s("取消", "Cancel"), null);
+        dlg.setPositive(L.s("创建", "Create"), dd -> {
+            List<String> segs = new ArrayList<>(PhoneSegs.extractSeg7(segEt.getText().toString()));
+            int age = 0;
+            try { age = Integer.parseInt(ageEt.getText().toString().trim()); }
+            catch (Exception ignored) {}
+            if (segs.isEmpty() && age > 0) {
+                List<PhoneSegs.Seg> win = PhoneSegs.forAge(age, nowYear);
+                for (int i = 0; i < win.size() && i < 3; i++) segs.add(win.get(i).p3);
+            }
+            if (segs.isEmpty()) {
+                Toast.makeText(this, L.s("先填一个号段或屋主年龄", "Enter a segment or an age first"),
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String name = nameEt.getText().toString().trim();
+            if (name.isEmpty()) name = L.s("手机号字典", "phone dict");
+            final List<String> fs = segs;
+            final boolean fastOn = fast.isChecked();
+            final String fn = name;
+            File f = new File(DictStore.defaultDir(this), name + ".txt");
+            new Thread(() -> {
+                boolean ok;
+                long entries;
+                if (fs.get(0).length() == 7) {
+                    if (fastOn) {
+                        List<String> lines = PhoneSegs.expandTails(fs, PhoneSegs.tailPatterns(nowYear), 500000);
+                        entries = lines.size();
+                        ok = DictStore.save(f, lines);
+                    } else {
+                        DictRule r = PhoneSegs.fullRule(fs);
+                        entries = r.estimateCount();
+                        ok = DictStore.saveRule(f, r);
+                    }
+                } else {
+                    DictRule r = PhoneSegs.nationalRuleOf(fs);
+                    entries = r.estimateCount();
+                    ok = DictStore.saveRule(f, r);
+                }
+                final boolean tok = ok;
+                final long en = entries;
+                ui.post(() -> {
+                    String msg = tok
+                            ? L.s("已创建 ", "Created ") + fn + "（" + DictRule.formatCount(en)
+                              + L.s(" 条，", " entries, ") + PhoneSegs.estimateText(en) + "）"
+                              + (PhoneSegs.onlineFeasible(en) ? ""
+                                 : L.s(" —— 在线跑不完，用导出交给 PC", " — export it for a PC"))
+                            : L.s("创建失败", "Create failed");
+                    Toast.makeText(this, msg, tok ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
+                    refresh();
+                });
+            }).start();
+        });
+        dlg.show();
+    }
+
+    /**
+     * 手机号字典的条数。号段是 7 位则乘后 4 位的空间，是 3 位则乘后 8 位。
+     * 与创建时的口径**必须一致**，否则预览说 1 万、建出来 1 亿。
+     */
+    static long phoneEntries(List<String> segs, boolean fast, int nowYear) {
+        return PhoneSegs.entriesOf(segs, fast, nowYear);
     }
 
     private List<String> splitLines(String s) {

@@ -27,6 +27,10 @@ public final class Prefs {
     private static final String K_RATE_N = "rate_samples";  // 样本数
     private static final String K_PIN_BSSID = "pin_bssid";   // 连接锁定到选中的那个 AP
     private static final String K_MAC_ROTATE = "mac_rotate";  // 每次尝试换随机 MAC
+    /** PIN 被拒 / 超时后是否自动暂停（2026-11-15，用户建议） */
+    private static final String K_WPS_PAUSE = "wps_pause_on_reject";
+    /** 上面那一项的暂停秒数 */
+    private static final String K_WPS_PAUSE_SEC = "wps_pause_sec";
     private static final String K_LAST_BEAT = "last_beat_ms";  // 引擎心跳（检测被系统挂起）
     /**
      * 用户线索（手机号 / 生日 / 拼音 / 门牌 / 自由词）编码串，见 SeedModel.encode()。
@@ -225,6 +229,33 @@ public final class Prefs {
     }
 
     /**
+     * PIN 被拒 / 超时后是否自动暂停。
+     *
+     * <p>默认**开**：多数家用 AP 在连续几次 WPS 失败后会锁 WPS 一分钟，
+     * 那段时间继续发是白撞，还可能把锁定期推长。默认值按「先别把目标惹毛」定，
+     * 嫌慢可以在设置页关掉。
+     */
+    public static boolean wpsPauseOnReject(Context ctx) {
+        return sp(ctx).getBoolean(K_WPS_PAUSE, true);
+    }
+
+    public static void setWpsPauseOnReject(Context ctx, boolean v) {
+        sp(ctx).edit().putBoolean(K_WPS_PAUSE, v).apply();
+    }
+
+    /** 被拒 / 超时后的暂停秒数（读出时已夹到合法范围）。 */
+    public static int wpsPauseSec(Context ctx) {
+        return io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff.clampPauseSec(
+                sp(ctx).getInt(K_WPS_PAUSE_SEC,
+                        io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff.DEFAULT_PAUSE_SEC));
+    }
+
+    public static void setWpsPauseSec(Context ctx, int sec) {
+        sp(ctx).edit().putInt(K_WPS_PAUSE_SEC,
+                io.github.wlmosv_png.wpaforge.wps.WpsPinBackoff.clampPauseSec(sec)).apply();
+    }
+
+    /**
      * 是否每次尝试都用新的随机 MAC（命令行加 -r non_persistent）。
      *
      * 用于缓解目标 AP 侧的限流/黑名单。默认关闭：目标若做了 MAC 白名单，
@@ -273,6 +304,7 @@ public final class Prefs {
      */
     public static final String[] RESET_KEYS = {
             K_PIN_BSSID, K_MAC_ROTATE, K_BUDGET, K_SKIP_POLICY, K_PLAN_AUTO, K_DICT_GUIDE,
+            K_WPS_PAUSE, K_WPS_PAUSE_SEC,
     };
 
     /**

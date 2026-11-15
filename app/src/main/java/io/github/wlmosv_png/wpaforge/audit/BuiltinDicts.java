@@ -70,9 +70,21 @@ public final class BuiltinDicts {
             this.entries = entries;
         }
 
-        /** 当前语言下的显示名 */
+        /** 当前语言下的**显示名**（只用于界面） */
         public String name() {
             return L.s(nameZh, nameEn);
+        }
+
+        /**
+         * 释放到磁盘时用的**文件名**。固定取中文名，**与语言无关**。
+         *
+         * <p>2026-11-15 修：以前用 {@link #name()}（会跟随语言）当文件名，
+         * 于是切到英文会再写一份 `01 Built-in common weak.txt`，中文那份还留着 ——
+         * 同一本字典在列表里出现两次，用户以为多了两本。
+         * 磁盘上的文件名是**数据标识**，不该随界面语言变。
+         */
+        public String fileName() {
+            return nameZh;
         }
 
         /** 当前语言下的「为什么在」 */
@@ -115,12 +127,12 @@ public final class BuiltinDicts {
         ITEMS.add(new Item("weak.txt", "01 内置弱口令常用.txt", "01 Built-in common weak.txt",
                 TIER_CORE,
                 "跨设备通用弱口令，本机命中 57 次、中位第 2 条即中",
-                "Cross-device weak passwords: 57 local hits, median position 2", 2494));
+                "Cross-device weak passwords: 57 local hits, median position 2", 2493));
 
         ITEMS.add(new Item("digits.txt", "02 内置纯数字弱口令.txt", "02 Built-in digits weak.txt",
                 TIER_CORE,
                 "纯数字是最大的单一族（公开统计里占家用 WiFi 密码 21.7%），本机命中 10 次",
-                "Pure digits are the largest single family (21.7% of home WiFi passwords)", 2188));
+                "Pure digits are the largest single family (21.7% of home WiFi passwords)", 2147));
 
         ITEMS.add(new Item("top2025.txt", "08 年度高频口令 TOP 146.txt", "08 Yearly top 146.txt",
                 TIER_CORE, "近年泄露库里排在最前列的口令，很短", "Top of recent breach lists, very short", 146));
@@ -128,7 +140,7 @@ public final class BuiltinDicts {
         ITEMS.add(new Item("cn_top.txt", "09 中文高频口令.txt", "09 Chinese common.txt",
                 TIER_CORE,
                 "谐音数字 / 姓名拼音 + 数字 / 姓氏 + 数字 —— 英文数据集完全覆盖不到的那一块",
-                "Number homophones, pinyin names + digits — missing from English datasets", 570));
+                "Number homophones, pinyin names + digits — missing from English datasets", 561));
 
         ITEMS.add(new Item("xato_top.txt", "07 通用口令榜 TOP 3336.txt", "07 Common passwords top 3336.txt",
                 TIER_CORE, "公开口令榜前列，本机 14 次使用全中、中位第 11 条",
@@ -143,7 +155,7 @@ public final class BuiltinDicts {
         ITEMS.add(new Item("alnum.txt", "03 内置字母数字混合.txt", "03 Built-in alphanumeric.txt",
                 TIER_EXT,
                 "15,146 条字母数字混合，本机命中位次中位 102 条 —— 想深挖再跑",
-                "15,146 alphanumeric entries; median hit position 102 — for deeper sweeps", 15146));
+                "13,255 alphanumeric entries; median hit position 102 — for deeper sweeps", 13255));
 
         // ── 穷举：规则区间，点开先看时间预估 ─────────────────────────
         ITEMS.add(new Item("rule_8digit.txt", "90 规则-8位数字.txt", "90 Rule-8digit.txt",
@@ -155,24 +167,130 @@ public final class BuiltinDicts {
         ITEMS.add(new Item("rule_date.txt", "92 规则-日期区间.txt", "92 Rule-date range.txt",
                 TIER_BRUTE, "1960–2014 的日期形态区间（YYYYMMDD）",
                 "Date-shaped range 1960–2014 (YYYYMMDD)", 0));
+
+        // ── 手机号（2026-11-14 新增，见 PhoneSegs 的算账说明）───────────
+        ITEMS.add(new Item("rule_phone_cn.txt", "93 规则-中国手机号段.txt", "93 Rule-China mobile segments.txt",
+                TIER_BRUTE,
+                "54 个公开号段（前 3 位）× 后 8 位全排列 ≈ 54 亿条。"
+                        + "在线要跑一百多年 —— 只用来导出给 PC 显卡跑（小时级）",
+                "54 public mobile prefixes x 8 trailing digits ~ 5.4B entries. "
+                        + "Centuries online — export it for a PC GPU (hours)", 0));
+
+        ITEMS.add(new Item("rule_phone_local.txt", "94 规则-本地号段模板.txt", "94 Rule-local segment template.txt",
+                TIER_BRUTE,
+                "模板：把「前缀」填成本地号段前 7 位。1 个号段 = 1 万条 ≈ 在线 1.9 小时，"
+                        + "这是在线可承受的最大粒度",
+                "Template: put local 7-digit segments in Prefix. One segment = 10k entries ~1.9 h online",
+                0));
     }
 
     /**
-     * 已停用的旧内置表：文件名 → 出厂内容 sha256。
-     * 释放时只有**内容和出厂完全一致**才删（用户改过的一律保留）。
+     * 历史内置表的名字（中文名 / 英文名）。**只认名字，不再拿「出厂 sha256 完全相等」当判据。**
+     *
+     * <h3>为什么放弃哈希判据（2026-11-15，真机实证）</h3>
+     * 旧实现只有「盘上内容与出厂哈希逐字节相等」才删。实测：
+     * {@code 05 内置号码变形.txt}（4.8 MB）仍躺在字典目录里，
+     * 它的 sha256 是 {@code 5810d7b3…}，而废弃表记的是 {@code 4d57649d…} ——
+     * 哈希在任何一次细微漂移（换版本释放过、换行差异、用户动过一字节）之后就对不上，
+     * 于是**删不掉、也没人知道删不掉**：那张 48 万条的废表还能在列表里被选中跑，
+     * 白占 4.8 MB 和用户几小时。
+     *
+     * <p>新判据分两档，且**一律进回收站而不是直接删**（可恢复）：
+     * <ol>
+     *   <li>清单里有记录且内容没被改过 → 确定是我们放的 → 回收；</li>
+     *   <li>清单里没记录（老版本放的，首次升级）→ 名字在我们的历史名单里 → 判为我们的 → 回收。</li>
+     * </ol>
+     * 第 2 档带一点推定成分（理论上用户可以恰好建一个同名文件），
+     * 所以「进回收站」是这条方案的必要部分，不是可有可无的礼貌。
+     *
+     * <p>保留旧哈希值仅作历史证据，不参与任何判断。
      */
-    private static final String[][] OBSOLETE = {
-            {"04 内置英文单词.txt", "04 Built-in English words.txt",
-                    "8b1d5b88071767afc014c7ed47368daecd61250531a5957bb172363af7527ed4"},
-            {"05 内置号码变形.txt", "05 Built-in number variants.txt",
-                    "4d57649d86eff837fd35c4d0d9b0014dedfc2b3c004124a4709d215dbfeddf5a"},
-            {"06 WPA 高频真实口令 TOP 447.txt", "06 Real-world WPA top 447.txt",
-                    "1be4e215c15d200c04e080c3dd2a7a8c893c5bfe5d400049d669619eac765f2d"},
+    private static final String[][] OBSOLETE_NAMES = {
+            {"04 内置英文单词.txt", "04 Built-in English words.txt"},
+            {"05 内置号码变形.txt", "05 Built-in number variants.txt"},
+            {"06 WPA 高频真实口令 Top 447.txt", "06 Real-world WPA top 447.txt"},
+            {"06 WPA 高频真实口令 TOP 447.txt", "06 Real-world WPA top 447.txt"},
     };
 
-    /** 释放版本。改动内置内容时加一，下次启动会重新释放。4 = 精选版（删两份大表、加 SecLists 两份） */
-    private static final int RELEASE_VERSION = 4;
+    /**
+     * 释放版本。**改动内置内容（不只是在 ITEMS 里增删条目）时必须加一** ——
+     * 加一以后 {@link #release} 才会重跑；而重跑会不会真的覆盖已有文件，
+     * 由 {@link Manifest} 决定（见 {@link #release} 的判据表）。
+     * 6 = 手机号段两条规则（93/94）之后，本轮修掉「内容改了不生效 / 废弃表删不掉」。
+     * 7 = 清单改成 v2 格式（「来源不可证」记 {@code ?}，永不覆盖用户改动）——
+     *     加一才能让 v6 那份**含有毒记录**的旧清单被丢弃重建。
+     */
+    private static final int RELEASE_VERSION = 7;
     private static final String MARK = ".builtin_v";
+    /** 发行清单：记录**我们上次释放时**写下的内容哈希，用来区分「我们放的」与「用户改的」。 */
+    private static final String MANIFEST = ".builtin_manifest";
+    /**
+     * 清单里表示「来源不可证」的哨兵值。
+     *
+     * <p>首次升级时没有清单，若盘上内容与出厂内容不同，我们**无法区分**
+     * 「老版本放的旧内容」与「用户自己改的」。这种情况必须记 {@code ?} 而不是
+     * 把盘上哈希记下来 —— 记了的话，下一次升级就会把用户改过的文件当成
+     * 「我们上次放的」而覆盖掉，正是要保住的那条保护。
+     * 真机证据：用户的 `01 内置弱口令常用` 是 2496 行（他自己加过条目）。
+     */
+    private static final String UNKNOWN = "?";
+    /** 清单格式版本前缀。带前缀的行才认；老格式（无前缀）一律当成「来源不可证」。 */
+    private static final String MANIFEST_V2 = "v2";
+
+    /**
+     * 内置表出处与许可（2026-11-15 落档）。
+     *
+     * <h3>为什么要单列一张表</h3>
+     * 内置 assets 属于**随包再分发**，比「在线下载、落在用户机器上」严得多：
+     * 前者的分发者是本应用，后者是用户自己。所以每一条内置表都必须能回答
+     * 「从哪来、什么许可」。此前 `Item` 里只有名字/档位/理由，**没有任何出处字段** ——
+     * 而 {@code AboutActivity} 的致谢里却笼统写着「来自 SecLists 等项目」，
+     * 这个说法对其中几份**并不成立**。
+     *
+     * <h3>填写口径（只写能核实的）</h3>
+     * <ul>
+     *   <li>能核实的写具体：SecLists 的 LICENSE 实测为
+     *       <b>MIT License, Copyright (c) 2018 Daniel Miessler</b>
+     *       （danielmiessler/SecLists@master/LICENSE，2026-11-15 取）；</li>
+     *   <li>核不实的**不许写成 MIT 之类的具体许可**，一律「未声明 / 待核实」，
+     *       并在关于页如实披露 —— 宁可写得难看，也不能替第三方许加拿大。</li>
+     * </ul>
+     */
+    private static final String[][] PROVENANCE = {
+            {"wpa_top62.txt", "SecLists (danielmiessler/SecLists) 的 WPA 高频口令统计",
+                    "MIT (c) 2018 Daniel Miessler"},
+            {"wpa_top4800.txt", "SecLists (danielmiessler/SecLists) 的 WPA 主表",
+                    "MIT (c) 2018 Daniel Miessler"},
+            {"weak.txt", "搬运自某第三方 WiFi 工具的内置表（原工具未声明来源）", "未声明"},
+            {"digits.txt", "搬运自某第三方 WiFi 工具的内置表（原工具未声明来源）", "未声明"},
+            {"alnum.txt", "搬运自某第三方 WiFi 工具的内置表（原工具未声明来源）", "未声明"},
+            {"cn_top.txt", "中文口令集，搬运自第三方工具内置表（原工具未声明来源）", "未声明"},
+            {"top2025.txt", "年度高频口令榜（下载来源页未记录）", "未声明"},
+            {"xato_top.txt", "疑为 SecLists 的 xato-net-10-million 系列，**未能核实对应文件**", "待核实"},
+            {"rule_8digit.txt", "本项目自制规则（区间描述，不含第三方数据）", "本项目"},
+            {"rule_10digit.txt", "本项目自制规则（区间描述，不含第三方数据）", "本项目"},
+            {"rule_date.txt", "本项目自制规则（区间描述，不含第三方数据）", "本项目"},
+            {"rule_phone_cn.txt", "本项目自制（号段取自工信部公告 → 中文维基号段分配表）", "本项目"},
+            {"rule_phone_local.txt", "本项目自制（模板，不含量数据）", "本项目"},
+    };
+
+    /** 某 asset 的出处；没登记返回空串（门禁会判红）。 */
+    public static String sourceOf(String asset) {
+        for (String[] row : PROVENANCE) if (row[0].equals(asset)) return row[1];
+        return "";
+    }
+
+    /** 某 asset 的许可；没登记返回空串（门禁会判红）。 */
+    public static String licenseOf(String asset) {
+        for (String[] row : PROVENANCE) if (row[0].equals(asset)) return row[2];
+        return "";
+    }
+
+    /** 是否属于「许可未声明 / 待核实」—— 关于页要如实披露这一批。 */
+    public static boolean licenseUnclear(String asset) {
+        String lic = licenseOf(asset);
+        return lic.isEmpty() || "未声明".equals(lic) || "待核实".equals(lic);
+    }
 
     private BuiltinDicts() {}
 
@@ -202,16 +320,24 @@ public final class BuiltinDicts {
     }
 
     public static final class Result {
+        /** 新写入或按出厂内容更新成功的本数 */
         public final int released;
+        /** 盘上内容已与出厂内容一致、无需动作的本数 */
         public final int skipped;
-        /** 清理掉的旧内置表数量 */
+        /** 移入回收站的废弃内置表数量 */
         public final int purged;
+        /** 因为「用户改过」而保留的本数 */
+        public final int keptEdited;
+        /** 疑似废弃但认不出来、保留的本数 */
+        public final int keptUnknown;
         public final String message;
 
-        Result(int r, int s, int p, String m) {
+        Result(int r, int s, int p, int ke, int ku, String m) {
             released = r;
             skipped = s;
             purged = p;
+            keptEdited = ke;
+            keptUnknown = ku;
             message = m;
         }
     }
@@ -224,66 +350,210 @@ public final class BuiltinDicts {
 
     /**
      * 释放内置字典到字典目录，并清理停用的旧内置表。
-     * 已存在的同名文件不覆盖（用户可能改过），只补缺失的。
+     *
+     * <h3>每个文件走哪条分支（判据表）</h3>
+     * <pre>
+     *   盘上不存在                        → 写入                       (released++)
+     *   盘上内容 == 出厂内容               → 不动，记进清单              (skipped++)
+     *   盘上内容 == 清单记录               → 我们放的、用户没动过 → 覆盖   (released++)
+     *   盘上内容 != 清单记录，且清单有记录   → 用户改过 → 原样保留          (keptEdited++)
+     *   清单无记录（首次升级）              → 无法证明是我们放的 → 保留并记账 (keptEdited++)
+     * </pre>
+     *
+     * <p>第 3 条是本轮修的核心：旧实现「存在就跳过」，于是**改了内置内容老用户永远拿不到**。
+     * 现在「用户没动过」是可证的（清单里的哈希与盘上一致），所以能安全覆盖；
+     * 用户动过的一律不碰 —— 保住原来那条保护，同时把更新打通。
+     *
+     * <p>废弃表一律**移入回收站**（{@link DictTrash}），不直接删：第一档能证明是我们的，
+     * 第二档是推定，推定错了用户还能捞回来。
      */
     public static Result release(Context ctx) {
         File dir = DictStore.defaultDir(ctx);
         if (!dir.exists() && !dir.mkdirs()) {
-            return new Result(0, 0, 0, L.s("无法创建字典目录", "Cannot create dictionary folder"));
+            return new Result(0, 0, 0, 0, 0, L.s("无法创建字典文件夹", "Cannot create dictionary folder"));
         }
 
-        int ok = 0, skip = 0;
+        Manifest mani = Manifest.load(dir);
+        int written = 0, same = 0, keptEdited = 0;
         StringBuilder fail = new StringBuilder();
 
         for (Item item : ITEMS) {
-            File out = new File(dir, item.name());
-            if (out.exists() && out.length() > 0) {
-                skip++;
+            String fn = item.fileName();
+            File out = new File(dir, fn);
+            String assetHash = assetSha256(ctx, "builtin/" + item.asset);
+            String diskHash = (out.isFile() && out.length() > 0) ? sha256(out) : null;
+
+            if (diskHash == null) {
+                if (copyAsset(ctx, "builtin/" + item.asset, out)) {
+                    written++;
+                    mani.put(fn, sha256(out));
+                } else {
+                    fail.append(fn).append(' ');
+                }
                 continue;
             }
-            if (copyAsset(ctx, "builtin/" + item.asset, out)) {
-                ok++;
+            if (assetHash != null && assetHash.equals(diskHash)) {
+                same++;
+                mani.put(fn, diskHash);
+                continue;
+            }
+            String last = mani.get(fn);
+            if (last != null && !UNKNOWN.equals(last) && last.equals(diskHash)) {
+                // 我们上次放的、用户没动过 → 可以安全地按当前出厂内容更新
+                if (copyAsset(ctx, "builtin/" + item.asset, out)) {
+                    written++;
+                    mani.put(fn, sha256(out));
+                } else {
+                    fail.append(fn).append(' ');
+                }
             } else {
-                fail.append(item.name()).append(" ");
+                keptEdited++;
+                // 首次升级（无记录）或记录本身就是「不可证」→ 一律记 ?,永不覆盖
+                if (last == null || UNKNOWN.equals(last)) mani.put(fn, UNKNOWN);
             }
         }
 
-        int purged = purgeObsolete(dir);
-
-        try {
-            File mark = new File(dir, MARK + RELEASE_VERSION);
-            try (FileOutputStream f = new FileOutputStream(mark)) {
-                f.write((System.currentTimeMillis() + "\n").getBytes());
+        int trashed = 0, keptUnknown = 0;
+        for (String[] row : OBSOLETE_NAMES) {
+            for (int i = 0; i < row.length; i++) {
+                String n = row[i];
+                if (find(n) != null) continue;              // 这个名字又被启用了，不动
+                File f = new File(dir, n);
+                if (!f.isFile() || f.length() <= 0) continue;
+                String h = sha256(f);
+                String last = mani.get(n);
+                // 有记录且被改过 → 保留；其余（无记录 / 记录为"?" / 内容未变）→ 判为我们的 → 回收
+                if (last == null || UNKNOWN.equals(last) || last.equals(h)) {
+                    if (DictTrash.trash(dir, f) != null) {
+                        trashed++;
+                        mani.remove(n);
+                        mani.remove(row[0]);
+                        mani.remove(row[1]);
+                    }
+                } else {
+                    keptUnknown++;
+                }
             }
-        } catch (Exception ignored) {}
+        }
 
-        String msg = L.s("释放 ", "Restored ") + ok + L.s(" 个，已存在跳过 ", " entries, skipped ")
-                + skip + L.s(" 个", " existing");
-        if (purged > 0) {
-            msg += L.s("，清理旧内置 " + purged + " 个（两份搬运来的大表，未经改动才删）",
-                    ", removed " + purged + " obsolete built-ins");
+        mani.save(dir);
+        cleanOldMarks(dir);
+        writeMark(dir);
+
+        String msg = L.s("释放 " + written + " 个，已是最新 " + same + " 个",
+                written + " restored, " + same + " already current");
+        if (keptEdited > 0) {
+            msg += L.s("，保留你改过的 " + keptEdited + " 个（不覆盖）",
+                    ", " + keptEdited + " kept as you edited them");
+        }
+        if (trashed > 0) {
+            msg += L.s("，废弃表 " + trashed + " 个已移入回收站（可恢复）",
+                    ", " + trashed + " obsolete moved to trash (recoverable)");
+        }
+        if (keptUnknown > 0) {
+            msg += L.s("，另有 " + keptUnknown + " 个疑似废弃但已被改动，保留",
+                    ", " + keptUnknown + " look obsolete but were modified; kept");
         }
         if (fail.length() > 0) msg += L.s("，失败: ", ", failed: ") + fail;
-        return new Result(ok, skip, purged, msg);
+        return new Result(written, same, trashed, keptEdited, keptUnknown, msg);
     }
 
-    /** 按内容哈希清理停用项；返回删除个数 */
-    private static int purgeObsolete(File dir) {
-        int n = 0;
-        for (String[] row : OBSOLETE) {
-            for (int i = 0; i <= 1; i++) {
-                File f = new File(dir, row[i]);
-                if (!f.isFile()) continue;
-                String h = sha256(f);
-                if (h != null && h.equalsIgnoreCase(row[2]) && f.delete()) n++;
+    /** 只保留最新一个标记文件（旧版本会在目录里堆 .builtin_v1…v5 五个） */
+    private static void cleanOldMarks(File dir) {
+        try {
+            File[] fs = dir.listFiles();
+            if (fs == null) return;
+            String keep = MARK + RELEASE_VERSION;
+            for (File f : fs) {
+                String n = f.getName();
+                if (!n.startsWith(MARK) || n.equals(keep)) continue;
+                f.delete();
             }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void writeMark(File dir) {
+        try (FileOutputStream f = new FileOutputStream(new File(dir, MARK + RELEASE_VERSION))) {
+            f.write((System.currentTimeMillis() + "\n").getBytes());
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * 发行清单：文件名 → 我们上次释放时写下的内容哈希。
+     *
+     * <p>格式一行一条：{@code <sha256>\t<文件名>}（文件名可能带空格，所以用制表符分隔）。
+     * 读不出来就当空清单 —— 代价只是本次不覆盖任何已有文件，**不会误删**。
+     */
+    static final class Manifest {
+        private final java.util.LinkedHashMap<String, String> map = new java.util.LinkedHashMap<>();
+
+        static Manifest load(File dir) {
+            Manifest m = new Manifest();
+            File f = new File(dir, MANIFEST);
+            if (!f.isFile()) return m;
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(new FileInputStream(f), "UTF-8"))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    String[] p = line.split("\t", -1);
+                    // 只认 v2 格式：v2 <哈希或?> <文件名>
+                    if (p.length < 3 || !MANIFEST_V2.equals(p[0].trim())) continue;
+                    String h = p[1].trim();
+                    String n = p[2].trim();
+                    if (!h.isEmpty() && !n.isEmpty()) m.map.put(n, h);
+                }
+            } catch (Exception ignored) {}
+            return m;
         }
-        return n;
+
+        String get(String name) {
+            return name == null ? null : map.get(name);
+        }
+
+        void put(String name, String hash) {
+            if (name != null && hash != null) map.put(name, hash);
+        }
+
+        void remove(String name) {
+            if (name != null) map.remove(name);
+        }
+
+        void save(File dir) {
+            try {
+                File dst = new File(dir, MANIFEST);
+                File tmp = new File(dir, MANIFEST + ".tmp");
+                try (java.io.OutputStreamWriter w = new java.io.OutputStreamWriter(
+                        new FileOutputStream(tmp), "UTF-8")) {
+                    for (java.util.Map.Entry<String, String> e : map.entrySet()) {
+                        w.write(MANIFEST_V2);
+                        w.write('\t');
+                        w.write(e.getValue());
+                        w.write('\t');
+                        w.write(e.getKey());
+                        w.write('\n');
+                    }
+                }
+                if (!tmp.renameTo(dst)) {
+                    // 某些文件系统上 rename 覆盖会失败：退化成删了再改名
+                    dst.delete();
+                    if (!tmp.renameTo(dst)) tmp.delete();
+                }
+            } catch (Exception ignored) {}
+        }
     }
 
     /** 文件 sha256；失败返回 null（读不了就当用户改过，保留） */
     static String sha256(File f) {
         try (InputStream in = new FileInputStream(f)) {
+            return sha256(in);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 流 sha256（同样用于 assets：要跟盘上的文件比对，就得能对 asset 也取哈希）。 */
+    static String sha256(InputStream in) {
+        try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] buf = new byte[1 << 16];
             int r;
@@ -294,6 +564,15 @@ public final class BuiltinDicts {
                 sb.append(Character.forDigit(b & 0xF, 16));
             }
             return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 某个 asset 的 sha256；打不开返回 null（拿不到就当「不知道出厂内容」，退回保守分支）。 */
+    static String assetSha256(Context ctx, String assetPath) {
+        try (InputStream in = ctx.getAssets().open(assetPath)) {
+            return sha256(in);
         } catch (Exception e) {
             return null;
         }

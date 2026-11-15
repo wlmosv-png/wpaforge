@@ -132,8 +132,25 @@ public class AboutActivity extends Activity {
 
         // ---- 感谢 ----
         content.addView(section(L.s("致谢", "Credits")));
-        content.addView(block("在线字典数据来自 SecLists 项目（MIT 许可）及其他公开安全数据集。\n\n"
-                + L.s("感谢所有把工具和知识公开出来的人。", "Thanks to everyone who publishes their tools and knowledge.")));
+        content.addView(block(L.s(
+                "内置字典的出处与许可（每条都可查）：\n"
+                        + "· SecLists（MIT，Copyright (c) 2018 Daniel Miessler）：\n"
+                        + "  06 WPA 专用 TOP 4800、10 WPA 起步 TOP 62\n"
+                        + "· 本项目自制（仅区间规则，不含第三方数据）：\n"
+                        + "  90/91/92/93/94 五份规则\n"
+                        + "· 其余数份搬运自第三方工具的内置表或来源页未记录，\n"
+                        + "  **原始出处与许可未声明** —— 仅供本机使用；\n"
+                        + "  如需再分发请自行核实来源与许可。\n\n",
+                "Where the built-in lists come from:\n"
+                        + "· SecLists (MIT, (c) 2018 Daniel Miessler):\n"
+                        + "  06 WPA top 4800, 10 WPA starter top 62\n"
+                        + "· Made by this project (interval rules, no third-party data):\n"
+                        + "  90/91/92/93/94\n"
+                        + "· The rest were carried over from third-party tools or have no\n"
+                        + "  recorded source; **their original licence is unstated**.\n"
+                        + "  For local use only — verify before redistributing.\n\n")
+                + L.s("感谢所有把工具和知识公开出来的人。",
+                        "Thanks to everyone who publishes their tools and knowledge.")));
 
         // ---- 版本 ----
         content.addView(section(L.s("版本", "Version")));

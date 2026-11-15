@@ -1177,6 +1177,52 @@ public class CrackService extends Service {
                 }
             }
 
+            /* ── 目标改过密码？自动自愈（2026-11-15，用户实报）─────────────
+             * 场景：某个网之前攻破过，对方改了密码，再用**同一本字典**跑，
+             * 软件「直接不跑了」—— 一条都没尝试。成因是历史排除：
+             * triedSet / 账本 / offset 全都建立在「这本字典在本目标上已经跑过」
+             * 这个前提上，而**密码一改，这个前提就不成立了**：旧记录里被排除的
+             * 候选，现在都可能成为新密码（对方完全可能挑一个当年被我们试过的串）。
+             *
+             * 处置取最保守的一档：只有「接着跑下去会是 0 条」时才动历史，
+             * 而且是**移档**（改名留档）不是删除。于是：
+             *   · 没改密码的普通重跑，行为一字不变（该跳的照跳）；
+             *   · 改过密码那种「不跑了」，直接变成「从头重跑整本」；
+             *   · 万一判错，旧记录还躺在盘上，随时能翻回来。
+             * 判定与位置换算都不写进判定链：本块只改「跑哪些候选」，不改任何判词。
+             */
+            if (!forceRerun && task.offset > 0) {
+                int runnableNow = runnableCount(work, workBeforeFilter, triedSet, ledger,
+                        skipPolicy, task.offset, false);
+                String prevHit = prevHitPassword(task.bssid, task.ssid);
+                boolean hasHistory = (triedSet != null && triedSet.size() > 0)
+                        || (ledger != null && ledger.size() > 0);
+                if (shouldAutoClearHistory(false, prevHit != null, hasHistory, runnableNow)) {
+                    log(L.s("本目标有命中记录，但按历史过滤后一条都跑不了（0/" + safeSize(workBeforeFilter)
+                                    + "）—— 对方很可能改过密码：已把本目标的已试/账本记录移档，"
+                                    + "本次从头重跑整本字典。",
+                            "This target was cracked before, yet history filtering leaves zero "
+                                    + "candidates — the password was probably changed. Old records "
+                                    + "were archived; this run restarts the dictionary from scratch."));
+                    int moved = quarantineHistory(triedKey);
+                    log(L.s("已移档 " + moved + " 份历史记录（改名留档，未删除）",
+                            "Archived " + moved + " history file(s) — renamed, not deleted"));
+                    triedSet = new TriedSet();
+                    ledger = new AttemptLedger();
+                    triedSinceFlush = 0;
+                    ledgerSinceFlush = 0;
+                    skipPolicy = AttemptLedger.SkipPolicy.CONSERVATIVE;
+                    forceRerun = true;
+                    task.offset = 0;
+                    work = workBeforeFilter;
+                    workBeforeFilter = null;
+                    filteredBeforeRun = false;
+                } else if (prevHit != null && runnableNow <= 0) {
+                    log(L.s("本目标有历史命中记录，但接着跑会是 0 条；本次未动历史（无命中记录或已被强制重跑）。",
+                            "History hit exists but nothing would run; history left untouched."));
+                }
+            }
+
             currentDict = work;
             if (task.dictSize <= 0) {
                 task.dictSize = currentDict.size();
@@ -2074,6 +2120,122 @@ public class CrackService extends Service {
             }
         }
         return amb == null ? java.util.Collections.emptySet() : amb;
+    }
+
+    /**
+     * 历史自愈的判据（纯函数，可穷举测试）。
+     *
+     * <p>「改了密码，同一本字典再跑」这件事，工具侧唯一的线索是：
+     * <b>这个目标以前命中过</b> + <b>按历史过滤后一条都跑不了</b>。
+     * 两个条件缺一不可 ——
+     * <ul>
+     *   <li>没命中过：谈不上「密码被改」，只是普通的重跑，不该动历史；</li>
+     *   <li>还有候选可跑：那就正常跑，没必要把历史推倒；</li>
+     *   <li>用户已经选了强制重跑：本就是「忽略历史」，无需自愈。</li>
+     * </ul>
+     *
+     * @param forceRerun    本次是否已强制重跑
+     * @param hasPrevHit    本目标是否有过命中记录
+     * @param hasHistory    是否存在已试集合 / 执行账本
+     * @param runnableCount 按当前过滤与游标，实际还能执行多少条
+     */
+    static boolean shouldAutoClearHistory(boolean forceRerun, boolean hasPrevHit,
+                                          boolean hasHistory, int runnableCount) {
+        if (forceRerun) return false;
+        if (!hasPrevHit) return false;
+        if (!hasHistory) return false;
+        return runnableCount <= 0;
+    }
+
+    /**
+     * 接着跑下去**实际会执行**多少条（0 = 一条都没有）。纯函数。
+     *
+     * <p><b>为什么必须同时吃「过滤后的列表」和「过滤前的原列表」</b>：
+     * 引擎跑的是过滤后的 {@code filtered}，而游标 {@code offset} 是原列表里的位置，
+     * 换算靠 {@link #resumeIndexAfterFilter}。只拿其中一个算都会得出错的数字 ——
+     * 曾经的第一版只拿原列表算，于是「整本都被过滤掉」被算成「还有 5 条要跑」，
+     * 自愈永远不会触发（门禁当场抓到，见 {@code HistorySelfHealTest}）。
+     *
+     * @param filtered 过滤后的候选（引擎真正会遍历的那份）
+     * @param original 过滤前的原列表（用来换算游标）
+     */
+    static int runnableCount(java.util.List<Candidate> filtered, java.util.List<Candidate> original,
+                             TriedSet tried, AttemptLedger ledger,
+                             AttemptLedger.SkipPolicy policy, int offset, boolean forceRerun) {
+        if (filtered == null) return 0;
+        int total = filtered.size();
+        if (original == null) return Math.max(0, total - Math.max(0, Math.min(offset, total)));
+        int start = resumeIndexAfterFilter(original, tried, ledger, policy, offset, forceRerun);
+        return Math.max(0, total - start);
+    }
+
+    /** 列表长度（null 安全，只用于日志）。 */
+    static int safeSize(java.util.List<Candidate> list) {
+        return list == null ? 0 : list.size();
+    }
+
+    /**
+     * 本目标历史上命中过的口令；没有就返回 null。
+     *
+     * <p>两个来源，先队列后历史表：
+     * <ol>
+     *   <li>{@link TaskQueue} 里同目标、状态 {@code DONE_HIT} 的任务（明文在内存里，
+     *       落盘的是密文，能用 Keystore 解开）；</li>
+     *   <li>{@code history.csv}（{@code audit.HistStore}）里同目标最近一条命中记录。</li>
+     * </ol>
+     * 换设备 / 换签名后密文解不开时两者都可能拿不到 —— 那就不自愈（保守）。
+     */
+    private String prevHitPassword(String bssid, String ssid) {
+        try {
+            for (TaskQueue.Task t : TaskQueue.load(this)) {
+                if (t == null || t.state != TaskQueue.State.DONE_HIT) continue;
+                if (!sameTarget(t.ssid, ssid, t.bssid, bssid)) continue;
+                if (t.hitPassword != null && !t.hitPassword.isEmpty()) return t.hitPassword;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            for (io.github.wlmosv_png.wpaforge.audit.HistStore.Record r
+                    : io.github.wlmosv_png.wpaforge.audit.HistStore.load(this)) {
+                if (r == null || !r.hit) continue;
+                if (!sameTarget(r.ssid, ssid, r.bssid, bssid)) continue;
+                if (r.password != null && !r.password.isEmpty()) return r.password;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** SSID 精确比、BSSID 忽略大小写比；两边都可能缺字段，缺就不算同一个目标。 */
+    static boolean sameTarget(String aSsid, String bSsid, String aBssid, String bBssid) {
+        if (aSsid == null || bSsid == null || !aSsid.equals(bSsid)) return false;
+        if (aBssid == null || bBssid == null) return true;
+        return aBssid.equalsIgnoreCase(bBssid);
+    }
+
+    /**
+     * 把本目标的已试集合与执行账本改名留档（**不删除**）。返回移档成功的份数。
+     * 命名带时间戳，重复自愈不会互相覆盖。
+     */
+    private int quarantineHistory(String key) {
+        if (key == null || key.isEmpty()) return 0;
+        String stamp = String.valueOf(System.currentTimeMillis());
+        int n = 0;
+        java.io.File a = TriedSet.fileFor(this, key);
+        java.io.File b = AttemptLedger.fileFor(this, key);
+        n += renameAside(a, stamp);
+        n += renameAside(b, stamp);
+        return n;
+    }
+
+    private static int renameAside(java.io.File f, String stamp) {
+        try {
+            if (f == null || !f.isFile() || f.length() <= 0) return 0;
+            java.io.File dst = new java.io.File(f.getAbsolutePath() + ".stale-" + stamp);
+            return f.renameTo(dst) ? 1 : 0;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** 过滤候选（默认档，不强制重跑）。 */

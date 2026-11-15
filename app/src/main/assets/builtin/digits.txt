@@ -708,7 +708,6 @@ furniture
 generation
 glancing
 glorious
-goodbye
 governor
 gracious
 grandfather
@@ -1224,7 +1223,6 @@ VaticanCity
 Venezuela
 YugoslaviaFormerYugoslavia
 ZimbabweFormerRhodesia
-othetop
 ainCitiesintheWorld
 lexandriaaeligzandric
 aghdadbaegdaed
@@ -1286,7 +1284,6 @@ ellingtonweliytcn
 okohamajcukchamc
 lborgAalborg
 berdeenshire
-buDhabi
 ccraAkkra
 concagua
 cropolis
@@ -1299,12 +1296,10 @@ lbuquerque
 leutians
 lexander
 lexandria
-lKuwait
 llahabad
 llentown
 msterdam
 msterdamshipcanal
-muDarya
 nchorage
 ncohumia
 ndalusia
@@ -1314,7 +1309,6 @@ netoPicode
 ngleseyAnglesea
 nnapolis
 nnapurna
-nnArbor
 ntananarivo
 ntarctic
 ntarctica
@@ -1322,7 +1316,6 @@ ntiguaandBarbuda
 nti-Lebanon
 ntofagasta
 pennines
-poMount
 ppalachian
 rabianDesert
 rabianSea
@@ -1372,7 +1365,6 @@ ashiChannel
 asutoland
 attersea
 avarianAlps
-earLake
 echuanaland
 edfordshire
 eirutBayrut
@@ -1392,7 +1384,6 @@ lackburn
 lackburnMount
 lackHills
 lackpool
-lackSea
 lagoveshchensk
 lancCape
 landMont
@@ -1412,7 +1403,6 @@ runswick
 ucharest
 uckinghamshire
 uenaventura
-ugRiver
 ujumbura
 uteshire
 yelorussia
@@ -1427,7 +1417,6 @@ anaveralPeninsula
 antabrian
 anterbury
 apeHatteras
-apeHorn
 apeofGoodHope
 apeTownCapetown
 apeVerdeIslands
@@ -1452,7 +1441,6 @@ hangJing
 hannelIslands
 harleston
 harlotte
-haudDoc
 hautauqua
 herrapunji
 hesapeakeBay
@@ -1465,7 +1453,6 @@ hristchurch
 hristmasIsland
 huckcheeSea
 hurchill
-huRiver
 incinnati
 iscaucasia
 leveland
@@ -1481,7 +1468,6 @@ onstantinople
 onstantsa
 oolgardie
 openhagen
-oralSea
 ordilleraMts
 orrientes
 ostaRica
@@ -1496,7 +1482,6 @@ angerIslands
 ardanellesthe
 aresSalaam
 arjeeling
-arlingR
 arlington
 armstadt
 auphineAlps
@@ -1517,7 +1502,6 @@ ianBienPhu
 istrictofColumbia
 ominicanRepublic
 oncaster
-onRiver
 ongtingHu
 orsetshire
 overfjell
@@ -1552,7 +1536,6 @@ sdraelonPlainof
 stoniaEsthonia
 uphrates
 vansMount
-yreLake
 anningIsland
 ederalRepublicofGermany
 ermanagh
@@ -1571,7 +1554,6 @@ remantle
 riendlyIslands
 risianIslands
 rontRange
-ujiyama
 undyBayof
 aberones
 alapagos
@@ -1614,7 +1596,6 @@ uatemalaCity
 uayaquil
 uinea-Bissau
 unongTahan
-agueThe
 aleakala
 ammerfest
 ampshire
@@ -1629,7 +1610,6 @@ ecateStrait
 eidelberg
 eilongjiang
 elsingor
-engShan
 erefordandWorcester
 erefordshire
 ermonMount
@@ -1641,7 +1621,6 @@ oChiMinhCity
 ollywood
 ongKongHongkong
 oodMount
-uangHai
 uascaran
 uddersfield
 uhehaote
@@ -1657,8 +1636,6 @@ ndochina
 ndonesia
 nnsbruck
 nverness-shire
-owaCity
-raqIrak
 rishRepublicEire
 rrawaddy
 slamabad
@@ -1723,13 +1700,11 @@ ualaLumpur
 uibyshevKuybyshev
 uwaitKuweitKowait
 accadiveIsland
-aGuaria
 anarkshire
 ancashire
 angsonLangSon
 asPalmas
 assenPeakMountLassen
-asVegas
 eicester
 eicestershire
 eixLaoighis
@@ -1797,8 +1772,6 @@ askatMasqatMuscat
 assiveMount
 atterhorn
 augaSili
-aunaKea
-aunaLoa
 auritania
 auritius
 ckinleyMount
@@ -1847,12 +1820,10 @@ ewBritain
 ewBrunswick
 ewCaledonia
 ewcastle
-ewDelhi
 ewEngland
 ewfoundland
 ewGuinea
 ewHampshire
-ewHaven
 ewMexicc
 ewOrleans
 ewSouthWales
@@ -1869,7 +1840,6 @@ orthBorneo
 orthernIsland
 orthernTerritory
 orthPlatte
-orthSea
 orthumberland
 orthWestTerritories
 orthYorkshire
@@ -1938,9 +1908,7 @@ ortMoresby
 ortofSpain
 orto-Novo
 ortoRico
-ortSaid
 ortsmouth
-oyangHu
 rinceEdwardIsland
 rinceton
 rovidence
@@ -1958,7 +1926,6 @@ ainierMount
 akaposhi
 antemario
 awalpindi
-edRiver
 eimsRheims
 enfrewshire
 eykjavik
@@ -1989,18 +1956,15 @@ amarkand
 amothrace
 anaSanaa
 anBernardino
-anDiego
 anfordMount
 anFrancisco
 anGorgonio
 angerdeCristo
 anMarino
 anSalvador
-antaAna
 antaIsabel
 antoDomingo
 aoFranciso
-aoPaulo
 aoTomeandPrincipe
 aragossa
 askatchewan
@@ -2039,8 +2003,6 @@ omaliland
 omaliRepublic
 omersetshire
 omerville
-ongShan
-oundthe
 outhAndaman
 outhAuwtralia
 outhCarolina
@@ -2060,7 +2022,6 @@ tElasRange
 tewartIsland
 tGeorges
 tGotthardTunnel
-tHelena
 tirlingshire
 tLawrence
 tLawrenceGulfof
@@ -2071,7 +2032,6 @@ trasbourg
 tratford-upon-Avon
 trathclyde
 tuttgart
-udanThe
 uezIsthmusof
 uluArchipelago
 undaIsles
@@ -2086,7 +2046,6 @@ uvalbard
 verdlosk
 waziland
 witzerland
-yrDarja
 adzhikistanTajikistan
 aiwanStrait
 ananarive

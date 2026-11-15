@@ -1,5 +1,7 @@
 <!-- GitHub Release 正文。标题填：WPAForge 1.9.59 · WPS PIN 专项重构 / 设置页审计 / 启动画面与观测页动效 -->
-<!-- tag: v1.9.59   target: main -->
+<!-- tag: v1.9.60   target: main -->
+<!-- 注意：下面正文仍是 1.9.59 的发布说明；1.9.60 尚未发布，
+     真要发版前需要用 CHANGELOG 里 1.9.60 的条目重写正文。 -->
 
 WPAForge 1.9.59 · WPS PIN 专项重构 / 设置页审计 / 启动画面与观测页动效
 

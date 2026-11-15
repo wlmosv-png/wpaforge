@@ -52,7 +52,13 @@ public class HeaderInsetTest {
         System.out.println("== 顶部间距必须由 inset 推导 ==");
         ok("读取了状态栏顶部 inset", code.contains("getSystemWindowInsetTop()"));
         ok("标题条的顶部内边距 = inset + 固定间隙",
-                code.contains("header.setPadding(px(22) + left, top + px(12)"));
+                code.contains("header.setPadding(px(22) + left, top + px(HEADER_GAP_DP)"));
+        ok("间距是单一常量（要松要紧只改一处）", code.contains("HEADER_GAP_DP = 20"));
+        ok("主动钉死窗口模型（不依赖 ROM 是否强制 edge-to-edge）",
+                code.contains("applyEdgeToEdge()")
+                        && code.contains("setDecorFitsSystemWindows(false)")
+                        && code.contains("SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN"));
+        ok("窗口模型在 buildUi 之前声明", code.indexOf("applyEdgeToEdge();") < code.indexOf("buildUi();"));
         ok("inset 取不到时仍有兜底值（34dp）",
                 code.contains("header.setPadding(px(22), px(34), px(22), px(2));"));
 

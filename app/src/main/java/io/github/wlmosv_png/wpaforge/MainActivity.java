@@ -507,6 +507,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         L.init(this);
         dp = getResources().getDisplayMetrics().density;
+        applyEdgeToEdge();
         buildUi();
         // 旧版单一计划文件 → 按目标分文件（一次性，幂等，不删旧文件）。
         // 放在这里是为了：只开破解页（没进字典管理）时也能看到迁移后的计划。
@@ -518,6 +519,40 @@ public class MainActivity extends Activity {
         requestNotifPermission();
         if (Prefs.pinEnabled(this)) setupPinGate();
     }
+
+    /**
+     * 把窗口模型钉死：**内容延伸到状态栏之下，由我们自己按 inset 让位**。
+     *
+     * <h3>为什么必须主动声明，而不是读 ROM 的现状</h3>
+     * 同一份布局在两类机器上量的是两回事：
+     * <pre>
+     *   非 edge-to-edge：窗口自状态栏下沿起 → 顶部内边距应只留「间隙」
+     *   edge-to-edge   ：窗口自屏幕顶起   → 顶部内边距应是「状态栏高 + 间隙」
+     * </pre>
+     * 本机实测为非 edge-to-edge（{@code overrideNonDecorFrame=[0,120][1080,2328]}），
+     * 别的 ROM 可能强制 edge-to-edge，而个别 ROM 在非 edge-to-edge 下**仍会报出
+     * 状态栏高度的 inset** —— 那时 `inset + 间隙` 会把状态栏高度算两遍。
+     * 与其猜 ROM 属于哪一类，不如自己声明：声明之后 inset 的含义唯一。
+     *
+     * <p>只影响窗口与系统栏的关系，不改任何内容布局 —— 内容仍由 header 的
+     * 内边距让位（见 buildUi 里读 insets 的那段）。
+     */
+    private void applyEdgeToEdge() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                getWindow().setDecorFitsSystemWindows(false);
+            } else {
+                getWindow().getDecorView().setSystemUiVisibility(
+                        android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+            }
+        } catch (Throwable ignored) {
+            // 声明失败就退回原行为：header 的兜底内边距仍然管用，不会重叠。
+        }
+    }
+
+    /** 标题顶部到状态栏下沿的间距（dp）。想松想紧只改这一处。 */
+    private static final int HEADER_GAP_DP = 20;
 
     /** PIN 锁遮挡层：设了 PIN 就先解锁才能用 */
     private android.widget.FrameLayout pinGate = null;
@@ -811,7 +846,7 @@ public class MainActivity extends Activity {
                         right = Math.max(right, in.getDisplayCutout().getSafeInsetRight());
                     }
                     if (header != null) {
-                        header.setPadding(px(22) + left, top + px(12), px(22) + right, px(2));
+                        header.setPadding(px(22) + left, top + px(HEADER_GAP_DP), px(22) + right, px(2));
                     }
 
                     int bottom = in.getSystemWindowInsetBottom();

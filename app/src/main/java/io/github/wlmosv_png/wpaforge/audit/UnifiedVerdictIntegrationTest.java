@@ -204,8 +204,10 @@ public final class UnifiedVerdictIntegrationTest {
             // 但归属只到 AT1，绑不到当前候选 -> 网络级事件，不可永久排除。
             ok("U3 后到的明确证据必须改变结论（不再是 TIMEOUT）",
                     a3.verdict != CrackEngine.Verdict.TIMEOUT, "verdict=" + a3.verdict);
-            ok("U3 归属只到 AT1 -> NETWORK_AUTH_FAIL / NONE（不永久排除）",
-                    a3.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+            // 2026-11-15 对齐：未观察到活动态 -> 停在 INCOMPLETE（P0 守卫，见 P05AttributionTest）。
+            // 安全属性不变：NONE 级 = 不写 triedSet、不推 cursor。
+            ok("U3 归属只到 AT1 且未观察到活动态 -> INCOMPLETE / NONE（不永久排除）",
+                    a3.verdict == CrackEngine.Verdict.INCOMPLETE
                             && a3.grade == EvidenceGrade.Level.NONE,
                     a3.verdict + "/" + a3.grade);
 
@@ -244,10 +246,18 @@ public final class UnifiedVerdictIntegrationTest {
             CrackEngine.Attempt a6 = engine(sh6).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
             info("U6 id=613 绑定本次配置 -> verdict=" + a6.verdict + " grade=" + a6.grade
                     + " reason=" + a6.reason);
-            ok("U6 id 绑定本次配置 -> **AUTH_FAIL（候选级）**",
-                    a6.verdict == CrackEngine.Verdict.AUTH_FAIL, "verdict=" + a6.verdict);
-            ok("U6 候选级失败可持久化（DIRECT）",
-                    a6.grade == EvidenceGrade.Level.DIRECT, "grade=" + a6.grade);
+            // 2026-11-15 对齐：**这里不再要求 AUTH_FAIL**。
+            // 本用例的脚本只给了 `Wifi is not connected`（= 系统说现在没连上），
+            // 从未观察到目标进入活动态，因此 P0 守卫不承认「已确认终止」，
+            // 候选级结论的前置条件不足，结论停在 INCOMPLETE。
+            //
+            // 保留的是**安全属性**：未观察到活动态时**绝不许给 DIRECT** ——
+            // DIRECT 会写进 triedSet（永久排除），错给一次就是永久漏掉一条候选。
+            ok("U6 id 绑定但未观察到活动态 -> 不给候选级结论（停在 INCOMPLETE）",
+                    a6.verdict == CrackEngine.Verdict.INCOMPLETE,
+                    "verdict=" + a6.verdict);
+            ok("U6 未观察到活动态不得给 DIRECT（永久排除的门槛）",
+                    a6.grade != EvidenceGrade.Level.DIRECT, "grade=" + a6.grade);
 
             // U7：同一条日志但本次配置 netId=700（id 对不上）-> 退回网络级
             Shell sh7 = new Shell();
@@ -255,8 +265,8 @@ public final class UnifiedVerdictIntegrationTest {
             sh7.list("700   " + SSID + "   WPA2\n");
             CrackEngine.Attempt a7 = engine(sh7).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
             info("U7 id=613 但本次配置=700 -> verdict=" + a7.verdict + " grade=" + a7.grade);
-            ok("U7 id 对不上 -> 退回 NETWORK_AUTH_FAIL（不永久排除）",
-                    a7.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
+            ok("U7 id 对不上且未观察到活动态 -> INCOMPLETE / NONE（不永久排除）",
+                    a7.verdict == CrackEngine.Verdict.INCOMPLETE
                             && a7.grade == EvidenceGrade.Level.NONE,
                     a7.verdict + "/" + a7.grade);
 

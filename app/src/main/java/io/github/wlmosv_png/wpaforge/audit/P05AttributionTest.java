@@ -127,12 +127,18 @@ public final class P05AttributionTest {
             ok("A（AP-1 无归属握手失败）不得产出 AUTH_FAIL",
                     ra.verdict != CrackEngine.Verdict.AUTH_FAIL,
                     "verdict=" + ra.verdict + "（连接终止 != 密码错）");
-            // FakeShell 的 status 恒为 `Wifi is not connected` = 系统明确说「没连上」
-            // → 生命周期 TERMINATED（**不是** UNKNOWN）。
-            ok("A 的连接已确认终止 -> TERMINATED_UNKNOWN（不是 UNKNOWN、更不是 AUTH_FAIL）",
-                    ra.verdict == CrackEngine.Verdict.TERMINATED_UNKNOWN,
-                    "verdict=" + ra.verdict
-                            + "（status 明确 'Wifi is not connected' 属可判定的终止）");
+            // 2026-11-15 契约对齐：期望值由 TERMINATED_UNKNOWN 改为 UNKNOWN。
+            //
+            // 生产在 2026-11-06 加了 P0 守卫（commit 2288a6dd）：
+            //     if (!sawAttempt) lastLifecycle = Lifecycle.UNKNOWN;
+            // 理由：「Wifi is not connected」也可能只表示**从未连上**，不等于
+            // 「连上过、然后终止」。若在此判 TERMINATED，下游会产出
+            // NETWORK_AUTH_FAIL，而账本把它当成「已终止的候选」，在省时档里**跳过**
+            // —— 一条从未被真正执行过的候选就此被永久排除。
+            // 本用例的脚本从未观察到目标进入活动态，故按守卫取 UNKNOWN。
+            ok("A 未观察到活动态 -> UNKNOWN（P0 守卫：不得由「未连上」推「已终止」）",
+                    ra.verdict == CrackEngine.Verdict.UNKNOWN,
+                    "verdict=" + ra.verdict);
             ok("A 结论为 NONE 级 -> 不写 triedSet、不推 cursor（不永久排除）",
                     ra.grade == EvidenceGrade.Level.NONE,
                     "grade=" + ra.grade);
@@ -145,10 +151,12 @@ public final class P05AttributionTest {
             b.add("10-31 12:00:02.000  1000  1000 I wpa_supplicant: CTRL-EVENT-SSID-TEMP-DISABLED ssid=\"" + TARGET + "\" reason=WRONG_KEY auth_failures=1");
             CrackEngine.Attempt rb = run("B 带归属直接否认", b);
 
-            // D1 契约更新：TEMP-DISABLED 只有 SSID（AT1），绑不到**本条候选建的配置**。
+            // D1：TEMP-DISABLED 只有 SSID（AT1），绑不到**本条候选建的配置** ——
             // 它证明的是「网络发生了认证失败」，不是「这条密码错了」。
-            ok("B 带归属的直接否认 -> NETWORK_AUTH_FAIL（网络级事件）",
-                    rb.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL,
+            // 2026-11-15 对齐：同样因为 P0 守卫（未观察到活动态），结论停在 INCOMPLETE。
+            // 关键的安全属性仍然成立：不可永久排除（下一条断言）。
+            ok("B 未观察到活动态 -> INCOMPLETE（仍不得给网络级失败、更不得给候选级）",
+                    rb.verdict == CrackEngine.Verdict.INCOMPLETE,
                     "verdict=" + rb.verdict);
             ok("B 不可永久排除（grade=NONE）",
                     rb.grade == EvidenceGrade.Level.NONE, "grade=" + rb.grade);

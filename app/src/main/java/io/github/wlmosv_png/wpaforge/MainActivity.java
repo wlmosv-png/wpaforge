@@ -2846,12 +2846,20 @@ public class MainActivity extends Activity {
                     + "  · 可信等级：" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
                             .levelText(lvl, zh));
         } else {
-            // 自动退避期间把倒计时接在状态行后面 —— 用户必须看得出「它没死，
-            // 是在等」，否则会以为卡住然后手动停掉。
+            // 状态行尾注按重要性排序：
+            //   ① 阶段 1 穷尽（拆半对本 AP 不成立）—— 这是**终态结论**，必须盖过「进行中」；
+            //   ② 自动退避倒计时 —— 用户必须看得出「它没死，是在等」；
+            //   ③ 都没有就只显示判词。
             int remain = wpsPauseRemainSec;
-            wpsStatusLine.setText(remain > 0 && wpsBackoff != null
-                    ? verdictTxt + "  ·  " + wpsBackoff.waitText(remain, zh)
-                    : verdictTxt);
+            if (s.halfPhase1Exhausted) {
+                wpsStatusLine.setText(verdictTxt + L.s(
+                        "  ·  阶段 1 已穷尽、未检出半接受 —— 阶段 2 无前缀可用",
+                        "  ·  phase 1 exhausted, no half-accept — phase 2 has no prefix"));
+            } else if (remain > 0 && wpsBackoff != null) {
+                wpsStatusLine.setText(verdictTxt + "  ·  " + wpsBackoff.waitText(remain, zh));
+            } else {
+                wpsStatusLine.setText(verdictTxt);
+            }
         }
 
         StringBuilder sb = new StringBuilder();
@@ -3616,8 +3624,28 @@ public class MainActivity extends Activity {
                     if (p != null) pins.add(p);
                 }
                 if (pins.isEmpty()) {
-                    wpsLog(L.s("[!] 阶段 1 已试完全部 10000 个前 4 位，仍未找到。",
-                            "[!] phase 1 exhausted all 10000 prefixes."));
+                    /* 阶段 1 穷尽（2026-11-15）。
+                     *
+                     * 拆半攻击的全部前提是：AP 在**前 4 位正确**时会给出可辨的半接受反馈，
+                     * 阶段 2 才有前缀可枚举（stage2Pin 需要一个 4 位前缀）。
+                     * 没有这个反馈，阶段 2 在数学上就无法构造 —— 不是漏了一个按钮。
+                     *
+                     * 旧实现在这里只打一行「仍未找到」就 break：用户点「继续」会立刻
+                     * 再次落到同一分支、再次结束，看起来像「点了继续就自动结束」；
+                     * 而状态卡还停在 `判定=RUNNING | 结论=进行中`，与事实不符。
+                     *
+                     * 现在把它变成一个**说得清的终态**：讲清为什么，并给出可执行的后路。 */
+                    wpsLog(L.s("[!] 阶段 1 已试完全部 10000 个前 4 位，且**未检测到半接受信号**。",
+                            "[!] phase 1 exhausted all 10000 prefixes; no half-accept signal seen."));
+                    wpsLog(L.s("[!] 拆半依赖 AP 的半接受反馈；本 AP 未给出 -> 阶段 2 无前缀可用，无法继续。",
+                            "[!] half-split needs an AP half-accept signal; none seen -> phase 2 has no prefix."));
+                    wpsLog(L.s("[i] 后路：① 改跑「厂商算法 / 内置弱 PIN 表」（不依赖半接受）；"
+                                    + "② 重试阶段 1（部分 AP 的半接受窗口不稳定）；"
+                                    + "③ 完整枚举 10^7 次（本机按现有速度不可行）。",
+                            "[i] Options: (1) vendor algorithm / built-in weak PIN list; "
+                                    + "(2) re-run phase 1; (3) full enumeration (10^7, not feasible here)."));
+                    wpsSession.halfPhase1Exhausted = true;
+                    saveHalfState();
                     break;
                 }
                 java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Result> rs =

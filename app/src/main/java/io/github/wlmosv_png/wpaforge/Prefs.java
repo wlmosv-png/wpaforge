@@ -21,6 +21,15 @@ public final class Prefs {
      * 兼容：老任务存的值不是 0 也一律当 Root。
      */
     public static final int MODE_ROOT = 0;
+    /**
+     * 用户选择的运行模式（**意愿**，不是能力）。
+     *
+     * <p>取值：{@code 0} = Root，{@code 1} = 无 Root，{@code 2} = 自动。
+     * 历史版本 1/2 另有含义（免 Root / Shizuku），那些值在队列 JSON 里出现时
+     * 由 {@link io.github.wlmosv_png.wpaforge.cap.RunMode#parseStoredMode(int)} 吸收，
+     * **不会**被当成「无 Root」执行。
+     */
+    private static final String K_MODE = "run_mode_v2";
 
     private static final String K_PIN = "app_pin_sha256";   // 空表示未设 PIN
     private static final String K_RATE = "avg_rate_ms";     // 平均每条耗时（毫秒）
@@ -271,15 +280,52 @@ public final class Prefs {
 
     // ---------------- 破解模式 ----------------
 
+    /**
+     * **实际生效**的破解通道：由能力层给出，不读设置。
+     *
+     * <p>改造前这里是恒 {@code return MODE_ROOT} —— 于是「设置项」被当成了
+     * 「能力真相」：su 掉了照跑，跑完几百条全是「未连上」，用户以为密码不对。
+     * 现在这里只是转发 {@link io.github.wlmosv_png.wpaforge.cap.RuntimeMode}，
+     * 真正的判定（su 能不能用、有没有必需子命令）在能力层用实测完成。
+     *
+     * <p>没有 Context 的调用点（少数静态工具）保持原行为，回到 Root ——
+     * 那是改造前的默认值，不是新引入的分支。
+     */
     public static int mode(Context ctx) {
-        // 只有 Root 一种执行方式。
-        // 老版本可能存过 1（免 Root）/ 2（Shizuku），一律当 Root ——
-        // 绝不能因为一个旧值就落到一条已经删掉的通道上，那会表现为「点开始没反应」。
-        //
-        // 2026-11-10：旧的 `crack_mode` 键与 `modeIsManual()` 已删除 ——
-        // 上面这条 return 是唯一的真相来源，再留一个「用户是否手动指定过」
-        // 的读数只会是永远 false 的死代码。
-        return MODE_ROOT;
+        if (ctx == null) return MODE_ROOT;
+        try {
+            return io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(ctx);
+        } catch (Throwable t) {
+            return MODE_ROOT;
+        }
+    }
+
+    /**
+     * 用户在设置里选的是什么（可能含有「自动」）。
+     *
+     * <p>与 {@link #mode(Context)} 的区别：这个代表**意愿**，那个代表**实际能力**。
+     * 分开两者的原因见 cap/RunMode 的类注释。
+     */
+    public static int requestedMode(Context ctx) {
+        try {
+            int v = sp(ctx).getInt(K_MODE, MODE_ROOT);
+            if (v == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
+                return io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS;
+            }
+            if (v == io.github.wlmosv_png.wpaforge.cap.RunMode.AUTO) {
+                return io.github.wlmosv_png.wpaforge.cap.RunMode.AUTO;
+            }
+            // 老值（1=历史免 Root / 2=历史 Shizuku）与未知值一律按 Root。
+            return MODE_ROOT;
+        } catch (Throwable t) {
+            return MODE_ROOT;
+        }
+    }
+
+    /** 写入用户选择（ROOT / ROOTLESS / AUTO）。写后必须让能力层重新判定。 */
+    public static void setRequestedMode(Context ctx, int mode) {
+        sp(ctx).edit().putInt(K_MODE, mode).apply();
+        io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(ctx);
     }
 
     // ---------------- 恢复默认设置 ----------------
@@ -385,7 +431,14 @@ public final class Prefs {
         }
     }
 
+    /** 实际生效模式的文案（与 {@link #mode(Context)} 同源，不允许各写一套）。 */
     public static String modeLabel(Context ctx) {
+        try {
+            io.github.wlmosv_png.wpaforge.cap.RunMode m =
+                    io.github.wlmosv_png.wpaforge.cap.RuntimeMode.current();
+            if (m != null) return m.label(L.isZh());
+        } catch (Throwable ignored) {
+        }
         return L.s("Root 模式", "Root mode");
     }
 

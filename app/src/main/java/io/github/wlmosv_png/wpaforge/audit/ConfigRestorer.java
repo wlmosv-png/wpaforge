@@ -33,9 +33,25 @@ public final class ConfigRestorer {
 
     private static final String TAG = "WPAForgeRestore";
 
-    /** WifiConfigStore 的读取路径（Android 10+）。 */
+    /** WifiConfigStore 的读取路径（Android 11+，Wi-Fi 模块化之后）。 */
     public static final String CONFIG_XML =
             "/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml";
+
+    /**
+     * Android 10 及更早的配置文件路径。
+     *
+     * <p>Wi-Fi 在 Android 11 才被搬进 Mainline 模块（apexdata），更早的版本
+     * 一直读写 {@code /data/misc/wifi/WifiConfigStore.xml}。原来这里只认
+     * apexdata 一条路径，在 Android 8~10 上 {@code cat} 必然失败 →
+     * 快照判 {@code configReadable=false} → 收尾恢复一律
+     * {@code CONFIG_UNREADABLE}（无法还原原配置）。这不只是「读不到」，
+     * 而是**删了配置却还原不回去**，所以必须兼容。
+     *
+     * <p>顺序即优先级：先试新路径（与本机 Android 11+ 行为逐字一致），
+     * 读不到再退回旧路径。**不做版本号判断** —— 与本项目「只探测不推断」
+     * 的一贯做法一致，也免得哪天 ROM 把布局改回去。
+     */
+    public static final String CONFIG_XML_LEGACY = "/data/misc/wifi/WifiConfigStore.xml";
 
     /**
      * 重建后等它连上的最长时间。
@@ -378,8 +394,33 @@ public final class ConfigRestorer {
         }
     }
 
+    /**
+     * 读系统自己的 WiFi 配置文件，先新路径、再旧路径。
+     *
+     * <p>为什么不能只认一条：Android 11 起 Wi-Fi 变成 Mainline 模块，
+     * 配置搬到 {@code /data/misc/apexdata/com.android.wifi/}；Android 8~10
+     * 一直用 {@code /data/misc/wifi/}。原来只写死前者，在 10 及更早的机器上
+     * {@code cat} 必然失败 → 快照判「配置不可读」→ 收尾恢复一律
+     * {@code CONFIG_UNREADABLE}，等于**删掉配置后还原不回去**。
+     *
+     * <p>顺序先新后旧：本机（Android 11+）行为与改动前逐字一致。
+     */
     private static String readConfigXml() {
-        return sh("cat " + CONFIG_XML, 12000);
+        String hit = readIfReadable(CONFIG_XML);
+        if (hit != null) return hit;
+        return readIfReadable(CONFIG_XML_LEGACY);
+    }
+
+    /**
+     * 路径可读才 cat；不可读返回 {@code null}。
+     *
+     * <p>先 {@code test -r} 再读，是为了不让 {@code cat} 的错误文本
+     * 混进 XML 解析（旧实现直接把 cat 的输出交给解析器）。
+     */
+    private static String readIfReadable(String path) {
+        String probe = sh("test -r " + path + " && echo READABLE", 6000);
+        if (probe == null || !probe.contains("READABLE")) return null;
+        return sh("cat " + path, 12000);
     }
 
     /** 目标当前是否还在已保存列表里（netId ≥ 0 即在）。 */

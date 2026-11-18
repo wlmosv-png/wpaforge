@@ -18,10 +18,14 @@ import io.github.wlmosv_png.wpaforge.core.NetRecord;
  * 用途：自查。把你手机里存着的 WiFi 口令读出来，并评估哪些是弱口令。
  * 这比逐条爆破快得多 —— 对自家的网络，这是最快的自查方式。
  *
- * 读取路径（按 Android 版本依次尝试）：
- *   1. /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml   (Android 10+)
- *   2. /data/misc/wifi/WifiConfigStore.xml                        (旧版)
- *   3. cmd wifi list-networks（只能拿到名字，拿不到口令）
+ * 读取路径（依次尝试，全部只做「能不能读」的探测，不按版本号猜）：
+ *   1. /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml   (Android 11+，Wi-Fi 模块化之后)
+ *   2. /data/misc/wifi/WifiConfigStore.xml                        (Android 10 及更早)
+ *   3. /data/misc/wifi/WifiConfigStore.xml.bak
+ *
+ * 注意第 1 条注释原来写的是「Android 10+」，那是错的：Wi-Fi 到 Android 11
+ * 才成为 Mainline 模块、配置才搬到 apexdata。10 及更早一直用
+ * /data/misc/wifi/，所以两条路径都必须认。
  *
  * 口令在 XML 里是明文存储的（Android 就是这么做），
  * 所以只要能读到文件就能拿到口令。
@@ -64,12 +68,29 @@ public final class SavedWifiReader {
         return L.s("找不到可读的 WiFi 配置文件（可能本机 ROM 结构不同）", "No readable Wi-Fi config file found (this ROM may differ)");
     }
 
+    /**
+     * 这段 XML 看起来是不是 WiFi 配置存储？
+     *
+     * <p>为什么不能只看 {@code <string name="SSID">}（旧判据）：那是 Android 11+
+     * 之前的结构；11 起 SSID 搬进 ConfigKey，条目里根本没有这个标签。
+     * 只看它 → 新系统上恒判「不是配置」→ 一条都读不出来。
+     *
+     * <p>反过来同样不行：只要 ConfigKey/KeyMgmt 也不够，旧系统未必有这两个标签。
+     * 所以认**任一**特征：SSID 字段、ConfigKey、KeyMgmt。
+     */
+    private static boolean looksLikeConfig(String xml) {
+        if (xml == null) return false;
+        return xml.contains("<string name=\"SSID\">")
+                || xml.contains("<string name=\"ConfigKey\">")
+                || xml.contains("<string name=\"KeyMgmt\">");
+    }
+
     /** 读取全部已保存网络 */
     public static List<Saved> read() {
         List<Saved> out = new ArrayList<>();
         for (String path : CANDIDATE_PATHS) {
             String xml = RootProber.exec(null, new String[]{"su", "-c", "cat " + path}, 12000);
-            if (xml == null || !xml.contains("<string name=\"SSID\">")) continue;
+            if (!looksLikeConfig(xml)) continue;
             parse(xml, out);
             if (!out.isEmpty()) break;
         }
@@ -79,7 +100,7 @@ public final class SavedWifiReader {
     /** 解析给定的 WifiConfigStore XML 文本（不执行任何命令）。 */
     public static List<Saved> parseXml(String xml) {
         List<Saved> out = new ArrayList<>();
-        if (xml != null && xml.contains("<string name=\"SSID\">")) parse(xml, out);
+        if (looksLikeConfig(xml)) parse(xml, out);
         return out;
     }
 
@@ -106,7 +127,21 @@ public final class SavedWifiReader {
 
     /**
      * 解析 WifiConfigStore.xml。
-     * 结构是若干个 <Network>…</Network>，里面 SSID 与 PreSharedKey 成对出现。
+     *
+     * <p>结构是若干个 {@code <Network>…</Network>}，SSID 与 PreSharedKey 成对出现。
+     * **两种版本的字段名不同**，都要认：
+     * <pre>
+     *   Android 11+  &lt;string name="ConfigKey"&gt;"SSID"WPA_PSK&lt;/string&gt;
+     *                &lt;string name="PreSharedKey"&gt;"口令"&lt;/string&gt;
+     *                （没有 SSID 字段，SSID 在 ConfigKey 里，带引号）
+     *
+     *   Android 10-  &lt;string name="SSID"&gt;&amp;quot;我的网&amp;quot;&lt;/string&gt;
+     *                &lt;string name="PreSharedKey"&gt;&amp;quot;口令&amp;quot;&lt;/string&gt;
+     *                &lt;string name="KeyMgmt"&gt;WPA_PSK&lt;/string&gt;
+     *                （安全类型在 KeyMgmt，不在 ConfigKey）
+     * </pre>
+     * 两个字段都要认：只读 {@code SSID} 会丢掉 Android 11+ 的条目，
+     * 只读 {@code ConfigKey} 会丢掉 Android 10- 的条目 —— 两条路都必须走。
      */
     private static void parse(String xml, List<Saved> out) {
         // 按 <network> 或 <Network> 切分
@@ -122,7 +157,21 @@ public final class SavedWifiReader {
 
             String ssid = tagValue(block, "SSID");
             String psk = tagValue(block, "PreSharedKey");
+
+            /* 安全类型 + SSID 的兜底：先看新版字段 ConfigKey，
+             * 再看旧版字段 KeyMgmt。两者都是「这一条是不是 WPA_PSK」，
+             * 只是字段名不同 —— 不能只认一个。 */
             String sec = tagValue(block, "ConfigKey");
+            if (sec == null || sec.isEmpty()) sec = tagValue(block, "KeyMgmt");
+
+            /* SSID 兜底：Android 11+ 的 <Network> 里没有 SSID 字段，
+             * SSID 只存在于 ConfigKey 的第一段：
+             *   ConfigKey = "SSID"WPA_PSK
+             * 取第一个引号到第二个引号之间的内容。
+             * 这一步必须在「判空跳过」**之前**做，否则新版结构会被整条丢弃。 */
+            if (ssid == null || ssid.isEmpty()) {
+                ssid = ssidFromConfigKey(sec);
+            }
 
             if (ssid == null || ssid.isEmpty()) continue;
             // XML 里的值是带引号的，去掉
@@ -130,11 +179,17 @@ public final class SavedWifiReader {
             if (psk != null) psk = stripQuotes(psk);
 
             String security = "WPA";
-            if (sec != null && sec.contains("WPA_PSK")) security = "WPA-PSK";
-            else if (sec != null && sec.contains("SAE")) security = "WPA3";
-            else if (sec != null && sec.contains("WEP")) security = "WEP";
-            else if (sec != null && sec.contains("NONE")) security = L.s("开放", "Open");
+            /* 大小写不敏感：旧实现在原始串上 contains("WPA_PSK")，
+             * 而旧版配置 <string name="KeyMgmt">WPA_PSK</string> 恰好是大写才凑巧命中。
+             * 统一先转大写再判断，两种格式都稳。 */
+            String secU = sec == null ? "" : sec.toUpperCase(java.util.Locale.ROOT);
+            if (secU.contains("WPA_PSK")) security = "WPA-PSK";
+            else if (secU.contains("SAE")) security = "WPA3";
+            else if (secU.contains("WEP")) security = "WEP";
+            else if (secU.contains("NONE")) security = L.s("开放", "Open");
 
+            /* 同一 SSID 可能有多条配置（系统里真实存在，例如换过密码的旧条目）。
+             * 不在这里去重 —— 顺序与条数和改动前一致，界面照旧全部列出。 */
             out.add(new Saved(ssid, psk == null ? "" : psk, security));
         }
     }
@@ -149,6 +204,27 @@ public final class SavedWifiReader {
         int lt = block.indexOf("</string>", gt);
         if (lt < 0) return null;
         return block.substring(gt + 1, lt).trim();
+    }
+
+    /**
+     * 从 ConfigKey 里取 SSID。
+     *
+     * <p>样例：{@code "我的网"WPA_PSK} / {@code "MyNet"WPA2_PSK} / {@code "Open"None}。
+     * 规则：取第一个 {@code "} 到下一个 {@code "} 之间的内容；取不到就返回 {@code null}
+     * （**不猜**：宁可认不出这一条，也不能把安全类型当 SSID 用）。
+     *
+     * <p>为什么需要它：Android 11+ 的 WifiConfigStore.xml 里，
+     * {@code <Network>} 内**没有 SSID 字段**，SSID 只以这种形式存在于 ConfigKey。
+     */
+    static String ssidFromConfigKey(String configKey) {
+        if (configKey == null) return null;
+        String v = configKey.replace("&quot;", "\"").trim();
+        int open = v.indexOf('"');
+        if (open < 0) return null;
+        int close = v.indexOf('"', open + 1);
+        if (close < 0) return null;
+        String ssid = v.substring(open + 1, close);
+        return ssid.isEmpty() ? null : ssid;
     }
 
     private static String stripQuotes(String s) {

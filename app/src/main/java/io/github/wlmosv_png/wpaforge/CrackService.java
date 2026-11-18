@@ -1314,8 +1314,15 @@ public class CrackService extends Service {
         // Root 模式用 RootChannel，行为与改造前完全一致（命令仍走下面这个
         // 常驻会话通道）；无 Root 模式用 RootlessChannel，引擎会在发第一条
         // 命令之前就停住，并给出 NOT_CAPABLE —— 不是「失败」，是「没执行」。
+        //
+        // **必须在后台线程判定**（2026-11-18 修）：RuntimeMode.modeId() 未探测时会
+        // 真的起一次 `su -c id`（约 137ms，冷启动更久）。本方法虽然跑在服务线程，
+        // 但任务启动路径里也有主线程的调用点；把它变成「读一次已缓存的值」最稳妥 ——
+        // 缓存没有就先用用户意愿，绝不在关键路径上同步等 su。
+        final int runModeId = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(this);
+        new Thread(() -> io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(this),
+                "wpaforge-mode-warm").start();
         {
-            final int runModeId = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(this);
             if (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
                 engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
             } else {
@@ -1374,7 +1381,9 @@ public class CrackService extends Service {
         });
         }
 
-        log(L.s("引擎模式: Root", "Engine mode: Root"));
+        // 日志首行必须说**真话**：改造前这里写死 "Root"，无 Root 模式下
+        // 日志会从头到尾假装自己在跑 Root 链，排查时最容易把人带偏。
+        log(L.s("引擎模式: ", "Engine mode: ") + engine.modeLabelForLog());
 
         engine.run(ft.toNetRecord(), currentDict, startOffset, 0L, new CrackEngine.Listener() {
             @Override

@@ -178,12 +178,18 @@ public final class P2KernelReauditTest {
                     java.util.Collections.singletonList(
                             ev(Evidence.Source.SUCCESS_STATUS, Evidence.Claim.CONNECTED,
                                     Evidence.Attribution.AT3)));
-            if (r.verdict != CrackEngine.Verdict.UNKNOWN) {
+            // 2026-11-18：NOT_CAPABLE 产 NOT_EXECUTED（「压根没执行」），
+            // 其余闸门仍必须是 UNKNOWN。这里放开的只是那一个 verdict ——
+            // 「任何证据都不采信」这条不变式没动（下面还额外断言 grade=NONE）。
+            boolean nonConclusive = r.verdict == CrackEngine.Verdict.UNKNOWN
+                    || (g == AttemptState.Gate.NOT_CAPABLE
+                        && r.verdict == CrackEngine.Verdict.NOT_EXECUTED);
+            if (!nonConclusive || r.grade != EvidenceGrade.Level.NONE) {
                 gateLeak++;
-                info("闸门 " + g + " 未拦住 -> " + r.verdict);
+                info("闸门 " + g + " 未拦住 -> " + r.verdict + "/" + r.grade);
             }
         }
-        ok("⑧ 前置闸门失败时任何证据都不采信（3 格穷举）", gateLeak == 0,
+        ok("⑧ 前置闸门失败时任何证据都不采信（4 格穷举，含 NOT_CAPABLE）", gateLeak == 0,
                 "泄漏 " + gateLeak);
 
         System.out.println();

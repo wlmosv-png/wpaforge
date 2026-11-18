@@ -68,10 +68,17 @@ public final class AdjudicatorMatrixTest {
                         // I2：DIRECT 只能是 AT3
                         if (r.grade == EvidenceGrade.Level.DIRECT
                                 && a != Evidence.Attribution.AT3) badDirect++;
-                        // I3：闸门未过 -> 永远 UNKNOWN / NONE
-                        if (g != AttemptState.Gate.OK
-                                && (r.verdict != CrackEngine.Verdict.UNKNOWN
-                                    || r.grade != EvidenceGrade.Level.NONE)) badGate++;
+                        // I3：闸门未过 -> 永远不可采信（verdict 只能是非结论、grade 必须 NONE）
+                        //
+                        // 2026-11-18：NOT_CAPABLE 单独产 NOT_EXECUTED（「压根没执行」，
+                        // 与「执行了但前置不满足」的 UNKNOWN 分开），所以这里放开的
+                        // 只是那一个 verdict；**「不得采信」这条不变式一条没动**。
+                        if (g != AttemptState.Gate.OK) {
+                            boolean nonConclusive = r.verdict == CrackEngine.Verdict.UNKNOWN
+                                    || (g == AttemptState.Gate.NOT_CAPABLE
+                                        && r.verdict == CrackEngine.Verdict.NOT_EXECUTED);
+                            if (!nonConclusive || r.grade != EvidenceGrade.Level.NONE) badGate++;
+                        }
                         // I4：NOT_CONNECTED 必须按生命周期分派
                         if (c == Evidence.Claim.NOT_CONNECTED
                                 && a != Evidence.Attribution.NONE
@@ -102,8 +109,8 @@ public final class AdjudicatorMatrixTest {
 
         // 2026-11-18：闸门从 4 档扩到 5 档（新增 NOT_CAPABLE —— 无 Root 模式下
         // 「压根没执行」，必须与「执行了但前置不满足」区分开）。
-        // 这是**扩充**而不是放宽：I3 断言（非 OK 闸门永远 UNKNOWN/NONE）对
-        // 新格子同样生效，所以格子数从 192 变成 240，不变式一条没少。
+        // 这是**扩充**而不是放宽：I3 断言（非 OK 闸门永不可采信、grade 恒 NONE）
+        // 对新格子同样生效，所以格子数从 192 变成 240，不变式一条没少。
         eq("矩阵格子数 = 5 闸门 × 3 生命周期 × 4 主张 × 4 归属 = 240", 240, cells);
         eq("闸门档位确为 5（含 NOT_CAPABLE）", 5, AttemptState.Gate.values().length);
         eq("I1 AUTH_FAIL 只由 WRONG_KEY 产生（AP-1 永不产 AUTH_FAIL）", 0, badAuthFail);

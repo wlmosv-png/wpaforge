@@ -133,7 +133,9 @@ public final class Adjudicator {
         // 没有观察到的失败，就不许记账；否则以后有 root 时会把
         // 真正没试过的候选当成「已证实错误」跳过。
         if (state.gate == AttemptState.Gate.NOT_CAPABLE) {
-            return new Result(CrackEngine.Verdict.UNKNOWN, EvidenceGrade.Level.NONE,
+            // verdict 用 NOT_EXECUTED 而不是 UNKNOWN：后者会被统计进「无结论」，
+            // 用户看到「336 条没结论」会以为是路由器不给面子，实际是这条路走不通。
+            return new Result(CrackEngine.Verdict.NOT_EXECUTED, EvidenceGrade.Level.NONE,
                     "not-capable", null,
                     "this mode has no capability to perform the attempt; "
                             + "nothing was observed, so nothing is concluded");

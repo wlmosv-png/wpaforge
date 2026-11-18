@@ -73,7 +73,8 @@ public class RootlessVerdictChainTest {
 
         CrackEngine.Attempt a = Adjudicator.gateBlocked("12345678", "run#1",
                 AttemptState.Gate.NOT_CAPABLE, 12L, "无 Root 模式无法逐条关联");
-        ok("NOT_CAPABLE → UNKNOWN", a.verdict == CrackEngine.Verdict.UNKNOWN);
+        ok("NOT_CAPABLE → NOT_EXECUTED（不是 UNKNOWN）",
+                a.verdict == CrackEngine.Verdict.NOT_EXECUTED);
         ok("NOT_CAPABLE → 证据等级 NONE", a.grade == EvidenceGrade.Level.NONE);
         ok("NOT_CAPABLE → 归类码 not-capable", "not-capable".equals(a.reason));
         ok("NOT_CAPABLE → 不产证据级", !EvidenceGrade.persistable(a.grade));
@@ -105,7 +106,10 @@ public class RootlessVerdictChainTest {
         ev.add(wrongKey);
         Adjudicator.Result r = Adjudicator.adjudicate(st, ev);
         ok("NOT_CAPABLE 下证据不得翻案为 AUTH_FAIL",
-                r.verdict == CrackEngine.Verdict.UNKNOWN);
+                r.verdict != CrackEngine.Verdict.AUTH_FAIL);
+        ok("NOT_CAPABLE 下证据也不得翻案为成功",
+                r.verdict != CrackEngine.Verdict.SUCCESS
+                        && r.verdict == CrackEngine.Verdict.NOT_EXECUTED);
         ok("NOT_CAPABLE 下证据不得翻案为证据级", r.grade == EvidenceGrade.Level.NONE);
     }
 
@@ -190,6 +194,13 @@ public class RootlessVerdictChainTest {
         int forgetAt = eng.indexOf("forgetTargetByShell(target.ssid)");
         ok("能力闸的代码存在", gateAt > 0);
         ok("能力闸写在 forget 之前", gateAt > 0 && forgetAt > 0 && gateAt < forgetAt);
+        // 2026-11-18 真机补丁：批量开跑前也必须挡一次 ——
+        // 否则「一条命令都不发」的字典会在几秒内「跑完」，界面显示跑过一轮。
+        int runGateAt = eng.indexOf("if (!canAttemptAssociation()) {");
+        int channelProbeAt = eng.indexOf("ChannelProbe probe = probeChannel();");
+        ok("run() 开跑前也有能力闸", runGateAt > 0);
+        ok("开跑前的闸在通道自检之前", runGateAt > 0 && channelProbeAt > 0
+                && runGateAt < channelProbeAt);
     }
 
     // ---------------------------------------------------------------- 5. 不许伪造成功
@@ -297,8 +308,8 @@ public class RootlessVerdictChainTest {
         // 真实代码路径：闸门挡住 = NOT_CAPABLE 的 UNKNOWN
         CrackEngine.Attempt blocked = ReflectUtil.probeGate(e, "12345678", "run#9");
         ok("无 Root 下闸门真的挡住了（非 null）", blocked != null);
-        ok("挡住的结论是 UNKNOWN", blocked != null
-                && blocked.verdict == CrackEngine.Verdict.UNKNOWN);
+        ok("挡住的结论是 NOT_EXECUTED", blocked != null
+                && blocked.verdict == CrackEngine.Verdict.NOT_EXECUTED);
         ok("挡住的结论不产证据级", blocked != null
                 && blocked.grade == EvidenceGrade.Level.NONE);
         ok("挡住的归类码是 not-capable", blocked != null
@@ -321,7 +332,14 @@ public class RootlessVerdictChainTest {
         spy.setConnectChannel(rl);
         CrackEngine.Attempt noCmd = ReflectUtil.probeGate(spy, "12345678", "run#9");
         ok("挡住时没有发出任何命令", noCmd != null
-                && noCmd.verdict == CrackEngine.Verdict.UNKNOWN);
+                && noCmd.verdict == CrackEngine.Verdict.NOT_EXECUTED);
+        // 新增：这条结论绝不能进「无结论」统计，否则界面会说「336 条没结论」
+        ok("未执行不进 inconclusive 统计",
+                countInconclusive(CrackEngine.Verdict.NOT_EXECUTED) == 0);
+        ok("未执行不计入 executed",
+                countExecuted(CrackEngine.Verdict.NOT_EXECUTED) == 0);
+        ok("未执行单列在 notExecuted",
+                countNotExecuted(CrackEngine.Verdict.NOT_EXECUTED) == 1);
     }
 
     // ---------------------------------------------------------------- 工具
@@ -355,6 +373,27 @@ public class RootlessVerdictChainTest {
                 throw new IllegalStateException("无法调用能力闸探针: " + t, t);
             }
         }
+    }
+
+    private int countInconclusive(CrackEngine.Verdict v) {
+        io.github.wlmosv_png.wpaforge.audit.VerdictTally t =
+                new io.github.wlmosv_png.wpaforge.audit.VerdictTally();
+        t.add(v, EvidenceGrade.defaultOf(v));
+        return t.inconclusive();
+    }
+
+    private int countExecuted(CrackEngine.Verdict v) {
+        io.github.wlmosv_png.wpaforge.audit.VerdictTally t =
+                new io.github.wlmosv_png.wpaforge.audit.VerdictTally();
+        t.add(v, EvidenceGrade.defaultOf(v));
+        return t.executed();
+    }
+
+    private int countNotExecuted(CrackEngine.Verdict v) {
+        io.github.wlmosv_png.wpaforge.audit.VerdictTally t =
+                new io.github.wlmosv_png.wpaforge.audit.VerdictTally();
+        t.add(v, EvidenceGrade.defaultOf(v));
+        return t.notExecuted();
     }
 
     /** 只接 shell、不接能力层的引擎（= 改造前的调用形态）。 */

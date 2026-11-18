@@ -45,6 +45,18 @@ public final class VerdictTally {
      */
     private int networkAuthFail;
     private int executed;
+    /**
+     * **没有被执行**的条数（当前模式没有这个能力）。
+     *
+     * <p>2026-11-18 新增。这类条目与 TIMEOUT/UNKNOWN 有本质区别：
+     * 后者是「跑了但没拿到证据」，前者是「压根没跑」。把它们并进「无结论」，
+     * 12 条卡门失败会显示成「12 条没结论」，用户会以为路由器不给面子，
+     * 实际是自己手机上这条路走不通。
+     *
+     * <p>所以单列一类，且**不计入 executed** —— 界面上的「已执行 N 条」
+     * 必须真的是执行过的条数。
+     */
+    private int notExecuted;
 
     public void reset() {
         confirmedFail = 0;
@@ -52,6 +64,7 @@ public final class VerdictTally {
         inconclusive = 0;
         networkAuthFail = 0;
         executed = 0;
+        notExecuted = 0;
     }
 
     /**
@@ -68,6 +81,11 @@ public final class VerdictTally {
         // 修复前这里无条件 executed++，于是界面说「没试过」、统计说「试过了一条」，
         // 两套数字对不上（用户看到「试了 N 条」里混着根本没跑的条目）。
         if (v == CrackEngine.Verdict.ERROR || v == CrackEngine.Verdict.TARGET_GONE) return;
+        // 没被执行 ≠ 执行过后没结论。单列，且不进 executed。
+        if (v == CrackEngine.Verdict.NOT_EXECUTED) {
+            notExecuted++;
+            return;
+        }
         executed++;
         if (v == CrackEngine.Verdict.AUTH_FAIL) {
             // 只有**可直接验证**的失败（DIRECT）才算已证实；
@@ -127,9 +145,14 @@ public final class VerdictTally {
         return networkAuthFail;
     }
 
-    /** 执行过的条数（不含 SUCCESS/ABORTED）。 */
+    /** 执行过的条数（不含 SUCCESS/ABORTED，也不含 NOT_EXECUTED）。 */
     public int executed() {
         return executed;
+    }
+
+    /** 当前模式没有能力执行、因而一条命令都没发的条数。 */
+    public int notExecuted() {
+        return notExecuted;
     }
 
     /**

@@ -54,6 +54,9 @@ public final class VerdictView {
             // 共用符号会让用户无法分辨，也让「符号唯一」这条契约失效。
             case TERMINATED_UNKNOWN: return "⊘";
             case UNKNOWN: return "?";
+            // 「当前模式没能力执行」——⌀ 与 ERROR 的 "!" 必须分开：
+            // 一个是「跑了但通道坏了」，一个是「压根没跑」。
+            case NOT_EXECUTED: return "⌀";
             case ERROR: return "!";
             case ABORTED: return "⏹";
             case TARGET_GONE: return "—";
@@ -74,6 +77,7 @@ public final class VerdictView {
             // 真实含义是「本次尝试已结束，但没拿到能证明密码对错的证据」。
             case TERMINATED_UNKNOWN: return "未证实";
             case UNKNOWN: return "不确定";
+            case NOT_EXECUTED: return "未执行";
             case ERROR: return "通道异常";
             case ABORTED: return "已中断";
             case TARGET_GONE: return "目标不在";
@@ -108,6 +112,9 @@ public final class VerdictView {
                 return "没连上目标，未证明密码错，将重试";
             case UNKNOWN:
                 return "状态读不到或归属不明";
+            case NOT_EXECUTED:
+                // 这行是「让用户知道该做什么」：不是密码的问题，是当前模式没这条路。
+                return "当前模式无法执行此项，未做任何尝试";
             case ERROR:
                 return "通道出错，与密码无关";
             case ABORTED:
@@ -131,6 +138,9 @@ public final class VerdictView {
             case ERROR:
             case ABORTED:
             case TARGET_GONE:
+            // NOT_EXECUTED：一条命令都没发，绝不能算「试过」——
+            // 否则「已执行 336 条」会混进 336 条根本没跑的条目。
+            case NOT_EXECUTED:
                 return false;
             default:
                 return true;
@@ -179,6 +189,7 @@ public final class VerdictView {
             case TERMINATED_UNKNOWN:
             case NETWORK_AUTH_FAIL:
             case ERROR:
+            case NOT_EXECUTED:      // 用户最该看到的一条：不是密码错，是这条路走不通
                 return true;
             default:
                 return false;

@@ -60,7 +60,17 @@ public final class RuntimeMode {
         }
     }
 
-    /** 当前实际的 modeId（未探测时按 Root —— 与原行为一致，避免改动前后行为漂移）。 */
+    /**
+     * 当前实际的 modeId。
+     *
+     * <p><b>未探测时按用户意愿回退</b>（2026-11-18 修）：原来回退到「恒 Root」，
+     * 于是在无 Root 模式下第一次进破解页时，服务端会按 Root 装通道 ——
+     * 用户明确选了无 Root，却被当成 Root 去跑，正是本轮要根除的那类毛病。
+     *
+     * <p>回退到用户意愿是**安全**的：真正的拦截仍由能力层做（Root 模式下
+     * 能力探测失败也会把 NOT_CAPABLE 顶回去），这里只是不要在「还没探测完」
+     * 这个瞬间把用户的选择丢掉。
+     */
     public static int modeId(Context ctx) {
         RunMode m = current;
         return m == null ? prefMode(ctx) : m.modeId();

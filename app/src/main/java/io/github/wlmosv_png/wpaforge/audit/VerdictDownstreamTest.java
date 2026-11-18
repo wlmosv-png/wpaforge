@@ -119,15 +119,22 @@ public final class VerdictDownstreamTest {
             // U3：ERROR（通道出错/命令没生效）与 TARGET_GONE（目标不在范围）
             // 也**不算试过** —— 它们衡量环境，不是「这条候选被验证过」。
             // 这条口径必须与 VerdictView.countsAsTested 完全一致。
+            // 2026-11-18：NOT_EXECUTED（当前模式没能力执行）也**不算试过**，
+            // 而且它不进「无结论」——它单列在 notExecuted 里。
+            // 闭合条件因此变成：executed + notExecuted == 应执行数。
             boolean excluded = (v == CrackEngine.Verdict.SUCCESS
                     || v == CrackEngine.Verdict.ABORTED
                     || v == CrackEngine.Verdict.ERROR
                     || v == CrackEngine.Verdict.TARGET_GONE);
-            int expectExecuted = excluded ? 0 : 1;
-            ok(String.format("%-20s executed=%d 三类和=%d（应闭合）",
-                            v, t.executed(), sum),
-                    t.executed() == expectExecuted && sum == expectExecuted,
-                    "executed=" + t.executed() + " sum=" + sum);
+            boolean notExec = (v == CrackEngine.Verdict.NOT_EXECUTED);
+            int expectExecuted = (excluded || notExec) ? 0 : 1;
+            int expectNotExec = notExec ? 1 : 0;
+            ok(String.format("%-20s executed=%d notExecuted=%d 三类和=%d（应闭合）",
+                            v, t.executed(), t.notExecuted(), sum),
+                    t.executed() == expectExecuted && sum == expectExecuted
+                            && t.notExecuted() == expectNotExec,
+                    "executed=" + t.executed() + " notExecuted=" + t.notExecuted()
+                            + " sum=" + sum);
         }
 
         VerdictTally t2 = new VerdictTally();

@@ -82,6 +82,19 @@ public final class CrackEngine {
          */
         AUTH_FAIL,
         /**
+         * **没有被执行**：当前运行模式没有能力做这次尝试（一条命令都没发）。
+         *
+         * <h3>为什么必须单独一个 Verdict</h3>
+         * 它与 {@code ERROR}（通道出错）和 {@code TIMEOUT}（跑了但没证据）都不同：
+         * 那两个的前提是「真的跑过」。而不存在的能力跑多少次都不会有结果，
+         * 把它算进「无结论」会让用户以为路由器不给面子，其实是自己手机上
+         * 这条路走不通。
+         *
+         * <p>下游契约：不写 TriedSet、不记账本、**不推进游标**、
+         * 不计入「已执行」。见 {@code Adjudicator} 规则 0a 与 {@code VerdictTally}。
+         */
+        NOT_EXECUTED,
+        /**
          * **网络级**事件：目标网络确实发生了认证失败，但证明不了它属于当前候选。
          *
          * <h3>为什么必须与 AUTH_FAIL 分开</h3>
@@ -606,6 +619,16 @@ public final class CrackEngine {
         return channel.canAssociate() && channel.canForget();
     }
 
+    /**
+     * 引擎运行模式的人话标签（日志首行「引擎模式: …」用）。
+     *
+     * <p>改造前这句是写死的 "Root"，无 Root 模式下日志会跟着说假话，
+     * 排查时最容易把人带偏。
+     */
+    public String modeLabelForLog() {
+        return io.github.wlmosv_png.wpaforge.cap.RunMode.nameOf(mode);
+    }
+
     /** 「不能执行」的人话原因（给界面与日志用；能执行时为空串）。 */
     public String inabilityReason(boolean zh) {
         if (shell == null) {
@@ -773,6 +796,9 @@ public final class CrackEngine {
             case TERMINATED_UNKNOWN: return pw + "=未证实"
                     + (by == null || by.isEmpty() ? "" : by);
             case UNKNOWN: return pw + "=?未定";          // 归属/状态不明确
+            // 「当前模式没能力执行」——必须与「通道出错」(!) 和「状态不明」(?) 分开：
+            // 前者是「压根没跑」，后两者是「跑了但不对劲」。
+            case NOT_EXECUTED: return pw + "=⌀未执行";
             case TARGET_GONE: return pw + "=目标不在";
             // 归因码优先：ERROR 类里既有"通道出错"，也有"候选不合法/未尝试"，
             // 只写"通道"会把后者说错。by 为空时保持原样（兼容既有断言）。
@@ -2907,6 +2933,21 @@ public final class CrackEngine {
      */
     public void run(NetRecord target, List<Candidate> candidates, int startOffset,
                     long timeoutMsPerItem, Listener l) {
+        // **能力闸（2026-11-18）**：连一条候选都执行不了时，根本不该开跑。
+        //
+        // 为什么必须在开跑前挡：真机实测（无 Root 模式，OnePlus PJX110 / Android 15）
+        // 关闭这一道时，336 条候选在 9 秒内「跑完」，界面报「已执行 336 条 · 325 条无结论」
+        // —— 一条命令都没发，却显示得像跑过一轮。这正是任务书点名要禁止的伪结论。
+        if (!canAttemptAssociation()) {
+            l.onBlocked(L.s("当前模式做不到逐条关联", "This mode cannot attempt associations"),
+                    inabilityReason(true) + "\n\n"
+                            + L.s("一条命令都没有发出 —— 不是密码的问题，是这条执行路径不存在。\n"
+                                  + "可改用「离线分析」处理已抓到的握手/PMKID，或换到已 root 的设备。",
+                            "Not a single command was sent: the execution path does not exist.\n"
+                                  + "Use Offline analysis on a captured handshake, or a rooted device."));
+            return;
+        }
+
         CheckResult chk = check();
         if (!chk.ok) { l.onBlocked(chk.title, chk.detail); return; }
         if (target == null || target.ssid == null || target.ssid.isEmpty()) {
@@ -3401,9 +3442,22 @@ public final class CrackEngine {
                 l.onLog("  " + L.s("最近判定: ", "recent verdicts: ") + vb);
             }
             // 收尾如实报账（后台跑时这是唯一能看出"到底有多少条真被证实"的地方）
-            l.onLog(L.f("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条（共执行 %d 条）",
-                    "Verdicts this run: %d confirmed failures, %d inconclusive (%d executed)",
-                    tally.confirmedFail(), tally.inconclusive(), tally.executed()));
+            // 2026-11-18：把「未执行」单列出来。无 Root 模式下整本字典都会落到
+            // 这一档，若并进「无结论」，日志会写「336 条没等到证据」——
+            // 那是把「这条路走不通」说成了「路由器不给面子」，属于误导。
+            if (tally.notExecuted() > 0) {
+                l.onLog(L.f("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条 · "
+                                + "**未执行 %d 条（当前模式没有执行能力，一条命令都没发）**"
+                                + "（共执行 %d 条）",
+                        "Verdicts this run: %d confirmed failures, %d inconclusive, "
+                                + "%d never attempted (no capability in this mode), %d executed",
+                        tally.confirmedFail(), tally.inconclusive(), tally.notExecuted(),
+                        tally.executed()));
+            } else {
+                l.onLog(L.f("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条（共执行 %d 条）",
+                        "Verdicts this run: %d confirmed failures, %d inconclusive (%d executed)",
+                        tally.confirmedFail(), tally.inconclusive(), tally.executed()));
+            }
 
             String outcome;
             if (hit != null) outcome = "DONE_HIT";
@@ -3424,6 +3478,11 @@ public final class CrackEngine {
     private volatile long lastPureTryMs = 0L;
     /** 运行中的实时累计净尝试耗时（供界面算**本次**速率，不是历史值） */
     private volatile long livePureTryMs = 0L;
+    /** 本轮**没有执行**的条数（当前模式没有能力执行；一条命令都没发）。 */
+    public int notExecutedCount() {
+        return tally.notExecuted();
+    }
+
     /** 本轮结论分布（已证实失败 / 无结论 / 执行数）—— 供服务写进任务与日志。 */
     private final VerdictTally tally = new VerdictTally();
     /** 最近若干条耗时的滑窗（引擎线程写、界面线程读，只读一个 volatile 快照值）。 */

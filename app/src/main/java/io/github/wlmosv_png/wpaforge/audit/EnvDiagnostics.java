@@ -84,12 +84,36 @@ public final class EnvDiagnostics {
                     null, new String[]{"su", "-c", "id"}, 12000);
             if (id == null) {
                 r.line("    ✗ su 不可用 —— 未 root 或未授予本应用 root");
-                r.failCritical();
+                // 2026-11-18：无 Root 模式是一套**正常工作**的模式，不是故障。
+                // 所以「su 不可用」只在当前实际跑的是 Root 模式时才算 critical；
+                // 无 Root 模式下它只是「这一节不适用」，写清楚即可。
+                if (io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(ctx)
+                        == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOT) {
+                    r.failCritical();
+                } else {
+                    r.line("    · 当前为无 Root 模式，这一节不适用（不是故障）");
+                }
             } else if (!id.contains("uid=0")) {
                 r.line("    ✗ su 返回非 root: " + id.trim());
-                r.failCritical();
+                if (io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(ctx)
+                        == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOT) {
+                    r.failCritical();
+                }
             } else {
                 r.line("    ✓ root 可用 (" + id.trim() + ")");
+            }
+            // 能力矩阵：把「哪几项做不到、为什么」一次说清，替代原来的一句结论
+            try {
+                io.github.wlmosv_png.wpaforge.cap.RunMode rm =
+                        io.github.wlmosv_png.wpaforge.cap.RuntimeMode.get(ctx);
+                r.line("");
+                r.line("  · 实际运行模式: " + rm.label(true) + "（来源 " + rm.source() + "）");
+                for (io.github.wlmosv_png.wpaforge.cap.Capability c
+                        : rm.capabilities().all()) {
+                    r.line("    - " + c.line(true));
+                }
+            } catch (Throwable t) {
+                r.line("    能力矩阵读取失败: " + t.getClass().getSimpleName());
             }
         }
         r.line("");

@@ -12363,10 +12363,50 @@ public class MainActivity extends Activity {
      * 能在入队前完成——否则检测结果还没回来，任务就已经入队开跑了。
      */
     private void startConnectAfterGuards() {
-        // 只有 Root 一条通道
         final int mode = Prefs.mode(this);
+
+        // 拦截条件从「有没有 root」改成**「这条路能不能跑」**（2026-11-18）。
+        //
+        // 为什么必须改：原来只检 root，于是无 Root 设备上会一路跑到底，
+        // 每条候选拿到空输出，被判成「未连上」，最后界面写「都不对」——
+        // 那是把「做不到」说成了「密码错」，属于伪造结论。
+        // 现在先问能力层：不能逐条关联就当场停住并讲清楚原因，
+        // 而且原因里必须带**替代路径**（离线分析 / 换 root 设备）。
+        final io.github.wlmosv_png.wpaforge.cap.RunMode runMode;
+        try {
+            runMode = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(this);
+        } catch (Throwable t) {
+            connectStreamView.setText("");
+            appendStreamColored(L.s("无法开始: 能力检测异常 ", "Cannot start: capability check failed ")
+                    + t.getClass().getSimpleName(), DANGER);
+            return;
+        }
+        final io.github.wlmosv_png.wpaforge.cap.Capability connectCap =
+                runMode.cap(io.github.wlmosv_png.wpaforge.cap.Capability.C_WIFI_CONNECT);
+        if (!connectCap.evidenceGrade()) {
+            connectStreamView.setText("");
+            appendStreamColored(L.f("无法开始: %s", "Cannot start: %s",
+                    connectCap.stateText(L.isZh())), DANGER);
+            StringBuilder body = new StringBuilder();
+            body.append(L.isZh() ? connectCap.reasonZh : connectCap.reasonEn);
+            String alt = L.isZh() ? connectCap.alternativeZh : connectCap.alternativeEn;
+            if (!alt.isEmpty()) {
+                body.append("\n\n").append(L.s("可以这样做：", "What you can do: ")).append(alt);
+            }
+            if (runMode.hasNotice()) {
+                body.append("\n\n").append(runMode.notice(L.isZh()));
+            }
+            NetDialog d = new NetDialog(this,
+                    L.s("当前模式做不到逐条关联", "This mode cannot try candidates"),
+                    body.toString());
+            d.setNegative(L.s("知道了", "Got it"), null);
+            d.show();
+            return;
+        }
+
+        // Root 模式的老闸门保持不变（它检查的是 su + cmd wifi 子命令，比能力层更细）
         RootProber.CheckResult chk = RootProber.check(this);
-        if (!chk.ok) {
+        if (!chk.ok && runMode.isRoot()) {
             connectStreamView.setText("");
             appendStreamColored(L.f("无法开始: %s", "Cannot start: %s", chk.title), DANGER);
             NetDialog d = new NetDialog(this, chk.title, chk.detail);
@@ -13528,6 +13568,35 @@ public class MainActivity extends Activity {
         modeHint.setTextSize(AmberTheme.FS_LABEL);
         modeHint.setTextColor(AmberTheme.TEXT_FAINT);
         modeCard.addView(modeHint, topGap(8));
+
+        // ---- 运行模式选择（2026-11-18 无 Root 适配）----
+        //
+        // 为什么不放在应用启动时弹窗问：模式是**长期设置**，不是每次开都要决定的事；
+        // 而且启动弹窗会在用户最急着用的时候挡路。
+        modeCard.addView(groupDivider(12));
+        LinearLayout modeRow = new LinearLayout(this);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        modeRow.addView(modeChoiceButton(io.github.wlmosv_png.wpaforge.cap.RunMode.ROOT,
+                L.s("Root", "Root")), twoColParams(6));
+        modeRow.addView(modeChoiceButton(io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS,
+                L.s("无 Root", "Rootless")), twoColParams(6));
+        modeRow.addView(modeChoiceButton(io.github.wlmosv_png.wpaforge.cap.RunMode.AUTO,
+                L.s("自动", "Auto")), twoColParams(0));
+        modeCard.addView(modeRow, topGap(10));
+        TextView modeChoiceHint = new TextView(this);
+        modeChoiceHint.setText(L.s(
+                "Root：su + cmd wifi，逐条自动尝试。\n"
+                + "无 Root：只用公开 API，逐条关联与 WPS PIN 不可用，字典/离线分析/扫描照常。\n"
+                + "自动：能拿到 root 就用 Root，否则用无 Root（不会把结果说成成功）。",
+                "Root: su + cmd wifi, per-candidate automatic attempts.\n"
+                + "Rootless: public APIs only; per-candidate association and WPS PIN are "
+                + "unavailable, dictionaries/offline analysis/scan still work.\n"
+                + "Auto: Root when root is available, otherwise rootless (never fakes results)."));
+        modeChoiceHint.setTextSize(AmberTheme.FS_LABEL);
+        modeChoiceHint.setTextColor(AmberTheme.TEXT_FAINT);
+        modeChoiceHint.setLineSpacing(px(3), 1f);
+        modeCard.addView(modeChoiceHint, topGap(8));
+
         pageSettings.addView(modeCard);
         refreshModeReady();
         fillModeInfo();
@@ -14229,9 +14298,48 @@ public class MainActivity extends Activity {
     private void fillModeInfo() {
         if (modeInfo == null) return;
 
-            int m = Prefs.mode(this);
+            final int m = Prefs.mode(this);
             StringBuilder sb = new StringBuilder();
-            sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
+            if (m == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
+                // 无 Root 模式：如实说清能做什么、不能做什么、为什么。
+                // 改造前这里无论什么情况都写「当前: Root 模式（推荐）」——
+                // 无 root 的机器上等于在骗人。
+                sb.append(L.s("当前: 无 Root 模式", "Current: rootless mode")).append("\n\n");
+                sb.append(L.s(
+                        "不需要 root，只用 Android 公开接口。\n"
+                        + "· 可用：字典管理、离线分析（握手/PMKID 文件）、任务与记录、周边扫描。\n"
+                        + "· 不可用：逐条自动关联、WPS PIN 执行、supplicant 日志取证、"
+                        + "读取系统已保存网络。\n"
+                        + "原因：非 root 应用调不了 Wi-Fi 服务的特权接口（同为 root 身份时"
+                        + "cmd wifi 正常，换成本应用 UID 就返回空）；公开接口里唯一能指定口令的"
+                        + "WifiNetworkSpecifier 每次关联都要用户点确认，撑不起逐条遍历。",
+                        "No root needed; Android public APIs only.\n"
+                        + "· Available: dictionaries, offline analysis (handshake/PMKID), "
+                        + "tasks and history, nearby scan.\n"
+                        + "· Unavailable: per-candidate association, WPS PIN, supplicant log "
+                        + "evidence, reading saved networks.\n"
+                        + "Why: a non-root app cannot reach Wi-Fi's privileged interface "
+                        + "(cmd wifi works as root but returns nothing as this app's UID), and "
+                        + "the only public API that takes a passphrase (WifiNetworkSpecifier) "
+                        + "prompts for every association."));
+                io.github.wlmosv_png.wpaforge.cap.RunMode rm =
+                        io.github.wlmosv_png.wpaforge.cap.RuntimeMode.current();
+                if (rm != null) {
+                    String alt = rm.cap(io.github.wlmosv_png.wpaforge.cap.Capability.C_WIFI_CONNECT)
+                            .alternativeZh;
+                    if (alt != null && !alt.isEmpty()) {
+                        sb.append("\n\n").append(L.s("替代路径：", "Alternative: ")).append(alt);
+                    }
+                    if (rm.hasNotice()) {
+                        sb.append("\n\n").append(rm.notice(L.isZh()));
+                    }
+                }
+                modeInfo.setText(sb.toString());
+                modeInfo.setTextColor(ACCENT);
+                return;
+            }
+            
+            sb.append(L.s("当前: Root 模式", "Current: root mode")).append("\n\n");
             sb.append(L.s(
                     "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
                     + "进度与暂停都可控，速度见下方实测值。\n"
@@ -14277,18 +14385,54 @@ public class MainActivity extends Activity {
         });
 
         new Thread(() -> {
-            io.github.wlmosv_png.wpaforge.audit.RootProber.CheckResult r =
-                    io.github.wlmosv_png.wpaforge.audit.RootProber.check(getApplicationContext());
-            boolean ok = r.ok;
-            String text = ok ? L.s("\u2713 \u5df2\u5c31\u7eea", "\u2713 ready")
-                             : L.s("\u2717 ", "\u2717 ") + r.title;
-            final String ft = modeName(m) + L.s("\uff1a", ": ") + text
-                    + L.s("\uff08\u70b9\u6b64\u91cd\u6d4b\uff09", " (tap to re-check)");
-            final boolean fok = ok;
+            // 一次探测，界面各页共用同一份结论（2026-11-18）。
+            // 改造前这里只问「root 有没有」，于是「没 root」被显示成整个应用不能用，
+            // 而实际上字典、离线分析、扫描都照常 —— 该说的不是「坏了」，是「哪几项做不了」。
+            final io.github.wlmosv_png.wpaforge.cap.RunMode rm;
+            try {
+                rm = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(getApplicationContext());
+            } catch (Throwable t) {
+                ui.post(() -> {
+                    if (modeReadyLabel == null) return;
+                    modeReadyLabel.setText(modeName(m) + L.s("：检测失败 ", ": check failed ")
+                            + t.getClass().getSimpleName());
+                    modeReadyLabel.setTextColor(DANGER);
+                });
+                return;
+            }
+            final StringBuilder sb = new StringBuilder();
+            sb.append(rm.label(L.isZh()));
+            if (rm.hasNotice()) {
+                sb.append('\n').append(rm.notice(L.isZh()));
+            }
+            // 逐项列出本机做不到的能力（含原因），不写笼统结论
+            int blocked = 0;
+            for (io.github.wlmosv_png.wpaforge.cap.Capability c : rm.capabilities().all()) {
+                if (c.supportedOnThisDevice()) continue;
+                if (blocked++ == 0) {
+                    sb.append('\n').append(L.s("本机不支持：", "Not supported here: "));
+                } else {
+                    sb.append(L.s("、", ", "));
+                }
+                sb.append(io.github.wlmosv_png.wpaforge.cap.Capability.name(c.id, L.isZh()));
+            }
+            if (blocked == 0) {
+                sb.append('\n').append(L.s("\u2713 各项能力已探测，均在可用范围",
+                        "\u2713 all capabilities probed and usable as far as this device allows"));
+            }
+            sb.append(L.s("（点此重测）", " (tap to re-check)"));
+            final String ft = sb.toString();
+            final boolean okAll = rm.isRoot();
+            final int blockedFinal = blocked;
             ui.post(() -> {
                 if (modeReadyLabel == null) return;
                 modeReadyLabel.setText(ft);
-                modeReadyLabel.setTextColor(fok ? OK_GREEN : DANGER);
+                // 无 Root 模式不再一律标红：它是一套**正常工作**的模式，只是能力边界不同
+                // 无 Root 模式不再一律标红：它是一套**正常工作**的模式，只是能力边界不同。
+                // 有做不到的项时用中介色（ACCENT_MID）而不是 DANGER ——
+                // 「本机没有这个能力」不是错误。
+                modeReadyLabel.setTextColor(okAll ? OK_GREEN
+                        : (blockedFinal == 0 ? ACCENT : AmberTheme.ACCENT_MID));
             });
         }, "wpaforge-modecheck").start();
     }
@@ -14336,7 +14480,37 @@ public class MainActivity extends Activity {
     }
 
     /** 模式名（不带“模式”后缀，用于状态行前缀） */
+    /**
+     * 模式选择按钮。点一下就切，并立刻让能力层重新判定。
+     *
+     * <p>切换只改「用户意愿」，实际生效模式由能力层决定 ——
+     * 所以点完必须重绘 {@link #refreshModeReady()} 与 {@link #fillModeInfo()}，
+     * 否则界面会继续显示旧结论（这正是任务书里说的「页面各维护一份状态」）。
+     */
+    private Button modeChoiceButton(final int modeId, String label) {
+        final int cur = Prefs.requestedMode(this);
+        final boolean on = cur == modeId;
+        Button b = secondaryButton(label, on ? AmberTheme.CARD_3 : TEXT_DIM);
+        b.setTextColor(on ? ACCENT : TEXT_DIM);
+        b.setOnClickListener(v -> {
+            Prefs.setRequestedMode(this, modeId);
+            // 整块重排：按钮高亮、检测结论、说明卡文案都要跟着变
+            rebuildSettingsTab();
+        });
+        return b;
+    }
+
+    /** 设置页整块重建（模式切换后调用，避免各处各改一半）。 */
+    private void rebuildSettingsTab() {
+        pageSettings.removeAllViews();
+        buildSettingsTab();
+    }
+
+    /** 实际生效模式的短名（与 {@link Prefs#mode(Context)} 同源）。 */
     private String modeName(int m) {
+        if (m == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
+            return L.s("无 Root", "Rootless");
+        }
         return "Root";
     }
 

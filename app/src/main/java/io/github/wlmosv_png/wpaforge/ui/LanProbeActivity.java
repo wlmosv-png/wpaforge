@@ -277,15 +277,23 @@ public class LanProbeActivity extends Activity {
         statusChip.setTextColor(WARN);
 
         new Thread(() -> {
-            if (!isRoot()) {
-                ui.post(() -> {
-                    term("[-] FATAL " + L.s("需要 root 权限", "root required"));
-                    statusChip.setText(L.s("需要 Root", "Root required"));
-                    statusChip.setTextColor(DANGER);
-                    running = false;
-                    scanBtn.setAlpha(1f);
-                });
-                return;
+            // 2026-11-18：这里的 root 前置**删掉了**。
+            //
+            // 为什么可以删：本页真正的动作是 LanProbeExecutor 的
+            // ping / 读 /proc/net/arp / TCP 端口探测，它从头到尾没有用 su
+            //（全仓 grep 可证），原来的 root 检查是自己给自己设的门槛。
+            // 无 root 下这些动作会被 SELinux 拦一部分，但不影响跑起来：
+            // 拿不到 ARP 表就是拿不到，探测结果里如实少一列，而不是
+            // 整页直接判「需要 Root」。
+            //
+            // 保留一条提醒，让用户知道结果可能不全 —— 说清限制，不拦路。
+            final boolean rooted = isRoot();
+
+            if (!rooted) {
+                ui.post(() -> term("[i] " + L.s(
+                        "无 root：ping 与 ARP 表可能读不到，结果里缺的那几列就是因此缺失的。",
+                        "No root: ping and the ARP table may be unavailable; missing columns "
+                        + "are due to that, not to the network.")));
             }
 
             final String selfIp = LanProbeExecutor.selfIp(this);

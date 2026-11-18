@@ -1310,6 +1310,20 @@ public class CrackService extends Service {
         final ShellSession sess = new ShellSession();
         final int[] sessFails = {0};
         final boolean[] sessOff = {false};
+        // 能力层（2026-11-18）：把「当前模式能不能真的逐条关联」接进来。
+        // Root 模式用 RootChannel，行为与改造前完全一致（命令仍走下面这个
+        // 常驻会话通道）；无 Root 模式用 RootlessChannel，引擎会在发第一条
+        // 命令之前就停住，并给出 NOT_CAPABLE —— 不是「失败」，是「没执行」。
+        {
+            final int runModeId = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(this);
+            if (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
+                engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
+            } else {
+                final io.github.wlmosv_png.wpaforge.cap.RootChannel rootCh =
+                        new io.github.wlmosv_png.wpaforge.cap.RootChannel();
+                engine.setConnectChannel(rootCh);
+            }
+        }
         engine.setShellChannel(new CrackEngine.ShellChannel() {
             @Override
             public String exec(String cmd, long timeoutMs) {

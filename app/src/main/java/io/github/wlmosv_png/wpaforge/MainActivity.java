@@ -2415,8 +2415,15 @@ public class MainActivity extends Activity {
                 io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager.root(
                         t.bssid, wpsParseConfigMethods(t.wpsMethods),
                         -1, -1, -1, t.wpsDevice, "", System.currentTimeMillis());
+        // 无 Root 模式下「通道 A（root BSS）」本来就不存在。
+        // 这里必须把这件事**显式告诉能力合并逻辑**，否则会被当成
+        // 「数据不完整」——那是把本机能力问题说成目标网络的问题。
+        final boolean rootChannelAbsent = !io.github.wlmosv_png.wpaforge.cap.RuntimeMode
+                .get(this).cap(io.github.wlmosv_png.wpaforge.cap.Capability.C_WPS_PIN)
+                .evidenceGrade();
         return io.github.wlmosv_png.wpaforge.wps.WpsCapabilityManager
-                .combine(t.bssid, System.currentTimeMillis(), a, null);
+                .combine(t.bssid, System.currentTimeMillis(), rootChannelAbsent ? null : a, null,
+                        rootChannelAbsent);
     }
 
     private int wpsCapStateOf(io.github.wlmosv_png.wpaforge.wps.WpsController.Target t) {

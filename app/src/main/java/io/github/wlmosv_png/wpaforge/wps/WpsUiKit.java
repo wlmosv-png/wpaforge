@@ -101,8 +101,18 @@ public final class WpsUiKit {
     }
 
     /** 能力来源 → 人话。 */
+    /**
+     * 通道来源文案。
+     *
+     * <p>2026-11-18：新增 {@code ABSENT} ——「本机没有这条通道」与
+     * 「通道有但没数据」必须分开写。混成一句「无可用来源」会让
+     * 无 Root 用户以为是 AP 的问题，其实是本机能力问题。
+     */
     public static String capSourceText(String source, boolean zh) {
         if (source == null) source = "";
+        if (WpsCapabilityManager.SRC_ABSENT.equals(source)) {
+            return zh ? "本机无 root 通道（只能看本地 IE）" : "no root channel on this device";
+        }
         if (WpsCapabilityManager.SRC_ROOT.equals(source)) {
             return zh ? "root BSS 查询" : "root BSS query";
         }

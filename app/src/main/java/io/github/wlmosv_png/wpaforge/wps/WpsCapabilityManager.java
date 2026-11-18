@@ -45,6 +45,8 @@ public final class WpsCapabilityManager {
     public static final String SRC_ROOT = "ROOT_BSS";
     public static final String SRC_LOCAL = "LOCAL_IE";
     public static final String SRC_NONE = "NONE";
+    /** 本机没有这条通道（无 Root 模式下的通道 A）。与「通道有但没数据」不是一回事。 */
+    public static final String SRC_ABSENT = "ABSENT";
 
     /** 采集结果被认为"新鲜"的时限。 */
     public static final long FRESH_MS = 5 * 60_000L;
@@ -99,6 +101,18 @@ public final class WpsCapabilityManager {
         public String reason = "";
         /** 目标是否已过期（采集时间过老）。 */
         public boolean stale;
+        /**
+         * **本机有没有能力跑通道 A（root BSS 查询）**。
+         *
+         * <p>2026-11-18 无 Root 适配新增。必须与 {@link #issues} 分开：
+         * issues 是「数据有问题」，本字段是「这条路本来就不存在」。
+         * 混在一起会出现把「本机没有 root」写成「数据不完整」——
+         * 用户会以为是 AP 的问题，其实是本机能力问题。
+         *
+         * <p>为 false 时 UI 必须明说「只能靠本地 IE，结论强度低」，
+         * 而不是让用户以为读到了完整能力。
+         */
+        public boolean rootChannelAbsent;
         /** 两通道是否被判定为冲突。 */
         public boolean conflict;
         /** 一致性 / 解析问题汇总（来自两通道 + 合并过程）。 */
@@ -202,11 +216,25 @@ public final class WpsCapabilityManager {
      * @param nowMs       当前时刻
      */
     public static Capability combine(String targetBssid, long nowMs, Channel root, Channel local) {
+        return combine(targetBssid, nowMs, root, local, null);
+    }
+
+    /**
+     * 合并两通道，并**显式说明本机缺哪条通道**。
+     *
+     * @param rootChannelAbsent 本机没有能力跑通道 A（无 Root 模式）时传 true。
+     *        这不是「数据有问题」，是「这条路本来就不存在」，所以单独记在
+     *        {@link Capability#rootChannelAbsent}，**不加进 issues**——
+     *        否则会被当成 AP 数据异常，让用户误以为是目标网络的问题。
+     */
+    public static Capability combine(String targetBssid, long nowMs, Channel root, Channel local,
+                                     Boolean rootChannelAbsent) {
         Capability cap = new Capability();
         cap.targetBssid = targetBssid == null ? "" : targetBssid;
         cap.atMs = nowMs;
         cap.root = root;
         cap.localIe = local;
+        cap.rootChannelAbsent = Boolean.TRUE.equals(rootChannelAbsent);
 
         // ① 先把两通道自身的解析问题汇总上来（截断 / 长度不符等，绝不吞掉）
         if (root != null && root.available) cap.issues.addAll(root.issues);
@@ -221,7 +249,9 @@ public final class WpsCapabilityManager {
 
         if (a == null && b == null) {
             cap.verdict = V_UNKNOWN;
-            cap.primarySource = SRC_NONE;
+            // 本机根本没有 root 通道时，来源写成 ABSENT 而不是 NONE ——
+            // 前者是「这条路由不存在」，后者是「路在但没数据」。
+            cap.primarySource = cap.rootChannelAbsent ? SRC_ABSENT : SRC_NONE;
             cap.reason = cap.issues.isEmpty() ? "两条通道都没有可用数据" : "通道数据不可用";
             return cap;
         }

@@ -334,6 +334,19 @@ public final class CrackEngine {
     /** shell 通道（Root），null 表示没接上 */
     private ShellChannel shell;
 
+    /**
+     * 逐条关联的能力通道（Root / 无 Root）。
+     *
+     * <p>{@code null} = 还没接（沿用旧行为，所有能力按「未探测」处理，命令照发）；
+     * 非 null 时由它决定本条候选**能不能执行**。
+     *
+     * <p>为什么不直接复用 {@link #shell}：{@code ShellChannel.exec(String)}
+     * 假定「给命令就有效果」，无 Root 下这条假设不成立（实测非 root uid 调
+     * {@code cmd wifi} 只得到空输出）。把「有没有能力」这件事放到语义层，
+     * 才能让「没执行」与「执行了但失败」被下游区分开。
+     */
+    private io.github.wlmosv_png.wpaforge.cap.ConnectChannel channel;
+
     /** 通道测速：连续 N 条都超时，说明这个通道在当前环境跑不动 */
     private int consecutiveTimeouts = 0;
 
@@ -535,6 +548,77 @@ public final class CrackEngine {
 
     public void setShellChannel(ShellChannel ch) {
         this.shell = ch;
+    }
+
+    /**
+     * 接入能力通道。
+     *
+     * <p>Root 模式下传 {@code RootChannel}，行为与改造前完全一致
+     * （关联仍走 {@link #shell}，只是多了一道「能不能做」的判读）；
+     * 无 Root 模式下传 {@code RootlessChannel}，逐条关联会被判为
+     * {@link AttemptState.Gate#NOT_CAPABLE}，**不产生任何失败结论**。
+     */
+    public void setConnectChannel(io.github.wlmosv_png.wpaforge.cap.ConnectChannel ch) {
+        this.channel = ch;
+    }
+
+    /**
+     * **仅供测试**：返回一个能判定「能不能执行」的探针结果，不跑真正的尝试。
+     *
+     * <p>为什么要单独给一个探针：{@code tryOne} 会起进程、sleep、读系统状态，
+     * 桌面环境跑不起来（这也是本项目的判定链测试一律走 Adjudicator 纯逻辑的原因）。
+     * 但「能力闸到底挡没挡住」这件事必须被真实代码回答，所以这里只把
+     * {@code tryOneShell} 的**第一段**（能力闸）暴露成可直接断言的结果。
+     *
+     * <p>它调用的是与生产完全相同的 {@link #canAttemptAssociation()} 与
+     * {@link Adjudicator#gateBlocked}，不是另写一份判断。
+     */
+    CrackEngine.Attempt probeCapabilityGateForTest(String password, String attemptId) {
+        // 闸门判定本身**不读时钟**：它要么挡住（返回值由 Adjudicator 给出），
+        // 要么放行（null）。这样桌面测试不需要注入时钟也能验证真实代码路径。
+        if (!canAttemptAssociation()) {
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.NOT_CAPABLE, 0L,
+                    L.s("当前模式无法执行逐条关联：" + inabilityReason(true),
+                            "this mode cannot attempt associations: " + inabilityReason(false)));
+        }
+        if (shell == null) {
+            return new Attempt(password, Verdict.ERROR, 0L,
+                    L.s("未配置 shell 通道", "no shell channel"), "");
+        }
+        return null;    // null = 闸门放行
+    }
+
+    /** 供诊断/界面读取当前通道能力（可能为 null）。 */
+    public io.github.wlmosv_png.wpaforge.cap.ConnectChannel getConnectChannel() {
+        return channel;
+    }
+
+    /**
+     * 本引擎现在能不能真的执行一次「逐条关联」。
+     *
+     * <p>三道都过才算能：shell 通道接了 + 能力通道说能关联 + 能净检。
+     * 少任何一道都不许往下跑 —— 跑下去只会得到「一堆未连上」，那是伪造结论。
+     */
+    public boolean canAttemptAssociation() {
+        if (shell == null) return false;
+        if (channel == null) return true;      // 未接入能力层：保持改造前行为
+        return channel.canAssociate() && channel.canForget();
+    }
+
+    /** 「不能执行」的人话原因（给界面与日志用；能执行时为空串）。 */
+    public String inabilityReason(boolean zh) {
+        if (shell == null) {
+            return zh ? "未配置 shell 通道" : "no shell channel";
+        }
+        if (channel == null) return "";
+        if (channel.canAssociate() && channel.canForget()) return "";
+        io.github.wlmosv_png.wpaforge.cap.Capability c =
+                channel.state().get(io.github.wlmosv_png.wpaforge.cap.Capability.C_WIFI_CONNECT);
+        String why = zh ? c.reasonZh : c.reasonEn;
+        return why == null || why.isEmpty()
+                ? (zh ? "当前模式没有逐条关联的能力" : "this mode cannot attempt associations")
+                : why;
     }
 
     /**
@@ -1739,6 +1823,20 @@ public final class CrackEngine {
         if (shell == null) {
             return new Attempt(password, Verdict.ERROR,
                     clock().uptimeMillis() - t0, L.s("未配置 shell 通道", "no shell channel"), "");
+        }
+
+        // **能力闸（2026-11-18，无 Root 适配）**：当前模式根本做不到「逐条关联」时，
+        // 一条命令都不发，直接给 NOT_CAPABLE。
+        //
+        // 为什么不「照发然后看结果」：非 root 下 cmd wifi 返回空输出，
+        // 空输出的语义是「命令跑了但没说话」，会被判成「没连上」进而变成
+        // 「这条密码不对」—— 那是**伪造结论**，而且会写进已试集合，
+        // 以后有 root 时把真正没试过的候选跳过。
+        if (!canAttemptAssociation()) {
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.NOT_CAPABLE, clock().uptimeMillis() - t0,
+                    L.s("当前模式无法执行逐条关联：" + inabilityReason(true),
+                        "this mode cannot attempt associations: " + inabilityReason(false)));
         }
 
         long statT0 = clock().uptimeMillis();

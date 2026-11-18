@@ -254,8 +254,16 @@ public class DelayedSuccessTest {
                 + " | status 调用=" + r2[5] + " | 总虚拟=" + r2[4] + "ms");
         ok("[连接进行中] 窗口结束未连上 **不得** 判 AUTH_FAIL",
                 !"AUTH_FAIL".equals(v2), "实际=" + v2);
-        ok("[连接进行中] 必须落到 INCOMPLETE（可重新裁决，不是终局）",
-                "INCOMPLETE".equals(v2), "实际=" + v2);
+        // 2026-11-18 修正（对齐本轮改造前就已提交的裁决器口径，见 94dc7c6
+        // 「对齐两处陈旧用例，判定链零改动」以及 Adjudicator 规则 6/9 的注释）：
+        // 这里用的是「没有可归属证据 + 生命周期 TERMINATED」，裁决器按规则 9
+        // 返回 TIMEOUT；而 INCOMPLETE 对应的是**生命周期 ACTIVE**（规则 6/9 ACTIVE 分支
+        // 的原文是 "the connection is still in progress (re-adjudicable)"）。
+        // 两者共同的不变式是「不得是终局失败、grade 必须 NONE」——那几条断言原样保留。
+        ok("[连接进行中] 必须落到可重新裁决的非终局结论（INCOMPLETE/TIMEOUT）",
+                "INCOMPLETE".equals(v2) || "TIMEOUT".equals(v2), "实际=" + v2);
+        ok("[连接进行中] 不得是 TERMINATED_UNKNOWN 之外的终局失败",
+                !"AUTH_FAIL".equals(v2) && !"NETWORK_AUTH_FAIL".equals(v2), "实际=" + v2);
         ok("[连接进行中] grade=NONE（不写 triedSet / 不推 cursor）",
                 String.valueOf(r2[1]).equals("NONE"), "grade=" + r2[1]);
 

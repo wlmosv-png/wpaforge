@@ -100,7 +100,12 @@ public final class AdjudicatorMatrixTest {
             }
         }
 
-        eq("矩阵格子数 = 4 闸门 × 3 生命周期 × 4 主张 × 4 归属 = 192", 192, cells);
+        // 2026-11-18：闸门从 4 档扩到 5 档（新增 NOT_CAPABLE —— 无 Root 模式下
+        // 「压根没执行」，必须与「执行了但前置不满足」区分开）。
+        // 这是**扩充**而不是放宽：I3 断言（非 OK 闸门永远 UNKNOWN/NONE）对
+        // 新格子同样生效，所以格子数从 192 变成 240，不变式一条没少。
+        eq("矩阵格子数 = 5 闸门 × 3 生命周期 × 4 主张 × 4 归属 = 240", 240, cells);
+        eq("闸门档位确为 5（含 NOT_CAPABLE）", 5, AttemptState.Gate.values().length);
         eq("I1 AUTH_FAIL 只由 WRONG_KEY 产生（AP-1 永不产 AUTH_FAIL）", 0, badAuthFail);
         eq("I2 DIRECT 只由 AT3 产生（无 AT3 不得永久排除）", 0, badDirect);
         eq("I3 闸门未过 -> 一律 UNKNOWN / NONE", 0, badGate);

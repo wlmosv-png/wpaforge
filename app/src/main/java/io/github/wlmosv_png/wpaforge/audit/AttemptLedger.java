@@ -505,7 +505,14 @@ public final class AttemptLedger {
 
     // ---------------------------------------------------------------- 路径
 
-    /** 账本文件名（纯函数，可离线测）：与 triedSet 的 {@code .tried} 分开，同名不同后缀。 */
+    /**
+     * 账本文件名（纯函数，可离线测）：与 triedSet 的 {@code .tried} 分开，同名不同后缀。
+     *
+     * <p>键直接来自 {@link TriedSet#targetKey(String, String, String)}，
+     * 因此**天然带上模式前缀** —— 两个存储必须同源，否则会出现
+     * 「tried 按模式隔离了、账本没隔离」这种一半一半的状态，
+     * 那比完全不隔离更难查。
+     */
     public static String fileNameOf(String targetKey) {
         return (targetKey == null ? "unknown" : targetKey) + ".ledger";
     }

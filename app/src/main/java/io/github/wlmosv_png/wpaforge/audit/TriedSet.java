@@ -224,11 +224,58 @@ public final class TriedSet {
      * BSSID 缺失时退化成 SSID 的哈希。
      */
     public static String targetKey(String bssid, String ssid) {
+        return targetKey(bssid, ssid, null);
+    }
+
+    /**
+     * 目标键，带**运行模式前缀**。
+     *
+     * <h3>为什么必须带前缀（2026-11-18 无 Root 适配）</h3>
+     * 「已试集合」记录的是「这个口令在这个目标上被**证实错误**」。
+     * 证实强度取决于用哪条链跑出来的：Root 模式下 AUTH_FAIL 是 DIRECT 级
+     * （日志有归属证据），无 Root 模式下根本产不出证据级结论。
+     *
+     * <p>如果两边共用一个键，就会出现最坏的组合：Root 模式下辛苦跑出来的
+     * 「已证实错误」被无 Root 模式继承 —— 看着是省事，实际是**用弱证据链
+     * 去加速强证据链的判断**；反过来也一样。所以按模式分开存。
+     *
+     * <p>{@code scope} 为 null 时保持旧行为（不加前缀）—— 旧任务与旧文件
+     * 仍然能读到，不会因为这次改动「凭空多出一堆没试过的候选」。
+     */
+    public static String targetKey(String bssid, String ssid, String scope) {
+        String base = baseKey(bssid, ssid);
+        String p = scopePrefix(scope);
+        return p.isEmpty() ? base : p + base;
+    }
+
+    /** 不带任何模式前缀的原始键（保持对旧文件的兼容）。 */
+    public static String baseKey(String bssid, String ssid) {
         String b = bssid == null ? "" : bssid.replaceAll("[^0-9a-fA-F]", "").toLowerCase(Locale.ROOT);
         if (b.length() >= 12) return "b" + b;
         String s = ssid == null ? "" : ssid.trim();
         if (s.isEmpty()) return "unknown";
         return "s" + Long.toHexString(hash(s));
+    }
+
+    /**
+     * 模式前缀。
+     *
+     * <p>格式 {@code "<mode>~"}：用 {@code ~} 是因为它不会出现在
+     * BSSID 十六进制里，也不会出现在 {@code unknown} 里，解析时不会有歧义。
+     * Root 模式返回**空串** —— 让 Root 的文件名与改造前逐字一致，
+     * 这样升级后老用户的历史一笔都不会丢。
+     */
+    public static String scopePrefix(String scope) {
+        if (scope == null || scope.isEmpty()) return "";
+        if ("root".equals(scope)) return "";
+        return scope + "~";
+    }
+
+    /** 从键里剥掉模式前缀（诊断/界面显示用）。 */
+    public static String stripScope(String key) {
+        if (key == null) return "";
+        int i = key.indexOf('~');
+        return i >= 0 ? key.substring(i + 1) : key;
     }
 
     /**

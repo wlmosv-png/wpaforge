@@ -1135,7 +1135,13 @@ public class CrackService extends Service {
              *
              * 只在本目标内生效：同一个候选在别的网失败，不代表这个网也失败。 */
             {
-                triedKey = TriedSet.targetKey(task.bssid, task.ssid);
+                // **按运行模式隔离**（2026-11-18 无 Root 适配）：Root 模式的
+                // 「已证实错误」与无 Root 模式下的结论强度不同，共用一张表
+                // 等于用弱证据链去加速强证据链的判断。Root 模式的前缀是空串，
+                // 所以老文件继续被读到，升级后历史一笔不丢。
+                triedKey = TriedSet.targetKey(task.bssid, task.ssid,
+                        io.github.wlmosv_png.wpaforge.cap.RunMode.nameOf(
+                                io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(this)));
                 triedSet = TriedSet.load(TriedSet.fileFor(this, triedKey));
                 triedSinceFlush = 0;
 

@@ -26,7 +26,23 @@ public final class AttemptState {
         /** status 与 list-networks 都读不到，无法确认前置状态。 */
         UNREADABLE,
         /** 上一条连接未能断开。 */
-        DISCONNECT_FAILED
+        DISCONNECT_FAILED,
+        /**
+         * **本条根本没有被执行的能力**（无 Root 模式下的逐条关联）。
+         *
+         * <h3>为什么必须单独一格，不能复用别的闸门</h3>
+         * 这是「没能力做」而不是「做了但前置不满足」：
+         * <ul>
+         *   <li>复用 {@code STALE_CONFIG} → 文案会说「旧配置未清除」，是假话；</li>
+         *   <li>复用 {@code UNREADABLE} → 文案会说「读不到状态」，也是假话；</li>
+         *   <li>走正常裁决路径 → 会因为没有证据落到「未连接」，再被下游
+         *       理解成「这条密码不对」—— <b>这就是伪造结论</b>。</li>
+         * </ul>
+         * 单独一格的作用是：让裁决器能一眼把它归到 UNKNOWN，
+         * 并让下游的 TriedSet / 游标 / 账本**都不动**（没有观察到的失败，
+         * 就不许记账）。
+         */
+        NOT_CAPABLE
     }
 
     public final String attemptId;

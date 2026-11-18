@@ -105,7 +105,7 @@ public final class Adjudicator {
         if (gate == null || gate == AttemptState.Gate.OK) {
             throw new IllegalArgumentException(
                     "gateBlocked() 只能用于闸门失败（STALE_CONFIG/UNREADABLE/"
-                            + "DISCONNECT_FAILED），收到 " + gate);
+                            + "DISCONNECT_FAILED/NOT_CAPABLE），收到 " + gate);
         }
         AttemptState st = new AttemptState(attemptId,
                 CrackEngine.Lifecycle.UNKNOWN, gate, false);
@@ -125,7 +125,21 @@ public final class Adjudicator {
                 ? new AttemptState("", CrackEngine.Lifecycle.UNKNOWN, AttemptState.Gate.OK, false)
                 : st;
 
-        // ---- 规则 0：前置闸门 ----
+        // ---- 规则 0a：**没有能力执行**（无 Root 模式的逐条关联）----
+        //
+        // 与 0b 的区别不是措辞，而是语义：0b 是「执行了但前置不满足」，
+        // 这里是「压根没执行」。所以归类码单独一个 not-capable，
+        // 下游（TriedSet / 游标 / 账本）据此**完全不动**——
+        // 没有观察到的失败，就不许记账；否则以后有 root 时会把
+        // 真正没试过的候选当成「已证实错误」跳过。
+        if (state.gate == AttemptState.Gate.NOT_CAPABLE) {
+            return new Result(CrackEngine.Verdict.UNKNOWN, EvidenceGrade.Level.NONE,
+                    "not-capable", null,
+                    "this mode has no capability to perform the attempt; "
+                            + "nothing was observed, so nothing is concluded");
+        }
+
+        // ---- 规则 0b：前置闸门 ----
         // 旧配置没删净 / 读不到前置状态 / 上一条没断开时，status 里的「目标已连上」
         // 可能来自旧配置或上一条连接 —— 任何证据都不可信，一刀切掉。
         if (!state.gateOk()) {

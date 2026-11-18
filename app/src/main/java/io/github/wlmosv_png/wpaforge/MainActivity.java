@@ -12390,7 +12390,10 @@ public class MainActivity extends Activity {
         }
         final io.github.wlmosv_png.wpaforge.cap.Capability connectCap =
                 runMode.cap(io.github.wlmosv_png.wpaforge.cap.Capability.C_WIFI_CONNECT);
-        if (!connectCap.evidenceGrade()) {
+        // 判据用 usable()（能不能真的试），不是 evidenceGrade()（结论能不能到 DIRECT）。
+        // 2026-11-18 修正：无 Root 在线验证是**真的能跑**的，只是它的失败结论
+        // 进不了 DIRECT —— 用 evidenceGrade 当门槛会把它整条误挡成「不能开始」。
+        if (!connectCap.usable()) {
             connectStreamView.setText("");
             appendStreamColored(L.f("无法开始: %s", "Cannot start: %s",
                     connectCap.stateText(L.isZh())), DANGER);
@@ -14313,22 +14316,31 @@ public class MainActivity extends Activity {
                 // 无 root 的机器上等于在骗人。
                 sb.append(L.s("当前: 无 Root 模式", "Current: rootless mode")).append("\n\n");
                 sb.append(L.s(
-                        "不需要 root，只用 Android 公开接口。\n"
-                        + "· 可用：字典管理、离线分析（握手/PMKID 文件）、任务与记录、周边扫描。\n"
-                        + "· 不可用：逐条自动关联、WPS PIN 执行、supplicant 日志取证、"
-                        + "读取系统已保存网络。\n"
-                        + "原因：非 root 应用调不了 Wi-Fi 服务的特权接口（同为 root 身份时"
-                        + "cmd wifi 正常，换成本应用 UID 就返回空）；公开接口里唯一能指定口令的"
-                        + "WifiNetworkSpecifier 每次关联都要用户点确认，撑不起逐条遍历。",
-                        "No root needed; Android public APIs only.\n"
-                        + "· Available: dictionaries, offline analysis (handshake/PMKID), "
-                        + "tasks and history, nearby scan.\n"
-                        + "· Unavailable: per-candidate association, WPS PIN, supplicant log "
-                        + "evidence, reading saved networks.\n"
-                        + "Why: a non-root app cannot reach Wi-Fi's privileged interface "
-                        + "(cmd wifi works as root but returns nothing as this app's UID), and "
-                        + "the only public API that takes a passphrase (WifiNetworkSpecifier) "
-                        + "prompts for every association."));
+                        "不需要 root，用 Android 公开接口做**真实在线验证**。\n"
+                        + "· 在线验证候选口令：系统会为每个候选弹一次「连接到该网络？」确认框，"
+                        + "你点确认后由系统真正去关联 —— 连上就是这条口令对。\n"
+                        + "· 一次一个候选：这是系统强制的交互，不是本应用的限制；"
+                        + "想整本字典挂机跑仍需 root。\n"
+                        + "· 验证前请先在系统设置里「取消保存」目标网络，"
+                        + "否则系统可能直接拿旧口令连上，结果不可信（本应用会据此拒绝判定）。\n"
+                        + "· 没连上时系统不会告诉你「是密码错还是超时」，"
+                        + "所以本模式绝不把它记成「已证实的错误密码」。\n"
+                        + "· 另外可用：字典管理、离线分析（握手/PMKID）、任务与记录、周边扫描。\n"
+                        + "· 仍需 root：WPS PIN、supplicant 日志取证、读取系统已保存网络。",
+                        "No root needed; real online verification through public APIs.\n"
+                        + "· Online verification: the system asks once per candidate "
+                        + "(\"connect to this network?\"), then associates for real - "
+                        + "connected means the passphrase works.\n"
+                        + "· One candidate at a time: that is the platform's interaction model, "
+                        + "not an app limit; unattended dictionary runs still need root.\n"
+                        + "· Remove the target from saved networks first, otherwise the system "
+                        + "may reuse the old passphrase and the result is useless "
+                        + "(the app refuses to judge in that case).\n"
+                        + "· When it fails to connect, the system does not say whether the "
+                        + "passphrase was wrong or it timed out, so this mode never records "
+                        + "such a failure as a proven-wrong passphrase.\n"
+                        + "· Also available: dictionaries, offline analysis, tasks/history, scan.\n"
+                        + "· Still needs root: WPS PIN, supplicant log evidence, saved networks."));
                 io.github.wlmosv_png.wpaforge.cap.RunMode rm =
                         io.github.wlmosv_png.wpaforge.cap.RuntimeMode.current();
                 if (rm != null) {

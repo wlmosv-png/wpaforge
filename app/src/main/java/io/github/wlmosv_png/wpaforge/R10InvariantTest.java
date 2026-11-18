@@ -147,9 +147,15 @@ public class R10InvariantTest {
             // 这条从「数出口」升级为「出口必须为零」——更严格，不是放宽。
             eq("**CrackEngine 内直接构造的 AUTH_FAIL 出口数 = 0**（全部经 Adjudicator）", 0, auth);
             // C3：五种证据源；C4：两个成功出口；D5：支A 拆成 AT3/AT1 两处
-            // -> 共 8 处统一裁决入口
-            ok("全部证据源都调用统一裁决入口 judge(...)（8 处：6 失败源 + 2 成功源）",
-                    countOccurrences(code, "judge(password,") == 8);
+            // -> 8 处统一裁决入口。
+            // 2026-11-18：无 Root 在线验证执行器（tryOneSpecifier）新增 2 处
+            //   · 系统回调 onAvailable        -> CONNECTED/AT3
+            //   · 系统回调 onUnavailable      -> NOT_CONNECTED（非失败结论）
+            // 它换的是「怎么试」，判定仍然只能走这一个出口 —— 计数是**精确相等**，
+            // 不是「至少」，任何新增证据源都必须在这里登记。合计 10 处。
+            ok("全部证据源都调用统一裁决入口 judge(...)（10 处：6 失败源 + 2 成功源 "
+                            + "+ 2 无 Root 在线验证）",
+                    countOccurrences(code, "judge(password,") == 10);
             // C1：authcast 也不得 DIRECT。
             // 广播只有 SSID（AT-1），而 netId 存在**不构成关联证据**——
             // 「本次建了配置」与「这条广播属于它」之间没有可验证的因果链。
@@ -163,9 +169,21 @@ public class R10InvariantTest {
             // D5 之后 AT3 有三处，且**每一处都有明确用途**：
             //   · 2 处成功证据（status 四条件同行 / 日志协商完成）
             //   · 1 处支A-AT3（TEMP-DISABLED 的 id= 绑定到本次新建配置）
+            // D5 之后 AT3 有三处，且**每一处都有明确用途**：
+            //   · 2 处成功证据（status 四条件同行 / 日志协商完成）
+            //   · 1 处支A-AT3（TEMP-DISABLED 的 id= 绑定到本次新建配置）
             // 其余失败源一律 AT1 / NONE —— 不能靠「反正对不上」蒙过去。
+            //
+            // 2026-11-18：无 Root 在线验证的证据主张**不在这里**硬编码 ——
+            // 它由纯逻辑类 cap/SpecifierVerdict 产出（见 RootlessSpecifierTest），
+            // CrackEngine 只消费 d.claim / d.attribution。所以本文件里的
+            // AT3 仍然是 3 处，多出来的那两处证据不会绕过这条枚举。
             eq("AT3 恰好 3 处（2 成功 + 1 支A 配置绑定）", 3,
                     countOccurrences(code, "Evidence.Attribution.AT3"));
+            // 守卫：无 Root 路径必须**引用**那张纯逻辑映射表，不许自己写死主张
+            ok("无 Root 在线验证的证据主张来自 SpecifierVerdict（不是就地硬编码）",
+                    code.contains("SpecifierVerdict.decide(")
+                            && code.contains("d.source, d.claim, d.attribution"));
             ok("支A 的 AT3 只在 sawWrongKeyForConfig 分支里",
                     code.contains("sawWrongKeyForConfig"));
             ok("候选级 AUTH_FAIL 出口只有 judge（无直接构造）",

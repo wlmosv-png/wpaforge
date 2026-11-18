@@ -81,8 +81,15 @@ public class RootlessUiConsistencyTest {
                 "// 耗时预估");
         ok("开始按钮的闸门是能力，不是 root",
                 gate.contains("Capability.C_WIFI_CONNECT"));
-        ok("闸门用 evidenceGrade 判断（弱证据不算能跑）",
-                gate.contains("connectCap.evidenceGrade()"));
+        // 2026-11-18 修正：门槛是 usable()（这条路能不能真的试），
+        // 而不是 evidenceGrade()（结论能不能到 DIRECT）。
+        // 无 Root 在线验证真的能跑，只是失败结论弱 —— 用 evidenceGrade 会误挡。
+        ok("闸门用 usable() 判断（能不能真的试），不用 evidenceGrade",
+                gate.contains("connectCap.usable()")
+                        && !gate.contains("connectCap.evidenceGrade()"));
+        ok("无 Root 在线验证仍被标为非证据级（失败不进 DIRECT）",
+                !io.github.wlmosv_png.wpaforge.cap.Capability
+                        .degraded("x", "r", "r").evidenceGrade());
         ok("被挡时的文案带状态词", gate.contains("connectCap.stateText("));
         ok("被挡时给出替代路径", gate.contains("alternativeZh")
                 && gate.contains("alternativeEn"));
@@ -114,8 +121,17 @@ public class RootlessUiConsistencyTest {
         ok("说明卡区分无 Root 模式", fill.contains("RunMode.ROOTLESS"));
         ok("无 Root 说明写明可用项", fill.contains("字典") || fill.contains("离线"));
         ok("无 Root 说明写明不可用项", fill.contains("WPS PIN"));
-        ok("无 Root 说明写明原因", fill.contains("WifiNetworkSpecifier")
-                || fill.contains("特权接口"));
+        // 2026-11-18 重写：无 Root 现在**能真的在线验证**，说明卡必须讲清
+        // 「一次一个候选 + 失败不可拆解 + 先取消保存」这三条边界，
+        // 而不是继续写「WifiNetworkSpecifier 撑不起遍历」把人劝退。
+        ok("无 Root 说明写明「一次一个候选」",
+                fill.contains("一次一个候选") || fill.contains("one candidate at a time"));
+        ok("无 Root 说明写明「失败不可拆解」",
+                fill.contains("是密码错还是超时") || fill.contains("wrong or it timed out"));
+        ok("无 Root 说明要求先取消保存目标",
+                fill.contains("取消保存") || fill.contains("Remove the target from saved"));
+        ok("无 Root 说明仍点明 WPS PIN 需要 root",
+                fill.contains("WPS PIN"));
     }
 
     // ---------------------------------------------------------------- 4. 不该有零散的 root 前置

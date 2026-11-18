@@ -1324,7 +1324,14 @@ public class CrackService extends Service {
                 "wpaforge-mode-warm").start();
         {
             if (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
+                // 无 Root 在线验证（2026-11-18）：不再「恒 false」。
+                // 用 WifiNetworkSpecifier 让系统真正去试候选口令，判定内核不变；
+                // 通道说明它的边界（每个候选要用户确认一次、失败不可拆解）。
+                io.github.wlmosv_png.wpaforge.cap.SpecifierChannel spec =
+                        new io.github.wlmosv_png.wpaforge.cap.SpecifierChannel(
+                                this, new android.os.Handler(android.os.Looper.getMainLooper()));
                 engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
+                engine.setSpecifierChannel(spec);
             } else {
                 final io.github.wlmosv_png.wpaforge.cap.RootChannel rootCh =
                         new io.github.wlmosv_png.wpaforge.cap.RootChannel();

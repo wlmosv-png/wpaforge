@@ -360,6 +360,18 @@ public final class CrackEngine {
      */
     private io.github.wlmosv_png.wpaforge.cap.ConnectChannel channel;
 
+    /**
+     * 无 Root 的**在线逐条验证**通道（{@code WifiNetworkSpecifier}）。
+     *
+     * <p>它和 {@link #shell} 是两套物理机制：一个走 shell uid 的 {@code cmd wifi}，
+     * 一个走应用 uid 到 ConnectivityService 的 binder。判定信号也不同
+     * （这边只有系统回调，没有 status 四条件、读不到 supplicant 日志）。
+     * 所以做成**可替换的执行器**，而不是把两套塞进同一个 ShellChannel。
+     *
+     * <p>{@code null} = 该模式不用这条路。
+     */
+    private io.github.wlmosv_png.wpaforge.cap.SpecifierChannel specifier;
+
     /** 通道测速：连续 N 条都超时，说明这个通道在当前环境跑不动 */
     private int consecutiveTimeouts = 0;
 
@@ -576,6 +588,26 @@ public final class CrackEngine {
     }
 
     /**
+     * 接入无 Root 在线验证通道。
+     *
+     * <p>接上之后，{@link #tryOne} 不再走 shell，改走系统回调；
+     * 判定仍由 {@link Adjudicator} 统一裁决 —— 换的是「怎么试」，
+     * 不是「怎么判」。
+     */
+    public void setSpecifierChannel(io.github.wlmosv_png.wpaforge.cap.SpecifierChannel ch) {
+        this.specifier = ch;
+    }
+
+    public io.github.wlmosv_png.wpaforge.cap.SpecifierChannel getSpecifierChannel() {
+        return specifier;
+    }
+
+    /** 当前是否走无 Root 在线验证通道。 */
+    public boolean usesSpecifier() {
+        return specifier != null;
+    }
+
+    /**
      * **仅供测试**：返回一个能判定「能不能执行」的探针结果，不跑真正的尝试。
      *
      * <p>为什么要单独给一个探针：{@code tryOne} 会起进程、sleep、读系统状态，
@@ -614,6 +646,13 @@ public final class CrackEngine {
      * 少任何一道都不许往下跑 —— 跑下去只会得到「一堆未连上」，那是伪造结论。
      */
     public boolean canAttemptAssociation() {
+        // 无 Root 在线验证通道：它的「能力」体现在 canAssociate 上，
+        // 而净检（删旧配置）在公开 API 下**做不到** —— 那一项由 tryOneSpecifier
+        // 在每次尝试前实测（目标是否已被系统保存 / 已连着目标），
+        // 不在这里一刀切，否则整条无 Root 通道都会被挡死。
+        if (specifier != null) {
+            return specifier.canAssociate();
+        }
         if (shell == null) return false;
         if (channel == null) return true;      // 未接入能力层：保持改造前行为
         return channel.canAssociate() && channel.canForget();
@@ -1811,14 +1850,157 @@ public final class CrackEngine {
             return a;
         }
 
-        // 只有 Root（su + cmd wifi）一条通道
-        Attempt a = tryOneShell(target, security, password, timeoutMs, t0, attemptId);
+        // 执行器分流（2026-11-18）：接上无 Root 在线验证通道时走系统回调，
+        // 否则走原来的 shell 链。**判定内核是同一个**，只有「怎么试」不同。
+        Attempt a = (specifier != null)
+                ? tryOneSpecifier(target, security, password, timeoutMs, t0, attemptId)
+                : tryOneShell(target, security, password, timeoutMs, t0, attemptId);
         a.attemptId = AttemptId.wellFormed(attemptId) ? attemptId : "";
         a.logWindow = lastWindow;
         if (lastWindow != null) {
             a.detail = a.detail + L.f(" [窗口 %s]", " [window %s]", lastWindow.describe());
         }
         return a;
+    }
+
+    /**
+     * **无 Root 在线验证**：一次候选 = 一次系统网络请求。
+     *
+     * <h3>与 Root 链的关系</h3>
+     * 只替换「怎么试」，判定仍交给 {@link Adjudicator}。所以：
+     * <ul>
+     *   <li>连上（系统回调 {@code onAvailable}）= {@code CONNECTED}，归属 AT3
+     *       （请求里指定的就是目标 SSID 和这条口令，系统亲自建立的连接）；</li>
+     *   <li>没连上（{@code onUnavailable}）= 系统「未能建立连接」，
+     *       **认证失败与超时在系统层面就分不开** → 只能记 {@code NOT_CONNECTED}，
+     *       落到 {@code TERMINATED_UNKNOWN}（非终局、不写 triedSet、不推游标）；</li>
+     *   <li>用户拒绝 = {@code NETWORK_REJECTED} → {@code UNKNOWN}（与密码无关）；</li>
+     *   <li>目标本来就在系统已保存列表里 / 当前正连着它 = {@code STALE_CONFIG} 闸门，
+     *       本条作废（公开 API 删不掉旧配置，这是唯一能守住「不伪造成功」的办法）。</li>
+     * </ul>
+     *
+     * <h3>为什么失败结论不进 DIRECT</h3>
+     * DIRECT 要求 AT3 归属的 {@code WRONG_KEY} 证据，而这里拿到的只是
+     * 「系统没连上」，既没有可归属的认证失败报文，也没有 supplicant 日志。
+     * 硬升到 DIRECT 就等于把「不确定」说成「已证实错误」——
+     * 那会让用户以后有 root 时跳过一条根本没被证明错误的口令。
+     * 这是能力边界，写在这里而不是藏起来。
+     */
+    private Attempt tryOneSpecifier(NetRecord target, String security, String password,
+                                    long timeoutMs, long t0, String attemptId) {
+        lastWindow = null;
+        if (!canAttemptAssociation()) {
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.NOT_CAPABLE, clock().uptimeMillis() - t0,
+                    L.s("无 Root 在线验证通道不可用：" + inabilityReason(true),
+                        "rootless online verification unavailable: " + inabilityReason(false)));
+        }
+
+        // ---- 净检替代：公开 API 删不掉已保存配置，只能先确认「没有旧配置可用」----
+        if (isTargetSavedOrConnected(target)) {
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.STALE_CONFIG, clock().uptimeMillis() - t0,
+                    L.s("系统里还保存着这个网络（或当前已连着它）—— 系统可能直接拿旧口令连上，"
+                                    + "本条结果不可信。请先在系统设置里取消保存该网络再试。",
+                        "this network is still saved in the system (or already connected); "
+                                + "the system may reuse the old passphrase. Remove it in "
+                                + "system settings first."));
+        }
+
+        // ---- 候选本身不合法：未提交，按「未执行」而不是「密码错」 ----
+        String reject = io.github.wlmosv_png.wpaforge.cap.SpecifierParams
+                .rejectReason(security, password);
+        if (!reject.isEmpty()) {
+            Attempt a = new Attempt(password, Verdict.NOT_EXECUTED,
+                    clock().uptimeMillis() - t0,
+                    L.s("候选不符合系统要求，未提交（" + reject + "）",
+                        "candidate rejected by the platform before submission (" + reject + ")"),
+                    "invalid");
+            a.reason = reject;
+            return a;
+        }
+
+        // ---- 真正发起 ----
+        boolean submitted = specifier.associate(target.ssid, security, password, null, false);
+        if (!submitted) {
+            Attempt a = new Attempt(password, Verdict.NOT_EXECUTED,
+                    clock().uptimeMillis() - t0,
+                    L.s("请求没有发出去：" + specifier.lastDetail(),
+                        "the request was not submitted: " + specifier.lastDetail()),
+                    "not-submitted");
+            a.reason = "not-submitted";
+            return a;
+        }
+
+        io.github.wlmosv_png.wpaforge.cap.SpecifierChannel.Outcome o =
+                specifier.await(Math.max(20_000L, timeoutMs + 15_000L));
+        long elapsed = clock().uptimeMillis() - t0;
+
+        // 回调 → 结论动作的映射是**纯逻辑**（cap/SpecifierVerdict），
+        // 由 RootlessSpecifierTest 逐格穷举钉死。这里只负责按动作执行。
+        io.github.wlmosv_png.wpaforge.cap.SpecifierVerdict.Decision d =
+                io.github.wlmosv_png.wpaforge.cap.SpecifierVerdict.decide(
+                        o.connected, o.unavailable, o.userRejected, o.preBlocked, o.timedOut);
+
+        if (d.isSuccess()) {
+            // 系统亲自用这条口令建立了到目标的连接 —— CONNECTED + AT3 → SUCCESS/DIRECT
+            return judge(password, Lifecycle.TERMINATED, AttemptState.Gate.OK,
+                    d.source, d.claim, d.attribution, attemptId, d.netIdKnown, elapsed,
+                    L.s("系统用这条口令连上了目标", "the system connected with this passphrase"));
+        }
+
+        if (d.isNotConnected()) {
+            // 系统「未能建立连接」：认证失败 / 超时 / AP 拒绝 三者混在一起。
+            // 只主张 NOT_CONNECTED（绝不主张 WRONG_KEY）→ 裁决器规则 6/7 给出
+            // TERMINATED_UNKNOWN：非终局、不写 triedSet、不推游标。
+            return judge(password, Lifecycle.TERMINATED, AttemptState.Gate.OK,
+                    d.source, d.claim, d.attribution, attemptId, d.netIdKnown, elapsed,
+                    L.s("系统未能建立连接（认证失败与超时不可区分）",
+                        "the system could not establish the connection "
+                                + "(auth failure and timeout are indistinguishable)"));
+        }
+
+        // 其余三种（用户拒绝 / 系统拒绝 / 无答复）：一条结论都不产生
+        Attempt a = new Attempt(password, Verdict.NOT_EXECUTED, elapsed,
+                L.s("系统没有给出可用结论：" + o.detail,
+                    "the platform produced no usable verdict: " + o.detail),
+                d.code);
+        a.reason = d.code;
+        return a;
+    }
+
+    /**
+     * 目标是不是「系统里已有可用配置」。
+     *
+     * <p>这是无 Root 模式对 Root 链「净检」的**唯一等价物**：删不掉，就只能
+     * 先确认没有 —— 否则系统可能拿已保存的正确口令连上，让任何候选都"成功"。
+     * 用公开 API 判定，不做任何推断。
+     */
+    private boolean isTargetSavedOrConnected(NetRecord target) {
+        if (target == null || target.ssid == null) return true;
+        String want = target.ssid;
+        try {
+            if (wifi != null) {
+                android.net.wifi.WifiInfo info = wifi.getConnectionInfo();
+                if (info != null) {
+                    String cur = info.getSSID();
+                    if (cur != null && want.equals(unquote(cur))) return true;
+                }
+            }
+            // Android 10+ 没有「列出已保存网络」的公开 API；
+            // 这里用「建议列表 / 配置列表」都不可读，所以只能靠上面那条 + 调用方提示。
+        } catch (Throwable ignored) {
+            return true;    // 读不到就按「可能有旧配置」处理 —— 宁可作废也不伪造
+        }
+        return false;
+    }
+
+    private static String unquote(String s) {
+        if (s == null) return null;
+        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
+            return s.substring(1, s.length() - 1);
+        }
+        return s;
     }
 
     /**

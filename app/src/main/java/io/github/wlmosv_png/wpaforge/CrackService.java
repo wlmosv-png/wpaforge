@@ -103,6 +103,20 @@ public class CrackService extends Service {
          * <p>用 default 实现：老实现类不必改。
          */
         default void onTally(int confirmed, int inconclusive, int networkAuthFail) { }
+
+        /**
+         * 带**环境出错**数的分布（2026-11-20 新增）。
+         *
+         * <p>为什么必须单独一条：真机现场「已执行 27 / 已证实错误 0 / 未确定 0」
+         * 就是 ERROR 结论被统计吞掉造成的。它既不进「已证实」也不进「未确定」，
+         * 用户看到一组自相矛盾的数字，而真正的问题是通道在抛异常。
+         *
+         * <p>用 default 实现：老实现类不必改，服务侧保证新方法总被调用。
+         */
+        default void onTallyDetail(int confirmed, int inconclusive, int networkAuthFail,
+                                   int environmentErrors) {
+            onTally(confirmed, inconclusive, networkAuthFail);
+        }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
@@ -147,6 +161,21 @@ public class CrackService extends Service {
     /** 保活悬浮窗（1×1 透明） */
     private android.view.View keepAliveOverlay;
     private android.view.WindowManager keepAliveWm;
+
+    /**
+     * 悬浮窗**当前为什么不可用**（空串 = 可用或已显示）。
+     *
+     * <p>取值：{@code ""} / {@code "no-permission"} / {@code "retry-limit"}
+     * / 异常类名+消息。设置页与诊断日志都读它，让「悬浮窗没出现」这件事
+     * 有一个可查的原因，而不是只在 logcat 里留一段堆栈。
+     */
+    private volatile String keepAliveOverlayUnavailable = "";
+
+    /** 悬浮窗添加尝试次数上限 —— 防止无限重试刷屏（任务书要求）。 */
+    private static final int OVERLAY_MAX_ATTEMPTS = 3;
+
+    /** 已尝试添加次数。 */
+    private int overlayAddAttempts = 0;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     /**
@@ -784,6 +813,34 @@ public class CrackService extends Service {
                 try {
                     if (keepAliveOverlay != null) return;
                     if (keepAliveWm == null) return;
+                    // **post 到主线程后必须重新检查一次权限**（2026-11-20 修）。
+                    //
+                    // 真机日志里的 BadTokenException（permission denied for window
+                    // type 2038）就是从这条缝里漏出来的：外层检查过
+                    // canDrawOverlays()，但那是**工作线程**上检查的；
+                    // post 到主线程真正 addView 之间可能隔着几百毫秒，
+                    // 而这段时间里：
+                    //   · 用 appops 刚授的权限可能还没生效（异步）
+                    //   · 用户可能刚好在设置里撤销了悬浮窗
+                    //   · ColorOS 的「后台弹出界面」策略可能刚拒绝
+                    // 任何一种都会让 addView 抛 BadTokenException。
+                    //
+                    // 现在：无权限就**根本不尝试**，并如实记录降级；
+                    // 这符合任务书「无权限时不尝试添加窗口」。
+                    if (!android.provider.Settings.canDrawOverlays(CrackService.this)) {
+                        keepAliveOverlayUnavailable = "no-permission";
+                        log(L.s("悬浮窗未授权，已跳过（改用应用内状态展示；不影响破解任务）",
+                                "overlay not permitted; skipped (in-app status used instead; "
+                                        + "cracking unaffected)"));
+                        return;
+                    }
+                    if (overlayAddAttempts >= OVERLAY_MAX_ATTEMPTS) {
+                        keepAliveOverlayUnavailable = "retry-limit";
+                        log(L.s("悬浮窗多次添加失败，已停止重试（不影响破解任务）",
+                                "overlay failed repeatedly; giving up (cracking unaffected)"));
+                        return;
+                    }
+                    overlayAddAttempts++;
                     keepAliveOverlay = new android.view.View(CrackService.this);
                     android.view.WindowManager.LayoutParams lp =
                             new android.view.WindowManager.LayoutParams(
@@ -797,11 +854,24 @@ public class CrackService extends Service {
                     lp.x = 0;
                     lp.y = 0;
                     keepAliveWm.addView(keepAliveOverlay, lp);
+                    keepAliveOverlayUnavailable = "";
                     log(L.s("已显示保活悬浮窗（1×1 透明，防止后台被系统冻结）",
                             "keep-alive overlay shown (1x1 transparent)"));
                 } catch (Throwable t) {
-                    log(L.s("悬浮窗不可用: ", "overlay unavailable: ")
-                            + android.util.Log.getStackTraceString(t));
+                    // **降级而不是崩**：把 view 引用清掉，避免后续 removeView
+                    // 操作一个从未成功加入的窗口（会二次抛异常）。
+                    keepAliveOverlay = null;
+                    String why = t.getClass().getSimpleName()
+                            + (t.getMessage() == null ? "" : ": " + t.getMessage());
+                    keepAliveOverlayUnavailable = why;
+                    log(L.s("悬浮窗添加失败，已降级为应用内展示（破解任务不受影响）: ",
+                            "overlay add failed; degraded to in-app display (cracking unaffected): ")
+                            + why);
+                    log(L.s("  判定依据: canDrawOverlays=",
+                            "  basis: canDrawOverlays=")
+                            + android.provider.Settings.canDrawOverlays(CrackService.this)
+                            + L.s(" · 第 ", " · attempt ")
+                            + overlayAddAttempts + L.s(" 次尝试", ""));
                 }
             });
         } catch (Throwable t) {
@@ -1543,6 +1613,9 @@ public class CrackService extends Service {
                         for (UiCallback cb : callbacks) {
                             cb.onTally(eng.confirmedFailCount(),
                                     eng.inconclusiveCount(), eng.networkAuthFailCount());
+                            cb.onTallyDetail(eng.confirmedFailCount(),
+                                    eng.inconclusiveCount(), eng.networkAuthFailCount(),
+                                    eng.environmentErrorCount());
                         }
                     }
                 }

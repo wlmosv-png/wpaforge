@@ -3513,12 +3513,36 @@ public final class CrackEngine {
                 // 自适应窗口：连续多条无证据超时后缩短单发时限（见 adaptiveWindow 注释）。
                 perItem = adaptiveWindow(consecutiveNoEvidence, basePerItem);
                 VerdictProvider vp = verdictProvider;
-                Attempt a = vp != null
-                        ? vp.attemptFor(c.password, i + 1)
-                        : tryOne(target, security, c.password, perItem, aid);
+                // **tryOne 必须兜异常，且兜出来要进统计**（2026-11-20 修）。
+                //
+                // 真机现场：「已执行 27 / 已证实错误 0 / 未确定 0」。
+                // 27 条不在任何一类里 —— 因为 tested++ 在 tryOne **之前**，
+                // 而 tally.add 在 tryOne **之后**。tryOne 一旦抛异常（通道
+                // 抛 RuntimeException、NPE、超时被中断……），tally 就一次都
+                // 没记上，但 tested 已经涨了。用户看到的是一组自相矛盾的数字，
+                // 而真正的原因（通道在抛异常）被这层数字噪声盖住了。
+                //
+                // 现在：异常一律转成 ERROR 结论并照常进 tally，
+                // 保证「已执行 == 已证实 + 未确定 + 未执行」恒成立。
+                Attempt a;
+                try {
+                    a = vp != null
+                            ? vp.attemptFor(c.password, i + 1)
+                            : tryOne(target, security, c.password, perItem, aid);
+                } catch (Throwable t) {
+                    String msg = t.getClass().getSimpleName()
+                            + (t.getMessage() == null ? "" : ": " + t.getMessage());
+                    a = new Attempt(c.password, Verdict.ERROR,
+                            clock().uptimeMillis() - itemT0,
+                            L.s("执行通道抛异常，本条未得到结论: ", "channel threw: ") + msg,
+                            "exception");
+                    l.onLog(L.s("  ⚠ 本条执行异常（已按「无结论」记账，不会当成密码错）: ",
+                            "  ! exception on this candidate (counted as inconclusive): ") + msg);
+                }
                 if (a == null) {
                     a = new Attempt(c.password, Verdict.ERROR,
-                            0L, "provider returned null", "");
+                            clock().uptimeMillis() - itemT0,
+                            L.s("判定返回空（内部错误）", "verdict returned null"), "");
                 }
                 long itemMs = clock().uptimeMillis() - itemT0;
                 // 更新「连续无证据」计数：TIMEOUT（观察窗口结束、无证据）累加，
@@ -3890,6 +3914,26 @@ public final class CrackEngine {
      */
     public int networkAuthFailCount() {
         return tally.networkAuthFail();
+    }
+
+    /**
+     * **环境类**条数（通道抛异常 / 目标消失）—— 与密码无关。
+     *
+     * <p>大于 0 说明这次跑的通道有问题。2026-11-20 新增：
+     * 旧实现让它凭空消失，用户看到「已执行 27 / 已证实 0 / 未确定 0」。
+     */
+    public int environmentErrorCount() {
+        return tally.environmentErrors();
+    }
+
+    /** 统计是否自洽（门禁与诊断用）。 */
+    public boolean tallyConsistent() {
+        return tally.selfConsistent();
+    }
+
+    /** 一句话统计摘要（不含任何口令，可安全写日志）。 */
+    public String tallySummary() {
+        return tally.describe();
     }
 
     public int inconclusiveCount() {

@@ -315,6 +315,8 @@ public class MainActivity extends Activity {
     private TextView statUnkView;
     /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
     private TextView planLineView;
+    /** 最近一次「环境出错」条数（通道抛异常 / 目标消失）。 */
+    private int lastTallyEnvErrors = 0;
     private TextView statTotalView;      /** 总数 */
     private TextView statPctView;        /** 完成度（大数字） */
     /**
@@ -11470,6 +11472,27 @@ public class MainActivity extends Activity {
          * 网络级失败已包含在「未确定」里（口径见 CrackEngine.inconclusiveCount），
          * 这里不再单独加一列，避免把「环境问题」摆成第五种结论。
          */
+        /**
+         * 带环境出错数的分布（2026-11-20 新增）。
+         *
+         * <p>环境出错（通道抛异常 / 目标消失）必须**可见** ——
+         * 它不进「已证实错误」也不进「未确定」，旧实现让它凭空消失，
+         * 用户就看到了「已执行 27 / 已证实 0 / 未确定 0」这种自相矛盾的数字。
+         * 现在它单独出现在计划行上，并在日志里给出明确一句话。
+         */
+        @Override
+        public void onTallyDetail(int confirmed, int inconclusive, int networkAuthFail,
+                                  int environmentErrors) {
+            ui.post(() -> {
+                lastTallyEnvErrors = environmentErrors;
+                refreshPlanLine();
+                if (environmentErrors > 0 && planLineView != null) {
+                    // 环境出错时把提示顶到计划行，避免用户误以为「密码全错」
+                    planLineView.setVisibility(View.VISIBLE);
+                }
+            });
+        }
+
         @Override
         public void onTally(int confirmed, int inconclusive, int networkAuthFail) {
             ui.post(() -> {
@@ -12005,6 +12028,18 @@ public class MainActivity extends Activity {
         int su = CrackService.lastSkippedUndetermined();
         StringBuilder sb = new StringBuilder();
         if (plan != null && !plan.isEmpty()) sb.append(plan);
+        // 环境出错必须显式说出来（2026-11-20）。
+        // 它既不进「已证实错误」也不进「未确定」，不说出来用户就会以为
+        // 「跑了 27 条一条结论都没有」= 字典有问题，实际是通道在抛异常。
+        if (lastTallyEnvErrors > 0) {
+            if (sb.length() > 0) sb.append("\n");
+            sb.append(L.s("⚠ 通道/环境出错 ", "! channel/environment errors "))
+                    .append(lastTallyEnvErrors)
+                    .append(L.s(" 条 —— 这些条目没有被真正验证（不是密码错），"
+                            + "请检查执行通道后重跑",
+                            " - these were not really verified (not wrong passwords); "
+                                    + "check the channel and re-run"));
+        }
         // 透明化（第七节）：当前目标 / 模式 / 过滤档位 / 待执行条数。
         {
             String mode = usePlanMode ? L.s("计划", "Plan") : L.s("单字典", "Single");

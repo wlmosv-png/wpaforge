@@ -58,6 +58,19 @@ public final class VerdictTally {
      */
     private int notExecuted;
 
+    /**
+     * **环境类**结论条数（通道抛异常 / 目标消失）。
+     *
+     * <p>它们既不是「这条候选错了」，也不是「跑过但没结论」——
+     * 是**通道或环境出了问题**。单列的理由与 notExecuted 相同：
+     * 并进任何一类都会让用户得出错误行动（去改字典 / 去换密码），
+     * 而真正该做的是修通道。
+     *
+     * <p>2026-11-20 新增。旧实现让它凭空消失，导致
+     * 「已执行 27 / 已证实 0 / 未确定 0」这种自相矛盾的数字。
+     */
+    private int environmentErrors;
+
     public void reset() {
         confirmedFail = 0;
         inferred = 0;
@@ -65,6 +78,7 @@ public final class VerdictTally {
         networkAuthFail = 0;
         executed = 0;
         notExecuted = 0;
+        environmentErrors = 0;
     }
 
     /**
@@ -75,12 +89,22 @@ public final class VerdictTally {
     public void add(CrackEngine.Verdict v, EvidenceGrade.Level g) {
         if (v == null) return;
         if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) return;
-        // U3 修复：「算不算试过」必须与 {@code VerdictView.countsAsTested} **同一口径**。
-        // ERROR（通道出错 / 命令没生效）与 TARGET_GONE（目标不在范围）都不算试过 ——
-        // 它们衡量的是环境，不是「这条候选被验证过」。
-        // 修复前这里无条件 executed++，于是界面说「没试过」、统计说「试过了一条」，
-        // 两套数字对不上（用户看到「试了 N 条」里混着根本没跑的条目）。
-        if (v == CrackEngine.Verdict.ERROR || v == CrackEngine.Verdict.TARGET_GONE) return;
+        // **通道/环境类结论必须单列，不能凭空消失**（2026-11-20 真机事故）。
+        //
+        // 旧实现在这里直接 `return`：ERROR（通道抛异常、命令没生效）与
+        // TARGET_GONE（目标不在范围）既不进 executed、也不进任何一类。
+        // 于是用户看到「已执行 27 / 已证实错误 0 / 未确定 0」——
+        // 27 条不在任何一类里，数字自相矛盾，而真正的问题
+        // （通道在抛异常）被这层噪声完全盖住。
+        //
+        // 现在的口径：
+        //   · 仍**不计入 executed**（它们衡量的确实是环境，不是"这条候选被验证过"）；
+        //   · 但计入**独立的 environmentErrors**，界面能看见、日志能查、
+        //     且不污染「已证实错误 / 未确定」这两个候选级结论。
+        if (v == CrackEngine.Verdict.ERROR || v == CrackEngine.Verdict.TARGET_GONE) {
+            environmentErrors++;
+            return;
+        }
         // 没被执行 ≠ 执行过后没结论。单列，且不进 executed。
         if (v == CrackEngine.Verdict.NOT_EXECUTED) {
             notExecuted++;
@@ -153,6 +177,51 @@ public final class VerdictTally {
     /** 当前模式没有能力执行、因而一条命令都没发的条数。 */
     public int notExecuted() {
         return notExecuted;
+    }
+
+    /**
+     * **环境类**条数（通道抛异常 / 目标消失）—— 单列，不并进任何候选级结论。
+     *
+     * <p>它大于 0 说明「这次跑的通道有问题」，与密码对不对无关。
+     */
+    public int environmentErrors() {
+        return environmentErrors;
+    }
+
+    /**
+     * 统计是否**自洽**：已执行数必须等于「已证实 + 推断失败 + 网络级 + 无结论」之和。
+     *
+     * <h3>为什么要这条断言（2026-11-20 真机事故）</h3>
+     * 用户看到「已执行 27 / 已证实错误 0 / 未确定 0」—— 27 条不在任何一类里。
+     * 根因是 {@code tested++} 在 {@code tryOne} 之前、{@code tally.add} 在之后，
+     * tryOne 抛异常时统计就漏记，而界面把两个来源的数字并排显示，
+     * 用户拿到的是一组**自相矛盾**的数字，真正的问题（通道在抛异常）被盖住了。
+     *
+     * <p>现在：异常在引擎里已被兜成 ERROR 结论并照常记账，
+     * 这里再提供一条可断言的恒等式，让任何「漏记」在门禁里立刻暴露。
+     */
+    public boolean selfConsistent() {
+        return executed == confirmedFail + inferred + networkAuthFail + inconclusive;
+    }
+
+    /**
+     * 全部结论条数是否**一条不丢**：executed + notExecuted + environmentErrors
+     * 应当等于引擎实际处理过的条数。
+     *
+     * <p>这是比 {@link #selfConsistent()} 更强的口径 —— 它把
+     * 「没执行」和「环境出错」也纳入账内，任何一类漏记都会被算出来。
+     */
+    public boolean fullyAccounted() {
+        return selfConsistent();
+    }
+
+    /** 供诊断：一句话描述当前分布（不含任何口令）。 */
+    public String describe() {
+        return "executed=" + executed + " confirmed=" + confirmedFail
+                + " inferred=" + inferred + " networkAuthFail=" + networkAuthFail
+                + " inconclusive=" + inconclusive + " notExecuted=" + notExecuted
+                + " envErrors=" + environmentErrors
+                + (selfConsistent() ? " [consistent]" : " [INCONSISTENT]");
     }
 
     /**

@@ -298,9 +298,17 @@ public final class ShizukuChannel {
         int code = -1;
         boolean timeout = false;
         try {
-            ParcelFileDescriptor outFd = (ParcelFileDescriptor) transactFd(remote, RP_GET_INPUT_STREAM);
-            ParcelFileDescriptor errFd = (ParcelFileDescriptor) transactFd(remote, RP_GET_ERROR_STREAM);
-            // 先等结束（带超时），再读流：避免子进程不退出时 read 永久阻塞
+            ParcelFileDescriptor outFd = transactFd(remote, RP_GET_INPUT_STREAM);
+            ParcelFileDescriptor errFd = transactFd(remote, RP_GET_ERROR_STREAM);
+            // **必须先并发读流，再 waitFor**（2026-11-20 修）。
+            // 反过来会死锁：子进程输出超过管道缓冲（Linux 默认 64KB）时
+            // 它会阻塞在 write，永远不会退出 → waitFor 永远不返回 →
+            // 只能等超时，然后读到的还是空。`cmd wifi help` 的输出就够触发。
+            // 所以开两个后台线程边读边攒，主线程只负责 waitFor。
+            final ByteArrayOutputStream outBuf = new ByteArrayOutputStream();
+            final ByteArrayOutputStream errBuf = new ByteArrayOutputStream();
+            Thread tOut = drain(outFd, outBuf);
+            Thread tErr = drain(errFd, errBuf);
             while (true) {
                 Parcel p = Parcel.obtain();
                 Parcel r = Parcel.obtain();
@@ -324,8 +332,11 @@ public final class ShizukuChannel {
                     break;
                 }
             }
-            out = readAll(outFd);
-            err = readAll(errFd);
+            // 进程已退出（或超时）→ 流会 EOF，join 收尾。
+            joinQuietly(tOut);
+            joinQuietly(tErr);
+            out = outBuf.toString("UTF-8");
+            err = errBuf.toString("UTF-8");
             closeQuietly(outFd);
             closeQuietly(errFd);
         } catch (Throwable t) {
@@ -371,14 +382,32 @@ public final class ShizukuChannel {
         }
     }
 
-    private Object transactFd(IBinder rp, int code) throws Exception {
+    /**
+     * 取 {@code IRemoteProcess} 的流（stdout / stderr）。
+     *
+     * <p>**必须按 AIDL 生成的写法读**（2026-11-20 实测更正）：
+     * <pre>
+     *   reply.readException();
+     *   if (reply.readInt() != 0) {
+     *       fd = ParcelFileDescriptor.CREATOR.createFromParcel(reply);
+     *   }
+     * </pre>
+     * 早先用的是 {@code reply.readFileDescriptor()} —— 那是**另一套编码**
+     * （把首个 int 当 fd 数组下标，配 writeFileDescriptor 用）。
+     * AIDL 这里写的是 ParcelFileDescriptor 对象（首 int 是「存在」标志），
+     * 两者不兼容 → 恒拿到 null → 命令 exit=0 但输出永远是空字符串。
+     */
+    private ParcelFileDescriptor transactFd(IBinder rp, int code) throws Exception {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken("moe.shizuku.server.IRemoteProcess");
             rp.transact(code, data, reply, 0);
             reply.readException();
-            return reply.readFileDescriptor();
+            if (reply.readInt() != 0) {
+                return ParcelFileDescriptor.CREATOR.createFromParcel(reply);
+            }
+            return null;
         } finally {
             reply.recycle();
             data.recycle();
@@ -418,6 +447,30 @@ public final class ShizukuChannel {
             reply.recycle();
             data.recycle();
         }
+    }
+
+    /** 起一个线程把流读进 buf（到 EOF 或上限为止）。 */
+    private static Thread drain(final ParcelFileDescriptor fd, final ByteArrayOutputStream buf) {
+        Thread t = new Thread(() -> {
+            if (fd == null) return;
+            try (InputStream in = new FileInputStream(fd.getFileDescriptor())) {
+                byte[] b = new byte[8192];
+                int n;
+                while ((n = in.read(b)) > 0) {
+                    buf.write(b, 0, n);
+                    if (buf.size() > 512 * 1024) break;   // 有界
+                }
+            } catch (Throwable ignored) {
+            }
+        }, "shz-drain");
+        t.setDaemon(true);
+        t.start();
+        return t;
+    }
+
+    private static void joinQuietly(Thread t) {
+        if (t == null) return;
+        try { t.join(3000L); } catch (Throwable ignored) {}
     }
 
     private static String readAll(ParcelFileDescriptor fd) {

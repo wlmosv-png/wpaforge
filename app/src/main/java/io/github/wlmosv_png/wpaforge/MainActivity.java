@@ -14513,10 +14513,59 @@ public class MainActivity extends Activity {
         b.setTextColor(on ? ACCENT : TEXT_DIM);
         b.setOnClickListener(v -> {
             Prefs.setRequestedMode(this, modeId);
+            // 选「无 Root」时顺手把 Shizuku 授权走一遍。
+            // 不主动 requestPermission 的话，Shizuku 的「已授权应用」列表里
+            // 根本不会出现本应用，用户无从授权（2026-11-20 修）。
+            if (modeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
+                ensureShizukuPermission();
+            }
             // 整块重排：按钮高亮、检测结论、说明卡文案都要跟着变
             rebuildSettingsTab();
         });
         return b;
+    }
+
+    /**
+     * 走一遍 Shizuku 授权流程。
+     *
+     * <p>三件事缺一不可，之前就是缺了它们才「列表里没有 WPAForge」：
+     * <ol>
+     *   <li>manifest 里注册 {@code ShizukuProvider}（binder 的入口）；</li>
+     *   <li>调用 {@code Shizuku.requestPermission()}（让 Shizuku 知道有应用要授权）；</li>
+     *   <li>监听授权结果，拿到后重新探测能力。</li>
+     * </ol>
+     */
+    private void ensureShizukuPermission() {
+        final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(this);
+        int st = shz.probe();
+        if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY
+                || st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY_NOT_SHELL) {
+            return;     // 已经可用，不用打扰用户
+        }
+        if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_INSTALLED) {
+            Toast.makeText(this, L.s(
+                    "没装 Shizuku。无 Root 自动破解需要它提供 shell 身份："
+                            + "装好后用「无线调试」启动服务。",
+                    "Shizuku is not installed. Rootless auto-cracking needs its shell "
+                            + "identity: install it and start the service via Wireless debugging."),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_RUNNING) {
+            Toast.makeText(this, L.s(
+                    "Shizuku 没在运行。打开 Shizuku，用「通过无线调试启动」启动服务后再回来。",
+                    "Shizuku is not running. Open Shizuku, start it via Wireless debugging, "
+                            + "then come back."),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        // S_NO_PERMISSION：真正去请求
+        shz.requestPermission();
+        Toast.makeText(this, L.s(
+                "正在请求 Shizuku 授权，请在弹窗里点「允许」",
+                "Requesting Shizuku permission - tap Allow in the dialog"),
+                Toast.LENGTH_LONG).show();
     }
 
     /** 设置页整块重建（模式切换后调用，避免各处各改一半）。 */

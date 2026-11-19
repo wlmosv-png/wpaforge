@@ -47,8 +47,17 @@ public final class ShizukuChannel {
     /** Shizuku 包名。 */
     public static final String PKG = "moe.shizuku.privileged.api";
 
-    /** IShizukuService 的事务码（取自官方 AIDL：newProcess = 7）。 */
-    private static final int TX_NEW_PROCESS = 7;
+    /**
+     * IShizukuService 的事务码。
+     *
+     * <p>**必须是 8，不是 7**（2026-11-20 实测更正）。官方 13.x 的
+     * {@code IShizukuService.Stub} 声明顺序是：
+     * getVersion=3 / getUid=4 / checkPermission=5 /
+     * <b>newProcess=8</b> / getSELinuxContext=9 / …
+     * 早先凭印象写的 7 会命中 {@code setSystemProperty}，
+     * 结果要么 RemoteException，要么静默改系统属性，命令永远跑不起来。
+     */
+    private static final int TX_NEW_PROCESS = 8;
     /** IRemoteProcess 的事务码（按 AIDL 声明顺序，1 起）。 */
     private static final int RP_GET_OUTPUT_STREAM = 1;
     private static final int RP_GET_INPUT_STREAM = 2;
@@ -86,6 +95,10 @@ public final class ShizukuChannel {
             stateDetail = "没有应用上下文";
             return state;
         }
+        // 0) 先确保 binder 真的到了本进程。
+        //    ShizukuProvider 在进程启动时塞 binder，但如果进程先于 Shizuku 服务起来
+        //    （或服务重启过），binder 会是空的。这里主动要一次。
+        ensureBinder(ctx);
         // 1) API 类能不能加载 —— 这是最先要判的（jar 没进 dex 时后面全是白搭）
         Class<?> shz;
         try {
@@ -146,6 +159,55 @@ public final class ShizukuChannel {
         }
     }
 
+    /**
+     * 确保 Shizuku binder 已就绪。
+     *
+     * <p>ShizukuProvider 会在进程启动时把 binder 塞进来；但若进程比服务先起、
+     * 或服务重启过，本进程里 binder 可能是空的。这时主动拉一次。
+     */
+    private static void ensureBinder(Context ctx) {
+        try {
+            Class<?> shz = Class.forName("rikka.shizuku.Shizuku");
+            Object alive = shz.getMethod("pingBinder").invoke(null);
+            if (Boolean.TRUE.equals(alive)) return;
+            // 通过 provider 重新索取 binder（官方提供 requestBinder 路径）
+            try {
+                Class<?> prov = Class.forName("rikka.shizuku.ShizukuProvider");
+                prov.getMethod("requestBinderForNonProviderProcess", android.content.Context.class)
+                        .invoke(null, ctx);
+            } catch (Throwable ignored) {
+                // 老版本没有这个方法；provider 已在 manifest 里，进程重启后会自己到位
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 请求 Shizuku 授权（**必须调用**，否则应用不会出现在授权列表里）。
+     *
+     * <p>这是用户看到「列表里没有 WPAForge」的直接原因：不调这个，
+     * Shizuku 根本不知道有应用要授权。
+     *
+     * @return 当前是否已授权
+     */
+    public boolean ensurePermission() {
+        try {
+            Class<?> shz = Class.forName("rikka.shizuku.Shizuku");
+            Object granted = shz.getMethod("checkSelfPermission").invoke(null);
+            if (granted instanceof Integer
+                    && (Integer) granted == PackageManager.PERMISSION_GRANTED) {
+                return true;
+            }
+            shz.getMethod("requestPermission", int.class).invoke(null, REQ_CODE);
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 授权请求码（随便取，只要回调时能对上）。 */
+    public static final int REQ_CODE = 0x5750;
+
     /** 包是否可见。Android 11+ 需要 manifest 里的 &lt;queries&gt;，否则恒 false。 */
     private static boolean isPackageInstalled(Context ctx, String pkg) {
         try {
@@ -180,7 +242,7 @@ public final class ShizukuChannel {
         try {
             Class<?> shz = Class.forName("rikka.shizuku.Shizuku");
             // requestPermission(int requestCode)
-            shz.getMethod("requestPermission", int.class).invoke(null, 0x5750);
+            shz.getMethod("requestPermission", int.class).invoke(null, REQ_CODE);
         } catch (Throwable ignored) {
         }
     }

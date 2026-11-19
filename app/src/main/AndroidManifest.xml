@@ -110,5 +110,33 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Shizuku 的 binder 入口（2026-11-20，关键）。
+
+          Shizuku 不是通过 startService 把 binder 给你的，而是通过一个
+          ContentProvider 在进程启动时把 binder 塞进你的进程。
+          不注册这个 provider，Shizuku.pingBinder() 永远 false，
+          应用也**不会出现在 Shizuku 的「已授权应用」列表里** ——
+          用户看到的就是「列表里根本没有 WPAForge」，无从授权。
+
+          permission 用 INTERACT_ACROSS_USERS_FULL 是官方要求：
+          防止其它普通应用通过这个 provider 拿到 binder。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="io.github.wlmosv_png.wpaforge.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!--
+          Shizuku 13 的 V3 协议标记。官方 aar 的 manifest 里就有这一条，
+          不声明的话 Shizuku 侧会按旧协议处理授权回调。
+        -->
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
     </application>
 </manifest>

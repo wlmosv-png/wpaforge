@@ -13649,11 +13649,16 @@ public class MainActivity extends Activity {
         TextView modeChoiceHint = new TextView(this);
         modeChoiceHint.setText(L.s(
                 "Root：su + cmd wifi，逐条自动尝试。\n"
-                + "无 Root：只用公开 API，逐条关联与 WPS PIN 不可用，字典/离线分析/扫描照常。\n"
+                + "无 Root：装了 Shizuku 并授权 → 同样能逐条自动尝试（借 shell 身份）；\n"
+                + "        没有 Shizuku → 用系统确认框逐次验证（一次一个，需要你点确认）。\n"
+                + "        两种方式下 WPS PIN 都不可用；字典/离线分析/扫描照常。\n"
                 + "自动：能拿到 root 就用 Root，否则用无 Root（不会把结果说成成功）。",
                 "Root: su + cmd wifi, per-candidate automatic attempts.\n"
-                + "Rootless: public APIs only; per-candidate association and WPS PIN are "
-                + "unavailable, dictionaries/offline analysis/scan still work.\n"
+                + "Rootless: with Shizuku granted, per-candidate automatic attempts work too "
+                + "(borrowing the shell identity);\n"
+                + "        without Shizuku, each candidate needs a system approval tap.\n"
+                + "        WPS PIN is unavailable either way; dictionaries/offline analysis/scan "
+                + "still work.\n"
                 + "Auto: Root when root is available, otherwise rootless (never fakes results)."));
         modeChoiceHint.setTextSize(AmberTheme.FS_LABEL);
         modeChoiceHint.setTextColor(AmberTheme.TEXT_FAINT);

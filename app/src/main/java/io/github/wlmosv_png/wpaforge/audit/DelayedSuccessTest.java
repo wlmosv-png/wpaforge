@@ -58,6 +58,23 @@ public class DelayedSuccessTest {
             if (cmd == null) return "";
             if (cmd.contains("connect-network") || cmd.contains("add-network")) attemptStarted = true;
             if (cmd.startsWith("cmd wifi status")) {
+                /* 竞态修复（2026-11-18，消除本测试的偶发失败）：
+                 * 引擎在**独立线程**里发 connect-network（见 tryOneShell 的
+                 * `new Thread(() -> sh.exec(cmd, 20000)).start()`），而本测试的
+                 * TestEngineClock realBlockCap=0 不产生真实等待 —— 于是虚拟时钟可能
+                 * 在连接线程被调度之前就走完观察窗口，收尾那次 status 落回
+                 * `notConnected()`（网关阶段的输出），生命周期被判成 TERMINATED，
+                 * 偶发得到 TERMINATED_UNKNOWN 而不是 INCOMPLETE。
+                 *
+                 * 这里在该阶段让出极短的**真实**时间（累计 <10ms，不影响虚拟时间语义），
+                 * 保证 connect 线程有机会置 attemptStarted。断言一条没改。
+                 */
+                if (!attemptStarted) {
+                    for (int k = 0; k < 5 && !attemptStarted; k++) {
+                        Thread.yield();
+                        try { Thread.sleep(0, 500_000); } catch (InterruptedException ignored) {}
+                    }
+                }
                 if (!attemptStarted) return notConnected();   // 前置阶段：确实没连
                 int i = Math.min(statusCalls++, statusScript.size() - 1);
                 String r = statusScript.get(Math.max(0, i));

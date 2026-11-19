@@ -214,7 +214,20 @@ public final class CrackEngine {
             this.grade = EvidenceGrade.defaultOf(v);
         }
 
-        public boolean isSuccess() { return verdict == Verdict.SUCCESS; }
+        /**
+         * 是不是**可采信的成功**。
+         *
+         * <p>2026-11-18 收紧：必须同时满足 {@code verdict == SUCCESS} **且** 证据等级
+         * 可持久化（即 DIRECT）。这是一条**结构性兜底** ——
+         * 「成功但证据不足」这种组合从此不可能被任何消费方（confirmedBy / 成功通知 /
+         * 成功统计 / 已验证进度）当成成功。
+         *
+         * <p>对 Root 无影响：Root 的 SUCCESS 恒为 DIRECT（四条件同行 + netId 归属），
+         * 所以判定结果与收紧前完全一致。
+         */
+        public boolean isSuccess() {
+            return verdict == Verdict.SUCCESS && EvidenceGrade.persistable(grade);
+        }
     }
 
     /**
@@ -1920,33 +1933,63 @@ public final class CrackEngine {
             return a;
         }
 
-        // ---- 真正发起 ----
-        boolean submitted = specifier.associate(target.ssid, security, password, null, false);
-        if (!submitted) {
+        // ---- 真正发起（D1：把目标 BSSID 一起交给通道，让它真正 setBssid）----
+        //
+        // attemptId 一并传入：结果按尝试身份返回，读结果必须带这条的身份（D9）。
+        final String bssidArg = (target.bssid == null) ? "" : target.bssid;
+        io.github.wlmosv_png.wpaforge.cap.SpecifierChannel.Token tok =
+                specifier.submit(target.ssid, security, password, bssidArg, attemptId);
+        if (!tok.submitted()) {
             Attempt a = new Attempt(password, Verdict.NOT_EXECUTED,
                     clock().uptimeMillis() - t0,
-                    L.s("请求没有发出去：" + specifier.lastDetail(),
-                        "the request was not submitted: " + specifier.lastDetail()),
+                    L.s("请求没有发出去（" + tok.rejectCode + "）：" + tok.rejectDetail,
+                        "the request was not submitted (" + tok.rejectCode + "): "
+                                + tok.rejectDetail),
                     "not-submitted");
-            a.reason = "not-submitted";
+            a.reason = tok.rejectCode;
             return a;
         }
 
+        long wait = Math.max(20_000L, timeoutMs + 10_000L);
         io.github.wlmosv_png.wpaforge.cap.SpecifierChannel.Outcome o =
-                specifier.await(Math.max(20_000L, timeoutMs + 15_000L));
+                specifier.await(tok, wait);
         long elapsed = clock().uptimeMillis() - t0;
 
+        // 身份校验：拿到的结论必须属于本条候选，否则一律按「未执行」——绝不让
+        // 上一条候选的迟到结论冒充这一条（D9）。
+        if (o.attemptId != null && !o.attemptId.isEmpty()
+                && attemptId != null && !attemptId.isEmpty()
+                && !o.attemptId.equals(attemptId)) {
+            Attempt a = new Attempt(password, Verdict.NOT_EXECUTED, elapsed,
+                    L.s("结论不属于本条候选（" + o.attemptId + " ≠ " + attemptId + "），已丢弃",
+                        "the verdict belongs to another attempt; discarded"),
+                    "attempt-mismatch");
+            a.reason = "attempt-mismatch";
+            return a;
+        }
+
         // 回调 → 结论动作的映射是**纯逻辑**（cap/SpecifierVerdict），
-        // 由 RootlessSpecifierTest 逐格穷举钉死。这里只负责按动作执行。
+        // 由 RootlessSpecifierTest / SpecifierChannelFixTest 逐格穷举钉死。
         io.github.wlmosv_png.wpaforge.cap.SpecifierVerdict.Decision d =
                 io.github.wlmosv_png.wpaforge.cap.SpecifierVerdict.decide(
-                        o.connected, o.unavailable, o.userRejected, o.preBlocked, o.timedOut);
+                        o.connected, o.unavailable, o.userRejected, o.preBlocked, o.timedOut,
+                        o.unstable);
 
-        if (d.isSuccess()) {
-            // 系统亲自用这条口令建立了到目标的连接 —— CONNECTED + AT3 → SUCCESS/DIRECT
+        if (d.isConnectedUnattributed()) {
+            // 系统建立了一条到目标的新连接，**但公开 API 证明不了这是本条候选的 PSK
+            // 完成的认证**（satisfiesNetworkSpecifier 不比 PSK；PMKSA 缓存可复用会话密钥）。
+            //
+            // 所以**不产出 SUCCESS**：归属只到 AT2（SSID+BSSID 对得上），交给裁决器后
+            // 自然落到 UNKNOWN / on-target-unattributed / grade=NONE ——
+            // 「既不当成功，也不当失败」。这样：
+            //   · Attempt.isSuccess() 为 false → 不会触发 confirmedBy / 成功通知 / 成功统计
+            //   · grade=NONE → 不写 TriedSet、不推游标
+            //   · 用户看到的是「已连上但未证实」，可以自己拿这条口令人工确认
             return judge(password, Lifecycle.TERMINATED, AttemptState.Gate.OK,
                     d.source, d.claim, d.attribution, attemptId, d.netIdKnown, elapsed,
-                    L.s("系统用这条口令连上了目标", "the system connected with this passphrase"));
+                    L.s("系统已连上目标，但无法证明是本条口令完成握手 —— 未证实，请人工确认",
+                        "the system connected to the target, but the handshake cannot be "
+                                + "attributed to this passphrase - unverified, confirm manually"));
         }
 
         if (d.isNotConnected()) {
@@ -1984,7 +2027,20 @@ public final class CrackEngine {
                 android.net.wifi.WifiInfo info = wifi.getConnectionInfo();
                 if (info != null) {
                     String cur = info.getSSID();
-                    if (cur != null && want.equals(unquote(cur))) return true;
+                    if (cur != null && want.equals(unquote(cur))) {
+                        // 已经连着这个 SSID。BSSID 已知时按 BSSID 精确判：
+                        // 同 SSID 另一个 AP 的连接**不会**满足本条的 specifier
+                        //（AOSP 的 satisfiesNetworkSpecifier 要比 BSSID），
+                        // 所以那种情况可以继续；BSSID 未知时只能保守作废。
+                        if (target.bssid != null
+                                && io.github.wlmosv_png.wpaforge.audit.ConnectSpec
+                                        .looksLikeMac(target.bssid)) {
+                            String curB = info.getBSSID();
+                            if (curB != null && target.bssid.equalsIgnoreCase(curB)) return true;
+                        } else {
+                            return true;
+                        }
+                    }
                 }
             }
             // Android 10+ 没有「列出已保存网络」的公开 API；

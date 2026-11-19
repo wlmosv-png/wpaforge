@@ -1419,7 +1419,9 @@ public class CrackService extends Service {
                     // 它是对的。旧实现把 SUCCESS 也当成 persistable 写进去，
                     // 于是正确口令长期占着「已排除」的名额 —— 换个目标再用同一份
                     // 字典时，它会因为是「已试过的错误密码」而被跳过。
-                    if (a.verdict == CrackEngine.Verdict.SUCCESS) {
+                    // 用 isSuccess() 而不是 verdict==SUCCESS：让它和其余成功消费方
+                    // 共用同一判据（成功 ⇔ SUCCESS ∧ DIRECT），不留下绕过点。
+                    if (a.isSuccess()) {
                         // 明确不写：命中属于结果，不属于「已试错误」。
                     } else if (EvidenceGrade.persistable(a.grade)) {
                         if (triedSet.add(a.password) && ++triedSinceFlush >= 32) {

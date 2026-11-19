@@ -232,8 +232,10 @@ public final class PlanRecoveryTest {
                 s.contains("finishTaskEarly(task, TaskQueue.State.PAUSED"), "缺少调用");
         ok("命中终止判定仍在 runQueue 的循环里（不是只在新模块绕过）",
                 s.contains("queueStopsAfter(task.state)"), "缺少调用");
+        // 2026-11-18：成功判定统一走 isSuccess()（成功 ⇔ SUCCESS ∧ DIRECT）。
+        // 契约「命中不写 triedSet」不变，且不再有 verdict==SUCCESS 的绕过点。
         ok("命中（SUCCESS）不写 triedSet",
-                s.contains("a.verdict == CrackEngine.Verdict.SUCCESS"), "缺少分支");
+                s.contains("if (a.isSuccess()) {"), "缺少分支");
         ok("补建失败不假装成功（检查 ensurePlanTask 返回值）",
                 s.contains("if (nt == null)"), "缺少检查");
     }

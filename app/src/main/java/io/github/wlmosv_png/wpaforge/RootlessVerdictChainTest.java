@@ -166,8 +166,11 @@ public class RootlessVerdictChainTest {
         String svc = readSource("CrackService.java");
         ok("CrackService 里 TriedSet 写入仍带 persistable 判据",
                 svc.contains("EvidenceGrade.persistable(a.grade)"));
-        ok("CrackService 里 SUCCESS 仍被显式排除",
-                svc.contains("a.verdict == CrackEngine.Verdict.SUCCESS"));
+        // 2026-11-18：成功判定统一收敛到 isSuccess()（成功 ⇔ SUCCESS ∧ DIRECT），
+        // 不再留 `verdict == SUCCESS` 这种绕过点。契约（成功不写 triedSet）不变且更严。
+        ok("CrackService 里 SUCCESS 仍被显式排除（走 isSuccess()）",
+                svc.contains("if (a.isSuccess()) {")
+                        && svc.contains("EvidenceGrade.persistable(a.grade)"));
     }
 
     // ---------------------------------------------------------------- 4. 游标契约

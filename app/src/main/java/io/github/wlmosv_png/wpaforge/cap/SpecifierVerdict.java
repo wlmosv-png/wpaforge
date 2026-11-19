@@ -2,6 +2,7 @@ package io.github.wlmosv_png.wpaforge.cap;
 
 import io.github.wlmosv_png.wpaforge.audit.AttemptState;
 import io.github.wlmosv_png.wpaforge.audit.Evidence;
+import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
 
 /**
  * 无 Root 在线验证的**结论映射**：系统回调 → 证据主张（纯逻辑）。
@@ -32,7 +33,15 @@ import io.github.wlmosv_png.wpaforge.audit.Evidence;
 public final class SpecifierVerdict {
 
     /** 结论动作：调用方按这个分支走。 */
-    public static final int ACT_SUCCESS = 1;        // 走 judge(CONNECTED/AT3)
+    /**
+     * 已连上，但**无法归属到本次候选**。
+     *
+     * <p>本通道从 `onAvailable` 只能得到「系统现在有一条到目标的连接」，
+     * 拿不到「它是用本条口令完成的握手」这一事实（AOSP 的
+     * {@code satisfiesNetworkSpecifier} 不比 PSK；PMKSA 缓存可复用会话密钥）。
+     * 所以它**不是成功**，只是「已连上但证据不足」。
+     */
+    public static final int ACT_CONNECTED_UNATTRIBUTED = 1;
     public static final int ACT_NOT_CONNECTED = 2;  // 走 judge(NOT_CONNECTED/AT3)
     public static final int ACT_NOT_EXECUTED = 3;   // 用户拒绝 / 系统拒绝 / 无答复
     public static final int ACT_STALE_CONFIG = 4;   // 目标已被系统保存或正连着
@@ -58,8 +67,18 @@ public final class SpecifierVerdict {
             this.netIdKnown = netIdKnown;
         }
 
+        /**
+         * **恒为 false。** 无 Root 在线验证不存在成功动作 ——
+         * 保留这个方法是为了让调用方写 `if (d.isSuccess())` 时得到明确否定，
+         * 而不是误以为这里能产出成功。
+         */
         public boolean isSuccess() {
-            return action == ACT_SUCCESS;
+            return false;
+        }
+
+        /** 已连上但无法归属到本次候选（走 UNKNOWN/on-target-unattributed）。 */
+        public boolean isConnectedUnattributed() {
+            return action == ACT_CONNECTED_UNATTRIBUTED;
         }
 
         public boolean isNotConnected() {
@@ -93,14 +112,40 @@ public final class SpecifierVerdict {
      */
     public static Decision decide(boolean connected, boolean unavailable,
                                   boolean userRejected, boolean preBlocked, boolean timedOut) {
+        return decide(connected, unavailable, userRejected, preBlocked, timedOut, false);
+    }
+
+    /**
+     * 完整版：额外区分「连上后立刻掉线」。
+     *
+     * <p>{@code unstable} 的优先级**高于** {@code connected} —— 连接建立后立刻丢失
+     * 不足以证明口令可用，必须降级成「没连上」，绝不留一个永久 SUCCESS（D7）。
+     */
+    public static Decision decide(boolean connected, boolean unavailable,
+                                  boolean userRejected, boolean preBlocked, boolean timedOut,
+                                  boolean unstable) {
+        if (unstable) {
+            return new Decision(ACT_NOT_CONNECTED, "dropped-immediately",
+                    Evidence.Source.FAILOVER, Evidence.Claim.NOT_CONNECTED,
+                    Evidence.Attribution.AT3, false);
+        }
         // 顺序即优先级：先认「连上」，再认「用户拒绝」（这不是网络结论），
         // 再认「系统拒绝」，最后才是「没能建立连接」。
         if (connected) {
-            return new Decision(ACT_SUCCESS, "available",
+            // 归属只到 AT2（SSID + BSSID 对得上），**不给 AT3**。
+            // AT3 的语义是「这条证据能绑到本次候选建立的配置上」——
+            // 无 Root 拿不到这个事实。交给 Adjudicator 后自然落到
+            // UNKNOWN / reason=on-target-unattributed / grade=NONE：
+            // 既不当成功，也不当失败。这是**用现有状态机**表达证据不足。
+            return new Decision(ACT_CONNECTED_UNATTRIBUTED, "available-unattributed",
                     Evidence.Source.SUCCESS_STATUS, Evidence.Claim.CONNECTED,
-                    Evidence.Attribution.AT3, true);
+                    Evidence.Attribution.AT2, false);
         }
         if (userRejected) {
+            // 说明：公开回调**没法**把「用户取消确认框」与「认证失败」分开
+            //（AOSP 里用户取消走 handleRejectUserSelection → 连接失败 →
+            // 应用侧收到的仍是 onUnavailable）。所以生产路径不会置这个位；
+            // 真到了这里也只按「未执行」处理，绝不落成密码错误。
             return new Decision(ACT_NOT_EXECUTED, "user-rejected",
                     null, null, Evidence.Attribution.NONE, false);
         }
@@ -122,6 +167,16 @@ public final class SpecifierVerdict {
                 null, null, Evidence.Attribution.NONE, false);
     }
 
+    /**
+     * 「已连上但无法归属」的机器可读归类码。
+     *
+     * <p>与 {@code Adjudicator} 的 {@code on-target-unattributed} 同义，
+     * UI / 日志据此说明「需要人工确认」，而不是「密码正确」。
+     */
+    public static String connectedUnattributedReason() {
+        return "on-target-unattributed";
+    }
+
     /** 目标已被系统保存 / 正连着它时，本条作废（公开 API 删不掉旧配置）。 */
     public static Decision staleConfig() {
         return new Decision(ACT_STALE_CONFIG, "stale-config",
@@ -130,7 +185,8 @@ public final class SpecifierVerdict {
 
     /** 这个决策要不要经过 Adjudicator（只有前两种要）。 */
     public static boolean needsAdjudication(Decision d) {
-        return d != null && (d.action == ACT_SUCCESS || d.action == ACT_NOT_CONNECTED);
+        return d != null
+                && (d.action == ACT_CONNECTED_UNATTRIBUTED || d.action == ACT_NOT_CONNECTED);
     }
 
     /** 对应要传的闸门（仅 ACT_STALE_CONFIG / ACT_NOT_EXECUTED 用得上）。 */

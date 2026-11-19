@@ -91,22 +91,45 @@ public class RootlessSpecifierTest {
 
     // ---------------------------------------------------------------- 2. 连上
 
+    /**
+     * 无 Root「已连上」的语义（2026-11-18 定稿）。
+     *
+     * <h3>为什么这里不再是 SUCCESS</h3>
+     * {@code onAvailable} 只能证明「系统现在有一条符合请求条件的到目标连接」，
+     * 证明不了「这条连接是用本条候选的 PSK 完成的握手」：
+     * AOSP 的 {@code satisfiesNetworkSpecifier} 不比 PSK，PMKSA 缓存可复用会话密钥。
+     * 所以归属只能到 AT2（SSID+BSSID 对得上），交给裁决器后落到
+     * <b>UNKNOWN / on-target-unattributed / NONE</b> —— 既不当成功也不当失败。
+     *
+     * <p>这些断言取代了旧版「连上 → SUCCESS/DIRECT/AT3」那批用例：
+     * 旧用例把「连上」当成「密码正确」，正是本次要封的假成功。
+     */
     private void mapConnected() {
         SpecifierVerdict.Decision d = SpecifierVerdict.decide(true, false, false, false, false);
-        ok("连上 → ACT_SUCCESS", d.isSuccess());
-        ok("连上 → 主张 CONNECTED", d.claim == Evidence.Claim.CONNECTED);
-        ok("连上 → 归属 AT3", d.attribution == Evidence.Attribution.AT3);
-        ok("连上 → netIdKnown", d.netIdKnown);
-        ok("连上 → 归类码 available", "available".equals(d.code));
-        ok("连上要经裁决器", SpecifierVerdict.needsAdjudication(d));
+        ok("连上 → 不是成功动作（isSuccess 恒 false）", !d.isSuccess());
+        ok("连上 → ACT_CONNECTED_UNATTRIBUTED", d.isConnectedUnattributed());
+        ok("连上 → 主张 CONNECTED（确实观察到连接）", d.claim == Evidence.Claim.CONNECTED);
+        // 关键：归属封顶 AT2 —— AT3 才是「可绑到本次候选的配置」
+        ok("连上 → 归属 AT2 而不是 AT3", d.attribution == Evidence.Attribution.AT2);
+        ok("连上 → netIdKnown=false（拿不到本次新建的 netId）", !d.netIdKnown);
+        ok("连上 → 归类码 available-unattributed", "available-unattributed".equals(d.code));
+        ok("连上仍要经裁决器（不自行下结论）", SpecifierVerdict.needsAdjudication(d));
         ok("连上的闸门是 OK", SpecifierVerdict.gateOf(d) == AttemptState.Gate.OK);
 
-        // 真的走一遍裁决：必须是 SUCCESS + DIRECT
+        // 真的走一遍裁决：必须是 UNKNOWN / NONE，绝不是 SUCCESS
         Adjudicator.Result r = adjudicate(d, "run#1");
-        ok("连上 → SUCCESS", r.verdict == CrackEngine.Verdict.SUCCESS);
-        ok("连上 → DIRECT", r.grade == EvidenceGrade.Level.DIRECT);
-        ok("连上 → 可持久化（SUCCESS 不写 triedSet，但等级是对的）",
-                EvidenceGrade.persistable(r.grade));
+        ok("连上 → 不产生 SUCCESS", r.verdict != CrackEngine.Verdict.SUCCESS);
+        ok("连上 → 结果是 UNKNOWN", r.verdict == CrackEngine.Verdict.UNKNOWN);
+        ok("连上 → 原因是 on-target-unattributed", "on-target-unattributed".equals(r.reason));
+        ok("连上 → 等级 NONE", r.grade == EvidenceGrade.Level.NONE);
+        ok("连上 → 不可持久化", !EvidenceGrade.persistable(r.grade));
+        ok("连上 → 不推进游标", !EvidenceGrade.advancesCursor(r.grade));
+
+        // 落到 Attempt 上：isSuccess 必须为 false（CrackService 据此不进成功分支）
+        CrackEngine.Attempt a = Attempts.of(d, "run#1");
+        ok("**连上后 Attempt.isSuccess() 为 false**", !a.isSuccess());
+        ok("连上的 Attempt 结论是 UNKNOWN", a.verdict == CrackEngine.Verdict.UNKNOWN);
+        ok("连上的 Attempt 等级 NONE", a.grade == EvidenceGrade.Level.NONE);
     }
 
     // ---------------------------------------------------------------- 3. 没连上（核心）
@@ -162,7 +185,8 @@ public class RootlessSpecifierTest {
         // 优先级：连上优先于一切
         SpecifierVerdict.Decision both =
                 SpecifierVerdict.decide(true, true, true, true, true);
-        ok("连上优先于其它信号", both.isSuccess());
+        // 「连上」优先级最高 —— 但它的结论是「已连上未归属」，不是成功
+        ok("连上优先于其它信号", both.isConnectedUnattributed() && !both.isSuccess());
 
         // 用户拒绝优先于「系统说不可用」
         SpecifierVerdict.Decision ur =
@@ -228,8 +252,12 @@ public class RootlessSpecifierTest {
         String ch = src("cap/SpecifierChannel.java");
         ok("通道明确声明不能删旧配置", ch.contains("public boolean canForget()")
                 && ch.contains("return false;"));
-        ok("通道的 forgetTarget 恒 false 且说明原因",
-                ch.contains("forget-unsupported"));
+        // 2026-11-18 修正：这里原来断言一个早已删掉的字符串 "forget-unsupported"。
+        // 契约本身是「删不掉 + 说明原因 + 用两道替代闸」，按契约断言而不是按魔法字符串。
+        ok("通道的 forgetTarget 恒 false 且说明为什么删不掉",
+                ch.contains("public boolean forgetTarget(String ssid) {")
+                        && ch.contains("公开 API 无法删除已保存配置")
+                        && ch.contains("请求前确认没连着目标"));
     }
 
     // ---------------------------------------------------------------- 7. 文案诚实
@@ -240,12 +268,29 @@ public class RootlessSpecifierTest {
         ok("通道注释承认每个候选要确认", ch.contains("每个不同的网络请求") || ch.contains("确认框"));
         ok("通道注释承认失败不可拆解",
                 ch.contains("onUnavailable") && ch.contains("分不开"));
-        ok("通道不声称能自动跑整本字典",
-                ch.contains("不能") && (ch.contains("全自动") || ch.contains("自动逐条")));
+        // 2026-11-18 修正：原断言要求文案里出现「不能…全自动」，但 AOSP 的批准缓存
+        // 说明首次批准后同一 AP 的后续候选**可能**不再弹框 —— 那句断言把已知不准确的
+        // 结论写死了。改为按「不承诺无人值守 + 不承诺无交互」断言。
+        ok("通道不承诺无人值守/无交互",
+                (ch.contains("无人值守") || ch.contains("unattended"))
+                        && (ch.contains("不承诺") || ch.contains("still need root")));
 
         // 能力状态里必须带「一次一个」的说明
         ok("能力说明写明一次一个候选",
                 ch.contains("一次一个候选") || ch.contains("one confirmation per candidate"));
+
+        // 2026-11-18 修正：原来断言「不能全自动」，但 AOSP 的批准缓存意味着
+        // 首次批准后同一 AP 的后续候选**可能**不再弹框。旧断言把一个已知不准确的
+        // 结论写死了。现在按**准确表述**断言：首次需确认 + 后续可能复用 + 厂商待确认。
+        ok("说明首次需要一次系统确认",
+                ch.contains("首次对某 AP 需你点一次确认")
+                        || ch.contains("the first request for an AP needs one confirmation"));
+        ok("说明后续候选可能复用授权（AOSP 行为）",
+                ch.contains("系统可能不再弹框") || ch.contains("may skip it"));
+        ok("说明厂商是否保留待真机确认",
+                ch.contains("厂商是否保留待真机确认") || ch.contains("vendor builds unverified"));
+        ok("不承诺无人值守",
+                ch.contains("无人值守") || ch.contains("unattended"));
 
         // 全仓不许把无 Root 说成「破解成功」
         String all = ch + src("audit/CrackEngine.java");
@@ -259,6 +304,18 @@ public class RootlessSpecifierTest {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < n; i++) sb.append(c);
         return sb.toString();
+    }
+
+    /** 把决策走完整裁决链落成 Attempt（与生产 tryOneSpecifier 同一入口）。 */
+    private static final class Attempts {
+        static CrackEngine.Attempt of(SpecifierVerdict.Decision d, String attemptId) {
+            AttemptState st = new AttemptState(attemptId, CrackEngine.Lifecycle.TERMINATED,
+                    SpecifierVerdict.gateOf(d), d.netIdKnown);
+            Adjudicator.Result r = Adjudicator.adjudicate(st,
+                    Collections.singletonList(new Evidence(d.source, d.claim, d.attribution,
+                            attemptId, 1000L)));
+            return Adjudicator.toAttempt("12345678", r, 100L, "", "specifier");
+        }
     }
 
     private Adjudicator.Result adjudicate(SpecifierVerdict.Decision d, String attemptId) {

@@ -68,6 +68,18 @@ public final class AuthCastAttributionTest {
             if (cmd.contains("connect-network") || cmd.contains("add-network")) attemptStarted = true;
             if (cmd.startsWith("cmd wifi status")) {
                 sc++;
+                /* 竞态修复（2026-11-18，消除本测试的偶发失败）：
+                 * 引擎在**独立线程**发 connect-network，而本测试的 TestEngineClock
+                 * realBlockCap=0 不产生真实等待 —— 虚拟时钟可能在连接线程被调度前
+                 * 就走完观察窗口，收尾那次 status 落回「未连接」，生命周期被判成
+                 * TERMINATED，偶发得到 NETWORK_AUTH_FAIL 而不是 INCOMPLETE。
+                 * 这里让出极短真实时间（累计 <10ms，不影响虚拟时间语义），
+                 * 保证 connect 线程有机会置 attemptStarted。断言一条没改。
+                 */
+                for (int k = 0; k < 5 && !attemptStarted; k++) {
+                    Thread.yield();
+                    try { Thread.sleep(0, 500_000); } catch (InterruptedException ignored) {}
+                }
                 if (!attemptStarted) return "Wifi is not connected\n";
                 return "WifiInfo: SSID: \"" + SSID + "\", BSSID: " + BSSID
                         + ", IP: /0.0.0.0, Supplicant state: ASSOCIATING, Net ID: 613\n";

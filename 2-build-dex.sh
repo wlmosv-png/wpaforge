@@ -80,15 +80,36 @@ SRC="$(find "$APP/src/main/java" -name "*.java" \
         ! -name "*Test.java" ! -name "R3AuditProbe.java" \
         ! -name "MarkerSelfCheck.java") \
      $(find "$OUT/gen" -name "*.java" 2>/dev/null)"
+# Shizuku API（本地 jar，app/libs 下）—— 只用于拿 binder，不引入运行时依赖。
+SHZ="$APP/libs/shizuku-api.jar"
+CP="$ANDROID_JAR"
+if [ -f "$SHZ" ]; then
+  CP="$CP:$SHZ"
+else
+  echo "警告: 缺少 $SHZ —— Shizuku 通道将无法编译" >&2
+fi
 javac --release 17 -encoding UTF-8 \
-  -cp "$ANDROID_JAR" \
+  -cp "$CP" \
   -d "$OUT/classes" $SRC
+
+echo "==> 解出 Shizuku API 的 class（必须进 dex，否则运行时 ClassNotFound）"
+# 这一步是 2026-11-20 的关键修复：之前只把 shizuku-api.jar 放进 javac 的 -cp，
+# d8 只转我们自己编译出的 class，导致 rikka.shizuku.* 根本没进 dex。
+# 运行时 Class.forName("rikka.shizuku.Shizuku") 抛 ClassNotFoundException，
+# 于是 probe() 判「缺少 API」→ 静默退回 WifiNetworkSpecifier → 弹出系统 WiFi 界面。
+# 正确做法（也是 WiFi 工具箱的做法）：把 API 的 class 一起打进 dex。
+SHZ_CLASSES="$OUT/shz-classes"
+if [ -f "$SHZ" ]; then
+  rm -rf "$SHZ_CLASSES"; mkdir -p "$SHZ_CLASSES"
+  ( cd "$SHZ_CLASSES" && unzip -o -q "$SHZ" 'rikka/**' 'moe/**' 2>/dev/null || true )
+fi
 
 echo "==> d8 转 dex"
 java -cp "$D8_JAR" com.android.tools.r8.D8 \
   --release --min-api 26 --lib "$ANDROID_JAR" \
   --output "$DEX" \
-  $(find "$OUT/classes" -name "*.class")
+  $(find "$OUT/classes" -name "*.class") \
+  $(find "$SHZ_CLASSES" -name "*.class" 2>/dev/null)
 
 echo "==> 组装未签名 APK"
 STAGE=$OUT/stage

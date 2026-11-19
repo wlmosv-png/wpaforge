@@ -94,4 +94,15 @@ public interface ConnectChannel {
     /** 掉通道时的回调（常驻会话断了、su 被收回）。默认不关心。 */
     default void setOnLost(Runnable r) {
     }
+
+    /**
+     * 这个通道能不能执行 {@code cmd wifi}（shell 语义）。
+     *
+     * <p>Root 与 Shizuku 都是「拿到 shell 身份」——区别只是身份从哪来。
+     * {@code SpecifierChannel} 走 binder 到 ConnectivityService，不具备这个能力。
+     * 判定链据此选择「status 四条件同行 + supplicant 日志」还是「系统回调」。
+     */
+    default boolean hasShellSemantics() {
+        return false;
+    }
 }

@@ -49,6 +49,26 @@
         android:name="android.hardware.wifi"
         android:required="false" />
 
+    <!--
+      Shizuku 包可见性（2026-11-20）。
+
+      Android 11+ 的包可见性默认把「别的应用装没装」藏起来 ——
+      不加这段，getPackageInfo("moe.shizuku.privileged.api") 会抛
+      NameNotFoundException，于是探测把「Shizuku 装了」误判成「没装」，
+      整条无 Root 自动连接路径被自己挡住（用户看到的就是「点了没反应」
+      或退回系统确认框）。
+
+      同时声明 Shizuku 的权限，用于 checkSelfPermission / requestPermission。
+    -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="moe.shizuku.manager" />
+        <intent>
+            <action android:name="moe.shizuku.manager.intent.action.BinderReceived" />
+        </intent>
+    </queries>
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
     <application
         android:name=".App"
         android:label="WPAForge"

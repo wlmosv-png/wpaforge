@@ -61,6 +61,12 @@ public final class CapabilityDetector {
             String specWhy = specifierUnavailableReason(ctx);
             f.specifierUsable = specWhy == null;
             f.specifierReason = specWhy == null ? "" : specWhy;
+            // Shizuku 探测：这是无 Root 自动连接的主路，必须实测。
+            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                    new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(ctx);
+            int st = shz.probe();
+            f.shizukuUsable = shz.usable();
+            f.shizukuReason = shz.usable() ? "" : shz.stateDetail();
             items = CapabilityProbe.explainRootless(f);
         } else {
             String su = suId();

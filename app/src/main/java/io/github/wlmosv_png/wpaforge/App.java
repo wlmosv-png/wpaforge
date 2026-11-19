@@ -186,8 +186,43 @@ public class App extends Application {
                 }
                 sb.append('\n');
 
-                // 特权通道（只有 Root；Shizuku 与免 Root 已在 1.9.24 移除）
+                // 特权通道（Root / Shizuku）
                 sb.append("-- 特权通道 --\n");
+                // Shizuku 探测：这是无 Root 自动连接的主路，启动时就把真实状态写进日志，
+                // 免得用户报「点了没反应」时无从判断。
+                // 先诊断类加载：这是「点了没反应」最常见的根因
+                try {
+                    Class.forName("rikka.shizuku.Shizuku");
+                    sb.append("  Shizuku 类加载: OK\n");
+                } catch (Throwable t) {
+                    sb.append("  Shizuku 类加载: FAIL ").append(t.getClass().getSimpleName())
+                            .append(" / loader=")
+                            .append(App.class.getClassLoader() == null ? "boot"
+                                    : App.class.getClassLoader().getClass().getSimpleName())
+                            .append('\n');
+                }
+                try {
+                    io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                            new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(App.this);
+                    int st = shz.probe();
+                    sb.append("  Shizuku 状态: ").append(st)
+                            .append(" (").append(shz.stateDetail()).append(")\n");
+                    sb.append("  Shizuku 可用: ").append(shz.usable() ? "是" : "否").append('\n');
+                    if (shz.usable()) {
+                        // 真跑一条只读命令，证明通道确实能执行
+                        io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
+                                shz.exec("cmd wifi status", 8000);
+                        String first = r.output == null ? "" : r.output.trim();
+                        int nl = first.indexOf('\n');
+                        if (nl > 0) first = first.substring(0, nl);
+                        sb.append("  Shizuku 实测 cmd wifi: exit=").append(r.exitCode)
+                                .append(r.ok() ? " OK" : (" ERR:" + r.error))
+                                .append(" 首行=").append(first).append('\n');
+                    }
+                } catch (Throwable t) {
+                    sb.append("  Shizuku 探测异常: ").append(t.getClass().getSimpleName())
+                            .append('\n');
+                }
                 try {
                     boolean hasPriv = io.github.wlmosv_png.wpaforge.scan.PrivScanReader.hasPrivilegedChannel();
                     sb.append("  Root 通道可用: ").append(hasPriv ? "是" : "否（su 不可用）").append('\n');

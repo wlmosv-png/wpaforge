@@ -91,6 +91,18 @@ public final class RootChannel implements ConnectChannel {
         return "Root";
     }
 
+    /**
+     * 具备 shell 语义 —— 能执行 {@code cmd wifi}。
+     *
+     * <p>Root 与 Shizuku 在这一点上完全等价：都是拿到 shell 身份，
+     * 所以判定链可以走同一条（status 四条件同行 + supplicant 日志），
+     * 不需要退化成「只有系统回调」的弱证据模式。
+     */
+    @Override
+    public boolean hasShellSemantics() {
+        return true;
+    }
+
     // ------------------------------------------------------------ 底层 exec
 
     /**

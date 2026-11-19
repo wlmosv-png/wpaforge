@@ -40,6 +40,15 @@ public final class CapabilityProbe {
         public boolean wpaLogNonEmpty;
         /** 本机能不能走 WifiNetworkSpecifier 在线验证（API 29+ 且有 ConnectivityManager）。 */
         public boolean specifierUsable;
+        /**
+         * Shizuku 能不能提供 shell 身份（= 能执行 cmd wifi connect-network）。
+         *
+         * <p>这是无 Root 自动连接的**主路**：有它就能走完整 Root 判定链，
+         * 不需要用户逐条确认。没有才退回 Specifier。
+         */
+        public boolean shizukuUsable;
+        /** Shizuku 不可用的具体原因（可用时为空）。 */
+        public String shizukuReason = "";
         /** 不能用的原因（能用时为空）。 */
         public String specifierReason = "";
 
@@ -70,7 +79,16 @@ public final class CapabilityProbe {
         // 整条无 Root 在线验证挡在门外 —— 明明 SpecifierChannel 已经实现可用。
         // 现在按**真实能力**判：API 29+ 且有 ConnectivityManager 就是降级可用。
         // 用 DEGRADED 而不是 AVAILABLE：能跑，但失败拆不开、成功进不了 DIRECT。
-        if (x.specifierUsable) {
+        if (x.shizukuUsable) {
+            // Shizuku 给的是 shell 身份 → 与 Root 同一条判定链（AT3 可达）。
+            // 这是**唯一**能让无 root 用户自动跑整本字典的路。
+            out.add(Capability.available(Capability.C_WIFI_CONNECT,
+                    "通过 Shizuku 借 shell 身份执行 cmd wifi —— 自动逐条关联，"
+                            + "与 Root 同一条判定链（需先安装并在 Shizuku 里授权）",
+                    "uses Shizuku to borrow the shell identity and run cmd wifi - "
+                            + "fully automatic per-candidate association on the same "
+                            + "judgment chain as root (install Shizuku and grant access)"));
+        } else if (x.specifierUsable) {
             out.add(Capability.degraded(Capability.C_WIFI_CONNECT,
                     "可用系统确认框逐次在线验证：首次对某 AP 需确认一次，"
                             + "之后对同一 AP 系统可能不再弹框（AOSP 行为，厂商待真机确认）；"
@@ -84,12 +102,16 @@ public final class CapabilityProbe {
                     "Treat it as per-candidate verification, one at a time; unattended "
                             + "dictionary runs still need root."));
         } else {
-            out.add(Capability.unsupported(Capability.C_WIFI_CONNECT,
-                    x.specifierReason.isEmpty()
-                            ? "本机没有可用的在线验证接口（需要 Android 10 及以上）"
-                            : x.specifierReason,
-                    "no usable online-verification interface on this device (Android 10+ required)",
-                    RootlessChannel.ALT_ZH, RootlessChannel.ALT_EN));
+            String why = !x.shizukuReason.isEmpty() ? x.shizukuReason
+                    : (x.specifierReason.isEmpty()
+                            ? "本机没有可用的在线验证接口" : x.specifierReason);
+            out.add(Capability.unsupported(Capability.C_WIFI_CONNECT, why,
+                    "no usable online-verification interface on this device",
+                    "安装 Shizuku 并用「无线调试」启动服务后授权本应用，即可自动逐条关联；"
+                            + "或换到已 root 的设备。",
+                    "Install Shizuku, start it via Wireless debugging, and grant this app "
+                            + "access to get automatic per-candidate association; "
+                            + "alternatively use a rooted device."));
         }
 
         out.add(Capability.unsupported(Capability.C_WIFI_FORGET,

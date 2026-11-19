@@ -659,7 +659,7 @@ public final class CrackEngine {
      * 少任何一道都不许往下跑 —— 跑下去只会得到「一堆未连上」，那是伪造结论。
      */
     public boolean canAttemptAssociation() {
-        // 无 Root 在线验证通道：它的「能力」体现在 canAssociate 上，
+        // 无 Root 在线验证通道（Specifier）：它的「能力」体现在 canAssociate 上，
         // 而净检（删旧配置）在公开 API 下**做不到** —— 那一项由 tryOneSpecifier
         // 在每次尝试前实测（目标是否已被系统保存 / 已连着目标），
         // 不在这里一刀切，否则整条无 Root 通道都会被挡死。
@@ -668,6 +668,12 @@ public final class CrackEngine {
         }
         if (shell == null) return false;
         if (channel == null) return true;      // 未接入能力层：保持改造前行为
+        // Shizuku 路径走 RootChannel（hasShellSemantics=true），它自带净检能力，
+        // 所以这里与 Root 完全一致 —— 不能因为「模式是无 Root」就要求 canForget，
+        // 否则装了 Shizuku 的用户会被自己的模式标签挡住。
+        if (channel.hasShellSemantics()) {
+            return channel.canAssociate();
+        }
         return channel.canAssociate() && channel.canForget();
     }
 

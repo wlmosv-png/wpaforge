@@ -122,6 +122,8 @@ public class CrackService extends Service {
     private Thread worker;
     /** 统一引擎实例（取消/暂停走它） */
     private volatile CrackEngine engineRef;
+    /** 无 Root 模式下用来执行 cmd wifi 的 Shizuku 通道（可能为 null）。 */
+    private volatile io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shizukuRef;
     private TaskQueue.Task currentTask;
     /** 连续 exec 超时计数（通道熔断用） */
     private int execTimeouts = 0;
@@ -1324,14 +1326,33 @@ public class CrackService extends Service {
                 "wpaforge-mode-warm").start();
         {
             if (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
-                // 无 Root 在线验证（2026-11-18）：不再「恒 false」。
-                // 用 WifiNetworkSpecifier 让系统真正去试候选口令，判定内核不变；
-                // 通道说明它的边界（每个候选要用户确认一次、失败不可拆解）。
-                io.github.wlmosv_png.wpaforge.cap.SpecifierChannel spec =
-                        new io.github.wlmosv_png.wpaforge.cap.SpecifierChannel(
-                                this, new android.os.Handler(android.os.Looper.getMainLooper()));
-                engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
-                engine.setSpecifierChannel(spec);
+                // 无 Root 模式（2026-11-20 重做）：
+                //   ① Shizuku 可用 → 借 shell 身份走**完整 Root 判定链**
+                //      （cmd wifi connect-network + status 四条件同行 + supplicant 日志）。
+                //      这才是「无 root 也能自动跑字典」的正解：不需要 root、不需要解锁，
+                //      只要用户装了 Shizuku 并用无线调试启动过服务。
+                //   ② Shizuku 不可用 → 退到 WifiNetworkSpecifier（要用户逐次确认，
+                //      且失败拆不开），作为兜底而不是主路。
+                final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                        new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(this);
+                final int shzState = shz.probe();
+                shizukuRef = shz;
+                if (shz.usable()) {
+                    log(L.s("无 Root 执行方式: Shizuku（" + shz.stateDetail() + "）",
+                            "rootless executor: Shizuku (" + shz.stateDetail() + ")"));
+                    engine.setConnectChannel(
+                            new io.github.wlmosv_png.wpaforge.cap.RootChannel());
+                    engine.setSpecifierChannel(null);
+                } else {
+                    log(L.s("Shizuku 不可用（" + shz.stateDetail() + "）→ 退回系统确认框逐次验证",
+                            "Shizuku unavailable (" + shz.stateDetail()
+                                    + ") -> falling back to per-candidate system approval"));
+                    io.github.wlmosv_png.wpaforge.cap.SpecifierChannel spec =
+                            new io.github.wlmosv_png.wpaforge.cap.SpecifierChannel(
+                                    this, new android.os.Handler(android.os.Looper.getMainLooper()));
+                    engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
+                    engine.setSpecifierChannel(spec);
+                }
             } else {
                 final io.github.wlmosv_png.wpaforge.cap.RootChannel rootCh =
                         new io.github.wlmosv_png.wpaforge.cap.RootChannel();
@@ -1351,6 +1372,16 @@ public class CrackService extends Service {
                                 "persistent shell unavailable; falling back to per-call su"));
                     }
                     out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                    // Root 也拿不到 → 如果 Shizuku 可用，改走 shell 身份。
+                    // 这一步让「无 root 但装了 Shizuku」能跑完整判定链。
+                    if (out == null || out.trim().isEmpty()) {
+                        io.github.wlmosv_png.wpaforge.cap.ShizukuChannel s2 = shizukuRef;
+                        if (s2 != null && s2.usable()) {
+                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
+                                    s2.exec(cmd, timeoutMs);
+                            if (r.ok() && !r.output.trim().isEmpty()) out = r.output;
+                        }
+                    }
                 } else {
                     sessFails[0] = 0;
                 }

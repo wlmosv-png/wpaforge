@@ -1668,7 +1668,42 @@ public final class CrackEngine {
                     join(p), p.steps);
         }
 
-        // --- 2. 通道类型：只有 Root ---
+        // --- 2. 走哪条通道 ---
+        //
+        // **无 Root 在线验证（Specifier）必须在这里分支出去**（2026-11-20 修）。
+        //
+        // 历史事故：这一段原来无条件要求 shell 通道，然后在下面真跑
+        // `cmd wifi status`。安卓 13 未 root 的机器上，应用 UID 执行该命令
+        // 返回**空串**（binder 按调用者 UID 拦），于是 probe 报
+        // 「通道未真正接入 / 本机不支持（缺子命令）」—— 而实际上
+        // WifiNetworkSpecifier 这条路是好的。用户看到的就是
+        // 「点击破解没反应，说是不支持 cmd」。
+        //
+        // 正确判据：有 Specifier 就走 Specifier 的自检，**完全不碰 shell**。
+        if (specifier != null) {
+            String why = specifier.probeSupport();
+            p.step((why == null ? "✓ " : "✗ ")
+                    + L.s("通道类型: 无 Root 在线验证（WifiNetworkSpecifier）",
+                          "channel type: rootless online verification (WifiNetworkSpecifier)"));
+            if (why != null) {
+                p.step("  " + L.s("不可用: ", "unavailable: ") + why);
+                return new ChannelProbe(false,
+                        L.s("本机无法做在线验证", "online verification unavailable here"),
+                        join(p));
+            }
+            p.step("✓ " + L.s("系统确认框通道可用（每条候选由系统真正去关联）",
+                    "system approval flow is available (each candidate is really associated)"));
+            // 判定信号：读当前连接（公开 API，不需要特权）
+            String curSpec = currentSsid();
+            p.step((curSpec != null ? "✓ " : "· ") + L.s("WifiInfo 信号: ",
+                    "WifiInfo signal: ")
+                    + (curSpec == null ? L.s("读不到（可能当前没连网）",
+                            "unavailable (may just be offline)") : curSpec));
+            p.step(L.s("  → 逐条验证：一次一个候选，系统会弹「连接到该网络？」确认框。",
+                    "  -> per-candidate: one at a time; the system shows a connect prompt."));
+            return new ChannelProbe(true, L.s("无 Root 在线验证已就绪",
+                    "rootless online verification ready"), join(p), p.steps);
+        }
         if (shell == null) {
             p.step("✗ " + L.s("shell 通道未设置", "shell channel not set"));
             return new ChannelProbe(false,

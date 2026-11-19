@@ -115,6 +115,21 @@ public class CrackService extends Service {
          * @param summary 人类可读的结论，例：{@code 已恢复 : OK}
          */
         default void onRestoreDone(String summary) { }
+
+        /**
+         * 任务被闸门拦下（不是失败，是**这条路径不存在**）。
+         *
+         * <p>为什么要单独一条：旧实现只往日志里写一行，用户点「开始」后
+         * 界面毫无反应 —— 他报障时说的就是「点击破解后没效果」。
+         * 日志藏在滚动区里，普通用户根本不会去看。
+         *
+         * <p>现在界面拿到这个回调就**弹一个可点击的引导对话框**：
+         * 说清缺什么、点哪里、下一步做什么。
+         *
+         * @param title  一句话结论（例：还差一步：装 Shizuku）
+         * @param detail 完整说明（含操作步骤）
+         */
+        default void onBlockedNotice(String title, String detail) { }
     }
 
     private final List<UiCallback> callbacks = new ArrayList<>();
@@ -1362,11 +1377,34 @@ public class CrackService extends Service {
         engine.setShellChannel(new CrackEngine.ShellChannel() {
             @Override
             public String exec(String cmd, long timeoutMs) {
-                String out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
+                // **通道优先级（2026-11-20 修）**
+                //
+                // 旧实现是「先 su，su 拿不到才试 Shizuku」，在未 root 的机器上
+                // 每条命令都要先白等一次 su 超时（实测 8s/条 × 几十条 = 几分钟
+                // 一动不动，用户以为「点了没反应」）。而且常驻会话 sess 内部
+                // 也是起 su，同样先卡一次。
+                //
+                // 现在按「当前模式实际拿到什么身份」决定顺序：
+                //   · Shizuku 可用且不是 root 身份 → 直接走 Shizuku（这是无 Root 的主路）
+                //   · 否则先走 su 会话，失败再退 Shizuku
+                io.github.wlmosv_png.wpaforge.cap.ShizukuChannel s0 = shizukuRef;
+                final boolean preferShizuku = (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS)
+                        && s0 != null && s0.usable()
+                        && s0.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY;
+
+                String out = null;
+                if (preferShizuku) {
+                    io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
+                            s0.exec(cmd, timeoutMs);
+                    if (r.ok() && !r.output.trim().isEmpty()) out = r.output;
+                    // Shizuku 这一帧失败 → 落到下面走 su 兜底（保持原行为）
+                } else {
+                    out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
+                }
                 if (out == null) {
                     // 这一帧没拿到（超时 / 会话死了）。连续几次就彻底不再试，
                     // 免得每轮白付一次启动成本。
-                    if (!sessOff[0] && ++sessFails[0] >= 3) {
+                    if (!preferShizuku && !sessOff[0] && ++sessFails[0] >= 3) {
                         sessOff[0] = true;
                         log(L.s("常驻 shell 会话不可用，已退回逐条 su（会慢一些）",
                                 "persistent shell unavailable; falling back to per-call su"));
@@ -1550,6 +1588,11 @@ public class CrackService extends Service {
             public void onBlocked(String title, String detail) {
                 log(L.f("无法开始: %s", "Cannot start: %s", title));
                 for (UiCallback cb : callbacks) cb.onLog(title + "\n" + detail);
+                // 同时给界面一条**可见**的通知（日志区用户不会去看）。
+                // 这是用户报障「点破解没反应」的直接来源。
+                for (UiCallback cb : callbacks) {
+                    try { cb.onBlockedNotice(title, detail); } catch (Throwable ignored) {}
+                }
                 engineRef = null;
                 // 通道/环境阻塞与「用户主动停止」是两回事：
                 // 前者是环境不行（计划要标 BLOCKED），后者是用户不想跑了（STOPPED）。

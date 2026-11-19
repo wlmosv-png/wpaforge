@@ -61,6 +61,59 @@ public class RootlessVerdictChainTest {
         wpsSeparation();
         modeIsolation();
         channelContract();
+        probeMustNotRequireShellInRootless();
+        shizukuPreferredOverSu();
+    }
+
+    // ---------------------------------------------------------------- 8. 自检不得拿 shell 判 Specifier
+    //
+    // 真机事故（2026-11-20，安卓 13 未 root 的另一台机器）：
+    //   用户点「破解」→ 界面提示「本机不支持（缺子命令）」→ 实际什么都没跑。
+    // 根因：probeChannel() 无条件用 shell 通道跑 `cmd wifi status`。
+    // 未 root 的应用 UID 执行该命令返回空串（binder 按调用者 UID 拦），
+    // 于是自检判「通道未真正接入」—— 而真正能用的 Specifier 通道根本没被检查。
+    private void probeMustNotRequireShellInRootless() {
+        String eng = readSource("audit/CrackEngine.java");
+        int probeAt = eng.indexOf("public ChannelProbe probeChannel()");
+        ok("probeChannel 存在", probeAt > 0);
+        int probeEnd = eng.indexOf("public ChannelProbe", probeAt + 10);
+        String body = eng.substring(probeAt, probeEnd > probeAt ? probeEnd : eng.length());
+
+        // Specifier 分支必须排在 shell 判空之前，否则永远走不到。
+        int specAt = body.indexOf("if (specifier != null)");
+        int shellNullAt = body.indexOf("if (shell == null)");
+        ok("probeChannel 里先判 Specifier 通道", specAt > 0);
+        ok("Specifier 分支在 shell 判空之前", specAt > 0 && shellNullAt > 0 && specAt < shellNullAt);
+
+        // 该分支里不许出现 `cmd wifi` —— 它就是用 shell 才会失败的东西
+        int specEnd = body.indexOf("if (shell == null)");
+        String specBlock = body.substring(specAt, specEnd > specAt ? specEnd : body.length());
+        ok("Specifier 自检不执行 cmd wifi", !specBlock.contains("cmd wifi"));
+        ok("Specifier 自检走 probeSupport()", specBlock.contains("probeSupport()"));
+        ok("Specifier 可用时自检通过（不判红）",
+                specBlock.contains("new ChannelProbe(true"));
+    }
+
+    // ---------------------------------------------------------------- 9. 无 Root 时优先 Shizuku
+    //
+    // 真机事故（2026-11-20）：旧实现「先 su、拿不到才试 Shizuku」。
+    // 未 root 的机器上每条命令先白等一次 su 超时（实测 8s/条），
+    // 几十条候选就是几分钟一动不动 —— 用户看到的就是「点了没反应」。
+    private void shizukuPreferredOverSu() {
+        String svc = readSource("CrackService.java");
+        int at = svc.indexOf("public String exec(String cmd, long timeoutMs)");
+        ok("CrackService 有 shell 通道实现", at > 0);
+        int end = svc.indexOf("engine.setShellChannel", at + 10);
+        String body = svc.substring(at, end > at ? end : Math.min(svc.length(), at + 4000));
+
+        ok("定义了 preferShizuku 决策", body.contains("preferShizuku"));
+        ok("preferShizuku 只在无 Root 模式成立",
+                body.contains("RunMode.ROOTLESS") && body.contains("preferShizuku"));
+        // Shizuku 分支必须出现在 su 会话调用之前
+        int shzExec = body.indexOf("s0.exec(cmd, timeoutMs)");
+        int suSess = body.indexOf("sess.exec(cmd, timeoutMs)");
+        ok("Shizuku 分支排在 su 会话之前", shzExec > 0 && suSess > 0 && shzExec < suSess);
+        ok("su 仍保留为兜底", body.contains("RootProber.exec(null"));
     }
 
     // ---------------------------------------------------------------- 1. 能力闸本身

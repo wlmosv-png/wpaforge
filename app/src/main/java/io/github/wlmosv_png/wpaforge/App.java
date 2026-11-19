@@ -237,17 +237,51 @@ public class App extends Application {
                 try {
                     sb.append('\n').append("-- 引擎通道自检 --\n");
                     int mode = io.github.wlmosv_png.wpaforge.Prefs.mode(App.this);
-                    sb.append("  当前模式: Root\n");
+                    // 模式标签不能写死 "Root"（2026-11-20 修）：无 Root 模式下
+                    // 日志说"Root"会把人带偏，报障时最容易被误读成"明明有 root 却不行"。
+                    sb.append("  当前模式: ")
+                      .append(io.github.wlmosv_png.wpaforge.cap.RunMode.nameOf(mode)).append('\n');
                     io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
                             new io.github.wlmosv_png.wpaforge.audit.CrackEngine(App.this, mode);
+                    // 自检也必须按真实通道来（同一处历史事故）：
+                    // 无 Root 模式下这里如果仍挂 su 通道，自检必然报「未接入」，
+                    // 而用户真正能用的 Specifier 通道根本没被检查。
+                    final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shzSelf =
+                            new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(App.this);
+                    final boolean shzOkSelf = (shzSelf.probe() ==
+                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY
+                            || shzSelf.probe() ==
+                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY_NOT_SHELL);
+                    final boolean rootlessSelf =
+                            (mode == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS);
                     eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
                         @Override
                         public String exec(String cmd, long timeoutMs) {
+                            if (rootlessSelf && shzOkSelf) {
+                                io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
+                                        shzSelf.exec(cmd, timeoutMs);
+                                if (r.ok() && !r.output.trim().isEmpty()) return r.output;
+                            }
                             return io.github.wlmosv_png.wpaforge.audit.RootProber
                                     .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
                         }
-                        @Override public String name() { return "Root"; }
+                        @Override public String name() {
+                            return (rootlessSelf && shzOkSelf) ? "Shizuku" : "Root";
+                        }
                     });
+                    if (rootlessSelf && !shzOkSelf) {
+                        // Shizuku 不可用 → 挂上 Specifier，让自检按真实通道判，
+                        // 而不是拿一条不存在的 su 通道去报「未接入」。
+                        try {
+                            eng.setSpecifierChannel(
+                                    new io.github.wlmosv_png.wpaforge.cap.SpecifierChannel(
+                                            App.this, new android.os.Handler(
+                                                    android.os.Looper.getMainLooper())));
+                            eng.setConnectChannel(
+                                    new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
+                        } catch (Throwable ignored) {
+                        }
+                    }
                     io.github.wlmosv_png.wpaforge.audit.CrackEngine.ChannelProbe cp = eng.probeChannel();
                     // 拼成一个字符串再一次性追加。
                     // 之前逐行 append 出现过 steps 全部空白的情况，

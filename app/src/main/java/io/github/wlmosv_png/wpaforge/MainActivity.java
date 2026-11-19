@@ -11690,7 +11690,60 @@ public class MainActivity extends Activity {
         public void onRestoreDone(String summary) {
             ui.post(() -> lastRestoreSummary = summary == null ? "" : summary);
         }
+
+        @Override
+        public void onBlockedNotice(String title, String detail) {
+            ui.post(() -> showBlockedNotice(title, detail));
+        }
     };
+
+    /**
+     * 被闸门拦下时给用户一个**可操作**的对话框。
+     *
+     * <p>用户报障原话：「点击破解后没效果，说是不支持 cmd」——
+     * 因为旧实现只往日志区写了一行，而日志区在页面下方、还会被后续行冲掉。
+     * 这里把结论 + 原因 + 下一步直接弹出来，并按当前实际缺的东西给对应按钮。
+     */
+    private void showBlockedNotice(String title, String detail) {
+        try {
+            final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                    new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(this);
+            final int st = shz.probe();
+            final int mode = Prefs.mode(this);
+
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                    .setTitle(title == null || title.isEmpty()
+                            ? L.s("无法开始", "Cannot start") : title)
+                    .setMessage(detail == null ? "" : detail)
+                    .setNegativeButton(L.s("知道了", "OK"), null);
+
+            // 按「当前实际缺什么」给按钮，不给泛泛的说明。
+            boolean rootless = (mode == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS);
+            if (rootless && st != io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY
+                    && st != io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY_NOT_SHELL) {
+                // 无 Root 且 Shizuku 没就绪 → 引导装/启动/授权
+                b.setPositiveButton(L.s("怎么解决", "How to fix"),
+                        (d, w) -> showShizukuGuide(st, shz));
+            } else if (!rootless) {
+                // Root 模式但通道没通 → 引导去设置页重测
+                b.setPositiveButton(L.s("去设置重测", "Re-check in Settings"),
+                        (d, w) -> {
+                            try {
+                                showTab(4);          // 设置页
+                                rebuildSettingsTab();
+                                refreshModeReady();
+                            } catch (Throwable ignored) {}
+                        });
+            }
+            b.show();
+        } catch (Throwable t) {
+            // 弹窗失败也不能静默：至少把文字给出去
+            try {
+                Toast.makeText(this, (title == null ? "" : title + "\n") + detail,
+                        Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {}
+        }
+    }
 
     /** 破解页的候选流日志。切页签会重建界面，所以文本要留在字段里。 */
     /**
@@ -14543,29 +14596,129 @@ public class MainActivity extends Activity {
                 || st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY_NOT_SHELL) {
             return;     // 已经可用，不用打扰用户
         }
+        // **引导而不是丢一句 Toast**（2026-11-20）。
+        // 用户报障时说「装上了但没看到要权限，点破解也没反应」——
+        // 只弹一条 Toast 他根本不知道该点哪里。这里给可点击的分步指引，
+        // 能直接跳到 Shizuku 应用。
+        showShizukuGuide(st, shz);
+    }
+
+    /** Shizuku 相关包名（管理端与服务端）。 */
+    private static final String SHIZUKU_PKG = "moe.shizuku.privileged.api";
+
+    /**
+     * 分步引导：按当前 Shizuku 状态给出**具体到点哪里**的说明。
+     *
+     * <p>为什么要有这个：无 Root 自动跑字典的唯一前置就是 Shizuku，
+     * 但它的启动方式（无线调试）对普通用户非常不直观。
+     * 只说「去启动服务」等于没说。
+     */
+    private void showShizukuGuide(int st, io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz) {
+        final StringBuilder title = new StringBuilder();
+        final StringBuilder body = new StringBuilder();
+        final String actionLabel;
+        final Runnable action;
+
         if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_INSTALLED) {
-            Toast.makeText(this, L.s(
-                    "没装 Shizuku。无 Root 自动破解需要它提供 shell 身份："
-                            + "装好后用「无线调试」启动服务。",
-                    "Shizuku is not installed. Rootless auto-cracking needs its shell "
-                            + "identity: install it and start the service via Wireless debugging."),
-                    Toast.LENGTH_LONG).show();
-            return;
+            title.append(L.s("还差一步：装 Shizuku", "One step left: install Shizuku"));
+            body.append(L.s(
+                    "无 Root 模式要「自动逐条跑字典」，需要借 shell 身份执行 cmd wifi。"
+                    + "这个身份只能由 Shizuku 提供。\n\n"
+                    + "步骤：\n"
+                    + "1. 点下面的按钮下载安装 Shizuku\n"
+                    + "2. 打开开发者选项 → 开启「无线调试」\n"
+                    + "3. 回到 Shizuku，点「通过无线调试启动」\n"
+                    + "4. 回来本应用，在设置页点「无 Root」重新检测\n\n"
+                    + "不装也能用：字典管理、离线分析、周边扫描照常。",
+                    "Rootless auto-cracking needs a shell identity to run cmd wifi, and only "
+                    + "Shizuku can provide it.\n\n"
+                    + "1. Download and install Shizuku\n"
+                    + "2. Enable Developer options -> Wireless debugging\n"
+                    + "3. In Shizuku, tap \"Start via Wireless debugging\"\n"
+                    + "4. Come back here and tap Rootless in Settings to re-check\n\n"
+                    + "Without it you can still use dictionaries, offline analysis and scanning."));
+            actionLabel = L.s("去安装 Shizuku", "Get Shizuku");
+            action = () -> {
+                try {
+                    startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://shizuku.rikka.app/download/")));
+                } catch (Throwable t) {
+                    Toast.makeText(this, "https://shizuku.rikka.app/download/",
+                            Toast.LENGTH_LONG).show();
+                }
+            };
+        } else if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_RUNNING) {
+            title.append(L.s("Shizuku 装了，但服务没启动",
+                    "Shizuku is installed but the service is not running"));
+            body.append(L.s(
+                    "Shizuku 的服务需要你自己启动一次（系统不允许应用自己拉起它）。\n\n"
+                    + "步骤：\n"
+                    + "1. 设置 → 关于手机 → 连点「版本号」7 次，开启开发者选项\n"
+                    + "2. 开发者选项里打开「无线调试」\n"
+                    + "3. 打开 Shizuku → 点「通过无线调试启动」→ 按提示配对\n"
+                    + "4. 看到「Shizuku 正在运行」后，回来点下面的按钮\n\n"
+                    + "注意：无线调试必须保持开着，否则重启后 Shizuku 会停。",
+                    "Shizuku's service must be started by you once (apps cannot start it).\n\n"
+                    + "1. Settings -> About phone -> tap Build number 7 times\n"
+                    + "2. Enable Wireless debugging in Developer options\n"
+                    + "3. Open Shizuku -> \"Start via Wireless debugging\" -> pair\n"
+                    + "4. Once it says running, come back and tap the button below\n\n"
+                    + "Keep Wireless debugging on, otherwise Shizuku stops after a reboot."));
+            actionLabel = L.s("打开 Shizuku", "Open Shizuku");
+            action = () -> {
+                try {
+                    android.content.Intent i = getPackageManager()
+                            .getLaunchIntentForPackage(SHIZUKU_PKG);
+                    if (i != null) {
+                        i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(i);
+                    } else {
+                        Toast.makeText(this, L.s("打不开 Shizuku，请手动从桌面启动",
+                                "Cannot open Shizuku; launch it from the launcher"),
+                                Toast.LENGTH_LONG).show();
+                    }
+                } catch (Throwable t) {
+                    Toast.makeText(this, L.s("打不开 Shizuku", "Cannot open Shizuku"),
+                            Toast.LENGTH_LONG).show();
+                }
+            };
+        } else {
+            // S_NO_PERMISSION
+            title.append(L.s("还差一步：给 WPAForge 授权",
+                    "One step left: grant access to WPAForge"));
+            body.append(L.s(
+                    "Shizuku 正在运行。点下面的按钮会弹出系统授权框，点「允许」即可。\n\n"
+                    + "如果没看到弹窗：打开 Shizuku → 右上角菜单 →「应用管理」，"
+                    + "在列表里把 WPAForge 的开关打开。\n\n"
+                    + "授权后回到设置页点「无 Root」，状态会变成可用。",
+                    "Shizuku is running. Tapping the button below shows the system approval "
+                    + "dialog; tap Allow.\n\n"
+                    + "If no dialog appears: open Shizuku -> menu -> App management, "
+                    + "and switch WPAForge on.\n\n"
+                    + "Then return to Settings and tap Rootless to re-check."));
+            actionLabel = L.s("立即授权", "Grant now");
+            action = () -> {
+                shz.requestPermission();
+                Toast.makeText(this, L.s(
+                        "已发出授权请求，请在弹窗里点「允许」",
+                        "Permission requested - tap Allow in the dialog"),
+                        Toast.LENGTH_LONG).show();
+            };
         }
-        if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_RUNNING) {
-            Toast.makeText(this, L.s(
-                    "Shizuku 没在运行。打开 Shizuku，用「通过无线调试启动」启动服务后再回来。",
-                    "Shizuku is not running. Open Shizuku, start it via Wireless debugging, "
-                            + "then come back."),
-                    Toast.LENGTH_LONG).show();
-            return;
+
+        final Runnable doAction = action;
+        try {
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle(title.toString())
+                    .setMessage(body.toString())
+                    .setPositiveButton(actionLabel, (d, w) -> {
+                        try { doAction.run(); } catch (Throwable ignored) {}
+                    })
+                    .setNegativeButton(L.s("稍后", "Later"), null)
+                    .show();
+        } catch (Throwable t) {
+            Toast.makeText(this, body.toString(), Toast.LENGTH_LONG).show();
         }
-        // S_NO_PERMISSION：真正去请求
-        shz.requestPermission();
-        Toast.makeText(this, L.s(
-                "正在请求 Shizuku 授权，请在弹窗里点「允许」",
-                "Requesting Shizuku permission - tap Allow in the dialog"),
-                Toast.LENGTH_LONG).show();
     }
 
     /** 设置页整块重建（模式切换后调用，避免各处各改一半）。 */

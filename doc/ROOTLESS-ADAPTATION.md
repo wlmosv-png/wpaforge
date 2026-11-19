@@ -355,6 +355,78 @@ usageKnown=false → 但 Specifier 分支根本没写在 probeChannel 里
 立刻报 2 条 FAIL（`Specifier 分支在 shell 判空之前` / `Specifier 自检不执行 cmd wifi`）——
 说明这条门禁不是摆设。
 
+### 6.3.3 子命令判据：「grep 用法表」被用户一句反问问穿（2026-11-20）
+
+用户在另一台安卓 13 上拿到这份自检结果，然后反问：
+
+> 咋可能没有 没有的话 他拿什么连接的
+
+```
+✓ status 子命令: 可用
+✗ connect-network 子命令: 本机没有
+✓ forget-network 子命令: 可用
+```
+
+**他说得对。** `forget-network` 删的正是 `connect-network` 建的配置，
+逻辑上不可能一个有一个没有。中间那个「没有」只能是**文本没搜到**。
+
+#### 旧判据为什么不可靠
+
+```java
+boolean hasConnect = usage.contains("connect-network");   // usage = cmd wifi help 的输出
+```
+
+用法表会被 ROM 裁剪、被终端宽度折行、被 shell 分帧截断 —— 三种情况都会让
+某一行「消失」，而另外两行还在。这正是用户看到的形态。
+
+#### 新判据：实际调用，看返回哪一句
+
+本机对照实测（Android 15）：
+
+```
+存在的子命令   → Invalid args for connect-network: Argument expected after "connect-network"
+不存在的子命令 → Unknown command: no-such-subcmd-xyz
+不需要参数的   → 直接执行并返回真实结果（cmd wifi status）
+```
+
+新增 `audit/ShellSubcommand`（纯逻辑），五级判据按可靠性排序：
+
+| 级 | 条件 | 结论 |
+|---|---|---|
+| ① | `Unknown command: <name>`（整词） | **MISSING** |
+| ② | `Invalid args for <name>` | AVAILABLE |
+| ③ | 无参子命令正常执行（输出含 wifi 语义词） | AVAILABLE |
+| ④ | 用法表含该名字（弱证据） | AVAILABLE |
+| ⑤ | 其余（空输出 / 超时 / 权限被拒） | UNKNOWN |
+
+**只有 ① 才判死；UNKNOWN 一律放行。** 这条是历史事故换来的：
+把「问不到」当成「没有」，会把好机器挡在门外。
+
+#### 接入三处
+
+- `CrackEngine.probeChannel()`：三个子命令各调一次；`MISSING` 才判不支持。
+  同时把**原始返回**写进自检详情 —— 判成 UNKNOWN 时必须能看见为什么。
+- `CapabilityProbe.explainRoot()`：新增 `Facts` 重载，实际调用优先、用法表只当弱证据；
+  并区分「用法表拿到了但没有」→ MISSING 与「用法表根本没拿到」→ UNKNOWN。
+- `CapabilityDetector`：真的去跑那三次调用。
+
+#### 门禁：ShellSubcommandTest 19 条（全部用真机输出喂养）
+
+覆盖：存在/不存在的真实句式、空/null/乱码必须 UNKNOWN、
+**用户截图里那种截断的用法表不得判 connect-network 不存在**、
+无参子命令正常执行要判 AVAILABLE、整词边界（`connect-network-v2` 不算命中）。
+
+期间门禁抓到我自己的两个真 bug：
+1. `Invalid args for status-x` 里 status 后面是 `-`，`isLetterOrDigit` 判假 → 误命中。
+2. 规则③「有输出就算存在」太宽 → 乱码也命中，收紧为要求含 wifi 语义词。
+
+#### 真机前后对照
+
+```
+修复前  · status 未知（问不到）/ ✓ connect / ✓ forget
+修复后  ✓ status / ✓ connect-network / ✓ forget-network   9 项全绿
+```
+
 ### 6.4 未做的测试（需要你来做，理由如下）
 
 - **无 Root 真机验收**：本机是已 root 设备。按任务书，不能用「关闭 su 授权 / 隐藏 root」的
@@ -372,9 +444,9 @@ usageKnown=false → 但 Specifier 分支根本没写在 probeChannel 里
 |---|---|
 | 基线 tag | `baseline-before-rootless-20261118` → `db97138d46dce649f1900fcf7daee4fe1bde00d4` |
 | 适配分支 HEAD | 见 §8（9 个 commit） |
-| APK | `/data/local/tmp/wpf-shz12.apk`（Shizuku 五修 + 无 Root 自检/引导） |
+| APK | `/data/local/tmp/wpf-shz15.apk`（+ 子命令判据改实际调用） |
 | 版本 | 1.9.61 (157) —— 未改（非正式发布） |
-| SHA-256 | `3acd5d83e55959ecb4704e8aebe20fea60446b41e9b2f36efa93eea684adf448`（2026-11-20 最终） |
+| SHA-256 | `e6178667670028e965d81c635b8bbf285c439e62100a4da29773c01877820f61`（2026-11-20 子命令判据版） |
 | 大小 | 1,879,487 B |
 | 签名 | 既有 release key（与已装包一致，可覆盖安装） |
 

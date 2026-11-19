@@ -38,6 +38,10 @@ public final class CapabilityProbe {
         public boolean scanPermission;
         /** 本应用 UID 读 wpa_supplicant 日志是否**真的拿到了非空输出**（空串不算能读）。 */
         public boolean wpaLogNonEmpty;
+        /** 本机能不能走 WifiNetworkSpecifier 在线验证（API 29+ 且有 ConnectivityManager）。 */
+        public boolean specifierUsable;
+        /** 不能用的原因（能用时为空）。 */
+        public String specifierReason = "";
 
         public static Facts empty() {
             return new Facts();
@@ -62,11 +66,31 @@ public final class CapabilityProbe {
                 "公开 API 可读当前连接状态", "current connection readable via public APIs"));
 
         // 关联：能不能做到，取决于公开接口是否给出「不弹框」的通路 —— 目前没有。
-        out.add(Capability.unsupported(Capability.C_WIFI_CONNECT,
-                "公开 API 下唯一的指定口令接口是 WifiNetworkSpecifier，每次关联都会弹系统确认框",
-                "the only public API that takes a passphrase is WifiNetworkSpecifier, "
-                + "which prompts for every association",
-                RootlessChannel.ALT_ZH, RootlessChannel.ALT_EN));
+        // 逐条关联（2026-11-20 修正）：这里原来写死「不支持」，于是 UI 闸门把
+        // 整条无 Root 在线验证挡在门外 —— 明明 SpecifierChannel 已经实现可用。
+        // 现在按**真实能力**判：API 29+ 且有 ConnectivityManager 就是降级可用。
+        // 用 DEGRADED 而不是 AVAILABLE：能跑，但失败拆不开、成功进不了 DIRECT。
+        if (x.specifierUsable) {
+            out.add(Capability.degraded(Capability.C_WIFI_CONNECT,
+                    "可用系统确认框逐次在线验证：首次对某 AP 需确认一次，"
+                            + "之后对同一 AP 系统可能不再弹框（AOSP 行为，厂商待真机确认）；"
+                            + "失败只代表「系统未能建立连接」，不会记成已证实的错误密码",
+                    "per-candidate online verification via the system approval flow: the first "
+                            + "request for an AP needs one confirmation, later ones may skip it "
+                            + "(AOSP behaviour; vendor unverified). A failure only means "
+                            + "'the system could not establish the connection'",
+                    "把它当「逐条验证」：一次一个候选、独立收尾；"
+                            + "要无人值守跑整本字典仍需 root。",
+                    "Treat it as per-candidate verification, one at a time; unattended "
+                            + "dictionary runs still need root."));
+        } else {
+            out.add(Capability.unsupported(Capability.C_WIFI_CONNECT,
+                    x.specifierReason.isEmpty()
+                            ? "本机没有可用的在线验证接口（需要 Android 10 及以上）"
+                            : x.specifierReason,
+                    "no usable online-verification interface on this device (Android 10+ required)",
+                    RootlessChannel.ALT_ZH, RootlessChannel.ALT_EN));
+        }
 
         out.add(Capability.unsupported(Capability.C_WIFI_FORGET,
                 "删除系统已保存网络需要系统级权限",

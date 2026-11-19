@@ -3,6 +3,7 @@ package io.github.wlmosv_png.wpaforge.cap;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 
@@ -55,6 +56,11 @@ public final class CapabilityDetector {
             f.wifiManager = hasWifiManager(ctx);
             f.scanPermission = hasScanPermission(ctx);
             f.wpaLogNonEmpty = readOwnSupplicantLogNonEmpty();
+            // 真实探测在线验证能力：API 29+ 且有 ConnectivityManager 才算能用。
+            // 这一步就是「UI 能不能点开始」的依据，必须来自实测而不是写死。
+            String specWhy = specifierUnavailableReason(ctx);
+            f.specifierUsable = specWhy == null;
+            f.specifierReason = specWhy == null ? "" : specWhy;
             items = CapabilityProbe.explainRootless(f);
         } else {
             String su = suId();
@@ -109,6 +115,26 @@ public final class CapabilityDetector {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * 本机能否用 {@code WifiNetworkSpecifier} 做在线验证。
+     *
+     * @return {@code null} = 可用；否则是中文原因
+     */
+    static String specifierUnavailableReason(Context ctx) {
+        if (ctx == null) return "没有应用上下文";
+        if (Build.VERSION.SDK_INT < 29) {
+            return "系统版本低于 Android 10（没有 WifiNetworkSpecifier）";
+        }
+        try {
+            if (ctx.getSystemService(ConnectivityManager.class) == null) {
+                return "系统没有提供 ConnectivityManager";
+            }
+        } catch (Throwable t) {
+            return "读取 ConnectivityManager 失败：" + t.getClass().getSimpleName();
+        }
+        return null;
     }
 
     private static boolean hasWifiManager(Context ctx) {

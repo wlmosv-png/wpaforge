@@ -219,16 +219,32 @@ public class CapabilityLayerTest {
         f.wifiManager = true;
         f.scanPermission = true;
         f.wpaLogNonEmpty = false;      // 读不到 supplicant 日志
+        f.specifierUsable = true;      // 本机有 WifiNetworkSpecifier（API 29+）
         List<Capability> out = CapabilityProbe.explainRootless(f);
 
-        // 无 Root 模式的核心结论：逐条关联做不到
+        // 无 Root 的逐条关联（2026-11-20 修正）：**能用**，但只到降级。
+        // 旧断言写死「判不支持」，那是把「cmd wifi 不可用」错当成「无 Root 无解」，
+        // 也正是它把 UI 闸门挡死、用户点开始就弹「当前模式做不到逐条关联」。
         Capability c = find(out, Capability.C_WIFI_CONNECT);
-        ok("无 Root → 关联判不支持", Capability.STATE_UNSUPPORTED.equals(c.state));
-        ok("无 Root → 关联不产证据级", !c.evidenceGrade());
-        ok("无 Root → 关联必须给替代路径",
-                c.alternativeZh != null && c.alternativeZh.contains("离线"));
-        ok("无 Root → 关联原因说明弹框",
-                c.reasonZh.contains("确认框") || c.reasonZh.contains("Specifier"));
+        ok("无 Root + 有 Specifier → 关联是降级可用",
+                Capability.STATE_DEGRADED.equals(c.state));
+        ok("无 Root → 关联可被 UI 判为 usable", c.usable());
+        ok("无 Root → 关联仍不产证据级（失败进不了 DIRECT）", !c.evidenceGrade());
+        ok("无 Root → 关联原因说明系统确认框",
+                c.reasonZh.contains("确认") || c.reasonZh.contains("Specifier"));
+        ok("无 Root → 关联必须给替代路径（无人值守仍需 root）",
+                c.alternativeZh != null && !c.alternativeZh.isEmpty());
+
+        // 反例：设备不支持时必须明确判不支持，而不是假装能用
+        CapabilityProbe.Facts noSpec = new CapabilityProbe.Facts();
+        noSpec.wifiManager = true;
+        noSpec.scanPermission = true;
+        noSpec.specifierUsable = false;
+        noSpec.specifierReason = "系统版本低于 Android 10（没有 WifiNetworkSpecifier）";
+        Capability nc = find(CapabilityProbe.explainRootless(noSpec), Capability.C_WIFI_CONNECT);
+        ok("无 Specifier → 关联判不支持", Capability.STATE_UNSUPPORTED.equals(nc.state));
+        ok("无 Specifier → 原因透传", nc.reasonZh.contains("Android 10"));
+        ok("无 Specifier → UI 不会误放行", !nc.usable());
 
         ok("无 Root → 净检不支持",
                 Capability.STATE_UNSUPPORTED.equals(find(out, Capability.C_WIFI_FORGET).state));
@@ -254,18 +270,22 @@ public class CapabilityLayerTest {
         f2.suId = "uid=0(root)";
         f2.wifiManager = true;
         f2.scanPermission = true;
+        f2.specifierUsable = true;
         Capability sh = find(CapabilityProbe.explainRootless(f2), Capability.C_SHELL);
         ok("su 可用但选了无 Root → 明说选了无 Root",
                 sh.reasonZh.contains("无 Root"));
         // 即使 su 在，仍不许把关联判成可用（模式就是模式）
+        // 契约不变：模式就是模式，su 在不在都不改无 Root 的关联结论。
+        // 只是结论本身从「不支持」修正为「降级可用」（SpecifierChannel 真的能跑）。
         ok("su 可用也不改无 Root 的关联结论",
-                Capability.STATE_UNSUPPORTED.equals(
+                Capability.STATE_DEGRADED.equals(
                         find(CapabilityProbe.explainRootless(f2), Capability.C_WIFI_CONNECT).state));
 
         // 扫描权限缺失
         CapabilityProbe.Facts f3 = new CapabilityProbe.Facts();
         f3.wifiManager = true;
         f3.scanPermission = false;
+        f3.specifierUsable = true;
         ok("无 Root + 缺权限 → 扫描判需要授权",
                 Capability.STATE_NEEDS_GRANT.equals(
                         find(CapabilityProbe.explainRootless(f3), Capability.C_SCAN).state));
@@ -275,6 +295,7 @@ public class CapabilityLayerTest {
         f4.wifiManager = true;
         f4.scanPermission = true;
         f4.wpaLogNonEmpty = true;
+        f4.specifierUsable = true;
         ok("真读到日志 → 降级可用而非不支持",
                 Capability.STATE_DEGRADED.equals(
                         find(CapabilityProbe.explainRootless(f4), Capability.C_WPA_LOG).state));

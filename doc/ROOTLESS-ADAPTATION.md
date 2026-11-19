@@ -259,6 +259,45 @@ as uid=10381  : cmd wifi status → **空输出**（应用 UID，含装在 /data
 3. **日志首行写死「引擎模式: Root」** —— 改为按实际模式输出。
 4. **`RuntimeMode` 未探测时回退到恒 Root** —— 改为回退到用户意愿。
 
+### 6.3.1 Shizuku 通道五个真 bug（2026-11-20 收尾）
+
+上一轮把「类加载 OK」当成通了，实际离能用还差五处。全部有 logcat 或对照实验作证：
+
+| # | 缺陷 | 现象 | 证据 |
+|---|---|---|---|
+| 1 | `ShizukuProvider` 不在 dex 里 | 装上后**一启动就闪退** | `Unable to get provider rikka.shizuku.ShizukuProvider: ClassNotFoundException` |
+| 2 | `newProcess` 事务码写成 7 | 命令永远跑不起来 | `IShizukuService.Stub` 实际是 `newProcess=8`；7 命中 `setSystemProperty` |
+| 3 | `authorities` 用了 `${applicationId}` | Provider 注册成字面量 | aapt2 link 不替换该占位符，`dumpsys` 里就是 `${applicationId}.shizuku` |
+| 4 | `ParcelFileDescriptor` 读法错 | `exit=0` 但输出恒空 | AIDL 用 `readInt()!=0` + `CREATOR.createFromParcel`；`readFileDescriptor()` 是另一套编码 |
+| 5 | 先 `waitFor` 再读流 | 输出超 64KB 即死锁 | 子进程阻塞在 write，waitFor 永不返回 |
+
+修法要点：
+- `app/libs/shizuku-api.jar` 31 → **35 类**，把 `prov-13.1.5.aar` 的
+  `ShizukuProvider{,$1}` 与 `moe/shizuku/api/BinderContainer{,$1}` 合进来
+  （`ShizukuProvider` 属于**另一个 aar**，不在 api aar 里 —— 这是最初踩空的地方）。
+- manifest 补 `moe.shizuku.client.V3_SUPPORT=true`（官方 aar 自带，不声明则按旧协议）。
+- 读流改为：两个 daemon 线程边读边攒，主线程只轮询 `waitForTimeout`。
+
+**真机前后对照**（OnePlus PJX110 / Android 15 / Shizuku 13.6.0）：
+
+```
+修复前  Shizuku 状态: 1（服务未运行）        启动即崩
+中间态  Shizuku 状态: 2（未授权）→ 4（以 root 运行）  可用: 是
+        但 实测 cmd wifi: exit=0 OK 首行=（空）
+修复后  实测 cmd wifi: exit=0 OK 首行=Wifi is enabled
+```
+
+**方案根基的对照实验**（决定「无 Root 能不能真跑字典」）：
+
+| 执行身份 | `cmd wifi status` | `cmd wifi help` |
+|---|---|---|
+| `uid 2000`(shell) | 返回真实 WifiInfo（连着 "211"） | 含 `connect-network` / `forget-network` |
+| `uid 10601`(应用自身) | **空输出** | — |
+
+即：binder 按调用者 UID 拦，**拿到 shell 身份就能自动连接**，不需要 root。
+这条路径现在通道本身已验证可用；剩下的是拿到纯 shell 身份（非 root 启动的
+Shizuku）后跑一轮真实字典，那需要一台未 root 设备或把 Shizuku 改成无线调试启动。
+
 ### 6.4 未做的测试（需要你来做，理由如下）
 
 - **无 Root 真机验收**：本机是已 root 设备。按任务书，不能用「关闭 su 授权 / 隐藏 root」的
@@ -275,11 +314,11 @@ as uid=10381  : cmd wifi status → **空输出**（应用 UID，含装在 /data
 | 项 | 值 |
 |---|---|
 | 基线 tag | `baseline-before-rootless-20261118` → `db97138d46dce649f1900fcf7daee4fe1bde00d4` |
-| 适配分支 HEAD | 见 §8（5 个 commit） |
-| APK | `/data/local/tmp/wpaforge-rootless-test.apk` |
+| 适配分支 HEAD | 见 §8（7 个 commit） |
+| APK | `/data/local/tmp/wpf-shz10.apk`（含 Shizuku 通道五修） |
 | 版本 | 1.9.61 (157) —— 未改（非正式发布） |
-| SHA-256 | `feee258de975680e3a2005a95806109b9dea298084af29e63f09708ccd58dcf0` |
-| 大小 | 1,785,279 B |
+| SHA-256 | `9ebfccae91c1ae86f7cb152eccda4ba35dab5a6e7a958dbe676cea4a6ecb6c12`（2026-11-20 收尾版） |
+| 大小 | 1,867,199 B |
 | 签名 | 既有 release key（与已装包一致，可覆盖安装） |
 
 ---
@@ -287,6 +326,9 @@ as uid=10381  : cmd wifi status → **空输出**（应用 UID，含装在 /data
 ## 8. 分阶段提交
 
 ```
+e16aa89 fix(shizuku): 命令能跑通但输出永远为空 —— 又两个真 bug
+4f88b0c fix(shizuku): Provider 类没进 dex 导致启动即崩 —— 三处真 bug 一并修掉
+2590ed8 feat(rootless): 借 Shizuku 拿 shell 身份 —— 无 root 也能自动跑字典
 d8b316e fix(run):   真机发现的两个诚实性问题（未执行被算成跑过）
 1a201eb feat(wps):  无 Root 下把「本机没有 root 通道」与「数据不完整」分开
 cc6ffcd feat(ui):   运行模式选择与能力展示（Root / 无 Root / 自动）
@@ -305,6 +347,7 @@ c88051a feat(cap):  引擎接入能力闸 + 按模式隔离已试集合
 ### 建议的下一步（需要你决定）
 
 1. 找一台**真正的未 root 设备**做无 Root 验收（本机能给的等效证据已在 §6.4 说明）。
+   通道侧已经打通（§6.3.1 的真机前后对照），缺的是「Shizuku 以 uid 2000 启动」的环境。
 2. Root 模式回归：在允许联网的时段跑一轮逐条关联 + 一条 WPS PIN，确认 `RootChannel` 搬运无偏差。
 3. 无 Root 模式的「关联能力」若未来 Android 开放静默关联接口，只需补一个 `ConnectChannel` 实现，
    业务层与判定链无需改动 —— 这是本次分层的直接收益。

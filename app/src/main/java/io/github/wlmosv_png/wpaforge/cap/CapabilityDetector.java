@@ -71,10 +71,21 @@ public final class CapabilityDetector {
         } else {
             String su = suId();
             String usage = null;
+            // **实际调用优先于用法表**（2026-11-20 真机事故后改）。
+            // 只 grep 用法表会把好机器判成「没有 connect-network」——
+            // 用户在安卓 13 上就撞到了（status 有、forget 有、中间那个没有）。
+            CapabilityProbe.Facts rf = new CapabilityProbe.Facts();
             if (su != null && su.contains("uid=0")) {
                 usage = RootProber.exec(null, new String[]{"su", "-c", "cmd wifi"}, 8000);
+                rf.cmdConnectProbe = RootProber.exec(null,
+                        new String[]{"su", "-c", "cmd wifi connect-network"}, 6000);
+                rf.cmdForgetProbe = RootProber.exec(null,
+                        new String[]{"su", "-c", "cmd wifi forget-network"}, 6000);
+                rf.cmdStatusProbe = RootProber.exec(null,
+                        new String[]{"su", "-c", "cmd wifi status"}, 6000);
             }
-            items = CapabilityProbe.explainRoot(su, usage, hasWifiManager(ctx), hasScanPermission(ctx));
+            items = CapabilityProbe.explainRoot(su, usage, rf,
+                    hasWifiManager(ctx), hasScanPermission(ctx));
         }
 
         Capability.Set0 s = new Capability.Set0(RunMode.nameOf(modeId), at, items);

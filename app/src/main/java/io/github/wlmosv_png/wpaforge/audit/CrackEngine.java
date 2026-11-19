@@ -1777,37 +1777,62 @@ public final class CrackEngine {
         //（AOSP pie-release service/java/com/android/server/wifi/WifiShellCommand.java，
         //  2026-11-15 实取）。而本引擎整条破解链都建在 connect-network 上。
         // 探测而不推断的好处：将来哪个 ROM 把子命令收走了，也会在这里报出来。
-        String usage = null;
-        try { usage = shell.exec("cmd wifi", 5000); } catch (Throwable ignored) {}
-        // **探测不到 ≠ 探测表明没有**。
-        // 受限 shell、单元测试的假通道对未知命令都返回空串 —— 那只是「问不到」。
-        // 只有拿到**非空的用法表**才允许下结论；否则一律按「未知」放过，
-        // 免得把整条引擎挡在门外（第一版就是没区分这两件事，门禁当场报 14 条红）。
-        boolean usageKnown = usage != null && usage.trim().length() > 0;
-        boolean hasStatus = usageKnown && usage.contains("status");
-        boolean hasConnect = usageKnown && usage.contains("connect-network");
-        boolean hasForget = usageKnown && usage.contains("forget-network");
-        String unknown = L.s("未知（问不到用法表）", "unknown (no usage table)");
-        p.step((!usageKnown ? "· " : hasStatus ? "✓ " : "✗ ") + L.s("status 子命令: ", "status subcommand: ")
-                + (!usageKnown ? unknown : hasStatus ? L.s("可用", "available") : L.s("本机没有", "missing")));
-        p.step((!usageKnown ? "· " : hasConnect ? "✓ " : "✗ ") + L.s("connect-network 子命令: ",
-                "connect-network subcommand: ")
-                + (!usageKnown ? unknown : hasConnect ? L.s("可用", "available") : L.s("本机没有", "missing")));
-        p.step((!usageKnown ? "· " : hasForget ? "✓ " : "✗ ") + L.s("forget-network 子命令: ",
-                "forget-network subcommand: ")
-                + (!usageKnown ? unknown : hasForget ? L.s("可用", "available") : L.s("本机没有", "missing")));
-        if (usageKnown && (!hasStatus || !hasConnect)) {
-            p.step(L.s("  → 本机 Android 版本的 `cmd wifi` **没有破解所需的子命令**。",
-                    "  -> this Android version's `cmd wifi` lacks the subcommands cracking needs."));
-            p.step(L.s("    实测：Android 9 及更早只开放 4 条调试命令，没有 connect-network。",
-                    "    Measured: Android 9 and earlier expose only 4 debug commands."));
+        // **判据换成「实际调用」**（2026-11-20 真机事故后重做）。
+        //
+        // 旧实现 grep `cmd wifi help` 的用法表，用户在一台安卓 13 上得到：
+        //     ✓ status 可用 / ✗ connect-network 本机没有 / ✓ forget-network 可用
+        // 中间那个"没有"是**文本没搜到**，不是设备不支持 —— 用户反问
+        // 「没有的话，他拿什么连接的」直接把这条判据问穿了。
+        // （forget-network 本身必须依附 connect-network 建的配置，逻辑上不可能
+        //   一个有一个没有。）
+        //
+        // 现在改成各调一次 `cmd wifi <子命令>`（不给参数），看返回哪一句：
+        //   存在 → Invalid args for <name>: Argument expected after "<name>"
+        //   不存在 → Unknown command: <name>
+        // 这两句是 ShellCommand 分发器自己打的，比用法表稳定得多。
+        int stStatus = probeSubcommand("status");
+        int stConnect = probeSubcommand("connect-network");
+        int stForget = probeSubcommand("forget-network");
+        boolean zh = L.isZh();
+        p.step(ShellSubcommand.mark(stStatus) + L.s("status 子命令: ", "status subcommand: ")
+                + ShellSubcommand.label(stStatus, zh));
+        p.step(ShellSubcommand.mark(stConnect) + L.s("connect-network 子命令: ",
+                "connect-network subcommand: ") + ShellSubcommand.label(stConnect, zh));
+        p.step(ShellSubcommand.mark(stForget) + L.s("forget-network 子命令: ",
+                "forget-network subcommand: ") + ShellSubcommand.label(stForget, zh));
+
+        // **只有「确认不存在」才判死**；「未知」一律放过。
+        // 这条规则是历史事故换来的：把"问不到"当成"没有"，会把好机器挡在门外。
+        boolean connectMissing = (stConnect == ShellSubcommand.MISSING);
+        if (connectMissing) {
+            p.step(L.s("  → 实测 `cmd wifi connect-network` 返回 Unknown command，确实没有。",
+                    "  -> `cmd wifi connect-network` returns Unknown command, really missing."));
+            p.step(L.s("    常见于 Android 9 及更早（只开放 4 条调试命令）。",
+                    "    Common on Android 9 and earlier (only 4 debug commands)."));
             return new ChannelProbe(false,
-                    L.s("本机不支持（缺子命令）", "unsupported on this device"),
+                    L.s("本机不支持（缺 connect-network）", "unsupported (no connect-network)"),
                     join(p) + "\n\n" + L.s(
-                            "破解依赖 `cmd wifi connect-network`；本机没有 → 跑不了。\n"
-                                    + "这不是编号的推断，是刚刚在你手机上实测出来的。",
-                            "Cracking needs `cmd wifi connect-network`; this device lacks it.\n"
-                                    + "This is measured on your device just now, not inferred from a version number."));
+                            "破解依赖 `cmd wifi connect-network`，本机实测返回 Unknown command。\n"
+                                    + "换 Android 11+ 的设备，或改用离线分析。",
+                            "Cracking needs `cmd wifi connect-network`; this device returns "
+                                    + "Unknown command for it.\n"
+                                    + "Use an Android 11+ device, or offline analysis."));
+        }
+        if (stConnect == ShellSubcommand.UNKNOWN) {
+            // 问不到 ≠ 没有：继续跑，真出错时执行阶段会报出来。
+            p.step(L.s("  · connect-network 探测没拿到判定性输出，按「未知」放行（不当成没有）。",
+                    "  . connect-network probe was inconclusive; passing through as unknown."));
+        }
+        if (stStatus == ShellSubcommand.MISSING) {
+            p.step(L.s("  · 本机没有 status 子命令 → 判定会退回 WifiInfo（结论降级，不会误判成功）。",
+                    "  . no status subcommand; verdicts fall back to WifiInfo (degraded, never fake success)."));
+        }
+        // 子命令探测的原始返回：判成「未知」时必须能看见为什么未知。
+        if (stStatus == ShellSubcommand.UNKNOWN || stConnect == ShellSubcommand.UNKNOWN
+                || stForget == ShellSubcommand.UNKNOWN) {
+            if (lastSubcommandProbe != null && !lastSubcommandProbe.isEmpty()) {
+                p.step(L.s("  最近一次探测: ", "  last probe: ") + lastSubcommandProbe);
+            }
         }
 
         // --- 4. 判定信号可用性 ---
@@ -1861,6 +1886,46 @@ public final class CrackEngine {
         String line = i > 0 ? s.substring(0, i) : s;
         return line.length() > 80 ? line.substring(0, 80) + "..." : line;
     }
+
+    /**
+     * 实际调一次 {@code cmd wifi <name>}（不给参数），据返回值判断子命令是否存在。
+     *
+     * <p>为什么不再 grep 用法表：用法表会被 ROM 裁剪、被宽度折行、被 shell
+     * 分帧截断 —— 用户那台安卓 13 上就出现了「status 有、forget-network 有、
+     * 中间的 connect-network 没有」这种逻辑上不可能的组合。
+     *
+     * <p>而这两种返回值由命令分发器直接打印，稳定可靠：
+     * <pre>
+     *   存在 → Invalid args for connect-network: Argument expected after "connect-network"
+     *   不存在 → Unknown command: connect-network
+     * </pre>
+     *
+     * @return {@link ShellSubcommand#AVAILABLE} / {@link ShellSubcommand#MISSING}
+     *         / {@link ShellSubcommand#UNKNOWN}
+     */
+    private int probeSubcommand(String name) {
+        if (shell == null) return ShellSubcommand.UNKNOWN;
+        String out;
+        try {
+            out = shell.exec("cmd wifi " + name, 5000);
+        } catch (Throwable t) {
+            lastSubcommandProbe = name + " → 抛异常 " + t.getClass().getSimpleName();
+            return ShellSubcommand.UNKNOWN;
+        }
+        int st = ShellSubcommand.detect(out, name);
+        // 记录原始输出，供自检详情显示 —— 判成 UNKNOWN 时**必须**能看见到底返回了什么，
+        // 否则又变成「问不到但不知道为什么」（历史上最贵的一类 bug）。
+        String brief = out == null ? "null"
+                : (out.trim().isEmpty() ? "（空）"
+                   : out.trim().replace("\n", " ⏎ "));
+        if (brief.length() > 160) brief = brief.substring(0, 160) + "…";
+        lastSubcommandProbe = name + " → " + ShellSubcommand.label(st, L.isZh())
+                + " ｜ 返回: " + brief;
+        return st;
+    }
+
+    /** 最近一次子命令探测的原始返回（自检详情用）。 */
+    private String lastSubcommandProbe = "";
 
     // ------------------------------------------------------------------ 单条尝试
 

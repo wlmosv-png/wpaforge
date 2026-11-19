@@ -1,5 +1,7 @@
 package io.github.wlmosv_png.wpaforge.cap;
 
+import io.github.wlmosv_png.wpaforge.audit.ShellSubcommand;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,6 +32,20 @@ public final class CapabilityProbe {
         public String suId;
         /** {@code cmd wifi} 用法表输出（非 root 身份执行的那份）。 */
         public String cmdWifiUsage;
+        /**
+         * 实际调用 {@code cmd wifi connect-network}（不给参数）的输出。
+         *
+         * <p>**这是唯一可靠的判据**（2026-11-20 真机事故后加的）。
+         * 之前只看 {@link #cmdWifiUsage} 里搜不搜得到 "connect-network"，
+         * 用户在一台安卓 13 上就得到「status 有、forget-network 有、
+         * 中间的 connect-network 没有」这种逻辑上不可能的结果 ——
+         * 用法表会被 ROM 裁剪/折行/分帧截断，不能当判据。
+         */
+        public String cmdConnectProbe;
+        /** 同上，针对 {@code forget-network}。 */
+        public String cmdForgetProbe;
+        /** 同上，针对 {@code status}。 */
+        public String cmdStatusProbe;
         /** {@code cmd wifi status} 的输出（可空）。 */
         public String cmdWifiStatus;
         /** 平台：WifiManager 是否可用。 */
@@ -198,6 +214,23 @@ public final class CapabilityProbe {
      */
     public static List<Capability> explainRoot(String suId, String usage,
                                                boolean wifiManager, boolean scanPermission) {
+        // 兼容旧调用：没有实际调用结果时，只能退回用法表（弱证据）。
+        return explainRoot(suId, usage, Facts.empty(), wifiManager, scanPermission);
+    }
+
+    /**
+     * 解释 root 侧探测结果（带**实际调用**结果，2026-11-20 加）。
+     *
+     * <p>为什么多这一个重载：只靠 {@code usage} 里搜字符串会把好机器判死 ——
+     * 用户在安卓 13 上实测到「status 有 / connect-network 没有 / forget-network 有」，
+     * 而 forget-network 必须依附 connect-network 的配置，逻辑上不可能一个有一个没有。
+     * 那只是用法表被截断/折行。
+     *
+     * @param rf 实际调用 {@code cmd wifi <sub>}（不给参数）的输出，见 {@link Facts}
+     */
+    public static List<Capability> explainRoot(String suId, String usage, Facts rf,
+                                               boolean wifiManager, boolean scanPermission) {
+        Facts x = rf == null ? Facts.empty() : rf;
         List<Capability> out = new ArrayList<>();
         boolean suOk = suId != null && suId.contains("uid=0");
 
@@ -228,16 +261,49 @@ public final class CapabilityProbe {
             out.add(Capability.needsGrant(Capability.C_SCAN_PRIV,
                     "需要 root 授权后才能探测", "needs root before this can be probed"));
         } else {
-            boolean usageKnown = usage != null && !usage.trim().isEmpty();
-            boolean hasConnect = usageKnown && usage.contains("connect-network");
-            boolean hasForget = usageKnown && usage.contains("forget-network");
-            boolean hasStatus = usageKnown && usage.contains("status");
+            // **判据优先级：实际调用 > 用法表**（2026-11-20 真机事故后改）。
+            //
+            // 旧实现只 grep 用法表，用户在一台安卓 13 上得到
+            // 「status 有 / connect-network 没有 / forget-network 有」——
+            // 而 forget-network 必须依附 connect-network 建的配置，
+            // 逻辑上不可能一个有一个没有。那只是**文本没搜到**。
+            // 现在先看实际调用的返回值，拿不到才退回用法表（且只当弱证据）。
+            int stConnect = ShellSubcommand.detect(x.cmdConnectProbe, "connect-network");
+            int stForget = ShellSubcommand.detect(x.cmdForgetProbe, "forget-network");
+            int stStatus = ShellSubcommand.detect(x.cmdStatusProbe, "status");
 
-            String unknown = "用法表拿不到（可能是 ROM 截断了 help 输出）——按未知处理，不判死";
-            String unknownEn = "usage table unavailable (help may be truncated) — treated as unknown";
+            // 实际调用问不到 → 退回用法表。
+            //
+            // **这里的语义要分清**（2026-11-20）：
+            //   · 用法表**拿到了**且里面没有该名字 → 判 MISSING（Android 9 的真实形态）；
+            //   · 用法表**根本没拿到**（空/null）→ 才是 UNKNOWN，不许判死。
+            // 早先一律按 UNKNOWN 会让 Android 9 的用例全红，也让「真的没有」说不出口。
+            boolean usageKnown = usage != null && !usage.trim().isEmpty();
+            if (stConnect == ShellSubcommand.UNKNOWN && usageKnown) {
+                stConnect = ShellSubcommand.usageMentions(usage, "connect-network")
+                        ? ShellSubcommand.AVAILABLE : ShellSubcommand.MISSING;
+            }
+            if (stForget == ShellSubcommand.UNKNOWN && usageKnown) {
+                stForget = ShellSubcommand.usageMentions(usage, "forget-network")
+                        ? ShellSubcommand.AVAILABLE : ShellSubcommand.MISSING;
+            }
+            if (stStatus == ShellSubcommand.UNKNOWN && usageKnown) {
+                stStatus = ShellSubcommand.usageMentions(usage, "status")
+                        ? ShellSubcommand.AVAILABLE : ShellSubcommand.MISSING;
+            }
+            boolean hasConnect = (stConnect == ShellSubcommand.AVAILABLE);
+            boolean hasForget = (stForget == ShellSubcommand.AVAILABLE);
+            boolean hasStatus = (stStatus == ShellSubcommand.AVAILABLE);
+            boolean connectKnownMissing = (stConnect == ShellSubcommand.MISSING);
+            boolean forgetKnownMissing = (stForget == ShellSubcommand.MISSING);
+            boolean statusKnownMissing = (stStatus == ShellSubcommand.MISSING);
+
+            String unknown = "问不到子命令（既没拿到实际调用结果，用法表也不可用）——按未知处理，不判死";
+            String unknownEn = "subcommand could not be probed (no real call result, no usage table) "
+                    + "— treated as unknown";
 
             // 关联
-            if (!usageKnown) {
+            if (!connectKnownMissing && !hasConnect) {
                 out.add(Capability.unknown(Capability.C_WIFI_CONNECT, unknown, unknownEn));
             } else if (hasConnect) {
                 out.add(Capability.available(Capability.C_WIFI_CONNECT,
@@ -251,7 +317,7 @@ public final class CapabilityProbe {
             }
 
             // 净检
-            if (!usageKnown) {
+            if (!forgetKnownMissing && !hasForget) {
                 out.add(Capability.unknown(Capability.C_WIFI_FORGET, unknown, unknownEn));
             } else if (hasForget) {
                 out.add(Capability.available(Capability.C_WIFI_FORGET,
@@ -266,7 +332,7 @@ public final class CapabilityProbe {
             }
 
             // 状态读取
-            if (!usageKnown) {
+            if (!statusKnownMissing && !hasStatus) {
                 out.add(Capability.unknown(Capability.C_WIFI_READ, unknown, unknownEn));
             } else if (hasStatus) {
                 out.add(Capability.available(Capability.C_WIFI_READ,

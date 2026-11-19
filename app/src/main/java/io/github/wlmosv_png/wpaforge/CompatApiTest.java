@@ -143,12 +143,24 @@ public class CompatApiTest {
         ok("CrackEngine 可读", engine != null);
         if (engine != null) {
             String code = stripComments(engine);
-            ok("探测 connect-network 是否在", code.contains("cmd wifi\"")
-                    && code.contains("connect-network"));
-            ok("探测 forget-network 是否在", code.contains("forget-network"));
+            // 2026-11-20 改：判据从「grep 用法表」换成「实际调用子命令看返回」。
+            // 用法表会被 ROM 裁剪/折行/分帧截断 —— 用户在安卓 13 上就撞到
+            // 「status 有、forget 有、中间 connect-network 没有」这种不可能的组合。
+            ok("探测 connect-network 是否在（实际调用）",
+                    code.contains("probeSubcommand(\"connect-network\")")
+                            && code.contains("connect-network"));
+            ok("探测 forget-network 是否在（实际调用）",
+                    code.contains("probeSubcommand(\"forget-network\")"));
+            ok("探测 status 是否在（实际调用）",
+                    code.contains("probeSubcommand(\"status\")"));
+            ok("判据走 ShellSubcommand.detect（不靠 contains 用法表）",
+                    code.contains("ShellSubcommand.detect"));
             ok("把「用法表」与「状态输出」分开判",
                     code.contains("commands:") && code.contains("looksLikeWifi"));
-            ok("缺子命令时通道判为不可用", code.contains("unsupported on this device"));
+            ok("缺 connect-network 时通道判为不可用",
+                    code.contains("unsupported (no connect-network)"));
+            ok("「未知」不得当成「没有」（只有 MISSING 才判死）",
+                    code.contains("connectMissing = (stConnect == ShellSubcommand.MISSING)"));
         }
 
         System.out.println("== 局域网探测的进度条不再用 String.repeat ==");

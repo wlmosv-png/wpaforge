@@ -298,6 +298,63 @@ as uid=10381  : cmd wifi status → **空输出**（应用 UID，含装在 /data
 这条路径现在通道本身已验证可用；剩下的是拿到纯 shell 身份（非 root 启动的
 Shizuku）后跑一轮真实字典，那需要一台未 root 设备或把 Shizuku 改成无线调试启动。
 
+### 6.3.2 安卓 13 未 root「点破解没反应」—— 自检把能用的通道自己挡死了（2026-11-20）
+
+用户报障（另一台**安卓 13、未 root** 的设备）：
+
+> 装上了，但没看到要索取权限；点破解后没效果，提示「不支持 cmd」。
+
+**真因不是「不支持 cmd」**。`probeChannel()` 原来**无条件**要求 shell 通道，
+然后真跑一条 `cmd wifi status`。未 root 的应用 UID 执行该命令返回**空串**
+（binder 按调用者 UID 拦，本机对照实验已确认），于是：
+
+```
+命令返回空 → looksLikeWifi=false → 「通道未真正接入」
+usageKnown=false → 但 Specifier 分支根本没写在 probeChannel 里
+```
+
+真正能用的 `WifiNetworkSpecifier` 通道**从头到尾没被检查过**。
+用户看到的那句「本机不支持（缺子命令）」就是这么来的。
+
+#### 三处修复
+
+| # | 缺陷 | 修法 |
+|---|---|---|
+| 1 | `probeChannel()` 用 shell 判一切 | `specifier != null` → 走 Specifier 自检（`probeSupport()` + 读当前连接），**完全不碰 shell**；且该分支必须排在 `shell == null` 之前 |
+| 2 | 无 Root 时「先 su、失败才试 Shizuku」 | 未 root 机器每条命令先白等 su 超时（实测 8s/条 × 几十条 = 几分钟不动）。改为按模式决定顺序：无 Root 且 Shizuku 可用 → 直接走 Shizuku；su 保留兜底 |
+| 3 | 启动自检写死「当前模式: Root」 | 改 `RunMode.nameOf(mode)`，并按真实通道挂 shell / Shizuku / Specifier |
+
+真机前后对照（本机）：
+
+```
+修复前  当前模式: Root      通道类型: Root      结论: 未接入
+修复后  当前模式: rootless  通道类型: Shizuku  结论: 已接入（9 项全绿，耗时 111ms）
+```
+
+#### 用户引导（用户明确要求「希望能引导用户做」）
+
+旧实现只往日志区写一行 —— 日志在页面下方、还会被后续行冲掉。
+这就是「点击破解后没效果」的观感来源。现在：
+
+- 新增 `CrackService.UiCallback.onBlockedNotice(title, detail)`：
+  闸门拦下时界面**弹对话框**，不再只写日志。
+- 新增 `MainActivity.showShizukuGuide()`：按 Shizuku 四种状态
+  （没装 / 装了没启动 / 没授权 / 可用）给**具体到点哪里**的分步说明，
+  并带可点按钮（去下载 / 打开 Shizuku / 立即授权）。
+- 无 Root 且 Shizuku 未就绪时，拦截对话框直接给「怎么解决」→ 引导。
+
+#### 门禁（新增 14 条，且验证过能抓到旧 bug）
+
+`RootlessVerdictChainTest` 72 → **86** 条：
+
+- `probeMustNotRequireShellInRootless` —— 钉住「Specifier 分支在 shell 判空之前」
+  且「Specifier 自检不执行 `cmd wifi`」；
+- `shizukuPreferredOverSu` —— 钉住「Shizuku 分支排在 su 会话之前」。
+
+**有效性验证**：把 `CrackEngine` 还原成旧的顺序后重跑，
+立刻报 2 条 FAIL（`Specifier 分支在 shell 判空之前` / `Specifier 自检不执行 cmd wifi`）——
+说明这条门禁不是摆设。
+
 ### 6.4 未做的测试（需要你来做，理由如下）
 
 - **无 Root 真机验收**：本机是已 root 设备。按任务书，不能用「关闭 su 授权 / 隐藏 root」的
@@ -314,11 +371,11 @@ Shizuku）后跑一轮真实字典，那需要一台未 root 设备或把 Shizuk
 | 项 | 值 |
 |---|---|
 | 基线 tag | `baseline-before-rootless-20261118` → `db97138d46dce649f1900fcf7daee4fe1bde00d4` |
-| 适配分支 HEAD | 见 §8（7 个 commit） |
-| APK | `/data/local/tmp/wpf-shz10.apk`（含 Shizuku 通道五修） |
+| 适配分支 HEAD | 见 §8（9 个 commit） |
+| APK | `/data/local/tmp/wpf-shz12.apk`（Shizuku 五修 + 无 Root 自检/引导） |
 | 版本 | 1.9.61 (157) —— 未改（非正式发布） |
-| SHA-256 | `9ebfccae91c1ae86f7cb152eccda4ba35dab5a6e7a958dbe676cea4a6ecb6c12`（2026-11-20 收尾版） |
-| 大小 | 1,867,199 B |
+| SHA-256 | `3acd5d83e55959ecb4704e8aebe20fea60446b41e9b2f36efa93eea684adf448`（2026-11-20 最终） |
+| 大小 | 1,879,487 B |
 | 签名 | 既有 release key（与已装包一致，可覆盖安装） |
 
 ---
@@ -326,6 +383,8 @@ Shizuku）后跑一轮真实字典，那需要一台未 root 设备或把 Shizuk
 ## 8. 分阶段提交
 
 ```
+f2b3828 fix(ui):       模式说明文案与真实能力对齐
+88e3eeb fix(rootless): 安卓13 无 root 点破解没反应 —— 自检拿 shell 判 Specifier
 e16aa89 fix(shizuku): 命令能跑通但输出永远为空 —— 又两个真 bug
 4f88b0c fix(shizuku): Provider 类没进 dex 导致启动即崩 —— 三处真 bug 一并修掉
 2590ed8 feat(rootless): 借 Shizuku 拿 shell 身份 —— 无 root 也能自动跑字典

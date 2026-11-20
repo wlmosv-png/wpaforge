@@ -1636,6 +1636,17 @@ public class CrackService extends Service {
                 // 抹掉了引擎辛苦区分出来的真实原因（通道没响应 / 未见尝试 / 证据不足），
                 // 用户因此永远看不到问题出在哪。现在原样透传。
                 String detail = a.detail;
+                // **把七阶段轨迹附在判词后面**（2026-11-20，任务书第七部分）。
+                // 用户报障时最想知道的是「卡在哪一阶段」——
+                // 以前只能给一句「未确定」，现在能直接说
+                // 「PRECHECK[ok] ISOLATE[stale-config] BLOCKED@隔离」。
+                try {
+                    CrackEngine eng0 = engineRef;
+                    String ph = eng0 == null ? "" : eng0.lastPhasesSummary();
+                    if (!ph.isEmpty()) {
+                        detail = detail + "\n  " + ph;
+                    }
+                } catch (Throwable ignored) {}
                 if (a.isSuccess() && a.confirmedBy != null && !a.confirmedBy.isEmpty()) {
                     // 命中时补上判定依据，便于自证：wifistate / status / watcher / wifiinfo
                     detail = L.s(detail + "（依据: ", detail + " (via: ") + a.confirmedBy + "）";

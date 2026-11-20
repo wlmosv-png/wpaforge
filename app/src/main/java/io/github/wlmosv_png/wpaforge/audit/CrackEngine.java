@@ -1954,6 +1954,36 @@ public final class CrackEngine {
     /** 供界面 / 诊断读取：最近一次探测的原始返回。 */
     public String lastSubcommandProbeRaw() { return lastSubcommandProbe; }
 
+    /**
+     * 最近一次尝试的**七阶段轨迹**（2026-11-20）。
+     *
+     * <p>界面与日志都读它：失败时能直接说出「卡在哪一阶段」，
+     * 而不是只给一句「未确定」。
+     */
+    private volatile AttemptPhases lastPhases;
+
+    /** 最近一次尝试的阶段轨迹（可能为 null = 还没跑过）。 */
+    public AttemptPhases lastPhases() { return lastPhases; }
+
+    /**
+     * 把阶段轨迹写进日志（**不含口令**）。
+     *
+     * <p>任务书第七部分：「执行页必须展示实际通道、当前验证阶段、真实统计和失败原因」。
+     * 这一行就是「当前验证阶段」的落点 —— 用户报障时贴这一行即可定位卡在哪。
+     */
+    private void logPhases(AttemptPhases ph) {
+        if (ph == null) return;
+        try {
+            l0Phases = ph.summary();
+        } catch (Throwable ignored) {}
+    }
+
+    /** 最近一次阶段摘要（供界面/日志读取，不含口令）。 */
+    private volatile String l0Phases = "";
+
+    /** 最近一次阶段摘要文本。 */
+    public String lastPhasesSummary() { return l0Phases; }
+
     // ------------------------------------------------------------------ 单条尝试
 
     /**
@@ -2239,9 +2269,22 @@ public final class CrackEngine {
         long statT0 = clock().uptimeMillis();
         statPrepMs = 0; statProbeMs = 0; statPollMs = 0; statLogMs = 0; statRounds = 0;
 
-        // 每条之前删净旧配置（配置复用会让任何密码都"成功"）。
-        // 走引擎自带实现，保证各调用方行为一致。
+        // ══════════════════════════════════════════════════════════════════
+        //  七阶段状态机（2026-11-20，任务书第四部分）
+        //
+        //  以前这些闸门全挤在这几百行里，各自没有时间戳、没有一个对象能回答
+        //  「这次尝试走到哪一步、在哪一步失败、每步花了多久」。
+        //  现在每一步都进 phases，失败时 phases.failedPhase() 直接给出阶段名，
+        //  日志里能看到完整轨迹（不含口令）。
+        // ══════════════════════════════════════════════════════════════════
+        final AttemptPhases phases = new AttemptPhases(attemptId);
+
+        // ---- ISOLATE ①：删净旧配置 ----
+        phases.begin(AttemptPhases.Phase.ISOLATE, clock().uptimeMillis());
         if (!forgetTargetByShell(target.ssid)) {
+            phases.finish(false, "stale-config", "无法清除旧配置", clock().uptimeMillis());
+            lastPhases = phases;
+            logPhases(phases);
             // D4：闸门失败也必须经 Adjudicator（规则 0），不再直造 UNKNOWN。
             return Adjudicator.gateBlocked(password, attemptId,
                     AttemptState.Gate.STALE_CONFIG, clock().uptimeMillis() - t0,
@@ -2259,6 +2302,10 @@ public final class CrackEngine {
         // 可信结论 —— 直接判 UNKNOWN，不让它污染结果。
         long staleNetId = netIdOfTarget(target.ssid);
         if (staleNetId >= 0) {
+            phases.finish(false, "stale-config-readback", "回读仍有 netId=" + staleNetId,
+                    clock().uptimeMillis());
+            lastPhases = phases;
+            logPhases(phases);
             return Adjudicator.gateBlocked(password, attemptId,
                     AttemptState.Gate.STALE_CONFIG, clock().uptimeMillis() - t0,
                     L.s("旧配置未清除（netId=" + staleNetId + "），本条结果不可信",
@@ -2285,6 +2332,8 @@ public final class CrackEngine {
          * 兜底：SSID 读不到时看 netId。list-networks 里还有目标的条目，
          * 同样说明配置没清干净，必须先断开。
          */
+        // ---- PRECHECK：读命令前状态 ----
+        phases.begin(AttemptPhases.Phase.PRECHECK, clock().uptimeMillis());
         // 一次读 status 拿原始文本，**同时**得到「读没读到」与「连着谁」两个信息。
         // 旧实现只看 snapshotSsid() 的返回值，无法区分
         // 「status 明确说未连接」与「status 读超时」—— 两者都是 null。
@@ -2309,6 +2358,10 @@ public final class CrackEngine {
 
         Baseline bl = baselineDecision(preStatusOk, linkedBySsid, preListOk, linkedByNetId);
         if (bl == Baseline.DECIDE_UNREADABLE) {
+            phases.finish(false, "pre-state-unknown",
+                    "status 与 list-networks 都读不到", clock().uptimeMillis());
+            lastPhases = phases;
+            logPhases(phases);
             // 两侧都读不到 -> 无法确认系统是否还挂着目标配置。
             // 绝不能按「干净」放行：若此刻系统仍连着目标，命令后四条件会立刻成立，
             // 把任意候选误判成命中。
@@ -2318,12 +2371,17 @@ public final class CrackEngine {
                         "pre-command link state unknown (status and list-networks both unreadable); "
                                 + "this attempt is unreliable"));
         }
+        phases.finish(true, "ok", bl.name(), clock().uptimeMillis());
         if (bl == Baseline.DECIDE_LINKED) {
             if (linkedByNetId && !linkedBySsid) {
                 android.util.Log.i(TAG,"SSID read failed but netId=" + preNetId + " still present; disconnecting");
             }
             boolean off = disconnectAndVerify(target.ssid);
             if (!off) {
+                phases.finish(false, "link-not-dropped", "上一条连接未断开",
+                        clock().uptimeMillis());
+                lastPhases = phases;
+            logPhases(phases);
                 return Adjudicator.gateBlocked(password, attemptId,
                         AttemptState.Gate.DISCONNECT_FAILED, clock().uptimeMillis() - t0,
                         L.s("上一条的连接未能断开，本条判定不可信",
@@ -2386,6 +2444,7 @@ public final class CrackEngine {
         //  但 Shizuku 通道已在 1.9.24 移除；在 Root 下 `cmd wifi` 实测可用
         //  （ConnectSpec 负责转义），保留一条路径更好维护。
         // ══════════════════════════════════════════════════════════════
+        phases.begin(AttemptPhases.Phase.SUBMIT, clock().uptimeMillis());
         {
             final String cmd = ConnectSpec.buildConnect(target.ssid, security, password,
                     pinBssid ? target.bssid : null, macRotate);
@@ -2394,6 +2453,11 @@ public final class CrackEngine {
                 try { sh.exec(cmd, 20000); } catch (Throwable ignored) {}
             }, "wpaforge-engine-conn").start();
         }
+        // SUBMIT 只是「命令已交给通道」（异步线程已启动）。
+        // **它不代表连接成功** —— AOSP 源码里 connect-network 只等 500ms 就返回，
+        // 返回 0 与连接成败无关。真正的判断在 OBSERVE。
+        phases.finish(true, "ok", "connect-network 已提交（异步）", clock().uptimeMillis());
+        phases.begin(AttemptPhases.Phase.OBSERVE, clock().uptimeMillis());
 
         // 命令后目标会得到一个新 netId（配置已在此之前删净并回读确认）。
         // 用它和 status 里的 Net ID 比对，把「连上了目标」严格归因到这条候选。
@@ -2757,7 +2821,17 @@ public final class CrackEngine {
                             true);       // 净检已确认配置被删净 → 后续连接必是本次建的
                     Evidence.Attribution attr = pre.capAttribution(Evidence.Attribution.AT3);
                     String preReason = pre.satisfied() ? "" : (" · 前提不足(" + pre.blockingReason() + ")");
-                    return judge(password, Lifecycle.ACTIVE, AttemptState.Gate.OK,
+
+                    // ---- 阶段记账：OBSERVE → ATTRIBUTE → ADJUDICATE → FINALIZE ----
+                    // 这一步是「看到了连接」；归属由下面 ATTRIBUTE 决定。
+                    phases.finish(true, "connected", sa.evidence, clock().uptimeMillis());
+                    phases.begin(AttemptPhases.Phase.ATTRIBUTE, clock().uptimeMillis());
+                    boolean attrOk = (attr == Evidence.Attribution.AT3);
+                    phases.finish(attrOk,
+                            attrOk ? "AT3" : ("AT2-" + pre.blockingReason()),
+                            "前提=" + pre, clock().uptimeMillis());
+                    phases.begin(AttemptPhases.Phase.ADJUDICATE, clock().uptimeMillis());
+                    Attempt adj = judge(password, Lifecycle.ACTIVE, AttemptState.Gate.OK,
                             Evidence.Source.SUCCESS_STATUS, Evidence.Claim.CONNECTED,
                             attr, attemptId, targetNetId >= 0, ms,
                             L.s("握手完成且已获取 IP（确认连上）",
@@ -2765,6 +2839,15 @@ public final class CrackEngine {
                                     + (sa.evidence == null || sa.evidence.isEmpty()
                                         ? "" : " · " + sa.evidence)
                                     + preReason);
+                    phases.finish(true, adj.verdict.name(), "grade=" + adj.grade,
+                            clock().uptimeMillis());
+                    phases.begin(AttemptPhases.Phase.FINALIZE, clock().uptimeMillis());
+                    phases.finish(true, adj.isSuccess() ? "persisted" : "not-persisted",
+                            "", clock().uptimeMillis());
+                    lastPhases = phases;
+                    logPhases(phases);
+            logPhases(phases);
+                    return adj;
                 } else {
                     /*
                      * ---- 失败加速：系统已经回连到别的网络 ----

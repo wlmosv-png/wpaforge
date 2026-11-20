@@ -178,8 +178,14 @@ public class R10InvariantTest {
             // 它由纯逻辑类 cap/SpecifierVerdict 产出（见 RootlessSpecifierTest），
             // CrackEngine 只消费 d.claim / d.attribution。所以本文件里的
             // AT3 仍然是 3 处，多出来的那两处证据不会绕过这条枚举。
-            eq("AT3 恰好 3 处（2 成功 + 1 支A 配置绑定）", 3,
-                    countOccurrences(code, "Evidence.Attribution.AT3"));
+            // 2026-11-20：这条断言的本意是「**产出** AT3 的地方只能有 3 处」，
+            // 防止有人偷偷加一条宽松路径。新增的 AttributionPrecondition
+            // 是**消费** AT3（capAttribution(AT3) 是入参，只会把它降级），
+            // 不是新的产出点。因此改为断言「产出形状」的处数。
+            eq("产出 AT3 的地方恰好 3 处（2 成功 + 1 支A 配置绑定）", 3,
+                    countAt3Producers(code));
+            ok("AttributionPrecondition 只消费 AT3（不产出）",
+                    code.contains("capAttribution(Evidence.Attribution.AT3)"));
             // 守卫：无 Root 路径必须**引用**那张纯逻辑映射表，不许自己写死主张
             ok("无 Root 在线验证的证据主张来自 SpecifierVerdict（不是就地硬编码）",
                     code.contains("SpecifierVerdict.decide(")
@@ -422,6 +428,27 @@ public class R10InvariantTest {
      * AT-1 级（不可永久排除）。若哪次改动把 DIRECT 直接写在 AUTH_FAIL 出口上，
      * 候选就会被永久排除 —— 那正是本不变量要拦住的回归。
      */
+    /**
+     * 只数**产出** AT3 的地方 —— 即把它作为 {@code judge(...)} 的归属参数、
+     * 或作为 {@code new Evidence(...)} 的归属参数传出去。
+     *
+     * <p>刻意不数 {@code capAttribution(AT3)} 这种「消费」用法：
+     * 那只会把 AT3 降级，不可能放大归属。
+     */
+    private static int countAt3Producers(String code) {
+        int n = 0;
+        int i = 0;
+        String tok = "Evidence.Attribution.AT3";
+        while ((i = code.indexOf(tok, i)) >= 0) {
+            int from = Math.max(0, i - 40);
+            String before = code.substring(from, i);
+            boolean consumed = before.contains("capAttribution(");
+            if (!consumed) n++;
+            i += tok.length();
+        }
+        return n;
+    }
+
     private static int countOccurrences(String haystack, String needle) {
         if (haystack == null || needle == null || needle.isEmpty()) return -1;
         int n = 0, at = 0;

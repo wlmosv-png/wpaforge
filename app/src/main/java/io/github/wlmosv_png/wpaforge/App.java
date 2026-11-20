@@ -218,6 +218,57 @@ public class App extends Application {
                         sb.append("  Shizuku 实测 cmd wifi: exit=").append(r.exitCode)
                                 .append(r.ok() ? " OK" : (" ERR:" + r.error))
                                 .append(" 首行=").append(first).append('\n');
+
+                        // **执行身份 + IWifiManager 直调自检**（2026-11-20）
+                        //
+                        // 「Shizuku 可用」只说明拿到 binder；真实 uid 决定能力边界
+                        // （uid 0 能读 WifiConfigStore.xml，uid 2000 读不到）。
+                        // 直调自检是**只读**的（列已保存网络 / 读当前连接），
+                        // 不删不改任何配置。
+                        try {
+                            io.github.wlmosv_png.wpaforge.cap.ExecutorIdentity id =
+                                    shz.identity();
+                            sb.append("  Shizuku 执行身份: ").append(id.describe(true))
+                                    .append('\n');
+                            sb.append("  可读 WifiConfigStore: ")
+                                    .append(id.canReadConfigStore() ? "是" : "否").append('\n');
+
+                            long dt0 = System.currentTimeMillis();
+                            io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge.Outcome<
+                                    java.util.List<Object>> lst =
+                                    io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                            .listConfiguredNetworks(
+                                                    android.os.Build.VERSION.SDK_INT);
+                            long dtMs = System.currentTimeMillis() - dt0;
+                            sb.append("  IWifiManager 直调(只读): ").append(lst.describe())
+                                    .append(" 耗时=").append(dtMs).append("ms\n");
+                            if (lst.ok) {
+                                sb.append("    已保存网络 ").append(lst.value.size())
+                                        .append(" 条\n");
+                            }
+
+                            long it0 = System.currentTimeMillis();
+                            io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge.Outcome<Object>
+                                    info = io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                            .getConnectionInfo(
+                                                    android.os.Build.VERSION.SDK_INT);
+                            long itMs = System.currentTimeMillis() - it0;
+                            if (info.ok) {
+                                Object ss = io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                        .infoField(info.value, "ssid");
+                                Object ni = io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                        .infoField(info.value, "networkId");
+                                sb.append("  IWifiManager 读连接: ssid=").append(ss)
+                                        .append(" netId=").append(ni)
+                                        .append(" 耗时=").append(itMs).append("ms\n");
+                            } else {
+                                sb.append("  IWifiManager 读连接: ").append(info.describe())
+                                        .append('\n');
+                            }
+                        } catch (Throwable t) {
+                            sb.append("  直调自检异常: ")
+                                    .append(t.getClass().getSimpleName()).append('\n');
+                        }
                     }
                 } catch (Throwable t) {
                     sb.append("  Shizuku 探测异常: ").append(t.getClass().getSimpleName())

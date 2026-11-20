@@ -67,10 +67,19 @@ public final class CapabilityProbe {
         public String shizukuReason = "";
         /** 不能用的原因（能用时为空）。 */
         public String specifierReason = "";
+        /** 本次探测时刻（单调时钟毫秒；0 = 未记录）。 */
+        public long probedAtMs = 0L;
 
         public static Facts empty() {
             return new Facts();
         }
+    }
+
+    /** 截断原始证据，避免把整段 help 写进诊断（200 字符够定位）。 */
+    static String truncate(String s) {
+        if (s == null) return "";
+        String t = s.trim().replace("\n", " ⏎ ");
+        return t.length() <= 200 ? t : t.substring(0, 200) + "…";
     }
 
     /** 无 Root 模式能力集（纯逻辑解释，不碰设备）。 */
@@ -307,7 +316,13 @@ public final class CapabilityProbe {
                 out.add(Capability.unknown(Capability.C_WIFI_CONNECT, unknown, unknownEn));
             } else if (hasConnect) {
                 out.add(Capability.available(Capability.C_WIFI_CONNECT,
-                        "cmd wifi connect-network 可用", "cmd wifi connect-network is available"));
+                        "cmd wifi connect-network 可用", "cmd wifi connect-network is available")
+                        .withEvidence("cmd wifi connect-network", "root shell",
+                                x.probedAtMs,
+                                truncate(x.cmdConnectProbe),
+                                "实际调用返回 Invalid args / 正常执行（非 Unknown command）",
+                                true,
+                                Capability.C_WIFI_CONNECT, Capability.C_WIFI_READ));
             } else {
                 out.add(Capability.unsupported(Capability.C_WIFI_CONNECT,
                         "本机 cmd wifi 没有 connect-network 子命令（Android 9 及更早只有 4 条调试命令）",

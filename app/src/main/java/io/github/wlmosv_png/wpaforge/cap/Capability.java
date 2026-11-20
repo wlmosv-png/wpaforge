@@ -68,8 +68,38 @@ public final class Capability {
     /** 结论强度：true = 用它得到的结论可进证据链；false = 只能展示，不能作判定依据。 */
     public final boolean evidenceGradeFlag;
 
+    // ── 检测元数据（2026-11-20 新增，任务书第二节要求）──────────────────
+    //
+    // 「不要只保存一个 Boolean」。每一项检测必须能回答：
+    //   检测对象是什么、走的哪条通道、什么时候测的、原始返回是什么、
+    //   为什么是这个结论、还能不能重试、哪些功能受它影响。
+    // 这些字段让用户/开发者能复核，而不是只看到一句「不支持」。
+
+    /** 检测对象（人话），例：{@code cmd wifi connect-network}。 */
+    public final String subject;
+    /** 使用的执行通道，例：{@code Root} / {@code Shizuku} / {@code 应用自身 UID}。 */
+    public final String channel;
+    /** 检测时间（毫秒时间戳，0 = 未记录）。 */
+    public final long probedAtMs;
+    /** 原始返回或错误原因（已截断，**不含口令**）。 */
+    public final String rawEvidence;
+    /** 判断依据（为什么得出这个 state），人话。 */
+    public final String basis;
+    /** 是否允许重试（用户点「重新检测」是否有意义）。 */
+    public final boolean retryable;
+    /** 受影响的业务功能标识（{@link #C_*} 的列表，可为空）。 */
+    public final String[] impacts;
+
     private Capability(String id, String state, String reasonZh, String reasonEn,
                        String alternativeZh, String alternativeEn, boolean evidenceGradeFlag) {
+        this(id, state, reasonZh, reasonEn, alternativeZh, alternativeEn, evidenceGradeFlag,
+                "", "", 0L, "", "", true, new String[0]);
+    }
+
+    private Capability(String id, String state, String reasonZh, String reasonEn,
+                       String alternativeZh, String alternativeEn, boolean evidenceGradeFlag,
+                       String subject, String channel, long probedAtMs,
+                       String rawEvidence, String basis, boolean retryable, String[] impacts) {
         this.id = id;
         this.state = state == null ? STATE_UNKNOWN : state;
         this.reasonZh = reasonZh == null ? "" : reasonZh;
@@ -77,6 +107,72 @@ public final class Capability {
         this.alternativeZh = alternativeZh == null ? "" : alternativeZh;
         this.alternativeEn = alternativeEn == null ? "" : alternativeEn;
         this.evidenceGradeFlag = evidenceGradeFlag;
+        this.subject = subject == null ? "" : subject;
+        this.channel = channel == null ? "" : channel;
+        this.probedAtMs = probedAtMs;
+        this.rawEvidence = rawEvidence == null ? "" : rawEvidence;
+        this.basis = basis == null ? "" : basis;
+        this.retryable = retryable;
+        this.impacts = impacts == null ? new String[0] : impacts;
+    }
+
+    /**
+     * 带**完整检测证据**的副本。
+     *
+     * <p>用法：先按业务结论构造（{@code available/unsupported/...}），
+     * 再在探测现场用本方法把原始事实挂上去 —— 这样既不必给每个工厂方法
+     * 加六个参数，也不会让「没填证据」的项看起来像「有证据」。
+     *
+     * @param subject    检测对象
+     * @param channel    执行通道
+     * @param probedAtMs 检测时刻
+     * @param raw        原始返回（调用方负责脱敏与截断）
+     * @param basis      判断依据
+     * @param retryable  是否允许重试
+     * @param impacts    受影响功能
+     */
+    public Capability withEvidence(String subject, String channel, long probedAtMs,
+                                   String raw, String basis, boolean retryable,
+                                   String... impacts) {
+        return new Capability(id, state, reasonZh, reasonEn, alternativeZh, alternativeEn,
+                evidenceGradeFlag, subject, channel, probedAtMs, raw, basis, retryable, impacts);
+    }
+
+    /**
+     * 一行诊断文本（**不含任何口令**，可安全写日志 / 导出）。
+     *
+     * <p>格式刻意保持稳定，便于用户复制给开发者：
+     * <pre>
+     *   [state] id · 对象 · 通道 · 依据 · 原始=... · 可重试=是 · 影响=a,b
+     * </pre>
+     */
+    public String diagnosticLine(boolean zh) {
+        StringBuilder sb = new StringBuilder();
+        sb.append('[').append(state).append("] ").append(id);
+        if (!subject.isEmpty()) sb.append(" · ").append(subject);
+        if (!channel.isEmpty()) sb.append(" · 通道=").append(channel);
+        String reason = zh ? reasonZh : reasonEn;
+        if (!reason.isEmpty()) sb.append(" · ").append(reason);
+        if (!basis.isEmpty()) sb.append(" · 依据=").append(basis);
+        if (!rawEvidence.isEmpty()) sb.append(" · 原始=").append(rawEvidence);
+        sb.append(" · 可重试=").append(retryable ? (zh ? "是" : "yes") : (zh ? "否" : "no"));
+        if (probedAtMs > 0) sb.append(" · 检测时刻=").append(probedAtMs);
+        if (impacts.length > 0) sb.append(" · 影响=").append(joinImpacts());
+        return sb.toString();
+    }
+
+    private String joinImpacts() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < impacts.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(impacts[i]);
+        }
+        return sb.toString();
+    }
+
+    /** 是否**确实**带了检测证据（不是「默认空值」）。 */
+    public boolean hasEvidence() {
+        return probedAtMs > 0 && (!subject.isEmpty() || !basis.isEmpty());
     }
 
     // ---------------------------------------------------------------- 构造

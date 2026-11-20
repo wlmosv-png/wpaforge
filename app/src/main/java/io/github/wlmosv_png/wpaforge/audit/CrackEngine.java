@@ -1790,10 +1790,18 @@ public final class CrackEngine {
         //   存在 → Invalid args for <name>: Argument expected after "<name>"
         //   不存在 → Unknown command: <name>
         // 这两句是 ShellCommand 分发器自己打的，比用法表稳定得多。
+        // 检测时刻用单调时钟（引擎内禁用墙钟：门禁不变量）。
+        // 它的用途是「两次探测间隔多久」，单调时钟完全够用且不受用户改时间影响。
+        final long subProbeAt = clock().uptimeMillis();
         int stStatus = probeSubcommand("status");
         int stConnect = probeSubcommand("connect-network");
         int stForget = probeSubcommand("forget-network");
         boolean zh = L.isZh();
+        // 把三个子命令的探测事实留档（任务书：不能只保存一个 Boolean）
+        lastSubcommandEvidence = "status=" + ShellSubcommand.label(stStatus, zh)
+                + " / connect-network=" + ShellSubcommand.label(stConnect, zh)
+                + " / forget-network=" + ShellSubcommand.label(stForget, zh);
+        lastSubcommandProbeAtMs = subProbeAt;
         p.step(ShellSubcommand.mark(stStatus) + L.s("status 子命令: ", "status subcommand: ")
                 + ShellSubcommand.label(stStatus, zh));
         p.step(ShellSubcommand.mark(stConnect) + L.s("connect-network 子命令: ",
@@ -1852,6 +1860,11 @@ public final class CrackEngine {
                     "    This is not necessarily a fault (you may just be offline),"));
             p.step(L.s("    但如果跑完所有候选都没命中，请先怀疑这里。",
                     "    but if every candidate misses, suspect this first."));
+        }
+
+        // 子命令探测的完整证据（任务书第七节：日志必须能定位问题）
+        if (lastSubcommandEvidence != null && !lastSubcommandEvidence.isEmpty()) {
+            p.step(L.s("  子命令实测: ", "  subcommands: ") + lastSubcommandEvidence);
         }
 
         if (cost > 5000) {
@@ -1926,6 +1939,20 @@ public final class CrackEngine {
 
     /** 最近一次子命令探测的原始返回（自检详情用）。 */
     private String lastSubcommandProbe = "";
+
+    /** 三个子命令的探测结论摘要（不含口令，可写日志）。 */
+    private String lastSubcommandEvidence = "";
+    /** 子命令探测时刻。 */
+    private long lastSubcommandProbeAtMs = 0L;
+
+    /** 供界面 / 诊断读取：三个子命令的探测结论。 */
+    public String subcommandEvidence() { return lastSubcommandEvidence; }
+
+    /** 供界面 / 诊断读取：子命令探测时刻。 */
+    public long subcommandProbeAtMs() { return lastSubcommandProbeAtMs; }
+
+    /** 供界面 / 诊断读取：最近一次探测的原始返回。 */
+    public String lastSubcommandProbeRaw() { return lastSubcommandProbe; }
 
     // ------------------------------------------------------------------ 单条尝试
 

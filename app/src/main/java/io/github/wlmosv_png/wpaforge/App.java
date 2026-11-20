@@ -209,15 +209,75 @@ public class App extends Application {
                             .append(" (").append(shz.stateDetail()).append(")\n");
                     sb.append("  Shizuku 可用: ").append(shz.usable() ? "是" : "否").append('\n');
                     if (shz.usable()) {
-                        // 真跑一条只读命令，证明通道确实能执行
-                        io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
-                                shz.exec("cmd wifi status", 8000);
-                        String first = r.output == null ? "" : r.output.trim();
-                        int nl = first.indexOf('\n');
-                        if (nl > 0) first = first.substring(0, nl);
-                        sb.append("  Shizuku 实测 cmd wifi: exit=").append(r.exitCode)
-                                .append(r.ok() ? " OK" : (" ERR:" + r.error))
-                                .append(" 首行=").append(first).append('\n');
+                        // ══════════════════════════════════════════════════════
+                        //  **只读诊断：逐条命令的完整证据**（2026-11-20 任务书第四部分）
+                        //
+                        //  全部走**正式 Executor**（ShizukuChannel.exec），
+                        //  不另写测试通道 —— 诊断结果与真实执行同源。
+                        //
+                        //  只跑这四条只读命令，绝不碰 connect/forget/disconnect：
+                        //    id / cmd wifi status / cmd wifi list-networks / dumpsys wifi
+                        //
+                        //  每条输出：执行器名 / UID / SELinux / 命令原文 /
+                        //            起止时刻 / 耗时 / exitCode / timeout / stdout / stderr
+                        // ══════════════════════════════════════════════════════
+                        sb.append("  -- 只读命令诊断（正式 Executor）--\n");
+                        String[] readonlyCmds = {
+                                "id",
+                                "cmd wifi status",
+                                "cmd wifi list-networks",
+                                "dumpsys wifi"
+                        };
+                        for (String rc : readonlyCmds) {
+                            long c0 = System.currentTimeMillis();
+                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result rr;
+                            try {
+                                rr = shz.exec(rc, 8000);
+                            } catch (Throwable t) {
+                                sb.append("    [").append(rc).append("] EX ")
+                                        .append(t.getClass().getSimpleName()).append('\n');
+                                continue;
+                            }
+                            long cMs = System.currentTimeMillis() - c0;
+                            sb.append("    [").append(rc).append("]\n");
+                            sb.append("      执行器=").append(rr.executorId)
+                                    .append(" 身份=").append(rr.executorIdentity).append('\n');
+                            sb.append("      耗时=").append(cMs).append("ms")
+                                    .append(" exit=").append(rr.exitCode)
+                                    .append(" timeout=").append(rr.timedOut)
+                                    .append(" ok=").append(rr.ok()).append('\n');
+                            if (!rr.error.isEmpty()) {
+                                sb.append("      error=").append(rr.error).append('\n');
+                            }
+                            // stdout 只取首行 + 字节数（避免日志膨胀，也不泄露口令）
+                            String so = rr.stdout == null ? "" : rr.stdout;
+                            String soFirst = so;
+                            int snl = soFirst.indexOf('\n');
+                            if (snl > 0) soFirst = soFirst.substring(0, snl);
+                            if (soFirst.length() > 100) soFirst = soFirst.substring(0, 100) + "…";
+                            sb.append("      stdout(").append(so.length()).append("B) 首行=")
+                                    .append(soFirst).append('\n');
+                            String se = rr.stderr == null ? "" : rr.stderr;
+                            if (!se.isEmpty()) {
+                                String seFirst = se;
+                                int enl = seFirst.indexOf('\n');
+                                if (enl > 0) seFirst = seFirst.substring(0, enl);
+                                if (seFirst.length() > 100) {
+                                    seFirst = seFirst.substring(0, 100) + "…";
+                                }
+                                sb.append("      stderr(").append(se.length()).append("B) 首行=")
+                                        .append(seFirst).append('\n');
+                            }
+                            // 失败分类
+                            if (!rr.ok()) {
+                                sb.append("      失败分类=")
+                                        .append(rr.timedOut ? "TIMEOUT"
+                                                : (rr.cancelled ? "CANCELLED"
+                                                : (rr.error.isEmpty() ? "NONZERO_EXIT"
+                                                : "ERROR:" + rr.error)))
+                                        .append('\n');
+                            }
+                        }
 
                         // **执行身份 + IWifiManager 直调自检**（2026-11-20）
                         //

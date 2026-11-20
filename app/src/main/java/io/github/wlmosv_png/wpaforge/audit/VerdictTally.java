@@ -44,6 +44,19 @@ public final class VerdictTally {
      * 把第三类并进前两类，用户就会把「这条密码错了」当成事实去行动。
      */
     private int networkAuthFail;
+    /**
+     * **环境类**结论条数（通道抛异常 / 目标消失）。
+     *
+     * <p>它们既不是「这条候选错了」，也不是「跑过但没结论」——
+     * 是**通道或环境出了问题**。单列的理由与 notExecuted 相同：
+     * 并进任何一类都会让用户得出错误行动（去改字典 / 去换密码），
+     * 而真正该做的是修通道。
+     *
+     * <p>2026-11-20 新增。旧实现让它凭空消失，导致
+     * 「已执行 27 / 已证实 0 / 未确定 0」这种自相矛盾的数字。
+     */
+    private int environmentErrors;
+
     private int executed;
 
     public void reset() {
@@ -52,6 +65,7 @@ public final class VerdictTally {
         inconclusive = 0;
         networkAuthFail = 0;
         executed = 0;
+        environmentErrors = 0;
     }
 
     /**
@@ -61,13 +75,34 @@ public final class VerdictTally {
      */
     public void add(CrackEngine.Verdict v, EvidenceGrade.Level g) {
         if (v == null) return;
+        // **SUCCESS 维持原契约：不计入 executed**（2026-11-20 恢复时确认）。
+        //
+        // v1.9.60 的 UiVerdictGlobalTest 明确断言
+        // 「SUCCESS 由命中路径单独处理，不计入 executed」——
+        // 命中时任务即刻结束，那条不是「试了一条失败」。
+        // 这是既定契约，不是缺陷；改动它属于行为变更，不移植。
         if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) return;
         // U3 修复：「算不算试过」必须与 {@code VerdictView.countsAsTested} **同一口径**。
         // ERROR（通道出错 / 命令没生效）与 TARGET_GONE（目标不在范围）都不算试过 ——
         // 它们衡量的是环境，不是「这条候选被验证过」。
         // 修复前这里无条件 executed++，于是界面说「没试过」、统计说「试过了一条」，
         // 两套数字对不上（用户看到「试了 N 条」里混着根本没跑的条目）。
-        if (v == CrackEngine.Verdict.ERROR || v == CrackEngine.Verdict.TARGET_GONE) return;
+        // **通道/环境类结论必须单列，不能凭空消失**（2026-11-20）。
+        //
+        // 旧实现在这里直接 `return`：ERROR（通道抛异常、命令没生效）与
+        // TARGET_GONE（目标不在范围）既不进 executed、也不进任何一类。
+        // 于是用户看到「已执行 27 / 已证实错误 0 / 未确定 0」——
+        // 27 条不在任何一类里，数字自相矛盾，而真正的问题
+        // （通道在抛异常）被这层噪声完全盖住。
+        //
+        // 现在的口径：
+        //   · 仍**不计入 executed**（它们衡量的确实是环境，不是"这条候选被验证过"）；
+        //   · 但计入**独立的 environmentErrors**，界面能看见、日志能查、
+        //     且不污染「已证实错误 / 未确定」这两个候选级结论。
+        if (v == CrackEngine.Verdict.ERROR || v == CrackEngine.Verdict.TARGET_GONE) {
+            environmentErrors++;
+            return;
+        }
         executed++;
         if (v == CrackEngine.Verdict.AUTH_FAIL) {
             // 只有**可直接验证**的失败（DIRECT）才算已证实；
@@ -125,6 +160,15 @@ public final class VerdictTally {
      */
     public int networkAuthFail() {
         return networkAuthFail;
+    }
+
+    /**
+     * **环境类**条数（通道抛异常 / 目标消失）—— 单列，不并进任何候选级结论。
+     *
+     * <p>它大于 0 说明「这次跑的通道有问题」，与密码对不对无关。
+     */
+    public int environmentErrors() {
+        return environmentErrors;
     }
 
     /** 执行过的条数（不含 SUCCESS/ABORTED）。 */

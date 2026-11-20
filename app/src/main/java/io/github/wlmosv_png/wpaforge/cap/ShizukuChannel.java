@@ -349,6 +349,30 @@ public final class ShizukuChannel {
         public final boolean timedOut;
         public final String error;
 
+        // ── 结构化诊断（2026-11-20，任务书第三阶段要求）────────────────
+        //
+        // 每次执行必须能回答：用的哪个执行器、执行身份是什么、
+        // 花了多久、stdout/stderr 各是什么、是不是超时/被取消。
+        // 以前只有 output/exitCode/error 三个字段，无法区分
+        // 「命令没跑」与「跑了但没输出」与「跑了但被拦」。
+
+        /** 执行器名（Shizuku / Root / App）。 */
+        public String executorId = "";
+        /** 实际执行身份（可空）。 */
+        public String executorIdentity = "";
+        /** 命令开始时刻（单调时钟）。 */
+        public long startedAtMs = 0L;
+        /** 命令结束时刻。 */
+        public long endedAtMs = 0L;
+        /** stdout（与 output 同源，保留语义清晰）。 */
+        public String stdout = "";
+        /** stderr。 */
+        public String stderr = "";
+        /** 是否被取消（区别于超时）。 */
+        public boolean cancelled = false;
+        /** 原始异常类名（无异常为空）。 */
+        public String exceptionClass = "";
+
         Result(String output, int exitCode, boolean timedOut, String error) {
             this.output = output == null ? "" : output;
             this.exitCode = exitCode;
@@ -357,7 +381,32 @@ public final class ShizukuChannel {
         }
 
         public boolean ok() {
-            return !timedOut && error.isEmpty();
+            return !timedOut && error.isEmpty() && !cancelled;
+        }
+
+        /** 耗时（毫秒）；未记录时 0。 */
+        public long elapsedMs() {
+            return endedAtMs > startedAtMs ? endedAtMs - startedAtMs : 0L;
+        }
+
+        /**
+         * 一行结构化诊断（**不含命令内容与输出正文**，避免口令泄露）。
+         *
+         * <p>格式固定，便于日志聚合与 grep：
+         * <pre>
+         *   [Shizuku/root(uid=0)] 111ms exit=0 timeout=false out=234B err=0B
+         * </pre>
+         */
+        public String brief() {
+            return "[" + (executorId.isEmpty() ? "?" : executorId)
+                    + (executorIdentity.isEmpty() ? "" : "/" + executorIdentity)
+                    + "] " + elapsedMs() + "ms exit=" + exitCode
+                    + " timeout=" + timedOut
+                    + (cancelled ? " cancelled" : "")
+                    + " out=" + stdout.length() + "B"
+                    + " err=" + stderr.length() + "B"
+                    + (error.isEmpty() ? "" : " err=" + error)
+                    + (exceptionClass.isEmpty() ? "" : " ex=" + exceptionClass);
         }
     }
 
@@ -384,6 +433,7 @@ public final class ShizukuChannel {
         if (!stillUsable()) {
             return new Result("", -1, false, stateDetail);
         }
+        final long tExec0 = System.currentTimeMillis();
         IBinder remote = null;
         try {
             remote = remoteProcess(new String[]{"sh", "-c", command});
@@ -480,10 +530,14 @@ public final class ShizukuChannel {
             try { transactVoid(remote, RP_DESTROY); } catch (Throwable ignored) {}
         }
         if (timeout) {
-            return new Result(out, code, true, "命令超时（" + timeoutMs + "ms）");
+            Result r = new Result(out, code, true, "命令超时（" + timeoutMs + "ms）");
+            fillDiag(r, out, err, tExec0);
+            return r;
         }
         String combined = err.isEmpty() ? out : (out + (out.isEmpty() ? "" : "\n") + err);
-        return new Result(combined, code, false, "");
+        Result okR = new Result(combined, code, false, "");
+        fillDiag(okR, out, err, tExec0);
+        return okR;
     }
 
     /** IRemoteProcess.waitForTimeout 的事务码（AIDL 第 8 个方法）。 */
@@ -607,6 +661,25 @@ public final class ShizukuChannel {
      * 给 300ms 是兜底（防止极端情况下 read 不响应 close），
      * 而不是当正常等待用。旧值 3000ms × 2 个线程 = 6 秒，正是「每条 11 秒」的来源。
      */
+    /**
+     * 填充结构化诊断字段（2026-11-20）。
+     *
+     * <p>不动判定逻辑，只补「这次执行到底发生了什么」的可观测性。
+     */
+    private void fillDiag(Result r, String stdout, String stderr, long startedAt) {
+        try {
+            r.executorId = "Shizuku";
+            ExecutorIdentity id = identity();
+            r.executorIdentity = id == null ? "" : id.describe(false);
+            r.startedAtMs = startedAt;
+            r.endedAtMs = System.currentTimeMillis();
+            r.stdout = stdout == null ? "" : stdout;
+            r.stderr = stderr == null ? "" : stderr;
+        } catch (Throwable t) {
+            r.exceptionClass = t.getClass().getSimpleName();
+        }
+    }
+
     private static void joinQuietly(Thread t) {
         if (t == null) return;
         try { t.join(300L); } catch (Throwable ignored) {}

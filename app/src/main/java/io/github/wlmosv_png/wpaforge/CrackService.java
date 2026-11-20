@@ -1418,7 +1418,17 @@ public class CrackService extends Service {
         // 真的起一次 `su -c id`（约 137ms，冷启动更久）。本方法虽然跑在服务线程，
         // 但任务启动路径里也有主线程的调用点；把它变成「读一次已缓存的值」最稳妥 ——
         // 缓存没有就先用用户意愿，绝不在关键路径上同步等 su。
-        final int runModeId = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId(this);
+        // **执行时以用户当前意愿为准，不用缓存**（2026-11-20）。
+        //
+        // RuntimeMode.modeId() 优先返回**缓存**的探测结果。缓存可能是上一次
+        // 探测留下的，而用户中途在设置页切了模式 → 执行时用的还是旧模式。
+        // 真机风险：用户选了「无 Root」但缓存仍是 Root → shizukuMode 恒 false
+        // → 走 su → su 未授权 → 每条超时。
+        //
+        // 这里改用 Prefs.requestedMode（用户在设置页明确选的），
+        // 因为「用哪条通道」是用户意愿，不是探测结论。
+        // 探测结论只用来判断「这条通道现在能不能用」。
+        final int runModeId = io.github.wlmosv_png.wpaforge.Prefs.requestedMode(this);
         new Thread(() -> io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(this),
                 "wpaforge-mode-warm").start();
         {
@@ -1558,9 +1568,25 @@ public class CrackService extends Service {
                 //   · Shizuku 可用且不是 root 身份 → 直接走 Shizuku（这是无 Root 的主路）
                 //   · 否则先走 su 会话，失败再退 Shizuku
                 io.github.wlmosv_png.wpaforge.cap.ShizukuChannel s0 = shizukuRef;
+                // ══════════════════════════════════════════════════════════════
+                //  **shizukuMode 必须接受 usable() 的全部状态**（2026-11-20 根因）
+                //
+                //  旧写法只认 S_READY（= shell 身份）：
+                //    shizukuMode = ... && s0.state() == S_READY
+                //
+                //  但 usable() 接受 S_READY **和** S_READY_NOT_SHELL（= root 身份）。
+                //  于是：Shizuku 是 root 身份时 → shizukuMode = false
+                //        → 落到 else 分支走 su
+                //        → 用户那台 su 未授权 → 每条命令等满超时
+                //        → 真机现象「每条 10.9 秒、6 条全环境错误」
+                //
+                //  而且这正好解释了「Shizuku 已授权却显示/调用 Root 通道」。
+                //
+                //  现在：只要 Shizuku usable（不管 shell 还是 root 身份）就走 Shizuku。
+                //  身份差异由 ExecutorIdentity 表达，不由「走不走」表达。
+                // ══════════════════════════════════════════════════════════════
                 final boolean shizukuMode = (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS)
-                        && s0 != null && s0.usable()
-                        && s0.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY;
+                        && s0 != null && s0.usable();
 
                 // **通道单一化（2026-11-20 架构修复）**
                 //
@@ -1580,6 +1606,11 @@ public class CrackService extends Service {
                     // ok()=false（超时/异常）→ null；成功但空输出 → 空串。
                     // 两者在判定链里含义不同，不能合并。
                     out = r.ok() ? r.output : null;
+                    // **每次 Shizuku 执行都留结构化诊断**（2026-11-20 任务书第三阶段）。
+                    // 不动判定，只让「这次到底发生了什么」可追溯。
+                    if (!r.ok() || r.elapsedMs() > 3000L) {
+                        log("  " + L.s("通道执行: ", "channel exec: ") + r.brief());
+                    }
                     // **让熔断器能看见 Shizuku 的超时**（2026-11-20 真机事故）。
                     //
                     // 旧实现里熔断器只查 RootProber.lastTimedOut()，而 Shizuku

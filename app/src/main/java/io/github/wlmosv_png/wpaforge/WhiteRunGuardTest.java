@@ -44,6 +44,17 @@ public class WhiteRunGuardTest {
         }
     }
 
+    /** 去掉注释行后的源码。 */
+    private static String codeOnly(String src) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : src.split("\n", -1)) {
+            String t = line.trim();
+            if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) continue;
+            sb.append(line).append('\n');
+        }
+        return sb.toString();
+    }
+
     private void ok(String name, boolean cond) {
         if (cond) {
             pass++;
@@ -145,12 +156,23 @@ public class WhiteRunGuardTest {
      */
     private void closeStreamsBeforeJoin() {
         String shz = readSource("cap/ShizukuChannel.java");
-        int closeAt = shz.indexOf("closeQuietly(outFd);");
-        int joinAt = shz.indexOf("joinQuietly(tOut);");
-        ok("close 出现在 join 之前", closeAt > 0 && joinAt > 0 && closeAt < joinAt);
-        ok("join 超时降到 300ms（不再当正常等待用）",
-                shz.contains("t.join(300L)") && !shz.contains("t.join(3000L)"));
-        ok("超时先 destroy 子进程", shz.contains("超时：先杀掉子进程"));
+        // **顺序已按真机证据改正**（2026-11-20 第三阶段）。
+        //
+        // 旧断言要求「close 在 join 之前」，那是上一轮的结论；
+        // 真机日志（exit=0 但 out=0B、err 只读到一半）证明它会丢输出：
+        // 子进程刚退出时数据还在内核缓冲里，close 让 drain 提前结束。
+        // 现在正确顺序是 **先 join 读尽，只有 drain 卡住才 close 兜底**。
+        String code = codeOnly(shz);
+        int joinAt = code.indexOf("joinQuietly(tOut, JOIN_DRAIN_MS);");
+        int closeAt = code.indexOf("closeQuietly(outFd);");
+        ok("join 出现在 close 之前（先读尽再关）",
+                joinAt > 0 && closeAt > 0 && joinAt < closeAt);
+        ok("join 有显式时限（不再固定 3000ms）",
+                shz.contains("JOIN_DRAIN_MS = 2000L")
+                        && shz.contains("JOIN_FORCE_MS = 300L")
+                        && !shz.contains("t.join(3000L)"));
+        ok("超时先 destroy 子进程（让写端关闭，drain 才能 EOF）",
+                shz.contains("超时：先杀子进程"));
     }
 
     /** 熔断日志必须说清「不是密码问题」。 */

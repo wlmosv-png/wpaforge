@@ -1587,8 +1587,27 @@ public class CrackService extends Service {
                         return "Shizuku/IWifiManager";
                     }
                 });
-                log(L.s("已启用 IWifiManager 直调（不走 shell，避免管道超时）",
-                        "IWifiManager direct calls enabled (no shell, avoids pipe timeouts)"));
+                // **不再无条件说「已启用」**（2026-11-20 第三阶段）。
+                //
+                // 旧实现在这里直接打「已启用 IWifiManager 直调」，而那一刻
+                // 只是把匿名类挂进引擎，**一次真实调用都没发生**。
+                // 用户看到「已启用」，实际 getConnectionInfo 可能返回
+                // no-service / no-method / invoke-failed —— 界面在说假话。
+                //
+                // 现在：先**实测一次只读调用**（读当前连接信息，不改网络），
+                // 按真实结果分级输出，只有 AVAILABLE 才说「可用」。
+                final io.github.wlmosv_png.wpaforge.cap.WifiDirectCapability.Probe dc =
+                        io.github.wlmosv_png.wpaforge.cap.WifiDirectCapability
+                                .probeConnectionInfo(android.os.Build.VERSION.SDK_INT);
+                directCapability = dc;
+                log(L.s("直调能力实测: ", "direct capability: ") + dc.describe(L.isZh()));
+                if (!dc.usable()) {
+                    // 不可用就明说，并说明「判定仍走 cmd wifi status」——
+                    // 不能让用户以为判定依赖一个用不了的东西。
+                    log(L.s("  → 直调不可用，净检与判定全部走 cmd wifi（判定链不受影响）",
+                            "  -> direct calls unavailable; net-check and verdict "
+                                    + "fall back to cmd wifi (verdict chain unaffected)"));
+                }
             }
         }
 
@@ -1867,6 +1886,18 @@ public class CrackService extends Service {
      * <p>诊断入口与正式任务都走它 —— 同一个实例、同一条代码路径。
      */
     private volatile io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter execAdapterRef;
+
+    /**
+     * **IWifiManager 直调的真实能力状态**（2026-11-20 第三阶段）。
+     *
+     * <p>由任务入口实测一次后写入。界面与诊断读它，**不再靠「注入了」推断可用**。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.cap.WifiDirectCapability.Probe directCapability;
+
+    /** 直调能力实测结论（可能为 null = 尚未实测）。 */
+    public io.github.wlmosv_png.wpaforge.cap.WifiDirectCapability.Probe directCapability() {
+        return directCapability;
+    }
 
     /** 本次任务的执行器适配器（可为 null = 任务未开始）。 */
     public io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter executorAdapter() {

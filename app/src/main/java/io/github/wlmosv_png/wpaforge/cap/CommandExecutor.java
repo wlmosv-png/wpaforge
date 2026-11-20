@@ -38,6 +38,16 @@ public final class CommandExecutor {
     public static final String F_EMPTY_OUTPUT = "EMPTY_OUTPUT";
     public static final String F_NOT_USABLE = "NOT_USABLE";
     public static final String F_EXCEPTION = "EXCEPTION";
+    /**
+     * 输出未完整读取（drain 被强制中断，可能截断）。
+     *
+     * <p>与 {@link #F_EMPTY_OUTPUT} 的差别是本质的：
+     * 那个是「命令真的什么都没输出」，这个是「我们没读完」。
+     * 真机 `exit=255 out=0B err=809B` 就属于需要区分的情形。
+     */
+    public static final String F_OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED";
+    /** 远程进程启动失败（Shizuku 拒绝 newProcess）。 */
+    public static final String F_NO_PROCESS = "NO_PROCESS";
 
     private CommandExecutor() {
     }
@@ -70,6 +80,23 @@ public final class CommandExecutor {
         public int stdoutBytes;
         /** stderr 字节数。 */
         public int stderrBytes;
+        /**
+         * stderr **正文**（截断到 2000 字符）。
+         *
+         * <p>真机报障时最需要的就是它：`err=809B` 只告诉你有东西，
+         * 不告诉你是什么。809 字节的 SecurityException 与 809 字节的
+         * "not found" 是完全不同的问题。
+         */
+        public String stderrText = "";
+        /** stdout 正文（截断到 2000 字符，诊断用）。 */
+        public String stdoutText = "";
+        /**
+         * 两路输出是否**完整读到 EOF**。
+         *
+         * <p>{@code false} = drain 被强制中断，输出可能被截断。
+         * 这种情况下的「空输出」不能当成「命令没输出」。
+         */
+        public boolean drainComplete = true;
         /** 失败分类（空 = 成功）。 */
         public String failure = "";
         /** 异常类名（无异常为空）。 */
@@ -106,13 +133,22 @@ public final class CommandExecutor {
                     + " out=" + stdoutBytes + "B err=" + stderrBytes + "B"
                     + " binder=" + binderMs + "ms wait=" + waitMs + "ms drain=" + drainMs + "ms"
                     + (failure.isEmpty() ? "" : " failure=" + failure)
-                    + (exceptionClass.isEmpty() ? "" : " ex=" + exceptionClass);
+                    + (exceptionClass.isEmpty() ? "" : " ex=" + exceptionClass)
+                    + (drainComplete ? "" : " TRUNCATED")
+                    + (stderrText.isEmpty() ? "" : " stderr=" + oneLine(stderrText, 300));
         }
 
         @Override
         public String toString() {
             return brief();
         }
+    }
+
+    /** 把多行文本压成一行并截断（诊断输出用，不含口令）。 */
+    public static String oneLine(String s, int max) {
+        if (s == null || s.isEmpty()) return "";
+        String t = s.replace("\r", "").replace("\n", " \u23ce ").trim();
+        return t.length() <= max ? t : t.substring(0, max) + "\u2026";
     }
 
     /**
@@ -156,17 +192,56 @@ public final class CommandExecutor {
             st.stdoutBytes = r.stdout == null ? 0 : r.stdout.length();
             st.stderrBytes = r.stderr == null ? 0 : r.stderr.length();
             st.output = r.output;
-            // 耗时分解：ShizukuChannel.Result 目前只给端到端；
-            // 若将来补了分段字段，这里直接透传，不改调用方。
-            st.waitMs = r.elapsedMs();
+            // **三段耗时真实透传**（2026-11-20 第三阶段修）。
+            //
+            // 旧实现只写 `st.waitMs = r.elapsedMs()`，binderMs 与 drainMs
+            // 恒为 0 —— 真机日志里「binder=0ms」就是这么来的：**不是 Binder
+            // 真的花了 0ms，而是这个字段从来没被赋过值**。
+            // 现在按 ShizukuChannel.Result 的三段原样透传。
+            st.binderMs = r.binderMs;
+            st.waitMs = r.waitMs;
+            st.drainMs = r.drainMs;
+            st.drainComplete = r.drainOutComplete && r.drainErrComplete;
+            // stderr 正文：真机要看 809B 里到底是什么，不能只给字节数。
+            st.stderrText = r.stderr == null ? "" : r.stderr;
+            st.stdoutText = r.stdout == null ? "" : r.stdout;
+            // **先按 ShizukuChannel 给出的失败种类分流**（2026-11-20 第三阶段）。
+            //
+            // 关键区分（任务书第三节第 5 条）：
+            //   进程没起来  ≠ 命令跑了但非零退出  ≠ 读流失败  ≠ 超时  ≠ 通道不可用
+            // 旧实现把它们全压成「有 error 就算 EXCEPTION」，
+            // 于是 SecurityException、RemoteException、binder 死亡长得一模一样。
+            String kind = r.failureKind == null ? "" : r.failureKind;
+            if (io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result.KIND_NO_PROCESS.equals(kind)) {
+                st.failure = F_NO_PROCESS;
+                st.exceptionClass = r.error;
+                st.stderrText = r.error;
+                return st;
+            }
+            if (io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result.KIND_NOT_USABLE.equals(kind)) {
+                st.failure = F_NOT_USABLE;
+                st.exceptionClass = r.error;
+                return st;
+            }
+            if (io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result.KIND_READ_FAILED.equals(kind)) {
+                st.failure = F_OUTPUT_TRUNCATED;
+                st.exceptionClass = r.error;
+                return st;
+            }
             if (r.timedOut) {
                 st.failure = F_TIMEOUT;
             } else if (!r.error.isEmpty()) {
                 st.failure = F_EXCEPTION;
                 st.exceptionClass = r.error;
+            } else if (!st.drainComplete) {
+                // **输出没读完整** —— 这不是「命令没输出」，
+                // 是读流被中断（管道/进程管理问题）。必须单独归类，
+                // 否则会被误诊成 EMPTY_OUTPUT 而掩盖真因。
+                st.failure = F_OUTPUT_TRUNCATED;
             } else if (r.exitCode != 0) {
                 st.failure = F_NONZERO_EXIT;
             } else if (r.output.isEmpty()) {
+                // 只有「两路都读到 EOF 且确实一个字节都没有」才算空输出
                 st.failure = F_EMPTY_OUTPUT;
             }
             return st;
@@ -239,8 +314,12 @@ public final class CommandExecutor {
             }
             // 语义与 Root 通道一致：没拿到（超时/异常/不可用）→ null；
             // 拿到但空输出 → 空串（两者在判定链里含义不同，不能合并）。
+            // 「没拿到」统一返回 null（判定链里 null 与空串语义不同，不能合并）：
+            //   超时 / 异常 / 通道不可用 / 进程启动失败 / 输出被截断
+            // 输出被截断也算「没拿到」—— 半截输出拿去判定只会得到假结论。
             if (F_TIMEOUT.equals(st.failure) || F_EXCEPTION.equals(st.failure)
-                    || F_NOT_USABLE.equals(st.failure)) {
+                    || F_NOT_USABLE.equals(st.failure) || F_NO_PROCESS.equals(st.failure)
+                    || F_OUTPUT_TRUNCATED.equals(st.failure)) {
                 return null;
             }
             return st.output;

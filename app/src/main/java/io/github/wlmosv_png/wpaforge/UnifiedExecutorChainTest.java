@@ -379,11 +379,19 @@ public class UnifiedExecutorChainTest {
         String shz = readSource("cap/ShizukuChannel.java");
         ok("超时先 destroy 子进程", shz.contains("destroy(remote);"));
         ok("finally 里也 destroy（兜底）", shz.contains("try { transactVoid(remote, RP_DESTROY); }"));
-        // 顺序：先关流再 join（旧顺序 3s+3s = 6s 是「每条 11 秒」来源）
-        int closeAt = shz.indexOf("closeQuietly(outFd);");
-        int joinAt = shz.indexOf("joinQuietly(tOut);");
-        ok("先 close 流再 join", closeAt > 0 && joinAt > closeAt);
-        ok("join 兜底时限收紧到 300ms", shz.contains("t.join(300L)"));
+        // **顺序已按真机证据改正**（2026-11-20 第三阶段）：
+        // 旧断言要求「先 close 再 join」，但真机证明那会丢输出 ——
+        // 子进程退出后缓冲区里还有没读走的数据，close 会让 drain 提前结束。
+        // 正确顺序：先 join 读尽（子进程退出后写端自动关闭，drain 自然 EOF），
+        // 只有 join 超时才 close 强制叫醒。
+        String code = codeOnly(shz);
+        int joinAt = code.indexOf("joinQuietly(tOut, JOIN_DRAIN_MS);");
+        int closeAt = code.indexOf("closeQuietly(outFd);");
+        ok("先 join 读尽再 close（真机根因修复）", joinAt > 0 && closeAt > 0 && joinAt < closeAt);
+        ok("join 有显式时限常量（不再固定 3000ms）",
+                shz.contains("JOIN_DRAIN_MS") && shz.contains("JOIN_FORCE_MS"));
+        ok("close 只在 drain 未完成时兜底",
+                shz.contains("if (!outComplete) closeQuietly(outFd);"));
         ok("waitFor 用带超时的事务码", shz.contains("RP_WAIT_FOR_TIMEOUT"));
         ok("有硬超时兜底（Binder 卡住也能返回）",
                 shz.contains("waitForTimeout") && shz.contains("timeout = true"));

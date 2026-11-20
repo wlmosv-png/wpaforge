@@ -256,8 +256,16 @@ public class App extends Application {
                         //            起止时刻 / 耗时 / exitCode / timeout / stdout / stderr
                         // ══════════════════════════════════════════════════════
                         sb.append("  -- 只读命令诊断（正式 Executor）--\n");
+                        // **基础管道验证优先**（2026-11-20 第三阶段）。
+                        //
+                        // `id` 与 `echo` 是最底层的管道探针：
+                        //   · id    —— 证明命令真的在目标身份下执行（输出就是执行者的 uid）
+                        //   · echo  —— 证明 stdout 能完整读回（固定 18 字节，对不上就是读流坏了）
+                        // 这两条不稳定，后面所有 Wi-Fi 逻辑都无从谈起。
+                        // 全部只读，**绝不包含 connect / forget / disconnect**。
                         String[] readonlyCmds = {
                                 "id",
+                                "echo WPAFORGE_EXEC_TEST",
                                 "cmd wifi status",
                                 "cmd wifi list-networks",
                                 "dumpsys wifi"
@@ -290,6 +298,18 @@ public class App extends Application {
                             if (!rr.exceptionClass.isEmpty()) {
                                 sb.append("      exception=").append(rr.exceptionClass).append('\n');
                             }
+                            // **stderr 正文**：真机 `err=809B` 只给字节数等于没给信息，
+                            // 809 字节的 SecurityException 与 809 字节的 "not found"
+                            // 是完全不同的问题。这里给出正文（截断到 300 字符）。
+                            if (!rr.stderrText.isEmpty()) {
+                                sb.append("      stderr正文=")
+                                        .append(io.github.wlmosv_png.wpaforge.cap.CommandExecutor
+                                                .oneLine(rr.stderrText, 300))
+                                        .append('\n');
+                            }
+                            if (!rr.drainComplete) {
+                                sb.append("      ⚠ 输出未完整读取（可能被截断）\n");
+                            }
                             // stdout 只取首行 + 字节数（避免日志膨胀，也不泄露口令）
                             String so = rr.output == null ? "" : rr.output;
                             String soFirst = so;
@@ -314,6 +334,32 @@ public class App extends Application {
                                 sb.append("      失败分类=")
                                         .append(rr.failure.isEmpty() ? "UNKNOWN" : rr.failure)
                                         .append('\n');
+                            }
+                        }
+
+                        // **基础管道判定**：id 与 echo 必须都拿到正确输出。
+                        // 拿不到就明说「底层通道不可靠，Wi-Fi 逻辑未验证」——
+                        // 不能让用户以为后面的 status/list-networks 结论有意义。
+                        {
+                            io.github.wlmosv_png.wpaforge.cap.CommandExecutor.Step idStep =
+                                    io.github.wlmosv_png.wpaforge.cap.CommandExecutor
+                                            .run(plan, "id", 8000);
+                            io.github.wlmosv_png.wpaforge.cap.CommandExecutor.Step echoStep =
+                                    io.github.wlmosv_png.wpaforge.cap.CommandExecutor
+                                            .run(plan, "echo WPAFORGE_EXEC_TEST", 8000);
+                            boolean idOk = idStep.ok() && idStep.stdoutText.contains("uid=");
+                            boolean echoOk = echoStep.ok()
+                                    && echoStep.stdoutText.contains("WPAFORGE_EXEC_TEST");
+                            sb.append("  -- 基础管道判定 --\n");
+                            sb.append("     id   : ").append(idOk ? "通过" : "失败")
+                                    .append(" (").append(idStep.brief()).append(")\n");
+                            sb.append("     echo : ").append(echoOk ? "通过" : "失败")
+                                    .append(" (").append(echoStep.brief()).append(")\n");
+                            if (idOk && echoOk) {
+                                sb.append("     结论: 底层执行通道可靠\n");
+                            } else {
+                                sb.append("     结论: **底层执行通道不可靠** —— "
+                                        + "Wi-Fi 能力结论不可信，请先修通道\n");
                             }
                         }
 

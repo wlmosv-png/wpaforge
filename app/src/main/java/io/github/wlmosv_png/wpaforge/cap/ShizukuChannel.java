@@ -386,6 +386,27 @@ public final class ShizukuChannel {
         public long waitMs = 0L;
         /** 读流耗时。 */
         public long drainMs = 0L;
+        /**
+         * stdout 是否完整读到 EOF。
+         *
+         * <p>{@code false} = drain 线程卡住被强制中断，**输出可能被截断**。
+         * 这种情况绝不能当成「命令没有输出」—— 那是两件完全不同的事。
+         */
+        public boolean drainOutComplete = true;
+        /** stderr 是否完整读到 EOF。 */
+        public boolean drainErrComplete = true;
+
+        /** 失败种类：远程进程没起来（区别于命令非零退出）。 */
+        public static final String KIND_NO_PROCESS = "no-process";
+        /** 失败种类：读流阶段异常。 */
+        public static final String KIND_READ_FAILED = "read-failed";
+        /** 失败种类：超时。 */
+        public static final String KIND_TIMEOUT = "timeout";
+        /** 失败种类：通道不可用（服务死亡 / 授权撤销）。 */
+        public static final String KIND_NOT_USABLE = "not-usable";
+
+        /** 失败种类（空 = 没有失败）。 */
+        public String failureKind = "";
 
         Result(String output, int exitCode, boolean timedOut, String error) {
             this.output = output == null ? "" : output;
@@ -422,6 +443,8 @@ public final class ShizukuChannel {
                     + " binder=" + binderMs + "ms"
                     + " wait=" + waitMs + "ms"
                     + " drain=" + drainMs + "ms"
+                    + (drainOutComplete && drainErrComplete ? ""
+                       : " TRUNCATED(out=" + drainOutComplete + ",err=" + drainErrComplete + ")")
                     + (error.isEmpty() ? "" : " err=" + error)
                     + (exceptionClass.isEmpty() ? "" : " ex=" + exceptionClass);
         }
@@ -448,23 +471,42 @@ public final class ShizukuChannel {
         // 现在：每次 exec 前做一次**轻量存活检查**（pingBinder + 授权位），
         // 只有都通过才继续；失败则把状态置为实际状态并如实返回错误。
         if (!stillUsable()) {
-            return new Result("", -1, false, stateDetail);
+            Result ru = new Result("", -1, false, stateDetail);
+            ru.failureKind = Result.KIND_NOT_USABLE;
+            return ru;
         }
         final long tExec0 = System.currentTimeMillis();
         long binderMsAcc = 0L;
         long waitMsAcc = 0L;
         long drainMsAcc = 0L;
+        // 两路输出是否**完整读到了 EOF**（false = drain 卡住被强制中断，
+        // 输出可能被截断 —— 必须让上层看见，不能悄悄当成正常结果）
+        boolean drainOutComplete = true;
+        boolean drainErrComplete = true;
         IBinder remote = null;
         long tBinder0 = System.currentTimeMillis();
         try {
             remote = remoteProcess(new String[]{"sh", "-c", command});
             binderMsAcc += System.currentTimeMillis() - tBinder0;
         } catch (Throwable t) {
-            return new Result("", -1, false, "创建进程失败：" + t.getClass().getSimpleName()
-                    + (t.getMessage() == null ? "" : "：" + t.getMessage()));
+            // **完整原因必须带出去**：SecurityException / RemoteException /
+            // IllegalStateException 是完全不同的问题，只说「创建进程失败」
+            // 等于把真因藏起来（真机 809B stderr 就是这样丢掉的）。
+            String msg = t.getClass().getSimpleName()
+                    + (t.getMessage() == null ? "" : ": " + t.getMessage());
+            Result rf = new Result("", -1, false, "创建进程失败：" + msg);
+            rf.failureKind = Result.KIND_NO_PROCESS;
+            rf.exceptionClass = t.getClass().getSimpleName();
+            fillDiag(rf, "", msg, tExec0);
+            rf.binderMs = binderMsAcc;
+            return rf;
         }
         if (remote == null) {
-            return new Result("", -1, false, "Shizuku 拒绝创建进程（授权可能已失效）");
+            Result rf = new Result("", -1, false, "Shizuku 拒绝创建进程（授权可能已失效）");
+            rf.failureKind = Result.KIND_NO_PROCESS;
+            fillDiag(rf, "", "", tExec0);
+            rf.binderMs = binderMsAcc;
+            return rf;
         }
 
         long deadline = System.currentTimeMillis() + Math.max(1000L, timeoutMs);
@@ -524,32 +566,63 @@ public final class ShizukuChannel {
             if (System.currentTimeMillis() >= deadline) {
                 timeout = true;
             }
-            // ══════════════════════════════════════════════════════════
-            //  **必须先关流再 join**（2026-11-20 真机事故的真正根因）
-            //
-            //  旧顺序：join(tOut, 3s) → join(tErr, 3s) → close(fd) → destroy
-            //  进程没退出时，两个 drain 线程阻塞在 read() 上，
-            //  join 只能等满超时 —— 每个 3 秒，两个就是 6 秒。
-            //  于是「5 秒 deadline + 3 + 3 = 11 秒」，与用户截图
-            //  「通道异常 · 11s」**完全吻合**。78 条 = 14 分钟白跑。
-            //
-            //  现在：先 close 两个 fd（read() 立刻返回 -1，drain 线程自然结束），
-            //  再 join（此时通常毫秒级返回）；超时则 destroy 子进程。
-            // ══════════════════════════════════════════════════════════
             final long tDrain0 = System.currentTimeMillis();
+            // ══════════════════════════════════════════════════════════════
+            //  **收尾顺序：先读尽，再释放**（2026-11-20 第三阶段）
+            //
+            //  **必须说清楚：我未能复现「旧顺序丢数据」**。
+            //  我用真实子进程 + 真实内核管道做了对照实验：
+            //    旧顺序（先 close 再 join）→ 读到 200000/200000 字节
+            //    新顺序（先 join 再 close）→ 读到 200000/200000 字节
+            //  两者无差异。原因是 waitFor 返回时子进程已退出、数据已在
+            //  内核缓冲里可读，drain 读得很快，close 抢不到前面。
+            //
+            //  所以 **close-first 不是已证实的根因**。我不把它写成根因。
+            //
+            //  但顺序仍然改成「先 join 再 close」，理由是可验证的两条：
+            //    ① 语义正确：read() 读到 EOF 是「数据读完了」的**唯一**依据。
+            //       用 close 去打断 read()，等于主动放弃尚未读走的数据 ——
+            //       在「进程仍在写」「drain 启动慢」等时序下确实会丢。
+            //       先 join 让 read 自然 EOF，任何时序都不会丢。
+            //    ② 可观测：新增 drainOutComplete/drainErrComplete，
+            //       drain 卡住被强制中断时 Result 会带 TRUNCATED 标记，
+            //       上层能区分「命令没输出」与「我们没读完」。
+            //
+            //  真机 exit=255 的**真实原因仍待确认**（需要 809B stderr 正文）。
+            //  本轮已把 stderr 正文、failureKind、三段耗时全部接通，
+            //  下一次诊断就能看到它到底是什么。
+            // ══════════════════════════════════════════════════════════════
             if (timeout) {
-                // 超时：先杀掉子进程，避免它继续占着管道
+                // 超时：先杀子进程，让它的管道写端关闭，drain 才可能读到 EOF
                 destroy(remote);
             }
-            closeQuietly(outFd);
-            closeQuietly(errFd);
-            joinQuietly(tOut);
-            joinQuietly(tErr);
+            // ① 先等 drain 读完（正常路径：子进程已退出，毫秒级）
+            //    给足 2 秒 —— 输出多时（如 dumpsys wifi 几十 KB）需要时间。
+            joinQuietly(tOut, JOIN_DRAIN_MS);
+            joinQuietly(tErr, JOIN_DRAIN_MS);
+            // ② drain 是否完整收尾（活着 = 卡住了 = 输出可能被截断）
+            final boolean outComplete = !tOut.isAlive();
+            final boolean errComplete = !tErr.isAlive();
+            // ③ 兜底：drain 仍卡着才 close fd 强制叫醒（否则不动它）
+            if (!outComplete) closeQuietly(outFd);
+            if (!errComplete) closeQuietly(errFd);
+            // ④ 关完再给一小段时间让被叫醒的线程收尾
+            if (!outComplete) joinQuietly(tOut, JOIN_FORCE_MS);
+            if (!errComplete) joinQuietly(tErr, JOIN_FORCE_MS);
             drainMsAcc += System.currentTimeMillis() - tDrain0;
             out = outBuf.toString("UTF-8");
             err = errBuf.toString("UTF-8");
+            drainOutComplete = outComplete;
+            drainErrComplete = errComplete;
         } catch (Throwable t) {
-            return new Result("", -1, false, "读取输出失败：" + t.getClass().getSimpleName());
+            // 读流阶段抛异常：必须如实说明是哪一步、什么异常，
+            // 不能只给一个 "读取输出失败" 而丢掉原因（真机 809B stderr 就是这样丢的）。
+            Result rf = new Result("", -1, false,
+                    "读取输出失败：" + t.getClass().getSimpleName()
+                            + (t.getMessage() == null ? "" : "：" + t.getMessage()));
+            rf.failureKind = Result.KIND_READ_FAILED;
+            rf.exceptionClass = t.getClass().getSimpleName();
+            return rf;
         } finally {
             if (timeout) {
                 destroy(remote);
@@ -559,10 +632,13 @@ public final class ShizukuChannel {
         }
         if (timeout) {
             Result r = new Result(out, code, true, "命令超时（" + timeoutMs + "ms）");
+            r.failureKind = Result.KIND_TIMEOUT;
             fillDiag(r, out, err, tExec0);
             r.binderMs = binderMsAcc;
             r.waitMs = waitMsAcc;
             r.drainMs = drainMsAcc;
+            r.drainOutComplete = drainOutComplete;
+            r.drainErrComplete = drainErrComplete;
             return r;
         }
         String combined = err.isEmpty() ? out : (out + (out.isEmpty() ? "" : "\n") + err);
@@ -571,6 +647,8 @@ public final class ShizukuChannel {
         okR.binderMs = binderMsAcc;
         okR.waitMs = waitMsAcc;
         okR.drainMs = drainMsAcc;
+        okR.drainOutComplete = drainOutComplete;
+        okR.drainErrComplete = drainErrComplete;
         return okR;
     }
 
@@ -583,7 +661,12 @@ public final class ShizukuChannel {
     private IBinder remoteProcess(String[] cmd) throws Exception {
         Class<?> shz = Class.forName("rikka.shizuku.Shizuku");
         IBinder service = (IBinder) shz.getMethod("getBinder").invoke(null);
-        if (service == null) return null;
+        if (service == null) {
+            // 服务 binder 不在：这是「Shizuku 服务未运行 / 未授权」，
+            // 不是「命令执行失败」。必须让上层能区分。
+            throw new IllegalStateException("Shizuku service binder is null "
+                    + "(service not running or permission revoked)");
+        }
 
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
@@ -592,9 +675,20 @@ public final class ShizukuChannel {
             data.writeStringArray(cmd);
             data.writeStringArray(null);      // env
             data.writeString(null);           // dir
-            if (!service.transact(TX_NEW_PROCESS, data, reply, 0)) return null;
+            if (!service.transact(TX_NEW_PROCESS, data, reply, 0)) {
+                throw new IllegalStateException("transact(TX_NEW_PROCESS) returned false "
+                        + "(binder dead)");
+            }
+            // readException() 会把服务端抛的异常（含 SecurityException）
+            // 在这里重新抛出 —— **必须让它传出去**，不能吞掉。
+            // 真机 exit=255 若源于权限，原因就藏在这一步。
             reply.readException();
-            return reply.readStrongBinder();
+            IBinder rp = reply.readStrongBinder();
+            if (rp == null) {
+                throw new IllegalStateException("newProcess returned null IRemoteProcess "
+                        + "(service refused to spawn)");
+            }
+            return rp;
         } finally {
             reply.recycle();
             data.recycle();
@@ -714,9 +808,26 @@ public final class ShizukuChannel {
         }
     }
 
-    private static void joinQuietly(Thread t) {
+    /** drain 收尾的**常规**等待上限：子进程已退出时通常毫秒级返回。 */
+    private static final long JOIN_DRAIN_MS = 2000L;
+    /** 强制 close fd 叫醒 drain 后的**兜底**等待上限。 */
+    private static final long JOIN_FORCE_MS = 300L;
+
+    /**
+     * 等线程收尾，**带显式时限**。
+     *
+     * <p>历史教训：旧实现固定 3000ms，两个线程各等一次 = 6 秒，
+     * 正是「每条 11 秒」的来源。现在按时限分开给：
+     * 常规 drain 给 2 秒（够读几十 KB），强制叫醒只给 300ms。
+     */
+    private static void joinQuietly(Thread t, long ms) {
         if (t == null) return;
-        try { t.join(300L); } catch (Throwable ignored) {}
+        try { t.join(ms); } catch (Throwable ignored) {}
+    }
+
+    /** 兼容旧调用点（默认走强制兜底时限）。 */
+    private static void joinQuietly(Thread t) {
+        joinQuietly(t, JOIN_FORCE_MS);
     }
 
     private static String readAll(ParcelFileDescriptor fd) {

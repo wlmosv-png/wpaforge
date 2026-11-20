@@ -1428,36 +1428,60 @@ public class CrackService extends Service {
         // 这里改用 Prefs.requestedMode（用户在设置页明确选的），
         // 因为「用哪条通道」是用户意愿，不是探测结论。
         // 探测结论只用来判断「这条通道现在能不能用」。
-        final int runModeId = io.github.wlmosv_png.wpaforge.Prefs.requestedMode(this);
+        // ══════════════════════════════════════════════════════════════════
+        // ══════════════════════════════════════════════════════════════════
+        //  **执行器选择收口 —— 唯一入口**（2026-11-20 第二阶段）
+        //
+        //  改造前「用哪条通道」在这一个方法里就有三处独立判断，且各写法不同：
+        //    · 模式用 Prefs.requestedMode 的原值 → AUTO(2) 落到 else → 被当成 Root
+        //    · 直调注入判 dsz.state() == S_READY（只认 shell 身份）
+        //    · shell 通道判 s0.usable()（接受两种身份）
+        //  同一个「Shizuku 可用」在不同路径上得出不同结论，诊断入口还另建
+        //  一个 ShizukuChannel 实例 —— 「诊断通过」证明不了「正式任务用同一个执行器」。
+        //
+        //  现在：只问 ExecutorProvider.resolve 一次，拿到**完整结论**：
+        //    请求模式 / 实际模式 / 执行器种类 / 真实身份 / 可用性 / 能否开跑
+        //  本次任务**固定**用这个执行器，中途失效就如实失败，绝不悄悄换。
+        // ══════════════════════════════════════════════════════════════════
+        final io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Plan plan =
+                io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.resolve(this);
+        log(L.s("执行器解析: ", "executor resolve: ") + plan.detail);
+        log(L.s("执行通道: ", "channel: ") + plan.label());
+        if (!plan.canRun) {
+            log("✗ " + plan.blockReason);
+            planBlockedThisRun = true;
+            ft.state = TaskQueue.State.STOPPED;
+            TaskQueue.update(this, ft);
+            running = false;
+            notifyQueue();
+            // 通道不可用时**必须让用户看见**，不能只写日志（真机「点了没反应」）
+            for (UiCallback cb : callbacks) {
+                try {
+                    cb.onBlockedNotice(L.s("执行通道不可用", "Execution channel unavailable"),
+                            plan.blockReason);
+                } catch (Throwable ignored) {}
+            }
+            stopSelfSafe();
+            return;
+        }
+        final int runModeId = plan.resolvedMode;
+        // 把「本次固定用哪个执行器」记下来：界面显示、诊断、后续注入都以它为准
+        resolvedPlan = plan;
+        shizukuRef = plan.shizuku;
+        lastExecutorLabel = plan.label();
         new Thread(() -> io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(this),
                 "wpaforge-mode-warm").start();
         {
-            if (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS) {
-                // 无 Root 模式（2026-11-20 重做）：
-                //   ① Shizuku 可用 → 借 shell 身份走**完整 Root 判定链**
-                //      （cmd wifi connect-network + status 四条件同行 + supplicant 日志）。
-                //      这才是「无 root 也能自动跑字典」的正解：不需要 root、不需要解锁，
-                //      只要用户装了 Shizuku 并用无线调试启动过服务。
-                //   ② Shizuku 不可用 → 退到 WifiNetworkSpecifier（要用户逐次确认，
-                //      且失败拆不开），作为兜底而不是主路。
-                final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
-                        new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(this);
-                final int shzState = shz.probe();
-                shizukuRef = shz;
-                if (shz.usable()) {
-                    log(L.s("无 Root 执行方式: Shizuku（" + shz.stateDetail() + "）",
-                            "rootless executor: Shizuku (" + shz.stateDetail() + ")"));
-                    // **注入 Shizuku 执行器**（2026-11-20 架构修复）。
+            switch (plan.kind) {
+                case SHIZUKU: {
+                    // 无 Root 但 Shizuku 可用 → 借它的身份走**完整判定链**
+                    // （cmd wifi connect-network + status 四条件同行 + supplicant 日志）。
                     //
-                    // 改造前这里挂的是 `new RootChannel()`，而它内部 exec 写死
-                    // `su -c` —— 于是「能力自述说能用 Shizuku 做」与
-                    // 「实际用哪条命令做」是两回事：channel 认为自己在跑 su，
-                    // 引擎却把命令交给 Shizuku。这正是任务书点名的
-                    // 「能力识别与实际执行通道不一致」。
-                    //
-                    // 现在 channel 只负责业务语义，执行交给注入的 Shizuku 执行器，
-                    // Root 与 Shizuku 真正走同一份判定链、同一份证据规则。
-                    final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shzExec = shz;
+                    // **注入 Shizuku 执行器**：channel 只负责业务语义，执行交给
+                    // 注入的执行器 —— Root 与 Shizuku 真正走同一份判定链。
+                    final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shzExec = plan.shizuku;
+                    log(L.s("无 Root 执行方式: Shizuku（" + shzExec.stateDetail() + "）",
+                            "rootless executor: Shizuku (" + shzExec.stateDetail() + ")"));
                     engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootChannel(
                             new io.github.wlmosv_png.wpaforge.cap.RootChannel.Executor() {
                                 @Override
@@ -1476,20 +1500,27 @@ public class CrackService extends Service {
                                 }
                             }));
                     engine.setSpecifierChannel(null);
-                } else {
-                    log(L.s("Shizuku 不可用（" + shz.stateDetail() + "）→ 退回系统确认框逐次验证",
-                            "Shizuku unavailable (" + shz.stateDetail()
+                    break;
+                }
+                case SPECIFIER: {
+                    // 无 Root 且 Shizuku 不可用 → 系统确认框逐次验证（兜底，不是主路）
+                    log(L.s("Shizuku 不可用（" + plan.verdict + "）→ 退回系统确认框逐次验证",
+                            "Shizuku unavailable (" + plan.verdict
                                     + ") -> falling back to per-candidate system approval"));
                     io.github.wlmosv_png.wpaforge.cap.SpecifierChannel spec =
                             new io.github.wlmosv_png.wpaforge.cap.SpecifierChannel(
                                     this, new android.os.Handler(android.os.Looper.getMainLooper()));
                     engine.setConnectChannel(new io.github.wlmosv_png.wpaforge.cap.RootlessChannel());
                     engine.setSpecifierChannel(spec);
+                    break;
                 }
-            } else {
-                final io.github.wlmosv_png.wpaforge.cap.RootChannel rootCh =
-                        new io.github.wlmosv_png.wpaforge.cap.RootChannel();
-                engine.setConnectChannel(rootCh);
+                case ROOT_SU:
+                default: {
+                    final io.github.wlmosv_png.wpaforge.cap.RootChannel rootCh =
+                            new io.github.wlmosv_png.wpaforge.cap.RootChannel();
+                    engine.setConnectChannel(rootCh);
+                    break;
+                }
             }
         }
         // ══════════════════════════════════════════════════════════════════
@@ -1502,11 +1533,18 @@ public class CrackService extends Service {
         //  判定链一行不改 —— 直调只负责「读/删」，不负责「判」。
         // ══════════════════════════════════════════════════════════════════
         {
-            final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel dsz = shizukuRef;
-            final boolean dRootless =
-                    (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS);
-            if (dRootless && dsz != null && dsz.usable()
-                    && dsz.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY) {
+            final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel dsz = plan.shizuku;
+            // **直调注入也走同一个结论**（2026-11-20 第二阶段）
+            //
+            // 旧写法在这里又自己判一次状态（先是硬判 == S_READY，
+            // 后来改成 ChannelReadiness.usable(dsz.state())）—— 但那仍是
+            // 「直调自己判」：只要判据与执行器选择不是同一次解析，
+            // 就会出现「主链路走 Shizuku、直调以为不可用」这种分裂。
+            //
+            // 现在：plan.kind == SHIZUKU 就意味着本次任务固定用 Shizuku，
+            // 直调桥直接用同一个实例，不再重复判任何状态。
+            if (plan.kind == io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Kind.SHIZUKU
+                    && dsz != null) {
                 engine.setDirectWifi(new CrackEngine.DirectWifi() {
                     @Override
                     public long netIdOf(String ssid) {
@@ -1554,122 +1592,66 @@ public class CrackService extends Service {
             }
         }
 
+        // **执行器适配器**：正式任务与诊断共用它 ——
+        // 它内部调 CommandExecutor.run，执行器来自上面那次 plan 解析。
+        final io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter execAdapter =
+                new io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter(plan);
+        execAdapterRef = execAdapter;
+
         engine.setShellChannel(new CrackEngine.ShellChannel() {
+            /**
+             * **执行通道适配器 —— 正式任务与诊断共用同一条路径**
+             * （2026-11-20 第二阶段）。
+             *
+             * <p>改造前这里自己实现了一套「先 su 后 Shizuku」的回落链，
+             * 而诊断入口又直接调 {@code ShizukuChannel.exec} ——
+             * 两条路径的包装层不同，超时与判定语义也不同，
+             * 于是「诊断通过」证明不了「正式任务会成功」。
+             *
+             * <p>现在：两边都走 {@link io.github.wlmosv_png.wpaforge.cap.CommandExecutor}，
+             * 执行器来自**同一次** {@link io.github.wlmosv_png.wpaforge.cap.ExecutorProvider} 解析结果。
+             * 中途绝不回落到另一条身份 —— 回落会让「界面写 Shizuku、
+             * 证据来自 su」，归因链彻底断掉。
+             */
             @Override
             public String exec(String cmd, long timeoutMs) {
-                // **通道优先级（2026-11-20 修）**
-                //
-                // 旧实现是「先 su，su 拿不到才试 Shizuku」，在未 root 的机器上
-                // 每条命令都要先白等一次 su 超时（实测 8s/条 × 几十条 = 几分钟
-                // 一动不动，用户以为「点了没反应」）。而且常驻会话 sess 内部
-                // 也是起 su，同样先卡一次。
-                //
-                // 现在按「当前模式实际拿到什么身份」决定顺序：
-                //   · Shizuku 可用且不是 root 身份 → 直接走 Shizuku（这是无 Root 的主路）
-                //   · 否则先走 su 会话，失败再退 Shizuku
-                io.github.wlmosv_png.wpaforge.cap.ShizukuChannel s0 = shizukuRef;
-                // ══════════════════════════════════════════════════════════════
-                //  **shizukuMode 必须接受 usable() 的全部状态**（2026-11-20 根因）
-                //
-                //  旧写法只认 S_READY（= shell 身份）：
-                //    shizukuMode = ... && s0.state() == S_READY
-                //
-                //  但 usable() 接受 S_READY **和** S_READY_NOT_SHELL（= root 身份）。
-                //  于是：Shizuku 是 root 身份时 → shizukuMode = false
-                //        → 落到 else 分支走 su
-                //        → 用户那台 su 未授权 → 每条命令等满超时
-                //        → 真机现象「每条 10.9 秒、6 条全环境错误」
-                //
-                //  而且这正好解释了「Shizuku 已授权却显示/调用 Root 通道」。
-                //
-                //  现在：只要 Shizuku usable（不管 shell 还是 root 身份）就走 Shizuku。
-                //  身份差异由 ExecutorIdentity 表达，不由「走不走」表达。
-                // ══════════════════════════════════════════════════════════════
-                final boolean shizukuMode = (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS)
-                        && s0 != null && s0.usable();
-
-                // **通道单一化（2026-11-20 架构修复）**
-                //
-                // 旧实现：Shizuku 失败 → 静默回落到 su → 再失败 → 又回落 Shizuku。
-                // 这违反了任务书的硬要求：
-                //   「Shizuku 模式检测失败 → 自动调用普通无 Root API →
-                //     页面仍显示 Shizuku → 最后用较弱证据判断成功」禁止。
-                //
-                // 现在：Shizuku 模式下**只用 Shizuku**。它失败就如实报失败，
-                // 绝不偷偷换通道 —— 否则用户看到的「Shizuku 通道」是假的，
-                // 而判定证据可能来自另一条身份，归因链就断了。
-                String out;
-                boolean thisTimedOut = false;
-                if (shizukuMode) {
-                    io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
-                            s0.exec(cmd, timeoutMs);
-                    // ok()=false（超时/异常）→ null；成功但空输出 → 空串。
-                    // 两者在判定链里含义不同，不能合并。
-                    out = r.ok() ? r.output : null;
-                    // **每次 Shizuku 执行都留结构化诊断**（2026-11-20 任务书第三阶段）。
-                    // 不动判定，只让「这次到底发生了什么」可追溯。
-                    if (!r.ok() || r.elapsedMs() > 3000L) {
-                        log("  " + L.s("通道执行: ", "channel exec: ") + r.brief());
-                    }
-                    // **让熔断器能看见 Shizuku 的超时**（2026-11-20 真机事故）。
-                    //
-                    // 旧实现里熔断器只查 RootProber.lastTimedOut()，而 Shizuku
-                    // 模式根本不走 RootProber —— 标志恒 false，熔断器永不触发。
-                    // 真机现象：78 条候选每条卡 11 秒（list-networks 5s +
-                    // forget-network 6s 全超时），界面显示「运行中 3.8%」，
-                    // 实际一条都没真正验证过。
-                    thisTimedOut = !r.ok();
-                } else {
-                    out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
-                    if (out == null) {
-                        // 这一帧没拿到（超时 / 会话死了）。连续几次就彻底不再试，
-                        // 免得每轮白付一次启动成本。
-                        if (!sessOff[0] && ++sessFails[0] >= 3) {
-                            sessOff[0] = true;
-                            log(L.s("常驻 shell 会话不可用，已退回逐条 su（会慢一些）",
-                                    "persistent shell unavailable; falling back to per-call su"));
-                        }
-                        out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
-                    } else {
-                        sessFails[0] = 0;
-                    }
+                String out = execAdapter.exec(cmd, timeoutMs);
+                io.github.wlmosv_png.wpaforge.cap.CommandExecutor.Step st = execAdapter.last;
+                // **每次执行都留结构化诊断**：超时、异常、慢到异常
+                // 都当场打一行（不含命令与输出正文），让「时间花在哪」可追溯。
+                if (st != null && (!st.ok() || st.totalMs > 3000L)) {
+                    log("  " + L.s("通道执行: ", "channel exec: ") + st.brief());
                 }
-                // ---- 通道熔断 ----
-                // 连续多次命令超时，说明通道已经不可用（进程被系统限制、su 被反复卡住……）。
-                // 这时继续跑只会让每条候选都耗在超时上 —— 界面看着像「在跑」，
-                // 实际一步没动。与其无声卡住，不如停下来把情况讲清楚。
-                {
-                    if (thisTimedOut || RootProber.lastTimedOut()) {
-                        if (++execTimeouts >= EXEC_TIMEOUT_LIMIT) {
-                            execTimeouts = 0;
-                            log(L.s(
-                                    "连续 " + EXEC_TIMEOUT_LIMIT + " 次命令超时 —— "
-                                    + (shizukuMode ? "Shizuku 通道" : "命令通道")
-                                    + "已不可用，任务已停止。"
-                                    + "这不是密码问题：继续跑只会让每条候选都白等超时。"
-                                    + "请检查 Shizuku 服务与授权后重试。",
-                                    "Repeated command timeouts (" + EXEC_TIMEOUT_LIMIT + ") - "
-                                    + (shizukuMode ? "Shizuku channel" : "command channel")
-                                    + " is unusable; task stopped. This is NOT a password "
-                                    + "problem; check the Shizuku service/grant and retry."));
-                            stopAll();
-                        }
-                    } else if (out != null) {
+                // **让熔断器能看见超时**（2026-11-20 真机事故）。
+                // 旧实现里熔断器只查 RootProber.lastTimedOut()，
+                // 而 Shizuku 模式根本不走 RootProber —— 标志恒 false，熔断器永不触发。
+                if (st != null && st.timedOut) {
+                    execTimeouts++;
+                    if (execTimeouts >= EXEC_TIMEOUT_LIMIT) {
                         execTimeouts = 0;
+                        log(L.s(
+                                "连续 " + EXEC_TIMEOUT_LIMIT + "次命令超时 —— "
+                                        + plan.kindName() + "通道已不可用，任务已停止。"
+                                        + "这不是密码问题：继续跑只会让每条候选都白等超时。"
+                                        + "请检查 " + plan.kindName() + " 服务与授权后重试。",
+                                "Repeated command timeouts (" + EXEC_TIMEOUT_LIMIT + ") - "
+                                        + plan.kindName() + " channel is unusable; task stopped. "
+                                        + "This is NOT a password problem; check the service/grant and retry."));
+                        stopAll();
                     }
+                } else if (st != null) {
+                    execTimeouts = 0;
                 }
                 return out;
             }
+
             @Override
             public void close() {
                 sess.close();
             }
-            // F4：这里原来有一份「删净旧配置」实现（内含 cmd wifi forget-network）。
-            // 自 verifyHit() 删除后它已无调用者，且引擎判定用的是自带的
-            // CrackEngine.forgetTargetByShell / removeTargetConfig —— 同一个动作
-            // 两处实现只会带来不一致。接口方法已降级为 @Deprecated 空默认实现。
+
             @Override
-            public String name() { return "Root"; }
+            public String name() { return plan.kindName(); }
         });
         }
 
@@ -1869,6 +1851,32 @@ public class CrackService extends Service {
 
     /** 最近一次任务实际使用的执行器标签（任务启动时写入）。 */
     private volatile String lastExecutorLabel = "";
+
+    /**
+     * **本次任务固定使用的执行器结论**（2026-11-20）。
+     *
+     * <p>由 {@link io.github.wlmosv_png.wpaforge.cap.ExecutorProvider#resolve} 在任务入口
+     * 解析一次并固定下来。界面「执行通道」、启动自检、只读诊断全部读它 ——
+     * 不再各自 new 一个 ShizukuChannel 去猜。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Plan resolvedPlan;
+
+    /**
+     * **本次任务的执行器适配器**（2026-11-20）。
+     *
+     * <p>诊断入口与正式任务都走它 —— 同一个实例、同一条代码路径。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter execAdapterRef;
+
+    /** 本次任务的执行器适配器（可为 null = 任务未开始）。 */
+    public io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter executorAdapter() {
+        return execAdapterRef;
+    }
+
+    /** 本次任务固定使用的执行器结论（可为 null = 尚未解析）。 */
+    public io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Plan plan() {
+        return resolvedPlan;
+    }
 
     /**
      * 本次任务的实时速率（毫秒/条）；没有任务在跑时返回 0。

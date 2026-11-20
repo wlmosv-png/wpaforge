@@ -97,7 +97,17 @@ public class DirectWifiBridgeTest {
 
         String svc = readSource("CrackService.java");
         ok("服务注入直调桥", svc.contains("engine.setDirectWifi("));
-        ok("只在 Shizuku 可用时注入", svc.contains("dRootless && dsz != null && dsz.usable()"));
+        // 2026-11-20：改用统一判定 ChannelReadiness（缺陷 A 收口），
+        // 断言意图不变：必须接受 S_READY 和 S_READY_NOT_SHELL 两种状态。
+        // 2026-11-20 第二阶段：直调注入改为只认 plan.kind（与执行器选择同源）。
+        // **意图不变**：只有本次任务固定用 Shizuku 时才注入直调桥。
+        ok("只在本次固定为 Shizuku 时注入",
+                svc.contains("plan.kind == io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Kind.SHIZUKU")
+                        && svc.contains("&& dsz != null"));
+        ok("直调注入不再自己判状态",
+                !svc.contains("ChannelReadiness\n                    .usable(dsz.state())"));
+        ok("直调注入不再只认 S_READY",
+                !svc.contains("dsz.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY"));
         ok("日志说明启用了直调", svc.contains("IWifiManager 直调"));
     }
 

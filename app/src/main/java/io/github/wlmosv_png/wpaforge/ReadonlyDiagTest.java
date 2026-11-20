@@ -53,10 +53,21 @@ public class ReadonlyDiagTest {
     /** 诊断必须复用正式 Executor。 */
     private void diagUsesFormalExecutor() {
         String app = readSource("App.java");
-        ok("诊断用 ShizukuChannel（正式 Executor）",
-                app.contains("new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(App.this)"));
-        ok("诊断调 shz.exec", app.contains("shz.exec(rc, 8000)"));
+        // 2026-11-20 第二阶段：诊断改走 ExecutorProvider + CommandExecutor（与正式任务同源）。
+        // **意图不变**：诊断必须用正式执行器，不得另写一套通道。
+        ok("诊断走 ExecutorProvider（唯一选择入口）",
+                app.contains("io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.resolve"));
+        ok("诊断走 CommandExecutor（唯一执行路径）",
+                app.contains("CommandExecutor"));
+        ok("诊断不再直接调 shz.exec", !app.contains("shz.exec(rc, 8000)"));
         ok("有只读命令诊断段", app.contains("只读命令诊断（正式 Executor）"));
+        // 七项输出必须都在
+        ok("输出请求模式", app.contains("请求模式="));
+        ok("输出实际模式", app.contains("实际模式="));
+        ok("输出 Executor 类型", app.contains("Executor 类型="));
+        ok("输出实际进程 UID", app.contains("实际进程 UID="));
+        ok("输出 SELinux context", app.contains("SELinux context="));
+        ok("输出 Binder 状态", app.contains("Binder 状态="));
         // 不能另写一套 shell 调用
         ok("诊断不自己起 su",
                 !app.contains("RootProber.exec(null, new String[]{\"su\", \"-c\", rc"));
@@ -87,8 +98,11 @@ public class ReadonlyDiagTest {
         ok("输出 stdout 字节数", app.contains("stdout("));
         ok("输出 stderr", app.contains("stderr("));
         ok("有失败分类", app.contains("失败分类="));
-        ok("分类含 TIMEOUT", app.contains("TIMEOUT"));
-        ok("分类含 NONZERO_EXIT", app.contains("NONZERO_EXIT"));
+        // 分类现在由 CommandExecutor 统一定义，诊断直接输出它的值。
+        ok("分类含 TIMEOUT", readSource("cap/CommandExecutor.java").contains("F_TIMEOUT"));
+        ok("分类含 NONZERO_EXIT",
+                readSource("cap/CommandExecutor.java").contains("F_NONZERO_EXIT"));
+        ok("诊断输出失败分类", app.contains("失败分类="));
     }
 
     /** 失败不能静默回退到其他通道。 */

@@ -373,6 +373,20 @@ public final class ShizukuChannel {
         /** 原始异常类名（无异常为空）。 */
         public String exceptionClass = "";
 
+        // ── 耗时分解（2026-11-20 第二阶段，任务书第四部分）────────────
+        //
+        // 真机「每条 11.7 秒」这类问题，只有把三段分开才定位得了：
+        //   · binderMs —— transact 建进程 / 取流（服务端卡住就在这里）
+        //   · waitMs   —— 子进程等待（waitForTimeout 轮询；子进程不退就在这里）
+        //   · drainMs  —— 读 stdout/stderr 到 EOF（管道死锁就在这里）
+        // 旧实现只有端到端，无法区分「命令没跑」与「跑了但读不到」。
+        /** Binder 往返耗时（建进程 + 取流）。 */
+        public long binderMs = 0L;
+        /** 子进程等待耗时。 */
+        public long waitMs = 0L;
+        /** 读流耗时。 */
+        public long drainMs = 0L;
+
         Result(String output, int exitCode, boolean timedOut, String error) {
             this.output = output == null ? "" : output;
             this.exitCode = exitCode;
@@ -405,6 +419,9 @@ public final class ShizukuChannel {
                     + (cancelled ? " cancelled" : "")
                     + " out=" + stdout.length() + "B"
                     + " err=" + stderr.length() + "B"
+                    + " binder=" + binderMs + "ms"
+                    + " wait=" + waitMs + "ms"
+                    + " drain=" + drainMs + "ms"
                     + (error.isEmpty() ? "" : " err=" + error)
                     + (exceptionClass.isEmpty() ? "" : " ex=" + exceptionClass);
         }
@@ -434,9 +451,14 @@ public final class ShizukuChannel {
             return new Result("", -1, false, stateDetail);
         }
         final long tExec0 = System.currentTimeMillis();
+        long binderMsAcc = 0L;
+        long waitMsAcc = 0L;
+        long drainMsAcc = 0L;
         IBinder remote = null;
+        long tBinder0 = System.currentTimeMillis();
         try {
             remote = remoteProcess(new String[]{"sh", "-c", command});
+            binderMsAcc += System.currentTimeMillis() - tBinder0;
         } catch (Throwable t) {
             return new Result("", -1, false, "创建进程失败：" + t.getClass().getSimpleName()
                     + (t.getMessage() == null ? "" : "：" + t.getMessage()));
@@ -451,8 +473,10 @@ public final class ShizukuChannel {
         int code = -1;
         boolean timeout = false;
         try {
+            long tFd0 = System.currentTimeMillis();
             ParcelFileDescriptor outFd = transactFd(remote, RP_GET_INPUT_STREAM);
             ParcelFileDescriptor errFd = transactFd(remote, RP_GET_ERROR_STREAM);
+            binderMsAcc += System.currentTimeMillis() - tFd0;
             // **必须先并发读流，再 waitFor**（2026-11-20 修）。
             // 反过来会死锁：子进程输出超过管道缓冲（Linux 默认 64KB）时
             // 它会阻塞在 write，永远不会退出 → waitFor 永远不返回 →
@@ -462,6 +486,7 @@ public final class ShizukuChannel {
             final ByteArrayOutputStream errBuf = new ByteArrayOutputStream();
             Thread tOut = drain(outFd, outBuf);
             Thread tErr = drain(errFd, errBuf);
+            final long tWait0 = System.currentTimeMillis();
             while (true) {
                 Parcel p = Parcel.obtain();
                 Parcel r = Parcel.obtain();
@@ -495,6 +520,7 @@ public final class ShizukuChannel {
             //
             // 这里补一道：无论循环怎么退出，只要已过 deadline 就标超时，
             // 让上层熔断器能看见（它靠 Result.ok()==false 计数）。
+            waitMsAcc += System.currentTimeMillis() - tWait0;
             if (System.currentTimeMillis() >= deadline) {
                 timeout = true;
             }
@@ -510,6 +536,7 @@ public final class ShizukuChannel {
             //  现在：先 close 两个 fd（read() 立刻返回 -1，drain 线程自然结束），
             //  再 join（此时通常毫秒级返回）；超时则 destroy 子进程。
             // ══════════════════════════════════════════════════════════
+            final long tDrain0 = System.currentTimeMillis();
             if (timeout) {
                 // 超时：先杀掉子进程，避免它继续占着管道
                 destroy(remote);
@@ -518,6 +545,7 @@ public final class ShizukuChannel {
             closeQuietly(errFd);
             joinQuietly(tOut);
             joinQuietly(tErr);
+            drainMsAcc += System.currentTimeMillis() - tDrain0;
             out = outBuf.toString("UTF-8");
             err = errBuf.toString("UTF-8");
         } catch (Throwable t) {
@@ -532,11 +560,17 @@ public final class ShizukuChannel {
         if (timeout) {
             Result r = new Result(out, code, true, "命令超时（" + timeoutMs + "ms）");
             fillDiag(r, out, err, tExec0);
+            r.binderMs = binderMsAcc;
+            r.waitMs = waitMsAcc;
+            r.drainMs = drainMsAcc;
             return r;
         }
         String combined = err.isEmpty() ? out : (out + (out.isEmpty() ? "" : "\n") + err);
         Result okR = new Result(combined, code, false, "");
         fillDiag(okR, out, err, tExec0);
+        okR.binderMs = binderMsAcc;
+        okR.waitMs = waitMsAcc;
+        okR.drainMs = drainMsAcc;
         return okR;
     }
 

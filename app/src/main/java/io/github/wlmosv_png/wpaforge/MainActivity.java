@@ -321,6 +321,8 @@ public class MainActivity extends Activity {
      * 用户只能靠命中卡片判断，而「已执行」与「各分类之和」也对不上。
      */
     private TextView statHitView;
+    /** 环境错误列（2026-11-20）—— 不并入「未确定」。 */
+    private TextView statEnvView;
     /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
     private TextView planLineView;
     /** 最近一次「环境出错」条数（通道抛异常 / 目标消失）。 */
@@ -447,6 +449,15 @@ public class MainActivity extends Activity {
     private int lastTested = 0, lastTotal = 0;
     /** 当前候选在字典里的位置（1 起）—— 脱敏后靠它把日志对回字典 */
     private int curCandIndex = 0;
+
+    /**
+     * **当前执行阶段**（2026-11-20 第二阶段）—— 界面状态的唯一来源。
+     *
+     * <p>不再从「候选循环次数」推状态：那会让「拿到下一条候选」看起来像
+     * 「正在验证密码」，而后端可能一条命令都没真正执行。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.ui.RunPhaseModel.UiState runPhase =
+            io.github.wlmosv_png.wpaforge.ui.RunPhaseModel.UiState.PREPARING;
     private TextView connectStatsView;
     private TextView connectStreamView;
     /** 候选流折叠：头部、箭头、行数、布局参数 */
@@ -9993,17 +10004,20 @@ public class MainActivity extends Activity {
         statWrongView = AmberTheme.stat(this);
         statUnkView = AmberTheme.stat(this);
         statHitView = AmberTheme.stat(this);
+        statEnvView = AmberTheme.stat(this);
         statDoneView.setText("—");
         statTotalView.setText("—");
         statWrongView.setText("—");
         statUnkView.setText("—");
         statHitView.setText("—");
+        statEnvView.setText("—");
         // 未知态一律用弱色：30sp 的亮琥珀「—」看起来像一根进度条，容易被当成数据
         statDoneView.setTextColor(AmberTheme.TEXT_FAINT);
         statTotalView.setTextColor(AmberTheme.TEXT_FAINT);
         statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
         statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
         statHitView.setTextColor(AmberTheme.TEXT_FAINT);
+        statEnvView.setTextColor(AmberTheme.TEXT_FAINT);
         // 五列：已执行 / 已验证成功 / 已证实错误 / 未确定 / 总数。
         //
         // 2026-11-20 新增「已验证成功」：任务书第十部分要求
@@ -10023,6 +10037,11 @@ public class MainActivity extends Activity {
                 statWrongView), weight());
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"),
                 statUnkView), weight());
+        // **环境错误必须单独成列**（2026-11-20 第二阶段）。
+        // 旧实现把它并进「未确定」，于是「通道坏了」被读成「没拿到证据」。
+        // 用户看到的就是「已执行 2 \/ 已证实 0 \/ 未确定 0」—— 那 2 条不在任何一类里。
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("环境错误", "ENV ERRORS"),
+                statEnvView), weight());
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("总数", "TOTAL"), statTotalView),
                 weight());
         LinearLayout.LayoutParams srlp = new LinearLayout.LayoutParams(
@@ -11391,6 +11410,15 @@ public class MainActivity extends Activity {
             // 统一由 onProgress 负责，这里只报当前在试什么。
             ui.post(() -> {
                 curCandIndex = index;
+                // **不在这里把状态标成「正在验证」**（2026-11-20 第二阶段）。
+                //
+                // onAttempt 的语义是「轮到这条候选了」，**不**等于命令已经发出。
+                // 真机截图：已执行 2、全部分类为 0、进度 2.6% ——
+                // 界面却在说「正在验证」，而后端一条命令都没真正执行成功。
+                //
+                // 现在：状态由 RunPhaseModel 按**后端真实事件**（七阶段 / Verdict）决定，
+                // 这里只更新「当前候选序号」与总数。
+                runPhase = io.github.wlmosv_png.wpaforge.ui.RunPhaseModel.UiState.PREPARING;
                 // 总条数在第一条候选开始时就已经确定（服务传进来的 total），
                 // 这里只是把它显示出来 —— 不额外查询、不重新统计。
                 if (statTotalView != null && total > 0) {
@@ -11445,6 +11473,10 @@ public class MainActivity extends Activity {
                                     io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v) {
             ui.post(() -> {
                 String pw = io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate);
+                // **状态来自后端结论**（2026-11-20）。
+                // RunPhaseModel 是唯一映射：非 DIRECT 的 SUCCESS 不会变「已验证成功」，
+                // 推断失败不会变「已证实错误」，ERROR 不会变得像密码错。
+                runPhase = io.github.wlmosv_png.wpaforge.ui.RunPhaseModel.ofVerdict(v, null);
                 if (hit) {
                     appendStreamColored(io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v)
                             + " 成功  " + pw + "  (" + ms + "ms " + detail + ")", OK_GREEN);
@@ -11523,6 +11555,13 @@ public class MainActivity extends Activity {
                     statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
                             .thousands(success));
                     statHitView.setTextColor(success > 0 ? OK_GREEN : AmberTheme.TEXT_FAINT);
+                }
+                // 环境错误单独上列：它不是密码错，也不是没结论。
+                if (statEnvView != null) {
+                    statEnvView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(environmentErrors));
+                    statEnvView.setTextColor(environmentErrors > 0
+                            ? AmberTheme.WARN : AmberTheme.TEXT_FAINT);
                 }
             });
         }

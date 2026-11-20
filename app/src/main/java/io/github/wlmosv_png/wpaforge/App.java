@@ -202,13 +202,47 @@ public class App extends Application {
                             .append('\n');
                 }
                 try {
-                    io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
-                            new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(App.this);
-                    int st = shz.probe();
+                    // ══════════════════════════════════════════════════════════
+                    //  **诊断与正式任务同源**（2026-11-20 第二阶段）
+                    //
+                    //  改造前这里自己 new 了一个 ShizukuChannel，
+                    //  它的探测结果与正式任务毫无关系 ——
+                    //  「诊断通过」证明不了「正式任务会用同一个执行器」。
+                    //
+                    //  现在：走同一个 ExecutorProvider.resolve，拿到同一份 Plan；
+                    //  每条命令走同一个 CommandExecutor.run。
+                    //  下面输出的七项全部来自该 Plan 与该 Step，不靠推断。
+                    // ══════════════════════════════════════════════════════════
+                    final io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Plan plan =
+                            io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.resolve(App.this);
+                    final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                            plan.shizuku != null ? plan.shizuku
+                                    : new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(App.this);
+                    int st = plan.shizukuState >= 0 ? plan.shizukuState : shz.probe();
                     sb.append("  Shizuku 状态: ").append(st)
                             .append(" (").append(shz.stateDetail()).append(")\n");
                     sb.append("  Shizuku 可用: ").append(shz.usable() ? "是" : "否").append('\n');
-                    if (shz.usable()) {
+                    // ── 执行器解析结论（与正式任务同一份）───────────────────
+                    sb.append("  -- 执行器解析（与正式任务同源）--\n");
+                    sb.append("     请求模式=")
+                            .append(io.github.wlmosv_png.wpaforge.cap.RunMode
+                                    .nameOf(plan.requestedMode)).append('\n');
+                    sb.append("     实际模式=")
+                            .append(io.github.wlmosv_png.wpaforge.cap.RunMode
+                                    .nameOf(plan.resolvedMode)).append('\n');
+                    sb.append("     Executor 类型=").append(plan.kind.name())
+                            .append(" (").append(plan.kindName()).append(")\n");
+                    sb.append("     实际进程 UID=").append(plan.identity.uid).append('\n');
+                    sb.append("     SELinux context=")
+                            .append(plan.identity.selinuxContext.isEmpty()
+                                    ? "<未知>" : plan.identity.selinuxContext).append('\n');
+                    sb.append("     Binder 状态=").append(plan.verdict.name())
+                            .append(" (state=").append(plan.shizukuState).append(")\n");
+                    sb.append("     su 可用=").append(plan.suUsable ? "是" : "否").append('\n');
+                    sb.append("     可开跑=").append(plan.canRun ? "是" : "否");
+                    if (!plan.canRun) sb.append("  阻止原因=").append(plan.blockReason);
+                    sb.append('\n');
+                    if (plan.kind != io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Kind.NONE) {
                         // ══════════════════════════════════════════════════════
                         //  **只读诊断：逐条命令的完整证据**（2026-11-20 任务书第四部分）
                         //
@@ -229,35 +263,42 @@ public class App extends Application {
                                 "dumpsys wifi"
                         };
                         for (String rc : readonlyCmds) {
-                            long c0 = System.currentTimeMillis();
-                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result rr;
+                            // **同一条执行路径**：与正式任务共用 CommandExecutor。
+                            io.github.wlmosv_png.wpaforge.cap.CommandExecutor.Step rr;
                             try {
-                                rr = shz.exec(rc, 8000);
+                                rr = io.github.wlmosv_png.wpaforge.cap.CommandExecutor
+                                        .run(plan, rc, 8000);
                             } catch (Throwable t) {
                                 sb.append("    [").append(rc).append("] EX ")
                                         .append(t.getClass().getSimpleName()).append('\n');
                                 continue;
                             }
-                            long cMs = System.currentTimeMillis() - c0;
                             sb.append("    [").append(rc).append("]\n");
                             sb.append("      执行器=").append(rr.executorId)
-                                    .append(" 身份=").append(rr.executorIdentity).append('\n');
-                            sb.append("      耗时=").append(cMs).append("ms")
+                                    .append(" 身份=").append(rr.identity).append('\n');
+                            sb.append("      耗时=").append(rr.totalMs).append("ms")
                                     .append(" exit=").append(rr.exitCode)
                                     .append(" timeout=").append(rr.timedOut)
                                     .append(" ok=").append(rr.ok()).append('\n');
-                            if (!rr.error.isEmpty()) {
-                                sb.append("      error=").append(rr.error).append('\n');
+                            // ── 耗时分解（定位「每条 11 秒」的关键）──
+                            sb.append("      binder=").append(rr.binderMs).append("ms")
+                                    .append(" 子进程等待=").append(rr.waitMs).append("ms")
+                                    .append(" 读流=").append(rr.drainMs).append("ms").append('\n');
+                            if (!rr.failure.isEmpty()) {
+                                sb.append("      failure=").append(rr.failure).append('\n');
+                            }
+                            if (!rr.exceptionClass.isEmpty()) {
+                                sb.append("      exception=").append(rr.exceptionClass).append('\n');
                             }
                             // stdout 只取首行 + 字节数（避免日志膨胀，也不泄露口令）
-                            String so = rr.stdout == null ? "" : rr.stdout;
+                            String so = rr.output == null ? "" : rr.output;
                             String soFirst = so;
                             int snl = soFirst.indexOf('\n');
                             if (snl > 0) soFirst = soFirst.substring(0, snl);
                             if (soFirst.length() > 100) soFirst = soFirst.substring(0, 100) + "…";
                             sb.append("      stdout(").append(so.length()).append("B) 首行=")
                                     .append(soFirst).append('\n');
-                            String se = rr.stderr == null ? "" : rr.stderr;
+                            String se = "";
                             if (!se.isEmpty()) {
                                 String seFirst = se;
                                 int enl = seFirst.indexOf('\n');
@@ -271,10 +312,7 @@ public class App extends Application {
                             // 失败分类
                             if (!rr.ok()) {
                                 sb.append("      失败分类=")
-                                        .append(rr.timedOut ? "TIMEOUT"
-                                                : (rr.cancelled ? "CANCELLED"
-                                                : (rr.error.isEmpty() ? "NONZERO_EXIT"
-                                                : "ERROR:" + rr.error)))
+                                        .append(rr.failure.isEmpty() ? "UNKNOWN" : rr.failure)
                                         .append('\n');
                             }
                         }
@@ -361,33 +399,34 @@ public class App extends Application {
                       .append(io.github.wlmosv_png.wpaforge.cap.RunMode.nameOf(mode)).append('\n');
                     io.github.wlmosv_png.wpaforge.audit.CrackEngine eng =
                             new io.github.wlmosv_png.wpaforge.audit.CrackEngine(App.this, mode);
-                    // 自检也必须按真实通道来（同一处历史事故）：
-                    // 无 Root 模式下这里如果仍挂 su 通道，自检必然报「未接入」，
-                    // 而用户真正能用的 Specifier 通道根本没被检查。
-                    final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shzSelf =
-                            new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(App.this);
-                    final boolean shzOkSelf = (shzSelf.probe() ==
-                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY
-                            || shzSelf.probe() ==
-                            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY_NOT_SHELL);
+                    // ═════════════════════════════════════════════════════════
+                    //  **自检也走同一个执行器选择**（2026-11-20 第二阶段）
+                    //
+                    //  改造前这里自己 new ShizukuChannel、自己判状态，
+                    //  且失败后**静默回落到 su** ——
+                    //  于是「自检通过」可能是 su 给的结果，而界面上写的是 Shizuku。
+                    //
+                    //  现在：同一份 ExecutorProvider.Plan，同一个 CommandExecutor，
+                    //  中途绝不回落。
+                    // ═════════════════════════════════════════════════════════
+                    final io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Plan selfPlan =
+                            io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.resolve(App.this);
+                    final io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter selfExec =
+                            new io.github.wlmosv_png.wpaforge.cap.CommandExecutor.ShellAdapter(selfPlan);
                     final boolean rootlessSelf =
                             (mode == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS);
                     eng.setShellChannel(new io.github.wlmosv_png.wpaforge.audit.CrackEngine.ShellChannel() {
                         @Override
                         public String exec(String cmd, long timeoutMs) {
-                            if (rootlessSelf && shzOkSelf) {
-                                io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
-                                        shzSelf.exec(cmd, timeoutMs);
-                                if (r.ok() && !r.output.trim().isEmpty()) return r.output;
-                            }
-                            return io.github.wlmosv_png.wpaforge.audit.RootProber
-                                    .exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                            // 不回落：plan 选了哪条就只用哪条，失败如实返 null
+                            return selfExec.exec(cmd, timeoutMs);
                         }
                         @Override public String name() {
-                            return (rootlessSelf && shzOkSelf) ? "Shizuku" : "Root";
+                            return selfPlan.kindName();
                         }
                     });
-                    if (rootlessSelf && !shzOkSelf) {
+                    if (rootlessSelf
+                            && selfPlan.kind == io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Kind.SPECIFIER) {
                         // Shizuku 不可用 → 挂上 Specifier，让自检按真实通道判，
                         // 而不是拿一条不存在的 su 通道去报「未接入」。
                         try {

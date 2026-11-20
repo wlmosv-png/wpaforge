@@ -110,15 +110,19 @@ public class ChannelParityTest {
     /** Shizuku 模式下不得静默回落 su（任务书硬要求）。 */
     private void noSilentFallbackInShizukuMode() {
         String svc = readSource("CrackService.java");
-        int branch = svc.indexOf("if (shizukuMode)");
-        ok("存在 shizukuMode 分支", branch > 0);
-        // 该分支体内不应包含 su 调用
-        int branchEnd = svc.indexOf("} else {", branch);
-        String seg = branchEnd > branch ? svc.substring(branch, branchEnd) : "";
-        ok("shizukuMode 分支内无 su 调用", !seg.contains("\"su\""));
-        ok("shizukuMode 分支内无 RootProber.exec", !seg.contains("RootProber.exec"));
-        // 失败即如实失败（out = null），不换通道
-        ok("Shizuku 失败如实置 null", seg.contains("r.ok() ? r.output : null"));
+        // 2026-11-20 第二阶段：判据收口到 plan.kind，不再各处自己判状态。
+        // **意图不变**：Shizuku 模式下绝不得静默回落 su。
+        ok("exec 分流走 plan.kind",
+                svc.contains("plan.kind == io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Kind.SHIZUKU"));
+        ok("不再出现旧的 shizukuMode 自判写法",
+                !svc.contains("&& s0.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY"));
+        // 正式任务的 exec 只调统一适配器，不自己决定走哪条身份
+        int at = svc.indexOf("engine.setShellChannel(");
+        int end = svc.indexOf("public String name() { return plan.kindName(); }", at);
+        String seg = (at > 0 && end > at) ? svc.substring(at, end) : "";
+        ok("ShellChannel 内无 su 字面量", !seg.contains("\"su\""));
+        ok("ShellChannel 内无 RootProber.exec", !seg.contains("RootProber.exec"));
+        ok("ShellChannel 走统一适配器", seg.contains("execAdapter.exec(cmd, timeoutMs)"));
     }
 
     /** Root 原链必须冻结：不能为了兼容 Shizuku 而改动。 */

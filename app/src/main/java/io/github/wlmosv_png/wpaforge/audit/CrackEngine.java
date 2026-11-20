@@ -3775,8 +3775,14 @@ public final class CrackEngine {
                 if (cancelFlag.get() || pauseFlag.get()) break;
 
                 Candidate c = candidates.get(i);
-                tested++;
-                testedCount = tested;
+                // **tested++ 不在这里**（2026-11-20 缺陷 C）。
+                //
+                // 旧位置在 tryOne 之前 → 候选还没真正验证，「已执行」就先 +1。
+                // 真机现象：已执行 2 / 已验证 0 / 已证实 0 / 未确定 0 ——
+                // 那 2 条全是环境错误，一条都没进入认证流程。
+                //
+                // 现在：只有 tally 真的记录了这一条（即 tryOne 返回了结论）
+                // 才计入 tested。见下方 tally.add 之后。
                 // B3 修复：**游标不在这里推进**。
                 // cursor 的语义是「续跑应该从这里开始」，因此只有当这一条真正得到了
                 // 可靠结论（DIRECT / INFERRED）时才允许越过它；无结论（TIMEOUT /
@@ -3849,8 +3855,9 @@ public final class CrackEngine {
                     a.attemptId = AttemptId.wellFormed(aid) ? aid : "";
                 }
                 if (a.verdict == Verdict.ABORTED) {
-                    tested--;
-                    testedCount = tested;
+                    // 2026-11-20：tested++ 已移到 tally.add 之后，
+                    // ABORTED 走不到那里（下面直接 break），所以不再需要 tested--。
+                    // 保留注释说明，避免以后有人以为漏了回退。
                     cursor = i;
                     l.onAttemptResult(a);
                     break;
@@ -3878,6 +3885,12 @@ public final class CrackEngine {
                 liveRecentAvgMs = rate.avgMs();
                 // 结论分布（只统计、不参与判定）
                 tally.add(a.verdict, a.grade);
+
+                // **tested 只在结论真正落账后才涨**（2026-11-20 缺陷 C）。
+                // 这样「已执行」与「各分类之和」永远一致，
+                // 不会再出现「已执行 N 条但所有分类都是 0」的自相矛盾数字。
+                tested++;
+                testedCount = tested;
 
                 // ---- **连续环境错误熔断**（2026-11-20，最高优先级）----
                 //
@@ -4106,8 +4119,15 @@ public final class CrackEngine {
                 for (int idx : infRetryIdx) {
                     if (cancelFlag.get() || pauseFlag.get()) break;
                     Candidate c = candidates.get(idx);
-                    tested++;
-                    testedCount = tested;
+                    // **补充验证不重复计入 tested**（2026-11-20 缺陷 C 同类）。
+                    //
+                    // tested 的语义是「试过几条**候选**」，而补充验证是
+                    // 同一条候选的第二次尝试。旧写法在 tryOne 之前就 tested++，
+                    // 而下面又**明确不计入 tally**：
+                    // 于是「已执行」会比「各分类之和」多出重试次数 ——
+                    // 用户又看到一组对不上的数字。
+                    //
+                    // 现在：不再抬 tested，「已执行」恒等于已走完评估的候选数。
                     l.onAttemptStart(idx + 1, total, c.password);
                     String aid2 = currentRunId == null ? null
                             : AttemptId.of(currentRunId, idx + 1);

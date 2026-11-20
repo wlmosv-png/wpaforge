@@ -111,16 +111,26 @@ public class RootlessVerdictChainTest {
         // 真正的问题是**失败后静默回落**：Shizuku 失败 → 偷偷走 su →
         // 界面还显示 Shizuku 通道 → 判定证据来自另一条身份，归因链断裂。
         // 任务书明确禁止这种「检测失败就偷偷降级」。
-        ok("定义了 shizukuMode 决策", body.contains("shizukuMode"));
-        ok("shizukuMode 只在无 Root 模式成立",
-                body.contains("RunMode.ROOTLESS") && body.contains("shizukuMode"));
-        // Shizuku 分支必须独占：shizukuMode 为真时不碰 su
-        int shzBranch = body.indexOf("if (shizukuMode)");
-        int suSess = body.indexOf("sess.exec(cmd, timeoutMs)");
-        ok("shizukuMode 分支排在 su 会话之前", shzBranch > 0 && suSess > 0 && shzBranch < suSess);
-        ok("Shizuku 分支内部不出现 su", 
-                shzBranch > 0 && body.indexOf("RootProber.exec(null", shzBranch) > suSess);
-        ok("su 仍在非 Shizuku 模式保留", body.contains("RootProber.exec(null"));
+        // 2026-11-20 第二阶段：判据收口到 plan.kind。
+        // **意图一字不改**：
+        //   ① 无 Root 且 Shizuku 可用 → 只用 Shizuku；
+        //   ② Shizuku 分支内部绝不碰 su（不得静默回落）；
+        //   ③ su 仍在 Root 模式保留。
+        ok("存在 Shizuku 分流判据",
+                body.contains("ExecutorProvider.Kind.SHIZUKU"));
+        ok("Shizuku 分流由统一解析结果决定（不自判状态）",
+                body.contains("plan.kind")
+                        && !body.contains("s0.state() =="));
+        // ShellChannel 内部不得出现 su / RootProber（回落就是假通道）
+        int at = body.indexOf("engine.setShellChannel(");
+        int end = body.indexOf("public String name() { return plan.kindName(); }", at);
+        String ch = (at > 0 && end > at) ? body.substring(at, end) : "";
+        ok("ShellChannel 内部不出现 su", !ch.contains("\"su\""));
+        ok("ShellChannel 内部不出现 RootProber.exec", !ch.contains("RootProber.exec"));
+        ok("su 仍在 Root 模式保留（CommandExecutor）",
+                readSource("cap/CommandExecutor.java").contains("RootProber"));
+        ok("执行路径统一到 CommandExecutor",
+                body.contains("execAdapter.exec(cmd, timeoutMs)"));
     }
 
     // ---------------------------------------------------------------- 1. 能力闸本身

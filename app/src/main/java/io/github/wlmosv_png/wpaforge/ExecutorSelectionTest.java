@@ -53,28 +53,55 @@ public class ExecutorSelectionTest {
         shizukuIdentityThreeWay();
     }
 
-    /** 关键：shizukuMode 必须接受 usable() 的全部状态。 */
+    /**
+     * **执行器选择必须收口到唯一入口**（2026-11-20 第二阶段）。
+     *
+     * <p>旧断言钉的是「shizukuMode 写法」这个**字符串形态**；现在判据收口到
+     * {@code ExecutorProvider} + {@code plan.kind}，字符串形态必然变。
+     * 但**意图一字不改**：
+     * <ol>
+     *   <li>不允许各调用点自己判 Shizuku 状态；<\/li>
+     *   <li>Shizuku 的两种可用状态（shell \/ 非 shell）都必须被接受；<\/li>
+     *   <li>不允许回到「只认 S_READY」的旧坑。<\/li>
+     * <\/ol>
+     */
     private void shizukuModeAcceptsBothStates() {
         String svc = readSource("CrackService.java");
-        // 不能再用 state() == S_READY 作为唯一判据
-        ok("shizukuMode 不再只判 S_READY",
-                !svc.contains("&& s0.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY"));
-        ok("shizukuMode 用 usable()",
-                svc.contains("&& s0 != null && s0.usable()"));
-        // 根因注释保留
-        ok("注释说明 root 身份也会走 su 的坑",
-                svc.contains("Shizuku 是 root 身份时 → shizukuMode = false"));
+        // ① 不允许任何地方拿 state() == S_READY 当可用性判据
+        ok("不再出现 state() == S_READY 当判据",
+                !svc.contains("s0.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY")
+                        && !svc.contains("dsz.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY"));
+        // ② 执行分流只认 plan.kind（与选择同源）
+        ok("执行分流走 plan.kind",
+                svc.contains("plan.kind == io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Kind.SHIZUKU"));
+        // ③ 选择入口唯一
+        ok("选择入口唯一（ExecutorProvider.resolve）",
+                svc.contains("io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.resolve(this)"));
+        ok("不再自己发 su 探测后直接判模式",
+                !svc.contains("final boolean suUsableNow"));
+        // ④ ChannelReadiness 仍是可用性的唯一判据（在 ExecutorProvider 内部）
+        String prov = readSource("cap/ExecutorProvider.java");
+        ok("ExecutorProvider 用 ChannelReadiness 判可用性",
+                prov.contains("ChannelReadiness.mayStartTask(verdict)")
+                        && prov.contains("ChannelReadiness.of(st)"));
     }
 
-    /** runModeId 必须用用户意愿，不用缓存。 */
+    /** **模式必须来自用户意愿 + 真实探测**，不用缓存。 */
     private void runModeFromPrefsNotCache() {
+        String prov = readSource("cap/ExecutorProvider.java");
         String svc = readSource("CrackService.java");
-        ok("runModeId 来自 Prefs.requestedMode",
-                svc.contains("Prefs.requestedMode(this)"));
+        ok("用户意愿来自 Prefs.requestedMode",
+                prov.contains("Prefs.requestedMode(ctx)"));
+        ok("模式解析走 ModeResolver（唯一实现）",
+                prov.contains("ModeResolver.resolve(requested, suOk, shzOk)"));
         ok("不再用 RuntimeMode.modeId 作为执行判据",
                 !svc.contains("final int runModeId = io.github.wlmosv_png.wpaforge.cap.RuntimeMode.modeId"));
         ok("注释说明缓存风险",
                 svc.contains("缓存可能是上一次"));
+        // su 探测只起一次（旧写法连着调两次，任一抖动就翻结论）
+        ok("su 探测只起一次", prov.contains("boolean suOk = probeSu();"));
+        ok("su 判据看 uid=0（不是看文件在不在）",
+                prov.contains("out.contains(\"uid=0\")"));
     }
 
     /** Result 必须有结构化诊断字段。 */

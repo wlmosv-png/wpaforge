@@ -63,16 +63,30 @@ public class WhiteRunGuardTest {
         closeStreamsBeforeJoin();
     }
 
-    /** 熔断器必须能看见 Shizuku 通道的超时。 */
+    /**
+     * **熔断器必须能看见超时**（2026-11-20 第二阶段）。
+     *
+     * <p>旧写法靠 {@code RootProber.lastTimedOut()} —— 而 Shizuku 模式根本不走
+     * RootProber，标志恒 false，熔断器永不触发（真机 78 条白跑的直接原因）。
+     *
+     * <p>现在：超时来自 {@link io.github.wlmosv_png.wpaforge.cap.CommandExecutor.Step#timedOut}，
+     * **与执行器无关** —— Root 与 Shizuku 共用同一个字段。意图一字不改：
+     * 超时必须能触发熔断，而且不能只看 RootProber。
+     */
     private void breakerSeesShizukuTimeout() {
         String svc = readSource("CrackService.java");
-        ok("声明 thisTimedOut", svc.contains("boolean thisTimedOut"));
-        ok("Shizuku 分支记录超时", svc.contains("thisTimedOut = !r.ok()"));
-        ok("熔断条件含 thisTimedOut",
-                svc.contains("thisTimedOut || RootProber.lastTimedOut()"));
-        // 旧写法（只看 RootProber）不能再单独存在
+        ok("声明执行器适配器", svc.contains("CommandExecutor.ShellAdapter"));
+        ok("熔断条件看 Step.timedOut", svc.contains("st.timedOut"));
+        ok("熔断阈值保留", svc.contains("EXEC_TIMEOUT_LIMIT"));
+        ok("超时归零在成功时", svc.contains("execTimeouts = 0;"));
+        // 不再只看 RootProber
         ok("不再只有 RootProber.lastTimedOut()",
-                !svc.contains("if (RootProber.lastTimedOut()) {"));
+                !svc.contains("if (RootProber.lastTimedOut()) {")
+                        && !svc.contains("thisTimedOut || RootProber.lastTimedOut()"));
+        // CommandExecutor 必须在所有执行器上都置 timedOut
+        String ce = readSource("cap/CommandExecutor.java");
+        ok("CommandExecutor 对 Shizuku 置 timedOut", ce.contains("st.timedOut = r.timedOut;"));
+        ok("CommandExecutor 对 su 置 timedOut", ce.contains("st.timedOut = io.github.wlmosv_png.wpaforge.audit.RootProber.lastTimedOut();"));
     }
 
     /** 开跑前必须实测净检通路（list-networks），不通就停。 */
@@ -144,7 +158,9 @@ public class WhiteRunGuardTest {
         String svc = readSource("CrackService.java");
         ok("熔断日志点明不是密码问题",
                 svc.contains("这不是密码问题"));
+        // 2026-11-20 第二阶段：通道名来自 plan.kindName()，不再写死字面量。
+        // **意图不变**：熔断日志必须告知是哪条通道不行了。
         ok("熔断日志给出通道名",
-                svc.contains("Shizuku 通道") && svc.contains("命令通道"));
+                svc.contains("plan.kindName() + \"通道已不可用"));
     }
 }

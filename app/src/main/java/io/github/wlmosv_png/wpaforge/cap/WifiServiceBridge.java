@@ -347,6 +347,15 @@ public final class WifiServiceBridge {
             sb.append(" getConfiguredNetworks=")
                     .append(methodOn(iface, "getConfiguredNetworks",
                             android.os.Build.VERSION.SDK_INT) != null ? "yes" : "no");
+            // **列出接口上真实可见的方法名**（任务书第五部分要求：
+            // 不能只看方法数量，要看具体需要的方法是否存在）。
+            try {
+                java.util.TreeSet<String> names = new java.util.TreeSet<>();
+                for (java.lang.reflect.Method m : cls.getMethods()) {
+                    names.add(m.getName());
+                }
+                sb.append(" | visible=").append(names);
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
             sb.append(" EX:").append(t.getClass().getSimpleName());
         }

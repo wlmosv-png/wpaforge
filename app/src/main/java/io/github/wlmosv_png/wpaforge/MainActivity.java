@@ -11285,17 +11285,26 @@ public class MainActivity extends Activity {
         // 口径要写清楚（这是最近 20 条的实时节奏，不是整轮平均），但**不能写太长** ——
         // 这一行在真机上会被 ellipsize 截成「（近 20…」（2026-10-24 用户截图）。
         // 所以：短标签 + 短单位；同时允许折两行兜底（窄屏/大字号不会再被切掉）。
+        // **通道名必须来自真实执行器，不能写死 "Root 通道"**（2026-11-20 真机事故）。
+        //
+        // 用户截图：设置页显示「Shizuku 已授权（shell 身份）」，
+        // 但目标卡片显示「Root 通道」—— 两处说的不是同一件事，
+        // 而且写死的那句还是错的（实际走的是 Shizuku）。
+        //
+        // 现在从服务读真实通道名 + 真实执行身份。
+        String ch = svc == null ? "" : svc.executorLabel();
+        if (ch.isEmpty()) ch = L.s("未接入", "not attached");
         if (live > 0) {
-            connectModeView.setText(L.f("Root 通道 · %.1f 秒/条 · 近 20 条",
-                    "Root channel · %.1fs/attempt · last 20",
-                    live / 1000.0));
+            connectModeView.setText(L.f("%s · %.1f 秒/条 · 近 20 条",
+                    "%s · %.1fs/attempt · last 20", ch, live / 1000.0));
         } else {
             long ms = Prefs.avgMsPerItem(this);
-            connectModeView.setText(L.f("Root 通道 · 上次 %.1f 秒/条",
-                    "Root channel · %.1fs/attempt (last run)",
-                    ms / 1000.0));
+            connectModeView.setText(L.f("%s · 上次 %.1f 秒/条",
+                    "%s · %.1fs/attempt (last run)", ch, ms / 1000.0));
         }
-        connectModeView.setTextColor(ACCENT);
+        // 通道没确认身份时用告警色，不再一律 ACCENT
+        connectModeView.setTextColor(
+                ch.contains("未") || ch.contains("UNKNOWN") ? DANGER : ACCENT);
     }
 
     /** 破解页显示当前选中的字典 */

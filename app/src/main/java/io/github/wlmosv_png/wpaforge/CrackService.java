@@ -1811,6 +1811,35 @@ public class CrackService extends Service {
     }
 
     /**
+     * **真实执行器标签**（2026-11-20）—— UI 显示通道名的唯一来源。
+     *
+     * <p>格式：{@code <后端> / <身份>}，例 Shizuku / root(uid=0)、Root / su、未接入。
+     *
+     * <p>为什么要这个：之前 UI 写死「Root 通道」，而实际可能走 Shizuku ——
+     * 两处说的不是同一件事（用户真机截图：设置页说 shell 身份，目标卡片说 Root 通道）。
+     */
+    public String executorLabel() {
+        try {
+            if (lastExecutorLabel != null && !lastExecutorLabel.isEmpty()) {
+                return lastExecutorLabel;
+            }
+            io.github.wlmosv_png.wpaforge.cap.ShizukuChannel s = shizukuRef;
+            if (s != null && s.usable()) {
+                io.github.wlmosv_png.wpaforge.cap.ExecutorIdentity id = s.identity();
+                return "Shizuku / " + id.describe(false);
+            }
+            if (io.github.wlmosv_png.wpaforge.audit.RootProber
+                    .exec(null, new String[]{"su", "-c", "id"}, 3000) != null) {
+                return "Root / su";
+            }
+        } catch (Throwable ignored) {}
+        return L.s("未接入", "not attached");
+    }
+
+    /** 最近一次任务实际使用的执行器标签（任务启动时写入）。 */
+    private volatile String lastExecutorLabel = "";
+
+    /**
      * 本次任务的实时速率（毫秒/条）；没有任务在跑时返回 0。
      *
      * <p>为什么不能用 Prefs 的历史值：那是跨任务累计的指数滑动平均，

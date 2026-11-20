@@ -681,6 +681,28 @@ public final class CrackEngine {
 
     private volatile DirectWifi direct;
 
+    /** 连续多少条环境错误就整体熔断（2026-11-20）。 */
+    public static final int ENV_ERROR_BREAK = 3;
+
+    /**
+     * 这个 ERROR 是不是**通道级**失败（而非候选/调用本身的问题）。
+     *
+     * <p>只有通道级失败才该触发整体熔断 —— 否则「候选不合法」这种
+     * 也会把整本字典停掉，那是误伤。
+     *
+     * @param reason {@link Attempt#reason}
+     */
+    public static boolean isChannelError(String reason) {
+        if (reason == null || reason.isEmpty()) return true;   // 未标注 → 按通道错处理
+        // 这些是「候选/调用」层面的，不是通道坏了
+        if ("invalid-candidate".equals(reason)) return false;
+        if ("not-submitted".equals(reason)) return false;
+        if ("attempt-mismatch".equals(reason)) return false;
+        if ("not-capable".equals(reason)) return false;
+        // exception / 其他 → 通道级
+        return true;
+    }
+
     /** 供诊断/界面读取当前通道能力（可能为 null）。 */
     public io.github.wlmosv_png.wpaforge.cap.ConnectChannel getConnectChannel() {
         return channel;
@@ -3691,6 +3713,16 @@ public final class CrackEngine {
         int tested = 0;
         int cursor = start;
         int consecutiveNoEvidence = 0;
+        // **连续环境错误计数**（2026-11-20 真机事故）。
+        //
+        // 用户真机：6 条全是环境错误、0 条有效验证，任务还在跑。
+        // 原因：CrackService 的熔断只 stopAll() 停服务，
+        // **引擎主循环不知道**，继续消费候选。
+        //
+        // 现在引擎自己也有熔断：连续 N 条环境错误就整体停下，
+        // 并把状态标成 BLOCKED_ENVIRONMENT（不是「跑完了」）。
+        int consecutiveEnvErrors = 0;
+        String blockedReason = null;
         String hit = null;
         long beginAt = clock().uptimeMillis();
         // 净尝试耗时：只累计每条候选从发命令到出结论的时间。
@@ -3847,10 +3879,68 @@ public final class CrackEngine {
                 // 结论分布（只统计、不参与判定）
                 tally.add(a.verdict, a.grade);
 
+                // ---- **连续环境错误熔断**（2026-11-20，最高优先级）----
+                //
+                // 环境错误（ERROR / 通道异常）意味着这条候选**没有被真正验证**。
+                // 连续出现说明通道已经不可用 —— 继续跑只会一条条消耗候选、
+                // 一条条记成「环境错误」，却永远产不出有效结论。
+                //
+                // 真机证据：6 条全环境错误、已验证 0、已证实 0、未确定 0，
+                // 进度 7.7% —— 纯白跑。
+                //
+                // 所以：连续 3 条就整体停下，明确标记 BLOCKED_ENVIRONMENT。
+                // **只对「通道级」ERROR 熔断**，不对「候选不合法」这类。
+                //
+                // 区分依据是 Attempt.reason：
+                //   · invalid-candidate / not-submitted / attempt-mismatch
+                //     → 候选或调用本身的问题，不是通道坏了，不该熔断
+                //   · exception / 空 reason 的 ERROR → 通道真的抛了/断了
+                //
+                // 真机 6 条环境错误属于后者（日志显示「通道异常 · 11s」）。
+                if (a.verdict == Verdict.ERROR && isChannelError(a.reason)) {
+                    consecutiveEnvErrors++;
+                } else if (a.verdict != Verdict.ERROR) {
+                    consecutiveEnvErrors = 0;
+                }
+                if (consecutiveEnvErrors >= ENV_ERROR_BREAK) {
+                    blockedReason = L.s(
+                            "连续 " + ENV_ERROR_BREAK + " 条环境错误 —— 通道不可用，任务已停止。"
+                                    + "这 " + ENV_ERROR_BREAK + " 条候选**没有被真正验证**"
+                                    + "（不是密码错，也不写已试集合）。"
+                                    + "请检查执行通道后重试。",
+                            "Consecutive " + ENV_ERROR_BREAK + " environment errors - channel "
+                                    + "unusable, task stopped. Those candidates were NOT really "
+                                    + "verified (not wrong passwords, not written to tried-set).");
+                    l.onLog("✗ " + blockedReason);
+                    l.onBlocked(L.s("通道不可用，已停止", "Channel unusable, stopped"),
+                            blockedReason);
+                    break;
+                }
+
                 // 攒够 20 条写一行汇总。四段分解 + 判定归类，
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
                 costMeter.record(itemMs, a.verdict.name(), a.confirmedBy,
                         statPrepMs, statProbeMs, statPollMs, statLogMs, statRounds);
+
+                // **单条耗时异常时立即打分段明细**（2026-11-20 任务书要求）。
+                //
+                // 用户真机：每条 10.9 秒。但之前的四段耗时只在「每 20 条」的
+                // 汇总里出现 —— 跑 6 条就停的话永远看不到。
+                // 现在：任何一条超过 5 秒就当场把分段打出来，
+                // 让「时间花在哪一段」一眼可见，不用等汇总。
+                if (itemMs > 5000L) {
+                    l.onLog(L.s(
+                            "  ⏱ 本条 " + itemMs + "ms 分段: 准备=" + statPrepMs
+                                    + " 探测=" + statProbeMs
+                                    + " 轮询=" + statPollMs
+                                    + " 日志=" + statLogMs
+                                    + " 轮次=" + statRounds,
+                            "  [slow] " + itemMs + "ms breakdown: prep=" + statPrepMs
+                                    + " probe=" + statProbeMs
+                                    + " poll=" + statPollMs
+                                    + " log=" + statLogMs
+                                    + " rounds=" + statRounds));
+                }
                 // 复核补充：把本条候选的**窗口隔离状态**一并写进判词尾巴。
                 // 原来 isolated 只进 detail（界面），任务日志里看不到 ——
                 // 事后无法回答「这次日志通道到底可不可用、有没有被污染」。

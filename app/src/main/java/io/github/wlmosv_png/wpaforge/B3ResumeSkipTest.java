@@ -136,8 +136,16 @@ public final class B3ResumeSkipTest {
         info("onFinished cursor : " + cb.finishedCursor);
         info("onFinished outcome: " + cb.finishedOutcome);
 
-        ok("引擎真的执行了候选（未被 check 挡住）",
-                !cb.blocked && cb.verdicts.size() == 3,
+        // 2026-11-20 行为升级：连续环境错误（ERROR）会触发整体熔断
+        // （真机 6 条全环境错误仍在跑 → 必须停）。
+        // 本测试的 FakeShell 对 list-networks 返回空串，会让 tryOneShell 内部判 ERROR，
+        // 因此第 3 条会触发熔断。**核心意图（无结论不推游标）不变**，
+        // 但「3 条都跑完」这个前提已被新的熔断规则取代。
+        ok("引擎真的执行了候选（未被 check 挡住；环境错误熔断除外）",
+                cb.verdicts.size() >= 2,
+                "blocked=" + cb.blocked + " verdicts=" + cb.verdicts.size());
+        ok("连续环境错误触发熔断（新增行为，不是 bug）",
+                cb.blocked && cb.verdicts.size() < 3,
                 "blocked=" + cb.blocked + " verdicts=" + cb.verdicts.size());
 
         boolean anyConclusive = false;

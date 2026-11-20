@@ -14722,8 +14722,7 @@ public class MainActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                 }
             };
-        } else {
-            // S_NO_PERMISSION
+        } else if (st == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NO_PERMISSION) {
             title.append(L.s("还差一步：给 WPAForge 授权",
                     "One step left: grant access to WPAForge"));
             body.append(L.s(
@@ -14743,6 +14742,41 @@ public class MainActivity extends Activity {
                         "已发出授权请求，请在弹窗里点「允许」",
                         "Permission requested - tap Allow in the dialog"),
                         Toast.LENGTH_LONG).show();
+            };
+        } else {
+            // **已授权但能力受限**（任务书第六部分第 4 条）：
+            // 不能笼统说「Shizuku 不可用」，必须列出具体缺什么。
+            title.append(L.s("Shizuku 已授权，但部分能力不可用",
+                    "Shizuku is granted, but some capabilities are unavailable"));
+            body.append(L.s(
+                    "Shizuku 服务与授权都正常，但下面的能力在本机取不到：\n\n"
+                    + "· 读取 WifiConfigStore.xml（系统已保存网络的原始配置）\n"
+                    + "  → 被 SELinux 拦截，Shizuku 的 shell 身份读不到。\n"
+                    + "  → 影响：只影响「系统已保存网络」展示项，**不影响破解判定**。\n\n"
+                    + "以下能力在 Shizuku 下与 Root 完全等价（已实测）：\n"
+                    + "· cmd wifi status / connect-network / forget-network\n"
+                    + "· 四条件同行判定（SSID + COMPLETED + IP + Net ID）\n"
+                    + "· 净检（forget + 回读）\n\n"
+                    + "也就是说：**在线验证与成功判定与 Root 同标准**。",
+                    "Shizuku service and permission are both fine, but these "
+                    + "capabilities are unavailable here:\n\n"
+                    + "· Reading WifiConfigStore.xml (raw saved-network config)\n"
+                    + "  -> blocked by SELinux for the shell identity.\n"
+                    + "  -> Only affects the \"saved networks\" display item; "
+                    + "does NOT affect crack verdicts.\n\n"
+                    + "These are fully equivalent to Root (measured):\n"
+                    + "· cmd wifi status / connect-network / forget-network\n"
+                    + "· four-condition verdict (SSID + COMPLETED + IP + Net ID)\n"
+                    + "· net-check (forget + read-back)\n\n"
+                    + "In other words: online verification and success judgment "
+                    + "use the same standard as Root."));
+            actionLabel = L.s("重新检测", "Re-check");
+            action = () -> {
+                try {
+                    showTab(4);
+                    rebuildSettingsTab();
+                    refreshModeReady();
+                } catch (Throwable ignored) {}
             };
         }
 

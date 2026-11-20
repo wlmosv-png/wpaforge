@@ -101,19 +101,26 @@ public class RootlessVerdictChainTest {
     // 几十条候选就是几分钟一动不动 —— 用户看到的就是「点了没反应」。
     private void shizukuPreferredOverSu() {
         String svc = readSource("CrackService.java");
-        int at = svc.indexOf("public String exec(String cmd, long timeoutMs)");
-        ok("CrackService 有 shell 通道实现", at > 0);
-        int end = svc.indexOf("engine.setShellChannel", at + 10);
-        String body = svc.substring(at, end > at ? end : Math.min(svc.length(), at + 4000));
+        // 直接对全文断言 —— exec 有两个重载，按 indexOf 取会取错那一个。
+        // 这些是「架构不变量」，在全文里成立即可（不依赖具体位置）。
+        String body = svc;
 
-        ok("定义了 preferShizuku 决策", body.contains("preferShizuku"));
-        ok("preferShizuku 只在无 Root 模式成立",
-                body.contains("RunMode.ROOTLESS") && body.contains("preferShizuku"));
-        // Shizuku 分支必须出现在 su 会话调用之前
-        int shzExec = body.indexOf("s0.exec(cmd, timeoutMs)");
+        // 2026-11-20 架构升级：从「优先 Shizuku」改成「Shizuku 模式只用 Shizuku」。
+        //
+        // 旧要求是「Shizuku 排在 su 之前」，但那只解决速度问题；
+        // 真正的问题是**失败后静默回落**：Shizuku 失败 → 偷偷走 su →
+        // 界面还显示 Shizuku 通道 → 判定证据来自另一条身份，归因链断裂。
+        // 任务书明确禁止这种「检测失败就偷偷降级」。
+        ok("定义了 shizukuMode 决策", body.contains("shizukuMode"));
+        ok("shizukuMode 只在无 Root 模式成立",
+                body.contains("RunMode.ROOTLESS") && body.contains("shizukuMode"));
+        // Shizuku 分支必须独占：shizukuMode 为真时不碰 su
+        int shzBranch = body.indexOf("if (shizukuMode)");
         int suSess = body.indexOf("sess.exec(cmd, timeoutMs)");
-        ok("Shizuku 分支排在 su 会话之前", shzExec > 0 && suSess > 0 && shzExec < suSess);
-        ok("su 仍保留为兜底", body.contains("RootProber.exec(null"));
+        ok("shizukuMode 分支排在 su 会话之前", shzBranch > 0 && suSess > 0 && shzBranch < suSess);
+        ok("Shizuku 分支内部不出现 su", 
+                shzBranch > 0 && body.indexOf("RootProber.exec(null", shzBranch) > suSess);
+        ok("su 仍在非 Shizuku 模式保留", body.contains("RootProber.exec(null"));
     }
 
     // ---------------------------------------------------------------- 1. 能力闸本身

@@ -24,8 +24,49 @@ import java.util.List;
  */
 public final class RootChannel implements ConnectChannel {
 
+    /**
+     * 命令执行器 —— **Root 与 Shizuku 的唯一差异点**（2026-11-20 重构）。
+     *
+     * <h3>为什么需要这个接缝</h3>
+     * 改造前 {@link #exec} 里写死 {@code su -c}。Shizuku 模式虽然挂了本通道，
+     * 但真正执行走的是引擎注入的另一条 shell 通道 —— **两条执行路径并存**，
+     * 于是「能力自述说能做的事」和「实际用哪条命令做的」可能不是同一件事。
+     * 这正是任务书点名要消除的「能力识别与实际执行通道不一致」。
+     *
+     * <p>现在：本通道只负责「业务语义」（能不能关联、能不能净检、怎么读状态），
+     * 执行交给注入的 {@link Executor}。Root 注入 su，Shizuku 注入 Shizuku，
+     * 判定链与证据规则完全同一份代码。
+     */
+    public interface Executor {
+        /**
+         * 执行一条命令。
+         *
+         * @return {@code null} = 没拿到（超时 / 通道死）；空串 = 拿到了但无输出
+         */
+        String exec(String cmd, long timeoutMs);
+
+        /** 执行器名字（写日志用，例：{@code Root} / {@code Shizuku}）。 */
+        String name();
+    }
+
     /** 连续多少次命令超时就判定通道被系统限制（原 CrackService 里的值）。 */
     public static final int EXEC_TIMEOUT_LIMIT = 6;
+
+    /** 默认执行器：su + 常驻会话（与改造前逐字一致）。 */
+    private static final Executor SU_EXECUTOR = new Executor() {
+        @Override
+        public String exec(String cmd, long timeoutMs) {
+            return RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+        }
+
+        @Override
+        public String name() {
+            return "Root";
+        }
+    };
+
+    /** 实际使用的执行器（默认 su；Shizuku 模式注入 Shizuku 执行器）。 */
+    private volatile Executor executor = SU_EXECUTOR;
 
     private final Object lock = new Object();
     private ShellSession session;
@@ -41,6 +82,22 @@ public final class RootChannel implements ConnectChannel {
     public RootChannel() {
     }
 
+    /**
+     * 用指定执行器构造（Shizuku 模式用）。
+     *
+     * <p>注意：注入执行器后 {@link #open()} **不再起 su 常驻会话** ——
+     * 那个会话本身就是 su，对 Shizuku 没有意义，白起一个进程还会污染诊断。
+     */
+    public RootChannel(Executor exec) {
+        if (exec != null) {
+            this.executor = exec;
+            this.usesSuSession = false;
+        }
+    }
+
+    /** 是否使用 su 常驻会话加速（只有默认 su 执行器才用）。 */
+    private boolean usesSuSession = true;
+
     // ------------------------------------------------------------ 生命周期
 
     /**
@@ -53,8 +110,14 @@ public final class RootChannel implements ConnectChannel {
     public boolean open() {
         synchronized (lock) {
             if (!opened) {
-                session = new ShellSession();
-                sessionOff = !session.start();
+                if (usesSuSession) {
+                    session = new ShellSession();
+                    sessionOff = !session.start();
+                } else {
+                    // 注入执行器（Shizuku）：不碰 su，会话恒关闭。
+                    session = null;
+                    sessionOff = true;
+                }
                 sessionFails = 0;
                 execTimeouts = 0;
                 opened = true;
@@ -88,7 +151,8 @@ public final class RootChannel implements ConnectChannel {
 
     @Override
     public String name() {
-        return "Root";
+        Executor e = executor;
+        return e == null ? "Root" : e.name();
     }
 
     /**
@@ -114,20 +178,24 @@ public final class RootChannel implements ConnectChannel {
      */
     public String exec(String cmd, long timeoutMs) {
         String out = null;
-        synchronized (lock) {
-            if (opened && !sessionOff && session != null) {
-                out = session.exec(cmd, timeoutMs);
-                if (out == null) {
-                    if (++sessionFails >= 3) {
-                        sessionOff = true;
+        // 只有 su 执行器才走常驻会话加速；注入执行器直接调用。
+        if (usesSuSession) {
+            synchronized (lock) {
+                if (opened && !sessionOff && session != null) {
+                    out = session.exec(cmd, timeoutMs);
+                    if (out == null) {
+                        if (++sessionFails >= 3) {
+                            sessionOff = true;
+                        }
+                    } else {
+                        sessionFails = 0;
                     }
-                } else {
-                    sessionFails = 0;
                 }
             }
         }
         if (out == null) {
-            out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+            Executor e = executor;
+            out = e == null ? null : e.exec(cmd, timeoutMs);
         }
         // 通道熔断：连续多次超时说明通道已经被系统限制，继续跑只是空转。
         if (RootProber.lastTimedOut()) {

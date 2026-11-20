@@ -60,6 +60,7 @@ public class WhiteRunGuardTest {
         breakerLogSaysNotPassword();
         forgetPathSplitIntoTwoCommands();
         shizukuHasHardDeadline();
+        closeStreamsBeforeJoin();
     }
 
     /** 熔断器必须能看见 Shizuku 通道的超时。 */
@@ -119,6 +120,23 @@ public class WhiteRunGuardTest {
         ok("有硬超时兜底", shz.contains("硬超时兜底"));
         ok("退出循环后再检查 deadline",
                 shz.contains("if (System.currentTimeMillis() >= deadline) {\n                timeout = true;"));
+    }
+
+    /**
+     * **必须「先关流、再 join」** —— 这是「每条 11 秒」的真正根因。
+     *
+     * <p>旧顺序 join(3s) → join(3s) → close(fd)：进程没退出时两个 drain 线程
+     * 阻塞在 read()，每个 join 等满 3 秒 = 6 秒；加上 5 秒 deadline = 11 秒。
+     * 与用户截图「通道异常 · 11s」完全吻合。
+     */
+    private void closeStreamsBeforeJoin() {
+        String shz = readSource("cap/ShizukuChannel.java");
+        int closeAt = shz.indexOf("closeQuietly(outFd);");
+        int joinAt = shz.indexOf("joinQuietly(tOut);");
+        ok("close 出现在 join 之前", closeAt > 0 && joinAt > 0 && closeAt < joinAt);
+        ok("join 超时降到 300ms（不再当正常等待用）",
+                shz.contains("t.join(300L)") && !shz.contains("t.join(3000L)"));
+        ok("超时先 destroy 子进程", shz.contains("超时：先杀掉子进程"));
     }
 
     /** 熔断日志必须说清「不是密码问题」。 */

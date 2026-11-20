@@ -395,13 +395,28 @@ public final class ShizukuChannel {
             if (System.currentTimeMillis() >= deadline) {
                 timeout = true;
             }
-            // 进程已退出（或超时）→ 流会 EOF，join 收尾。
+            // ══════════════════════════════════════════════════════════
+            //  **必须先关流再 join**（2026-11-20 真机事故的真正根因）
+            //
+            //  旧顺序：join(tOut, 3s) → join(tErr, 3s) → close(fd) → destroy
+            //  进程没退出时，两个 drain 线程阻塞在 read() 上，
+            //  join 只能等满超时 —— 每个 3 秒，两个就是 6 秒。
+            //  于是「5 秒 deadline + 3 + 3 = 11 秒」，与用户截图
+            //  「通道异常 · 11s」**完全吻合**。78 条 = 14 分钟白跑。
+            //
+            //  现在：先 close 两个 fd（read() 立刻返回 -1，drain 线程自然结束），
+            //  再 join（此时通常毫秒级返回）；超时则 destroy 子进程。
+            // ══════════════════════════════════════════════════════════
+            if (timeout) {
+                // 超时：先杀掉子进程，避免它继续占着管道
+                destroy(remote);
+            }
+            closeQuietly(outFd);
+            closeQuietly(errFd);
             joinQuietly(tOut);
             joinQuietly(tErr);
             out = outBuf.toString("UTF-8");
             err = errBuf.toString("UTF-8");
-            closeQuietly(outFd);
-            closeQuietly(errFd);
         } catch (Throwable t) {
             return new Result("", -1, false, "读取输出失败：" + t.getClass().getSimpleName());
         } finally {
@@ -531,9 +546,17 @@ public final class ShizukuChannel {
         return t;
     }
 
+    /**
+     * 等 drain 线程收尾。
+     *
+     * <p>**300ms 而不是 3000ms**（2026-11-20）：调用方现在会**先 close 流**，
+     * read() 立刻返回 -1，drain 线程随即结束 —— 正常情况毫秒级返回。
+     * 给 300ms 是兜底（防止极端情况下 read 不响应 close），
+     * 而不是当正常等待用。旧值 3000ms × 2 个线程 = 6 秒，正是「每条 11 秒」的来源。
+     */
     private static void joinQuietly(Thread t) {
         if (t == null) return;
-        try { t.join(3000L); } catch (Throwable ignored) {}
+        try { t.join(300L); } catch (Throwable ignored) {}
     }
 
     private static String readAll(ParcelFileDescriptor fd) {

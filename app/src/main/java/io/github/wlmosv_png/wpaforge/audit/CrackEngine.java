@@ -2729,13 +2729,42 @@ public final class CrackEngine {
                      * 若 netId 与本次配置冲突，SuccessRule 已在上面返回 UNKNOWN，
                      * 走不到这里（归属冲突不会被当成成功）。
                      */
+                    // **AT3 的结构性前提必须显式成立**（2026-11-20 审计）。
+                    //
+                    // 三条件（SSID + COMPLETED + IP）只是协议层事实；
+                    // 「这条连接是本候选造成的」靠的是命令之前的两道闸门。
+                    // 以前这两道闸门散在几百行里、没有任何对象能回答
+                    // 「这一次尝试的前提到底成不成立」，于是漏掉一道就会
+                    // 悄悄放宽成功判据而没有任何断言失败。
+                    //
+                    // 现在：前提不满足 → AT3 降到 AT2 → Adjudicator 规则 2
+                    // 给出 UNKNOWN / on-target-unattributed / grade=NONE，
+                    // 既不判成功也不判失败。宁可少一个命中，不可多一个假成功。
+                    // **freshConfig 不能等于「netId >= 0」**（2026-11-20 自我修正）。
+                    //
+                    // 历史事故：正确密码因「取不到 netId」被整段跳过成功判断
+                    // （见 SuccessRule 类注释）。targetNetId 是时序敏感的值 ——
+                    // framework 建配置要 242~324ms，早查就是 -1。
+                    //
+                    // 所以：能走到这里，说明 forgetTargetByShell 已回读确认目标
+                    // 配置**不存在**，那么命令之后出现的连接只可能来自本次命令 ——
+                    // 「本次新建」这个前提**由净检保证，不由 netId 是否可读保证**。
+                    // netId 只在「两侧都有效且不等」时作冲突否决（SuccessRule.assess）。
+                    AttributionPrecondition pre = AttributionPrecondition.of(
+                            true,        // forgetTargetByShell + netIdOfTarget<0 回读都过了
+                            true,        // baseline 判定与 disconnectAndVerify 都过了
+                            true,        // 否则上面早就 gateBlocked 返回了
+                            true);       // 净检已确认配置被删净 → 后续连接必是本次建的
+                    Evidence.Attribution attr = pre.capAttribution(Evidence.Attribution.AT3);
+                    String preReason = pre.satisfied() ? "" : (" · 前提不足(" + pre.blockingReason() + ")");
                     return judge(password, Lifecycle.ACTIVE, AttemptState.Gate.OK,
                             Evidence.Source.SUCCESS_STATUS, Evidence.Claim.CONNECTED,
-                            Evidence.Attribution.AT3, attemptId, targetNetId >= 0, ms,
+                            attr, attemptId, targetNetId >= 0, ms,
                             L.s("握手完成且已获取 IP（确认连上）",
                                 "handshake completed and IP obtained")
                                     + (sa.evidence == null || sa.evidence.isEmpty()
-                                        ? "" : " · " + sa.evidence));
+                                        ? "" : " · " + sa.evidence)
+                                    + preReason);
                 } else {
                     /*
                      * ---- 失败加速：系统已经回连到别的网络 ----

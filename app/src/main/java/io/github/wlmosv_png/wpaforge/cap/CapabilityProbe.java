@@ -69,6 +69,13 @@ public final class CapabilityProbe {
         public String specifierReason = "";
         /** 本次探测时刻（单调时钟毫秒；0 = 未记录）。 */
         public long probedAtMs = 0L;
+        /**
+         * Shizuku 通道的**真实执行身份**（null = 未探测）。
+         *
+         * <p>「Shizuku 已授权」≠「拿到 root」。能力必须按真实 uid 分级：
+         * uid 0 能读 WifiConfigStore.xml，uid 2000 读不到（SELinux 拦）。
+         */
+        public ExecutorIdentity shizukuIdentity;
 
         public static Facts empty() {
             return new Facts();
@@ -204,9 +211,34 @@ public final class CapabilityProbe {
                 "结论只会是「能力未知/数据不完整」，永不作为命中依据。",
                 "Verdicts stay unknown/incomplete and never count as a hit."));
 
-        out.add(Capability.unsupported(Capability.C_SAVED_CFG,
-                "WifiConfigStore.xml 位于 /data/misc，非 root 不可读",
-                "/data/misc WifiConfigStore.xml is unreadable without root"));
+        // **系统已保存网络：按真实身份分级**（2026-11-20）。
+        //
+        // 实测（PJX110 / Android 15 / ColorOS 15）：
+        //   uid 0    → 可读（读到 XML 头）
+        //   uid 2000 + u:r:shell:s0 → Permission denied（SELinux 拦）
+        // 所以不能笼统说「Shizuku 可用就能读」，要看拿到的是哪个 uid。
+        ExecutorIdentity id = x.shizukuIdentity;
+        if (id != null && id.isRoot()) {
+            out.add(Capability.available(Capability.C_SAVED_CFG,
+                    "Shizuku 以 root 身份运行，可读 WifiConfigStore.xml",
+                    "Shizuku runs as root; WifiConfigStore.xml is readable")
+                    .withEvidence("/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml",
+                            "Shizuku", x.probedAtMs, "",
+                            "uid=0 实测可读（读到 XML 头）", false,
+                            Capability.C_SAVED_CFG));
+        } else if (id != null && id.hasShellOrBetter()) {
+            out.add(Capability.unsupported(Capability.C_SAVED_CFG,
+                    "Shizuku 是 " + id.describe(true) + "，SELinux 拦 shell 身份读 /data/misc"
+                            + "（实测 Permission denied）",
+                    "Shizuku identity " + id.describe(false)
+                            + "; SELinux blocks shell from /data/misc (measured)",
+                    "改用「已保存网络」在系统设置里查看。",
+                    "Check saved networks in system settings."));
+        } else {
+            out.add(Capability.unsupported(Capability.C_SAVED_CFG,
+                    "WifiConfigStore.xml 位于 /data/misc，非 root 不可读",
+                    "/data/misc WifiConfigStore.xml is unreadable without root"));
+        }
 
         out.add(Capability.unsupported(Capability.C_KEEPALIVE,
                 "appops / 电池白名单写入需要 su", "appops / allowlist writes need su",

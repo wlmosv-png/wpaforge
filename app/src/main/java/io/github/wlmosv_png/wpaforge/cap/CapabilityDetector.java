@@ -67,6 +67,11 @@ public final class CapabilityDetector {
             int st = shz.probe();
             f.shizukuUsable = shz.usable();
             f.shizukuReason = shz.usable() ? "" : shz.stateDetail();
+            // **记录真实执行身份**（2026-11-20）。
+            // 「Shizuku 可用」只说明拿到 binder；拿到的是 uid 0 / 1000 / 2000
+            // 决定了哪些能力真的能做（例如 WifiConfigStore.xml 只有 root 能读）。
+            f.shizukuIdentity = shz.usable() ? shz.identity() : null;
+            f.probedAtMs = now();
             items = CapabilityProbe.explainRootless(f);
         } else {
             String su = suId();

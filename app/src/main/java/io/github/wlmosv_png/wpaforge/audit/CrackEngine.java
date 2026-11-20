@@ -647,6 +647,40 @@ public final class CrackEngine {
         return null;    // null = 闸门放行
     }
 
+    /**
+     * **直调 IWifiManager 的接缝**（2026-11-20）。
+     *
+     * <p>为什么不直接在引擎里调 WifiServiceBridge：引擎是纯逻辑类，桌面单测
+     * 跑不了 Android binder。用接口注入，生产环境由 CrackService 提供真实实现。
+     *
+     * <p>**优先级**：直调成功就用直调结果；直调不可用（-2）才回落 shell。
+     * 两条都是特权通道，只是直调没有 shell 的进程/管道开销，更快更稳。
+     */
+    public interface DirectWifi {
+        /**
+         * 列已保存网络的 netId。
+         *
+         * @return >=0 找到；-1 目标不在列表；-2 直调不可用（回落 shell）
+         */
+        long netIdOf(String ssid);
+
+        /** 删掉某 netId 的配置。@return true = 已删 */
+        boolean forget(long netId);
+
+        /** 读当前连接 SSID（空串 = 没连或读不到）。 */
+        String currentSsid();
+
+        /** 通道名（日志用）。 */
+        String name();
+    }
+
+    /** 注入直调桥（null = 不启用，全部走 shell）。 */
+    public void setDirectWifi(DirectWifi d) {
+        this.direct = d;
+    }
+
+    private volatile DirectWifi direct;
+
     /** 供诊断/界面读取当前通道能力（可能为 null）。 */
     public io.github.wlmosv_png.wpaforge.cap.ConnectChannel getConnectChannel() {
         return channel;
@@ -1504,7 +1538,36 @@ public final class CrackEngine {
     }
 
     private boolean forgetTargetByShell(String ssid) {
-        if (shell == null || ssid == null) return false;
+        if (ssid == null) return false;
+
+        // ══════════════════════════════════════════════════════════════════
+        //  **优先走 IWifiManager 直调**（2026-11-20，真机 11 秒事故的根治）
+        //
+        //  真机现象：每条候选卡 11 秒（list-networks 5s + forget-network 6s
+        //  全超时），78 条白跑 14 分钟。
+        //
+        //  对照 WiFi 工具箱真实源码发现它**根本不走 cmd wifi shell**，
+        //  而是用 ShizukuBinderWrapper 包住 IWifiManager 反射直调 ——
+        //  没有进程、没有管道、没有 500ms 的 countDownLatch。
+        //
+        //  所以这里：直调可用就走直调（通常几十毫秒）；
+        //  直调不可用（-2）才回落 shell。
+        // ══════════════════════════════════════════════════════════════════
+        DirectWifi dw = direct;
+        if (dw != null) {
+            for (int round = 0; round < 2; round++) {
+                long id = dw.netIdOf(ssid);
+                if (id == -2) break;          // 直调不可用 → 跳出走 shell
+                if (id < 0) return true;      // 目标不在列表 = 已净
+                if (!dw.forget(id)) break;    // 删失败 → 走 shell 兜底
+                sleep(120);
+                long chk = dw.netIdOf(ssid);
+                if (chk == -2) break;
+                if (chk < 0) return true;     // 回读确认已删
+            }
+        }
+
+        if (shell == null) return false;
         // 两轮足够：第一轮删净即返回；第二轮兜「删了又被系统重建」的罕见情况。
         // 原来每轮是「删一次 + sleep(400) + 下轮再查」，现在把「删 + 等 0.3s + 回读」
         // 压进同一次 shell 调用 —— 省掉一次进程启动和一个固定 sleep。

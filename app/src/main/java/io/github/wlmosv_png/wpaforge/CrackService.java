@@ -1482,6 +1482,68 @@ public class CrackService extends Service {
                 engine.setConnectChannel(rootCh);
             }
         }
+        // ══════════════════════════════════════════════════════════════════
+        //  **注入 IWifiManager 直调桥**（2026-11-20）
+        //
+        //  Shizuku 模式下优先用 binder 直调代替 cmd wifi shell：
+        //  没有进程启动、没有管道读取、没有 AOSP 的 500ms countDownLatch。
+        //  这是 WiFi 工具箱的实际做法（ShizukuUtil.kt，Apache 2.0）。
+        //
+        //  判定链一行不改 —— 直调只负责「读/删」，不负责「判」。
+        // ══════════════════════════════════════════════════════════════════
+        {
+            final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel dsz = shizukuRef;
+            final boolean dRootless =
+                    (runModeId == io.github.wlmosv_png.wpaforge.cap.RunMode.ROOTLESS);
+            if (dRootless && dsz != null && dsz.usable()
+                    && dsz.state() == io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY) {
+                engine.setDirectWifi(new CrackEngine.DirectWifi() {
+                    @Override
+                    public long netIdOf(String ssid) {
+                        io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge.Outcome<
+                                java.util.List<Object>> r = dsz.listConfiguredNetworksDirect();
+                        if (!r.ok) return -2;          // 直调不可用 → 回落 shell
+                        for (Object cfg : r.value) {
+                            String s = io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                    .ssidOf(cfg);
+                            if (ssid.equals(s)) {
+                                return io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                        .netIdOf(cfg);
+                            }
+                        }
+                        return -1;                     // 不在列表
+                    }
+
+                    @Override
+                    public boolean forget(long netId) {
+                        return io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                .forgetNetwork((int) netId);
+                    }
+
+                    @Override
+                    public String currentSsid() {
+                        io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge.Outcome<Object> r =
+                                dsz.getConnectionInfoDirect();
+                        if (!r.ok) return "";
+                        Object ssid = io.github.wlmosv_png.wpaforge.cap.WifiServiceBridge
+                                .infoField(r.value, "ssid");
+                        String s = ssid == null ? "" : ssid.toString();
+                        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
+                            s = s.substring(1, s.length() - 1);
+                        }
+                        return "<unknown ssid>".equals(s) ? "" : s;
+                    }
+
+                    @Override
+                    public String name() {
+                        return "Shizuku/IWifiManager";
+                    }
+                });
+                log(L.s("已启用 IWifiManager 直调（不走 shell，避免管道超时）",
+                        "IWifiManager direct calls enabled (no shell, avoids pipe timeouts)"));
+            }
+        }
+
         engine.setShellChannel(new CrackEngine.ShellChannel() {
             @Override
             public String exec(String cmd, long timeoutMs) {

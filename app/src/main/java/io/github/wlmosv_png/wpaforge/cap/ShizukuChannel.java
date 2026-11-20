@@ -272,6 +272,59 @@ public final class ShizukuChannel {
         }
     }
 
+    /**
+     * **直调 IWifiManager 读当前连接**（2026-11-20，优先路径）。
+     *
+     * <p>不走 shell，因此没有进程启动、没有管道、没有 500ms 的 countDownLatch 等待 ——
+     * 这是 WiFi 工具箱的实际做法（{@code ShizukuUtil.getConnectionInfo}）。
+     *
+     * <p>返回 {@code Outcome}；value 是反射拿到的 {@code WifiInfo}。
+     * 调用方自己取字段，**不要**把「拿到了 WifiInfo」当成「密码正确」。
+     */
+    public WifiServiceBridge.Outcome<Object> getConnectionInfoDirect() {
+        if (!usable()) {
+            return WifiServiceBridge.Outcome.fail("not-usable", null);
+        }
+        return WifiServiceBridge.getConnectionInfo(android.os.Build.VERSION.SDK_INT);
+    }
+
+    /**
+     * **直调 IWifiManager 列已保存网络**（2026-11-20，优先路径）。
+     *
+     * <p>对应 {@code cmd wifi list-networks}，但走 binder 而非 shell。
+     */
+    public WifiServiceBridge.Outcome<java.util.List<Object>> listConfiguredNetworksDirect() {
+        if (!usable()) {
+            return WifiServiceBridge.Outcome.fail("not-usable", null);
+        }
+        return WifiServiceBridge.listConfiguredNetworks(android.os.Build.VERSION.SDK_INT);
+    }
+
+    /**
+     * 当前通道的**真实执行身份**（2026-11-20）。
+     *
+     * <p>「Shizuku 已授权」只说明拿到 binder，不说明拿到的是 uid 0 / 1000 / 2000。
+     * 能力探测必须按真实身份分级，不能一律当 shell 或一律当 root。
+     *
+     * <p>参考 WiFi 工具箱 {@code ShizukuUtil.kt:572} 的同一做法。
+     */
+    public ExecutorIdentity identity() {
+        if (!usable()) return ExecutorIdentity.unknown("Shizuku");
+        try {
+            Class<?> shz = Class.forName("rikka.shizuku.Shizuku");
+            Object uidObj = shz.getMethod("getUid").invoke(null);
+            int uid = uidObj instanceof Integer ? (Integer) uidObj : -1;
+            String se = "";
+            try {
+                Object ctxObj = shz.getMethod("getSELinuxContext").invoke(null);
+                if (ctxObj instanceof String) se = (String) ctxObj;
+            } catch (Throwable ignored) {}
+            return ExecutorIdentity.of(uid, se, "Shizuku");
+        } catch (Throwable t) {
+            return ExecutorIdentity.unknown("Shizuku");
+        }
+    }
+
     /** 需要用户去 Shizuku 里点授权。 */
     public boolean needsPermission() {
         return state() == S_NO_PERMISSION;

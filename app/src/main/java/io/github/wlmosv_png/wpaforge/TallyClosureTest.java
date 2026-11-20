@@ -54,10 +54,23 @@ public class TallyClosureTest {
             for (EvidenceGrade.Level g : EvidenceGrade.Level.values()) {
                 VerdictTally t = new VerdictTally();
                 t.add(v, g);
-                if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) {
-                    // 这两类不进 tally（成功由命中路径单独处理，中断未结案）
-                    ok("SUCCESS/ABORTED 不进统计: " + v,
+                if (v == CrackEngine.Verdict.ABORTED) {
+                    // 中断未结案，不进任何分类
+                    ok("ABORTED 不进统计: " + g,
                             t.executed() == 0 && t.selfConsistent());
+                } else if (v == CrackEngine.Verdict.SUCCESS) {
+                    // 2026-11-20：SUCCESS 必须独立计数（任务书第十部分）。
+                    // 只有 DIRECT 才算 success，其余按未确定处理 ——
+                    // 但**无论哪种都不得进 confirmedFail/inferred**。
+                    ok("SUCCESS 不进已证实失败: " + g, t.confirmedFail() == 0);
+                    ok("SUCCESS 不进推断失败: " + g, t.inferred() == 0);
+                    ok("SUCCESS 恒等式成立: " + g, t.selfConsistent());
+                    if (EvidenceGrade.persistable(g)) {
+                        ok("SUCCESS+DIRECT 计入 success: " + g, t.success() == 1);
+                    } else {
+                        ok("SUCCESS+非DIRECT 不计入 success: " + g, t.success() == 0);
+                        ok("SUCCESS+非DIRECT 计入无结论: " + g, t.inconclusive() == 1);
+                    }
                 } else {
                     ok("恒等式成立: " + v + "/" + g, t.selfConsistent());
                 }

@@ -117,6 +117,18 @@ public class CrackService extends Service {
                                    int environmentErrors) {
             onTally(confirmed, inconclusive, networkAuthFail);
         }
+
+        /**
+         * 带**已验证成功**数的完整分布（2026-11-20）。
+         *
+         * <p>任务书第十部分：「成功数量必须独立显示，不能把 SUCCESS 隐藏在其他分类里」。
+         * 旧实现让 SUCCESS 不进任何分类，界面四列里根本没有成功，
+         * 用户只能靠命中卡片判断，而「已执行」与「各分类之和」也对不上。
+         */
+        default void onTallyFull(int confirmed, int inconclusive, int networkAuthFail,
+                                 int environmentErrors, int success) {
+            onTallyDetail(confirmed, inconclusive, networkAuthFail, environmentErrors);
+        }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
@@ -1643,6 +1655,9 @@ public class CrackService extends Service {
                             cb.onTallyDetail(eng.confirmedFailCount(),
                                     eng.inconclusiveCount(), eng.networkAuthFailCount(),
                                     eng.environmentErrorCount());
+                            cb.onTallyFull(eng.confirmedFailCount(),
+                                    eng.inconclusiveCount(), eng.networkAuthFailCount(),
+                                    eng.environmentErrorCount(), eng.successCount());
                         }
                     }
                 }

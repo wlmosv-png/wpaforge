@@ -118,10 +118,12 @@ public final class UiVerdictGlobalTest {
                 VerdictView.retryable(CrackEngine.Verdict.INCOMPLETE), "violated");
 
         // ---- ⑥ countsAsTested 与 VerdictTally.executed 一致 ----
-        // 例外：SUCCESS 由命中路径单独处理，不进入「试过多少条」的统计
-        // （命中时任务即刻结束，那条不是"试了一条失败"）。
+        //
+        // 2026-11-20 口径升级：任务书第十部分要求「SUCCESS 必须独立计数，
+        // 不能隐藏在其他分类里」。旧实现在这里把 SUCCESS 排除在外，
+        // 导致「已执行」与「各分类之和」对不上、成功数量无处可看。
+        // 现在 SUCCESS 也进 executed，因此**不再跳过它** —— 口径反而更统一了。
         for (CrackEngine.Verdict v : ALL) {
-            if (v == CrackEngine.Verdict.SUCCESS) continue;
             VerdictTally t = new VerdictTally();
             t.add(v, EvidenceGrade.defaultOf(v));
             boolean tallied = t.executed() > 0;
@@ -129,8 +131,12 @@ public final class UiVerdictGlobalTest {
             ok("「是否算试过」口径一致: " + v, tallied == viewSays,
                     "tally=" + tallied + " view=" + viewSays);
         }
-        ok("SUCCESS 由命中路径单独处理，不计入 executed",
-                tallyExecutedFor(CrackEngine.Verdict.SUCCESS) == 0, "violated");
+        // SUCCESS 计入 executed，但只有 DIRECT 才计入 success
+        ok("SUCCESS 计入 executed（与界面口径一致）",
+                tallyExecutedFor(CrackEngine.Verdict.SUCCESS) == 1, "violated");
+        VerdictTally tSucc = new VerdictTally();
+        tSucc.add(CrackEngine.Verdict.SUCCESS, EvidenceGrade.Level.DIRECT);
+        ok("SUCCESS+DIRECT 计入 success", tSucc.success() == 1, "violated");
 
         // ---- ⑦ 「已证实错误」口径一致 ----
         for (CrackEngine.Verdict v : ALL) {

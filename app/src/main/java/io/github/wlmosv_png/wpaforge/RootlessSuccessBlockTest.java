@@ -102,13 +102,26 @@ public class RootlessSuccessBlockTest {
 
     // ---------------------------------------------------------------- 3
 
-    /** INFERRED 不增加成功统计。 */
+    /**
+     * INFERRED 不增加**成功**统计（核心意图不变）。
+     *
+     * <p>2026-11-20 口径升级：任务书第十部分要求「SUCCESS 必须独立计数、
+     * 不能隐藏在其他分类里」。于是 SUCCESS 现在会进 executed，
+     * 但 **grade 不是 DIRECT 时绝不进 success**，而是进 inconclusive ——
+     * 「没被证实的成功」按未确定处理，这正是本条测试要守的东西。
+     */
     private void t3_inferredNoSuccessStats() {
         VerdictTally t = new VerdictTally();
         t.add(CrackEngine.Verdict.SUCCESS, EvidenceGrade.Level.INFERRED);
         ok("SUCCESS+INFERRED 不计入已证实失败", t.confirmedFail() == 0);
-        ok("SUCCESS+INFERRED 不计入已执行", t.executed() == 0);
-        ok("SUCCESS+INFERRED 不计入无结论", t.inconclusive() == 0);
+        ok("SUCCESS+INFERRED 不计入 success（关键）", t.success() == 0);
+        ok("SUCCESS+INFERRED 计入无结论（未证实）", t.inconclusive() == 1);
+        ok("SUCCESS+INFERRED 后统计自洽", t.selfConsistent());
+        // DIRECT 才是真成功
+        VerdictTally tSucc = new VerdictTally();
+        tSucc.add(CrackEngine.Verdict.SUCCESS, EvidenceGrade.Level.DIRECT);
+        ok("SUCCESS+DIRECT 计入 success", tSucc.success() == 1);
+        ok("SUCCESS+DIRECT 后统计自洽", tSucc.selfConsistent());
 
         // 推理型失败单独计数，绝不冒充「已证实错误」
         VerdictTally t2 = new VerdictTally();

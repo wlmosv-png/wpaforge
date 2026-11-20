@@ -58,15 +58,21 @@ public class VerdictTallyTest {
         eq("失败 0", 0, t.confirmedFail());
         ok("missProven 为假", !t.missProven());
 
-        System.out.println("== V5 SUCCESS / ABORTED 不进任何一类 ==");
+        // 2026-11-20 口径升级（任务书第十部分）：SUCCESS 必须独立计数，
+        // 不能隐藏在其他分类里。ABORTED（用户中断）仍未结案，不进统计。
+        System.out.println("== V5 SUCCESS 独立计数 / ABORTED 不进任何一类 ==");
         t.reset();
         t.add(CrackEngine.Verdict.AUTH_FAIL, EvidenceGrade.Level.DIRECT);
-        t.add(CrackEngine.Verdict.SUCCESS);   // 命中由命中路径单独处理
+        t.add(CrackEngine.Verdict.SUCCESS);   // 默认等级 DIRECT → 计入 success
         t.add(CrackEngine.Verdict.ABORTED);   // 中断的那条没结案（引擎还会回退游标重试）
         eq("失败 1", 1, t.confirmedFail());
         eq("无结论 0", 0, t.inconclusive());
-        eq("执行 1", 1, t.executed());
-        ok("missProven（成功/中断都不算「未证实」）", t.missProven());
+        eq("执行 2（AUTH_FAIL + SUCCESS）", 2, t.executed());
+        // SUCCESS 的默认等级就是 DIRECT（EvidenceGrade.defaultOf 保证），
+        // 所以它会计入 success —— 这正是任务书要求的「成功独立显示」。
+        eq("success 1（SUCCESS 默认 DIRECT）", 1, t.success());
+        ok("missProven 为假（有命中就不算未证实）", !t.missProven());
+        ok("统计自洽", t.selfConsistent());
 
         System.out.println("== V6 null 不炸、reset 清空 ==");
         t.reset();

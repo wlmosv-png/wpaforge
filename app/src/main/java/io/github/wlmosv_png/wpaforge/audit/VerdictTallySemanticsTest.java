@@ -65,12 +65,21 @@ public final class VerdictTallySemanticsTest {
                 t3.confirmedFail() == 0 && t3.inferred() == 1,
                 "confirmedFail=" + t3.confirmedFail() + " inferred=" + t3.inferred());
 
-        // ---------- 5. SUCCESS / ABORTED 不计入任何一类（行为不变）
+        // ---------- 5. ABORTED 不计入任何一类；SUCCESS 独立计数
+        //
+        // 2026-11-20 口径升级（任务书第十部分）：SUCCESS 必须独立显示，
+        // 不能隐藏在其他分类里。ABORTED（用户中断）仍未结案，不进统计。
         VerdictTally t4 = new VerdictTally();
         t4.add(CrackEngine.Verdict.SUCCESS, EvidenceGrade.Level.DIRECT);
         t4.add(CrackEngine.Verdict.ABORTED, EvidenceGrade.Level.NONE);
-        ok("SUCCESS / ABORTED 不计入统计（行为不变）",
-                t4.executed() == 0 && t4.confirmedFail() == 0 && t4.inferred() == 0,
+        ok("SUCCESS 计入 executed 且独立计 success",
+                t4.executed() == 1 && t4.success() == 1,
+                "executed=" + t4.executed() + " success=" + t4.success());
+        ok("SUCCESS 不计入已证实失败/推断失败",
+                t4.confirmedFail() == 0 && t4.inferred() == 0,
+                "confirmedFail=" + t4.confirmedFail());
+        ok("ABORTED 不进任何分类（executed 只有 SUCCESS 那一条）",
+                t4.executed() == 1 && t4.selfConsistent(),
                 "executed=" + t4.executed());
 
         System.out.println();

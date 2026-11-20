@@ -232,6 +232,46 @@ public final class ShizukuChannel {
         return s == S_READY || s == S_READY_NOT_SHELL;
     }
 
+    /**
+     * **轻量存活检查**：每次执行前调用，不走完整 probe()（那会做包名查询等重活）。
+     *
+     * <p>只查两件最要紧的事：
+     * <ol>
+     *   <li>{@code pingBinder()} —— Binder 还活着吗（服务退出/重启会变 false）</li>
+     *   <li>{@code checkSelfPermission()} —— 授权还在吗（用户撤销会变 denied）</li>
+     * </ol>
+     *
+     * <p>任一不成立就把 {@code state} 更新成实际状态，让界面与日志立刻反映真相，
+     * 而不是继续用旧的 READY。
+     */
+    private boolean stillUsable() {
+        try {
+            Class<?> shz = Class.forName("rikka.shizuku.Shizuku");
+            Object alive = shz.getMethod("pingBinder").invoke(null);
+            if (!Boolean.TRUE.equals(alive)) {
+                // Binder 不在了 —— 服务退出或重启中
+                state = isPackageInstalled(ctx, PKG) ? S_NOT_RUNNING : S_NOT_INSTALLED;
+                stateDetail = state == S_NOT_RUNNING
+                        ? "Shizuku 服务已退出（Binder 断开），请重新启动服务"
+                        : "Shizuku 已被卸载";
+                return false;
+            }
+            Object perm = shz.getMethod("checkSelfPermission").invoke(null);
+            int granted = perm instanceof Integer ? (Integer) perm : -1;
+            if (granted != PackageManager.PERMISSION_GRANTED) {
+                state = S_NO_PERMISSION;
+                stateDetail = "Shizuku 授权已失效（用户撤销或服务重启），请重新授权";
+                return false;
+            }
+            // 都通过 —— 保持原状态（可能是 READY 或 READY_NOT_SHELL）
+            return state == S_READY || state == S_READY_NOT_SHELL;
+        } catch (Throwable t) {
+            state = S_NOT_RUNNING;
+            stateDetail = "Shizuku 通道检查失败：" + t.getClass().getSimpleName();
+            return false;
+        }
+    }
+
     /** 需要用户去 Shizuku 里点授权。 */
     public boolean needsPermission() {
         return state() == S_NO_PERMISSION;
@@ -278,7 +318,17 @@ public final class ShizukuChannel {
      * @param timeoutMs 超时；到点 {@code destroy()} 子进程
      */
     public Result exec(String command, long timeoutMs) {
-        if (!usable()) {
+        // **执行前必须重新确认通道真的还活着**（2026-11-20 修）。
+        //
+        // 旧实现调 usable() → state() → 返回**缓存**的 state。
+        // 于是：Shizuku 服务退出、用户撤销授权、Binder 断开之后，
+        // 只要第一次探测成功过，后面每条命令都还会「以为自己在用 Shizuku」，
+        // 实际 transact 全部失败 —— 任务书明确禁止这种
+        // 「Shizuku 未授权、服务退出、Binder 断开后仍继续使用旧通道」。
+        //
+        // 现在：每次 exec 前做一次**轻量存活检查**（pingBinder + 授权位），
+        // 只有都通过才继续；失败则把状态置为实际状态并如实返回错误。
+        if (!stillUsable()) {
             return new Result("", -1, false, stateDetail);
         }
         IBinder remote = null;

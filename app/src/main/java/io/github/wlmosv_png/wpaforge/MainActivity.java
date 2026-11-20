@@ -313,6 +313,14 @@ public class MainActivity extends Activity {
     private TextView statWrongView;
     /** 未确定（无结论 + 网络级失败 + 推断失败）—— 绝不显示成「密码错误」。 */
     private TextView statUnkView;
+    /**
+     * **已验证成功**（SUCCESS 且 DIRECT）。
+     *
+     * <p>2026-11-20 新增：任务书第十部分要求「成功数量必须独立显示，
+     * 不能把 SUCCESS 隐藏在其他分类里」。旧界面四列里根本没有成功，
+     * 用户只能靠命中卡片判断，而「已执行」与「各分类之和」也对不上。
+     */
+    private TextView statHitView;
     /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
     private TextView planLineView;
     /** 最近一次「环境出错」条数（通道抛异常 / 目标消失）。 */
@@ -9984,20 +9992,33 @@ public class MainActivity extends Activity {
         statTotalView = AmberTheme.stat(this);
         statWrongView = AmberTheme.stat(this);
         statUnkView = AmberTheme.stat(this);
+        statHitView = AmberTheme.stat(this);
         statDoneView.setText("—");
         statTotalView.setText("—");
         statWrongView.setText("—");
         statUnkView.setText("—");
+        statHitView.setText("—");
         // 未知态一律用弱色：30sp 的亮琥珀「—」看起来像一根进度条，容易被当成数据
         statDoneView.setTextColor(AmberTheme.TEXT_FAINT);
         statTotalView.setTextColor(AmberTheme.TEXT_FAINT);
         statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
         statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
-        // 四列：已执行 / 已证实错误 / 未确定 / 总数。
-        // 「已证实错误」用危险色、「未确定」用告警色 —— 两者视觉上必须不同：
-        // 前者说明这条密码被证明了是错的，后者只说明我们没拿到证据。
+        statHitView.setTextColor(AmberTheme.TEXT_FAINT);
+        // 五列：已执行 / 已验证成功 / 已证实错误 / 未确定 / 总数。
+        //
+        // 2026-11-20 新增「已验证成功」：任务书第十部分要求
+        // 「成功数量必须独立显示，不能把 SUCCESS 隐藏在其他分类里」。
+        // 旧四列里没有成功，用户只能靠命中卡片判断，
+        // 且「已执行」与「各分类之和」对不上。
+        //
+        // 配色语义（必须互不相同，否则用户会混读）：
+        //   已验证成功 → OK 绿（这条密码被证明了是对的）
+        //   已证实错误 → DANGER 红（这条被证明了是错的）
+        //   未确定     → ACCENT 琥珀（我们没拿到证据）
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("已执行", "TRIED"), statDoneView),
                 weight());
+        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已验证成功", "VERIFIED"),
+                statHitView), weight());
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("已证实错误", "PROVEN WRONG"),
                 statWrongView), weight());
         statRow.addView(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"),
@@ -11485,6 +11506,18 @@ public class MainActivity extends Activity {
          * 用户就看到了「已执行 27 / 已证实 0 / 未确定 0」这种自相矛盾的数字。
          * 现在它单独出现在计划行上，并在日志里给出明确一句话。
          */
+        @Override
+        public void onTallyFull(int confirmed, int inconclusive, int networkAuthFail,
+                                int environmentErrors, int success) {
+            ui.post(() -> {
+                if (statHitView != null) {
+                    statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(success));
+                    statHitView.setTextColor(success > 0 ? OK_GREEN : AmberTheme.TEXT_FAINT);
+                }
+            });
+        }
+
         @Override
         public void onTallyDetail(int confirmed, int inconclusive, int networkAuthFail,
                                   int environmentErrors) {

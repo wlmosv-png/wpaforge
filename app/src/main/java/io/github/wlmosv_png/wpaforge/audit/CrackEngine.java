@@ -3982,6 +3982,11 @@ public final class CrackEngine {
         return tally.environmentErrors();
     }
 
+    /** **已验证成功**条数（SUCCESS 且 DIRECT）。 */
+    public int successCount() {
+        return tally.success();
+    }
+
     /** 统计是否自洽（门禁与诊断用）。 */
     public boolean tallyConsistent() {
         return tally.selfConsistent();

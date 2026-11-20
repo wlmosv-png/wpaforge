@@ -122,16 +122,20 @@ public final class VerdictDownstreamTest {
             // 2026-11-18：NOT_EXECUTED（当前模式没能力执行）也**不算试过**，
             // 而且它不进「无结论」——它单列在 notExecuted 里。
             // 闭合条件因此变成：executed + notExecuted == 应执行数。
-            boolean excluded = (v == CrackEngine.Verdict.SUCCESS
-                    || v == CrackEngine.Verdict.ABORTED
+            // 2026-11-20：SUCCESS 不再被排除 —— 任务书第十部分要求
+            // 「成功数量必须独立显示，不能把 SUCCESS 隐藏在其他分类里」。
+            // 它现在计入 executed，并在 success 里独立计数。
+            boolean excluded = (v == CrackEngine.Verdict.ABORTED
                     || v == CrackEngine.Verdict.ERROR
                     || v == CrackEngine.Verdict.TARGET_GONE);
             boolean notExec = (v == CrackEngine.Verdict.NOT_EXECUTED);
             int expectExecuted = (excluded || notExec) ? 0 : 1;
             int expectNotExec = notExec ? 1 : 0;
+            // 「三类和」现在必须含 success 才能闭合（SUCCESS 归 success 一类）
+            int sumWithSuccess = sum + t.success();
             ok(String.format("%-20s executed=%d notExecuted=%d 三类和=%d（应闭合）",
                             v, t.executed(), t.notExecuted(), sum),
-                    t.executed() == expectExecuted && sum == expectExecuted
+                    t.executed() == expectExecuted && sumWithSuccess == expectExecuted
                             && t.notExecuted() == expectNotExec,
                     "executed=" + t.executed() + " notExecuted=" + t.notExecuted()
                             + " sum=" + sum);
@@ -158,14 +162,16 @@ public final class VerdictDownstreamTest {
         t4.add(CrackEngine.Verdict.SUCCESS, EvidenceGrade.Level.DIRECT);     // 不计
         info("混合: executed=" + t4.executed() + " 已证实失败=" + t4.confirmedFail()
                 + " 推断失败=" + t4.inferred() + " 无结论=" + t4.inconclusive());
-        ok("混合场景闭合：executed = 已证实 + 推断 + 无结论 + 网络级",
+        ok("混合场景闭合：executed = 已证实 + 推断 + 无结论 + 网络级 + 成功",
                 t4.executed() == t4.confirmedFail() + t4.inferred()
-                        + t4.inconclusive() + t4.networkAuthFail(),
-                "executed=" + t4.executed());
-        ok("混合场景具体数值正确（4 条计入，1 已证实 / 1 推断 / 2 无结论）",
-                t4.executed() == 4 && t4.confirmedFail() == 1
-                        && t4.inferred() == 1 && t4.inconclusive() == 2,
-                t4.confirmedFail() + "/" + t4.inferred() + "/" + t4.inconclusive());
+                        + t4.inconclusive() + t4.networkAuthFail() + t4.success(),
+                "executed=" + t4.executed() + " success=" + t4.success());
+        ok("混合场景具体数值正确（5 条计入，1 已证实 / 1 推断 / 2 无结论 / 1 成功）",
+                t4.executed() == 5 && t4.confirmedFail() == 1
+                        && t4.inferred() == 1 && t4.inconclusive() == 2
+                        && t4.success() == 1,
+                t4.confirmedFail() + "/" + t4.inferred() + "/" + t4.inconclusive()
+                        + "/" + t4.success());
 
         System.out.println();
         System.out.println("=== verdict 下游一致性: " + pass + " 通过, " + fail + " 失败 ===");

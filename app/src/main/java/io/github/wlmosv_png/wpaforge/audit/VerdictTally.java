@@ -71,6 +71,14 @@ public final class VerdictTally {
      */
     private int environmentErrors;
 
+    /**
+     * **已验证成功**条数（SUCCESS 且 grade=DIRECT）。
+     *
+     * <p>2026-11-20 新增。旧实现让 SUCCESS 不进任何分类，
+     * 于是「已执行」与「各分类之和」对不上，成功数量也无处可看。
+     */
+    private int success;
+
     public void reset() {
         confirmedFail = 0;
         inferred = 0;
@@ -79,6 +87,7 @@ public final class VerdictTally {
         executed = 0;
         notExecuted = 0;
         environmentErrors = 0;
+        success = 0;
     }
 
     /**
@@ -88,7 +97,20 @@ public final class VerdictTally {
      */
     public void add(CrackEngine.Verdict v, EvidenceGrade.Level g) {
         if (v == null) return;
-        if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) return;
+        // **SUCCESS 必须独立计数**（2026-11-20，任务书第十部分）。
+        //
+        // 旧实现把 SUCCESS 直接 return 掉 —— 界面上「已执行 N 条」里不含命中那条，
+        // 「已验证成功」这个数根本不存在，用户只能靠命中卡片判断。
+        // 统计口径要求「成功数量必须独立显示，不能把 SUCCESS 隐藏在其他分类里」。
+        if (v == CrackEngine.Verdict.SUCCESS) {
+            // 只有 DIRECT 才算「已验证成功」；非 DIRECT 的 SUCCESS 不该出现，
+            // 但真出现时按「未确定」处理，绝不让它冒充成功。
+            if (EvidenceGrade.persistable(g)) success++;
+            else inconclusive++;
+            executed++;
+            return;
+        }
+        if (v == CrackEngine.Verdict.ABORTED) return;
         // **通道/环境类结论必须单列，不能凭空消失**（2026-11-20 真机事故）。
         //
         // 旧实现在这里直接 `return`：ERROR（通道抛异常、命令没生效）与
@@ -188,6 +210,11 @@ public final class VerdictTally {
         return environmentErrors;
     }
 
+    /** **已验证成功**条数（SUCCESS 且 DIRECT）。 */
+    public int success() {
+        return success;
+    }
+
     /**
      * 统计是否**自洽**：已执行数必须等于「已证实 + 推断失败 + 网络级 + 无结论」之和。
      *
@@ -201,7 +228,7 @@ public final class VerdictTally {
      * 这里再提供一条可断言的恒等式，让任何「漏记」在门禁里立刻暴露。
      */
     public boolean selfConsistent() {
-        return executed == confirmedFail + inferred + networkAuthFail + inconclusive;
+        return executed == confirmedFail + inferred + networkAuthFail + inconclusive + success;
     }
 
     /**
@@ -220,7 +247,7 @@ public final class VerdictTally {
         return "executed=" + executed + " confirmed=" + confirmedFail
                 + " inferred=" + inferred + " networkAuthFail=" + networkAuthFail
                 + " inconclusive=" + inconclusive + " notExecuted=" + notExecuted
-                + " envErrors=" + environmentErrors
+                + " envErrors=" + environmentErrors + " success=" + success
                 + (selfConsistent() ? " [consistent]" : " [INCONSISTENT]");
     }
 
@@ -232,6 +259,7 @@ public final class VerdictTally {
         // 推断失败同样**不是**确证：只要存在推断失败或无结论，
         // 「未命中」就没有被充分证明。
         // D1：网络级认证失败也是「有事件但无候选级结论」，同样不能算证伪成功。
-        return inconclusive == 0 && inferred == 0 && networkAuthFail == 0;
+        // 有命中时「未命中」本身就不成立。
+        return success == 0 && inconclusive == 0 && inferred == 0 && networkAuthFail == 0;
     }
 }

@@ -106,7 +106,39 @@ public final class WifiServiceBridge {
      * @return null = 该版本没有这个方法
      */
     static Method method(Object svc, String name, int sdk) {
-        Class<?> c = svc.getClass();
+        // **必须先试接口，再试实现类**（2026-11-20 真机证据）。
+        //
+        // 真机自检结果：fail(no-method)。
+        // 原因：asInterface 返回的是 IWifiManager$Stub$Proxy，
+        // 它实现的接口是 android.net.wifi.IWifiManager；
+        // 但 Proxy 类上的方法可能因 hidden API 限制不可见，
+        // 而**接口上的方法签名是稳定的**。
+        // 所以先按接口找，找不到再按实现类找。
+        Method m = methodOn(interfaceOf(svc), name, sdk);
+        if (m != null) return m;
+        return methodOn(svc.getClass(), name, sdk);
+    }
+
+    /** 取 svc 实现的、名字以 android.net 开头的接口（IWifiManager）。 */
+    private static Class<?> interfaceOf(Object svc) {
+        if (svc == null) return null;
+        for (Class<?> i : svc.getClass().getInterfaces()) {
+            String n = i.getName();
+            if (n.startsWith("android.net.") || n.startsWith("android.os.")) return i;
+        }
+        // 一层父类
+        Class<?> sup = svc.getClass().getSuperclass();
+        if (sup != null) {
+            for (Class<?> i : sup.getInterfaces()) {
+                String n = i.getName();
+                if (n.startsWith("android.net.") || n.startsWith("android.os.")) return i;
+            }
+        }
+        return null;
+    }
+
+    private static Method methodOn(Class<?> c, String name, int sdk) {
+        if (c == null) return null;
         Class<?> str = String.class;
         Class<?> i = Integer.TYPE;
         Class<?> z = Boolean.TYPE;
@@ -149,8 +181,34 @@ public final class WifiServiceBridge {
                     return null;
             }
         } catch (Throwable t) {
-            return null;
+            // **兜底：按名字扫描所有方法**（2026-11-20）。
+            // 上面的精确签名映射依赖具体类的方法可见性；
+            // 若某 ROM 的 Proxy 隐藏了方法或签名有细微差异，
+            // 这里按「名字 + 参数个数最多」挑一个可用的。
+            return scanByName(c, name);
         }
+    }
+
+    /**
+     * 按名字扫描方法（兜底）。
+     *
+     * <p>只用于**只读**方法（getConnectionInfo / getConfiguredNetworks）：
+     * 写操作必须走精确签名，避免误调到语义不同的重载。
+     */
+    private static Method scanByName(Class<?> c, String name) {
+        if (c == null) return null;
+        Method best = null;
+        try {
+            for (Method m : c.getMethods()) {
+                if (!m.getName().equals(name)) continue;
+                // 挑参数最多的那个（通常是完整版本）
+                if (best == null || m.getParameterCount() > best.getParameterCount()) {
+                    best = m;
+                }
+            }
+            if (best != null) best.setAccessible(true);
+        } catch (Throwable ignored) {}
+        return best;
     }
 
     // ------------------------------------------------------------ 只读能力
@@ -248,6 +306,51 @@ public final class WifiServiceBridge {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /**
+     * **诊断**：报告直调链路各环节的状态（只读，不改任何东西）。
+     *
+     * <p>真机自检显示 {@code fail(no-method)} 时，需要知道是哪一步断的：
+     * binder 没拿到？wrapper 构造失败？asInterface 失败？接口里没这个方法？
+     */
+    public static String diagnose() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            IBinder binder = (IBinder) Class.forName("rikka.shizuku.SystemServiceHelper")
+                    .getMethod("getSystemService", String.class)
+                    .invoke(null, Context.WIFI_SERVICE);
+            sb.append("binder=").append(binder == null ? "null" : "ok");
+            if (binder == null) return sb.toString();
+
+            Object wrapper = Class.forName("rikka.shizuku.ShizukuBinderWrapper")
+                    .getConstructor(IBinder.class).newInstance(binder);
+            sb.append(" wrapper=ok");
+
+            Class<?> stub = Class.forName("android.net.wifi.IWifiManager$Stub");
+            Object svc = stub.getMethod("asInterface", IBinder.class).invoke(null, wrapper);
+            sb.append(" asInterface=").append(svc == null ? "null" : "ok");
+            if (svc == null) return sb.toString();
+
+            Class<?> cls = svc.getClass();
+            sb.append(" class=").append(cls.getSimpleName());
+            Class<?> iface = interfaceOf(svc);
+            sb.append(" iface=").append(iface == null ? "none" : iface.getSimpleName());
+            int n = 0;
+            try { n = cls.getMethods().length; } catch (Throwable ignored) {}
+            sb.append(" methods=").append(n);
+
+            // 关键方法是否可见
+            sb.append(" | getConnectionInfo=")
+                    .append(methodOn(iface, "getConnectionInfo",
+                            android.os.Build.VERSION.SDK_INT) != null ? "yes" : "no");
+            sb.append(" getConfiguredNetworks=")
+                    .append(methodOn(iface, "getConfiguredNetworks",
+                            android.os.Build.VERSION.SDK_INT) != null ? "yes" : "no");
+        } catch (Throwable t) {
+            sb.append(" EX:").append(t.getClass().getSimpleName());
+        }
+        return sb.toString();
     }
 
     /** 从 WifiConfiguration 反射取 networkId。 */

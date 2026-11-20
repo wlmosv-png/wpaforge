@@ -265,6 +265,13 @@ public class App extends Application {
                                 sb.append("  IWifiManager 读连接: ").append(info.describe())
                                         .append('\n');
                             }
+                            // 直调失败时给出链路诊断（只读）
+                            if (!lst.ok || !info.ok) {
+                                sb.append("  直调诊断: ")
+                                        .append(io.github.wlmosv_png.wpaforge.cap
+                                                .WifiServiceBridge.diagnose())
+                                        .append('\n');
+                            }
                         } catch (Throwable t) {
                             sb.append("  直调自检异常: ")
                                     .append(t.getClass().getSimpleName()).append('\n');

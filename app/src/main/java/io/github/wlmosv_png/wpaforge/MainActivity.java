@@ -317,6 +317,11 @@ public class MainActivity extends Activity {
     private TextView planLineView;
     /** 最近一次「环境出错」条数（通道抛异常 / 目标消失）。 */
     private int lastTallyEnvErrors = 0;
+
+    // ── 权限与能力中心的三块宿主（2026-11-20）──
+    private LinearLayout capabilityEnvHost;
+    private LinearLayout capabilityPermHost;
+    private LinearLayout capabilityFuncHost;
     private TextView statTotalView;      /** 总数 */
     private TextView statPctView;        /** 完成度（大数字） */
     /**
@@ -13643,6 +13648,29 @@ public class MainActivity extends Activity {
         if (radar != null) radar.stopSpin();
 
         // ---------------- 执行通道 ----------------
+        // ══════════════════════════════════════════════════════════════════
+        //  权限与能力中心（2026-11-20，任务书第六部分）
+        //
+        //  原来这里只有三个模式按钮 + 一行状态，用户看不出
+        //  「这台设备到底能做什么、缺什么、怎么补」。
+        //  现在拆成三块：当前环境 / 权限状态 / 功能能力，
+        //  全部由真实检测结果生成，没有证据的项显示「未知」而不是「不支持」。
+        // ══════════════════════════════════════════════════════════════════
+        pageSettings.addView(sectionLabel(L.s("当前环境", "Environment")));
+        capabilityEnvHost = new LinearLayout(this);
+        capabilityEnvHost.setOrientation(LinearLayout.VERTICAL);
+        pageSettings.addView(capabilityEnvHost);
+
+        pageSettings.addView(sectionLabel(L.s("权限状态", "Permissions")));
+        capabilityPermHost = new LinearLayout(this);
+        capabilityPermHost.setOrientation(LinearLayout.VERTICAL);
+        pageSettings.addView(capabilityPermHost);
+
+        pageSettings.addView(sectionLabel(L.s("功能能力", "Capabilities")));
+        capabilityFuncHost = new LinearLayout(this);
+        capabilityFuncHost.setOrientation(LinearLayout.VERTICAL);
+        pageSettings.addView(capabilityFuncHost);
+
         pageSettings.addView(sectionLabel(L.s("执行通道", "Execution channel")));
         LinearLayout modeCard = AmberTheme.card(this, dp, AmberTheme.RADIUS_CARD);
 
@@ -13703,6 +13731,8 @@ public class MainActivity extends Activity {
         pageSettings.addView(modeCard);
         refreshModeReady();
         fillModeInfo();
+        // 权限与能力中心（真实探测，全部来自运行时）
+        fillCapabilityCenter();
 
         // ---------------- 语言 ----------------
         pageSettings.addView(sectionLabel(L.s("语言", "Language")));
@@ -14799,6 +14829,234 @@ public class MainActivity extends Activity {
     private void rebuildSettingsTab() {
         pageSettings.removeAllViews();
         buildSettingsTab();
+    }
+
+    /**
+     * 填充权限与能力中心的三块内容（2026-11-20）。
+     *
+     * <p>全部数据来自真实探测：
+     * <ul>
+     *   <li>Root：{@code su -c id} 是否返回 uid=0</li>
+     *   <li>Shizuku：{@code ShizukuChannel.probe()} 五态</li>
+     *   <li>悬浮窗：{@code Settings.canDrawOverlays()}</li>
+     *   <li>通知：{@code NotificationManagerCompat} / 运行时权限</li>
+     *   <li>能力明细：{@code CapabilityDetector.get()}</li>
+     * </ul>
+     * 没有证据的一律显示「未知」，**不显示成不支持**。
+     */
+    private void fillCapabilityCenter() {
+        if (capabilityEnvHost == null || capabilityPermHost == null
+                || capabilityFuncHost == null) return;
+
+        capabilityEnvHost.removeAllViews();
+        capabilityPermHost.removeAllViews();
+        capabilityFuncHost.removeAllViews();
+
+        final boolean zh = L.isZh();
+        final int modeId = Prefs.mode(this);
+
+        // ---- 1. 当前环境 ----
+        java.util.List<io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow> env =
+                new java.util.ArrayList<>();
+
+        env.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("运行模式", "Mode"),
+                io.github.wlmosv_png.wpaforge.cap.RunMode.nameOf(modeId),
+                null, "", "", null));
+
+        // 实际执行通道（由能力探测决定，不是写死）
+        String channelName = "—";
+        try {
+            io.github.wlmosv_png.wpaforge.cap.RunMode rm =
+                    io.github.wlmosv_png.wpaforge.cap.RuntimeMode.peek();
+            if (rm != null && rm.label(zh) != null) channelName = rm.label(zh);
+        } catch (Throwable ignored) {}
+
+        // Root 实测
+        boolean rootOkTmp;
+        String rootDetail;
+        try {
+            String id = io.github.wlmosv_png.wpaforge.audit.RootProber
+                    .exec(null, new String[]{"su", "-c", "id"}, 5000);
+            rootOkTmp = id != null && id.contains("uid=0");
+            rootDetail = rootOkTmp ? L.s("su 返回 uid=0", "su returned uid=0")
+                    : L.s("su 无输出或未授权", "su gave no output / not granted");
+        } catch (Throwable t) {
+            rootOkTmp = false;
+            rootDetail = t.getClass().getSimpleName();
+        }
+        final boolean rootOk = rootOkTmp;
+        env.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                "Root", rootOk ? L.s("可用", "available") : L.s("不可用", "unavailable"),
+                rootOk, rootDetail, "", null));
+
+        // Shizuku 实测五态
+        io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shz =
+                new io.github.wlmosv_png.wpaforge.cap.ShizukuChannel(this);
+        int shzState = -1;
+        String shzDetail = "";
+        try {
+            shzState = shz.probe();
+            shzDetail = shz.stateDetail();
+        } catch (Throwable t) {
+            shzDetail = t.getClass().getSimpleName();
+        }
+        String shzLabel;
+        Boolean shzOk;
+        switch (shzState) {
+            case io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY:
+                shzLabel = L.s("已授权（shell 身份）", "granted (shell identity)");
+                shzOk = Boolean.TRUE;
+                break;
+            case io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_READY_NOT_SHELL:
+                shzLabel = L.s("已授权（root 身份）", "granted (root identity)");
+                shzOk = Boolean.TRUE;
+                break;
+            case io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NO_PERMISSION:
+                shzLabel = L.s("服务在跑，未授权", "running, not granted");
+                shzOk = Boolean.FALSE;
+                break;
+            case io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_RUNNING:
+                shzLabel = L.s("已安装，未启动", "installed, not started");
+                shzOk = Boolean.FALSE;
+                break;
+            case io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.S_NOT_INSTALLED:
+                shzLabel = L.s("未安装", "not installed");
+                shzOk = Boolean.FALSE;
+                break;
+            default:
+                shzLabel = L.s("未知", "unknown");
+                shzOk = null;   // 探测失败 → 未知，不判死
+                break;
+        }
+        final int shzStateFinal = shzState;
+        final io.github.wlmosv_png.wpaforge.cap.ShizukuChannel shzFinal = shz;
+        env.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                "Shizuku", shzLabel, shzOk, shzDetail,
+                (shzOk != null && shzOk) ? "" : L.s("查看引导 ›", "See guide >"),
+                (shzOk != null && shzOk) ? null : () -> showShizukuGuide(shzStateFinal, shzFinal)));
+
+        env.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("Android", "Android"),
+                android.os.Build.VERSION.RELEASE + " (API " + android.os.Build.VERSION.SDK_INT + ")",
+                null, "", "", null));
+
+        String rom = "";
+        try {
+            rom = (android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL).trim();
+            String brand = android.os.Build.BRAND;
+            if (brand != null && !rom.toLowerCase().contains(brand.toLowerCase())) {
+                rom = brand + " " + rom;
+            }
+        } catch (Throwable ignored) {}
+        if (!rom.isEmpty()) {
+            env.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                    L.s("设备 / ROM", "Device / ROM"), rom, null, "", "", null));
+        }
+
+        env.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("最近检测", "Last check"),
+                android.text.format.DateFormat.format("HH:mm:ss",
+                        System.currentTimeMillis()).toString(),
+                null, L.s("下拉或点状态行可重新检测", "re-check from the status line"),
+                L.s("重新检测 ›", "Re-check >"), this::refreshModeReady));
+
+        capabilityEnvHost.addView(io.github.wlmosv_png.wpaforge.ui.CapabilityCenter
+                .environmentCard(this, dp, env));
+
+        // ---- 2. 权限状态 ----
+        java.util.List<io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow> perms =
+                new java.util.ArrayList<>();
+
+        perms.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("Root 授权", "Root"),
+                rootOk ? L.s("已授权", "granted") : L.s("未授权", "not granted"),
+                rootOk,
+                rootOk ? L.s("可执行 su 命令", "su commands work")
+                        : L.s("需要 root 管理器授权本应用", "grant this app in your root manager"),
+                rootOk ? "" : L.s("去 root 管理器授权", "Grant in root manager"), null));
+
+        perms.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("Shizuku", "Shizuku"), shzLabel, shzOk, shzDetail,
+                (shzOk != null && shzOk) ? "" : L.s("查看引导 ›", "See guide >"),
+                (shzOk != null && shzOk) ? null : () -> showShizukuGuide(shzStateFinal, shzFinal)));
+
+        // 悬浮窗
+        boolean overlayOkTmp;
+        try {
+            overlayOkTmp = android.provider.Settings.canDrawOverlays(this);
+        } catch (Throwable t) {
+            overlayOkTmp = false;
+        }
+        final boolean overlayOk = overlayOkTmp;
+        perms.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("悬浮窗", "Overlay"),
+                overlayOk ? L.s("已授予", "granted") : L.s("未授予", "not granted"),
+                overlayOk,
+                overlayOk ? L.s("可用于后台保活提示", "usable for keep-alive hint")
+                        : L.s("不影响破解；只是后台提示会改用应用内展示",
+                                "cracking unaffected; background hints fall back to in-app"),
+                overlayOk ? "" : L.s("去授权 ›", "Grant >"),
+                overlayOk ? null : () -> {
+                    try {
+                        startActivity(new android.content.Intent(
+                                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                android.net.Uri.parse("package:" + getPackageName())));
+                    } catch (Throwable ignored) {}
+                }));
+
+        // 通知
+        boolean notifOk;
+        try {
+            notifOk = checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            notifOk = true;   // Android 12 及以下没有这个运行时权限
+        }
+        perms.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("通知", "Notifications"),
+                notifOk ? L.s("已授予", "granted") : L.s("未授予", "not granted"),
+                notifOk,
+                notifOk ? "" : L.s("命中提醒与进度通知会被静音",
+                        "hit alerts and progress notifications will be silent"),
+                "", null));
+
+        // 后台运行（电池优化豁免）
+        boolean batteryOk;
+        try {
+            android.os.PowerManager pm =
+                    (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            batteryOk = pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Throwable t) {
+            batteryOk = false;
+        }
+        perms.add(new io.github.wlmosv_png.wpaforge.ui.CapabilityCenter.PermRow(
+                L.s("后台运行", "Background"),
+                batteryOk ? L.s("已豁免", "exempted") : L.s("受电池优化限制", "battery-optimised"),
+                batteryOk,
+                batteryOk ? L.s("关屏后不易被冻结", "less likely to be frozen when screen off")
+                        : L.s("长任务可能被系统冻结；root 模式会自动申请豁免",
+                                "long runs may be frozen; root mode requests exemption automatically"),
+                "", null));
+
+        capabilityPermHost.addView(io.github.wlmosv_png.wpaforge.ui.CapabilityCenter
+                .permissionCard(this, dp, perms));
+
+        // ---- 3. 功能能力（异步探测，避免卡 UI）----
+        new Thread(() -> {
+            io.github.wlmosv_png.wpaforge.cap.Capability.Set0 set = null;
+            try {
+                set = io.github.wlmosv_png.wpaforge.cap.CapabilityDetector.get(this, modeId);
+            } catch (Throwable ignored) {}
+            final java.util.List<io.github.wlmosv_png.wpaforge.cap.Capability> items =
+                    set == null ? null : set.all();
+            ui.post(() -> {
+                if (capabilityFuncHost == null) return;
+                capabilityFuncHost.removeAllViews();
+                capabilityFuncHost.addView(io.github.wlmosv_png.wpaforge.ui.CapabilityCenter
+                        .capabilityCard(this, dp, items));
+            });
+        }, "wpaforge-capcenter").start();
     }
 
     /** 实际生效模式的短名（与 {@link Prefs#mode(Context)} 同源）。 */

@@ -1519,13 +1519,25 @@ public final class CrackEngine {
             }
             if (leftover < 0) return true;
             try {
-                // sleep 0.3 → 0.15（2026-10-23 实测）：这一步是「删 + 等 + 回读」，
-                // 等的是让 framework 把删除落定。实测 0.05s 就已经读不到了（5/5 干净），
-                // 取 0.15 留 3 倍余量 —— 万一真读回旧配置，下面的校验会让它多跑一轮
-                // （只是慢，不会误判），所以这条可以放心压。
-                String out2 = shell.exec("cmd wifi forget-network " + leftover
-                        + "; sleep 0.15; cmd wifi list-networks", 6000);
-                if (out2 != null && netIdIn(out2, ssid) < 0) return true;
+                // **拆成两条命令**（2026-11-20 真机事故）。
+                //
+                // 旧写法把「删 + sleep + 回读」合成一条 sh -c：
+                //   cmd wifi forget-network N; sleep 0.15; cmd wifi list-networks
+                // 一旦 forget-network 本身卡住（AOSP 里它 await(500ms) 后返回，
+                // 但某些 ROM/通道会卡更久），**整条命令占满 6 秒超时**，
+                // 后半段的 list-networks 根本没机会跑 —— 白白多等一轮。
+                // 真机现象：一条候选卡 11 秒（5s + 6s）。
+                //
+                // 拆开后：forget 给 4 秒，回读给 4 秒，任一失败立刻返回 false
+                // （上层会判 STALE_CONFIG 闸门，而不是继续白跑）。
+                String fOut = shell.exec("cmd wifi forget-network " + leftover, 4000);
+                if (fOut == null) {
+                    // forget 本身超时 —— 通道有问题，不要继续等回读
+                    return false;
+                }
+                sleep(150);
+                String chk = shell.exec("cmd wifi list-networks", 4000);
+                if (chk != null && netIdIn(chk, ssid) < 0) return true;
             } catch (Throwable ignored) {}
         }
         return netIdOfTarget(ssid) < 0;
@@ -3489,6 +3501,47 @@ public final class CrackEngine {
             return;
         }
         l.onLog("✓ " + probe.summary);
+
+        // **净检通路前置探测（2026-11-20 真机事故）**
+        //
+        // 自检用的是 `cmd wifi status`（快），但真正开跑时每条候选要先跑
+        // `list-networks`(5s) + `forget-network`(6s) —— 如果这两个在
+        // 当前通道上超时，78 条就是 78 × 11 秒 = 14 分钟**全白跑**，
+        // 界面还显示「运行中」。
+        //
+        // 所以开跑前实测一次 list-networks：拿不到就当场停，
+        // 把「通道不通」和「密码不对」彻底分开。
+        {
+            long tProbe = clock().uptimeMillis();
+            String ln = null;
+            try { ln = shell.exec("cmd wifi list-networks", 6000); } catch (Throwable ignored) {}
+            long lnMs = clock().uptimeMillis() - tProbe;
+            if (ln == null) {
+                l.onLog(L.s("✗ 净检通路不通：list-networks 在 " + lnMs
+                                + "ms 内没有返回 —— 通道不可用，已停止（未消耗任何候选）。",
+                        "x net-check path unavailable: list-networks did not return within "
+                                + lnMs + "ms - channel unusable, stopped (no candidate consumed)."));
+                l.onBlocked(L.s("通道不可用，任务未开始",
+                                "channel unusable, task not started"),
+                        L.s("开跑前探测发现 `cmd wifi list-networks` 超时（" + lnMs + "ms）。\n\n"
+                                        + "这条命令是净检的必需步骤 —— 它不通，"
+                                        + "每条候选都会白等 11 秒超时，一条都不会真正验证。\n\n"
+                                        + "请检查：\n"
+                                        + "· Shizuku 服务是否仍在运行\n"
+                                        + "· 本应用是否还有 Shizuku 授权\n"
+                                        + "· 必要时在设置页点「重新检测」",
+                                "Pre-flight probe: `cmd wifi list-networks` timed out after "
+                                        + lnMs + "ms.\n\n"
+                                        + "This command is required by net-check; without it every "
+                                        + "candidate just burns 11s of timeout and none is really "
+                                        + "verified.\n\n"
+                                        + "Check: Shizuku service running / grant still valid / "
+                                        + "tap Re-check in Settings."));
+                return;
+            }
+            l.onLog(L.s("✓ 净检通路正常（list-networks " + lnMs + "ms）",
+                    "✓ net-check path ok (list-networks " + lnMs + "ms)"));
+        }
 
         // **完整环境诊断** —— 把每一层能测的都测一遍并写进日志。
         //

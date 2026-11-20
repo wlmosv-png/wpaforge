@@ -1511,12 +1511,21 @@ public class CrackService extends Service {
                 // 绝不偷偷换通道 —— 否则用户看到的「Shizuku 通道」是假的，
                 // 而判定证据可能来自另一条身份，归因链就断了。
                 String out;
+                boolean thisTimedOut = false;
                 if (shizukuMode) {
                     io.github.wlmosv_png.wpaforge.cap.ShizukuChannel.Result r =
                             s0.exec(cmd, timeoutMs);
                     // ok()=false（超时/异常）→ null；成功但空输出 → 空串。
                     // 两者在判定链里含义不同，不能合并。
                     out = r.ok() ? r.output : null;
+                    // **让熔断器能看见 Shizuku 的超时**（2026-11-20 真机事故）。
+                    //
+                    // 旧实现里熔断器只查 RootProber.lastTimedOut()，而 Shizuku
+                    // 模式根本不走 RootProber —— 标志恒 false，熔断器永不触发。
+                    // 真机现象：78 条候选每条卡 11 秒（list-networks 5s +
+                    // forget-network 6s 全超时），界面显示「运行中 3.8%」，
+                    // 实际一条都没真正验证过。
+                    thisTimedOut = !r.ok();
                 } else {
                     out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
                     if (out == null) {
@@ -1537,14 +1546,19 @@ public class CrackService extends Service {
                 // 这时继续跑只会让每条候选都耗在超时上 —— 界面看着像「在跑」，
                 // 实际一步没动。与其无声卡住，不如停下来把情况讲清楚。
                 {
-                    if (RootProber.lastTimedOut()) {
+                    if (thisTimedOut || RootProber.lastTimedOut()) {
                         if (++execTimeouts >= EXEC_TIMEOUT_LIMIT) {
                             execTimeouts = 0;
                             log(L.s(
-                                    "连续多次命令超时 —— 通道已被系统限制，任务已暂停。"
-                                    + "回到应用界面后点继续即可（前台运行时不受此限制）。",
-                                    "Repeated command timeouts - channel throttled. Task paused; "
-                                    + "reopen the app and press resume."));
+                                    "连续 " + EXEC_TIMEOUT_LIMIT + " 次命令超时 —— "
+                                    + (shizukuMode ? "Shizuku 通道" : "命令通道")
+                                    + "已不可用，任务已停止。"
+                                    + "这不是密码问题：继续跑只会让每条候选都白等超时。"
+                                    + "请检查 Shizuku 服务与授权后重试。",
+                                    "Repeated command timeouts (" + EXEC_TIMEOUT_LIMIT + ") - "
+                                    + (shizukuMode ? "Shizuku channel" : "command channel")
+                                    + " is unusable; task stopped. This is NOT a password "
+                                    + "problem; check the Shizuku service/grant and retry."));
                             stopAll();
                         }
                     } else if (out != null) {

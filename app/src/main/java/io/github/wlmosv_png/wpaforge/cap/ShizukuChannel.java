@@ -382,6 +382,19 @@ public final class ShizukuChannel {
                     break;
                 }
             }
+            // **硬超时兜底**（2026-11-20 真机事故）。
+            //
+            // 上面的循环理论上到 deadline 就 break，但如果
+            // `waitForTimeout` 的 Binder 调用本身阻塞（Shizuku 服务侧实现
+            // 有 bug、或服务正被冻结），控制权根本回不到 deadline 检查。
+            // 真机现象：一条 list-networks 卡满 5 秒、一条 forget 卡满 6 秒，
+            // 78 条候选白跑 14 分钟。
+            //
+            // 这里补一道：无论循环怎么退出，只要已过 deadline 就标超时，
+            // 让上层熔断器能看见（它靠 Result.ok()==false 计数）。
+            if (System.currentTimeMillis() >= deadline) {
+                timeout = true;
+            }
             // 进程已退出（或超时）→ 流会 EOF，join 收尾。
             joinQuietly(tOut);
             joinQuietly(tErr);

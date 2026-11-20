@@ -139,9 +139,29 @@ public final class CapabilityProbe {
                             + "alternatively use a rooted device."));
         }
 
-        out.add(Capability.unsupported(Capability.C_WIFI_FORGET,
-                "删除系统已保存网络需要系统级权限",
-                "removing saved networks needs a system permission"));
+        // **净检能力必须按真实通道判定**（2026-11-20 真机事故）。
+        //
+        // 旧实现无条件写「不支持」，于是界面出现自相矛盾：
+        //   静默关联（逐条尝试）  可用      ← Shizuku 能给 shell 身份
+        //   清除旧配置（净检）    不支持    ← 但这是硬编码的谎
+        // 而净检正是关联的前置条件 —— 用户看到这个组合只会困惑。
+        //
+        // 实际情况：Shizuku 的 shell 身份能执行 `cmd wifi forget-network`，
+        // 净检走「forget + list-networks 回读」，**不依赖 WifiConfigStore.xml**。
+        // 所以 Shizuku 可用时净检也可用。
+        if (x.shizukuUsable) {
+            out.add(Capability.available(Capability.C_WIFI_FORGET,
+                    "通过 Shizuku 借 shell 身份执行 forget-network + 回读确认",
+                    "uses Shizuku to run forget-network and verify by read-back")
+                    .withEvidence("cmd wifi forget-network", "Shizuku shell",
+                            x.probedAtMs, "",
+                            "forget-network 在白名单内（AOSP 源码第 141 行），shell 身份可执行",
+                            true, Capability.C_WIFI_FORGET, Capability.C_WIFI_CONNECT));
+        } else {
+            out.add(Capability.unsupported(Capability.C_WIFI_FORGET,
+                    "删除系统已保存网络需要系统级权限",
+                    "removing saved networks needs a system permission"));
+        }
 
         // 日志：只有拿到非空输出才算能读。空输出 = 读不到，不是「没内容」。
         if (x.wpaLogNonEmpty) {

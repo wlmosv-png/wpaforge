@@ -89,6 +89,14 @@
             android:exported="false"
             android:label="关于" />
 
+        <!-- 公开 API 可行性验证器（2026-11-20 第四阶段）。
+             独立入口，只做「一次一条凭据」的验证，不是破解引擎。
+             exported=false：只能由本应用或 adb（同 uid/root）启动。 -->
+        <activity
+            android:name=".PublicApiProbeActivity"
+            android:exported="false"
+            android:label="公开 API 验证" />
+
         <activity
             android:name=".DictActivity"
             android:exported="false"

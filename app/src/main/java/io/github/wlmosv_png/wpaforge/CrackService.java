@@ -1469,6 +1469,27 @@ public class CrackService extends Service {
         resolvedPlan = plan;
         shizukuRef = plan.shizuku;
         lastExecutorLabel = plan.label();
+        // **把真实执行身份注入引擎**（2026-11-20 第四阶段）。
+        // 探测到 connect-network 权限被拒时，用它把 uid 说清楚。
+        engine.setExecutorIdentity(plan.identity);
+
+        // ══════════════════════════════════════════════════════════════════
+        //  **三后端独立能力探测**（任务书第 4 点）
+        //
+        //  任何一个后端的能力结论**不得**用于另一个：
+        //    · Root     只认 su -c id 返回 uid=0
+        //    · Shizuku  只认实际跑通 connect-network（权限被拒就是不可用）
+        //    · 公开 API 只认 SDK 版本 + 权限 + ConnectivityManager
+        //
+        //  这一步只读，不连接任何网络；connect-network 探测是**不带参数**的，
+        //  系统在参数解析前就完成 UID 权限校验，所以能拿到 SecurityException
+        //  而不会真的发起连接。
+        // ══════════════════════════════════════════════════════════════════
+        final io.github.wlmosv_png.wpaforge.cap.BackendCapability.Set0 caps =
+                io.github.wlmosv_png.wpaforge.cap.BackendCapability
+                        .probeAll(this, plan.shizuku);
+        backendCaps = caps;
+        log(L.s("三后端能力: ", "backend capability: ") + caps.summary(L.isZh()));
         new Thread(() -> io.github.wlmosv_png.wpaforge.cap.RuntimeMode.refresh(this),
                 "wpaforge-mode-warm").start();
         {
@@ -1879,6 +1900,19 @@ public class CrackService extends Service {
      * 不再各自 new 一个 ShizukuChannel 去猜。
      */
     private volatile io.github.wlmosv_png.wpaforge.cap.ExecutorProvider.Plan resolvedPlan;
+
+    /**
+     * **三后端能力结论**（2026-11-20 第四阶段）。
+     *
+     * <p>由任务入口探测一次后写入。界面与诊断读它，
+     * 不允许再用「Shizuku 可用」推断「能跑在线认证」。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.cap.BackendCapability.Set0 backendCaps;
+
+    /** 三后端能力结论（可能为 null = 尚未探测）。 */
+    public io.github.wlmosv_png.wpaforge.cap.BackendCapability.Set0 backendCapability() {
+        return backendCaps;
+    }
 
     /**
      * **本次任务的执行器适配器**（2026-11-20）。

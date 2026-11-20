@@ -703,6 +703,24 @@ public final class CrackEngine {
         return true;
     }
 
+    /**
+     * **当前执行身份**（2026-11-20 第四阶段）。
+     *
+     * <p>由服务侧在注入执行器时一起写入。探测到权限拒绝时用它把 uid 说清楚
+     * （真机现场：{@code Uid 2000 does not have access}）。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.cap.ExecutorIdentity identity;
+
+    /** 注入当前执行身份（服务侧调用）。 */
+    public void setExecutorIdentity(io.github.wlmosv_png.wpaforge.cap.ExecutorIdentity id) {
+        this.identity = id;
+    }
+
+    /** 当前执行身份（可能为 null）。 */
+    public io.github.wlmosv_png.wpaforge.cap.ExecutorIdentity executorIdentity() {
+        return identity;
+    }
+
     /** 供诊断/界面读取当前通道能力（可能为 null）。 */
     public io.github.wlmosv_png.wpaforge.cap.ConnectChannel getConnectChannel() {
         return channel;
@@ -1906,6 +1924,68 @@ public final class CrackEngine {
         p.step(ShellSubcommand.mark(stForget) + L.s("forget-network 子命令: ",
                 "forget-network subcommand: ") + ShellSubcommand.label(stForget, zh));
 
+        // ══════════════════════════════════════════════════════════════════
+        //  **connect-network 权限被拒 = 在线认证不可用，必须在候选循环前判死**
+        //  （2026-11-20 第四阶段，任务书第 4 点）
+        //
+        //  真机现场（OPPO Android 13 / Shizuku shell uid=2000）：
+        //      cmd wifi status          ✓ 可用
+        //      cmd wifi list-networks   ✓ 可用
+        //      cmd wifi forget-network  ✓ 可用
+        //      cmd wifi connect-network ✗ SecurityException: Uid 2000
+        //                                  does not have access
+        //  旧实现把这条判成「未知 → 放行」，于是任务一路跑到消耗 3 条候选
+        //  才由熔断器停下。用户看到的是「跑了 3 条然后说通道不可用」。
+        //
+        //  现在：权限被拒直接判死，一条候选都不消耗，并明确告知
+        //  「shell 身份做不到，需要 root 身份或改用公开 API」。
+        // ══════════════════════════════════════════════════════════════════
+        if (stConnect == io.github.wlmosv_png.wpaforge.cap.BackendCapability.CONNECT_DENIED) {
+            String uid = "";
+            try {
+                io.github.wlmosv_png.wpaforge.cap.ExecutorIdentity id = identity;
+                if (id != null && id.uid >= 0) uid = "uid=" + id.uid + " ";
+            } catch (Throwable ignored) {}
+            p.step("✗ " + L.s("connect-network 权限被拒（" + uid + "命令存在但无权限执行）",
+                    "connect-network denied (" + uid + "command exists but not permitted)"));
+            p.step(L.s("  → 该系统要求 uid=0 才能执行 connect-network；"
+                            + "当前执行身份是 shell，做不到在线认证。",
+                    "  -> this system requires uid=0 for connect-network; "
+                            + "the current shell identity cannot perform online auth."));
+            p.step(L.s("  → 只读诊断（status / list-networks）仍可用。",
+                    "  -> read-only diagnostics (status / list-networks) still work."));
+            p.step(L.s("  → 可行替代：① 让 Shizuku 以 root 身份启动服务；"
+                            + "② 或改用 Android 公开 Wi-Fi API（每条需用户确认）。",
+                    "  -> alternatives: (1) start Shizuku with root; "
+                            + "(2) use the Android public Wi-Fi API (per-candidate approval)."));
+            return new ChannelProbe(false,
+                    L.s("本机 shell 身份无法在线认证（connect-network 权限被拒）",
+                            "shell identity cannot do online auth here "
+                                    + "(connect-network permission denied)"),
+                    join(p) + "\n\n" + L.s(
+                            "系统明确拒绝了 shell 身份执行 `cmd wifi connect-network`：\n"
+                                    + "  Uid " + (uid.isEmpty() ? "?" : uid.replace("uid=", ""))
+                                    + " does not have access to connect-network wifi command\n\n"
+                                    + "这是 Android 的权限模型限制，不是本应用的问题，"
+                                    + "也不是密码问题。\n"
+                                    + "一条候选都不会消耗。\n\n"
+                                    + "可选路径：\n"
+                                    + "  ① 让 Shizuku 以 root 身份运行（那样 uid=0，全链可用）\n"
+                                    + "  ② 改用「公开 Wi-Fi API」模式（每条候选需你在系统弹窗点允许）\n"
+                                    + "  ③ 只做离线分析与只读诊断",
+                            "The system explicitly denied `cmd wifi connect-network` to the "
+                                    + "shell identity:\n"
+                                    + "  Uid " + (uid.isEmpty() ? "?" : uid.replace("uid=", ""))
+                                    + " does not have access to connect-network wifi command\n\n"
+                                    + "This is an Android permission-model limit, not an app bug "
+                                    + "and not a password problem.\n"
+                                    + "No candidate will be consumed.\n\n"
+                                    + "Options:\n"
+                                    + "  1) run Shizuku as root (uid=0, full chain available)\n"
+                                    + "  2) use the public Wi-Fi API mode (approve each candidate)\n"
+                                    + "  3) offline analysis and read-only diagnostics only"));
+        }
+
         // **只有「确认不存在」才判死**；「未知」一律放过。
         // 这条规则是历史事故换来的：把"问不到"当成"没有"，会把好机器挡在门外。
         boolean connectMissing = (stConnect == ShellSubcommand.MISSING);
@@ -2022,14 +2102,28 @@ public final class CrackEngine {
             lastSubcommandProbe = name + " → 抛异常 " + t.getClass().getSimpleName();
             return ShellSubcommand.UNKNOWN;
         }
-        int st = ShellSubcommand.detect(out, name);
+        // **权限被拒优先判定**（2026-11-20 第四阶段）。
+        //
+        // 真机（OPPO Android 13 / shell uid=2000）实测：
+        //   cmd wifi connect-network
+        //   → SecurityException: Uid 2000 does not have access to connect-network
+        //
+        // 旧实现只认 AVAILABLE / MISSING / UNKNOWN，这段输出会落到 UNKNOWN，
+        // 而「未知就放行」的规则让它一路跑到消耗 3 条候选才熔断。
+        // 现在单独识别为 DENIED：命令**存在**但**没权限**。
+        int st = io.github.wlmosv_png.wpaforge.cap.BackendCapability.isPermissionDenied(out)
+                ? io.github.wlmosv_png.wpaforge.cap.BackendCapability.CONNECT_DENIED
+                : ShellSubcommand.detect(out, name);
         // 记录原始输出，供自检详情显示 —— 判成 UNKNOWN 时**必须**能看见到底返回了什么，
         // 否则又变成「问不到但不知道为什么」（历史上最贵的一类 bug）。
         String brief = out == null ? "null"
                 : (out.trim().isEmpty() ? "（空）"
                    : out.trim().replace("\n", " ⏎ "));
         if (brief.length() > 160) brief = brief.substring(0, 160) + "…";
-        lastSubcommandProbe = name + " → " + ShellSubcommand.label(st, L.isZh())
+        String stLabel = (st == io.github.wlmosv_png.wpaforge.cap.BackendCapability.CONNECT_DENIED)
+                ? (L.isZh() ? "权限被拒" : "permission denied")
+                : ShellSubcommand.label(st, L.isZh());
+        lastSubcommandProbe = name + " → " + stLabel
                 + " ｜ 返回: " + brief;
         return st;
     }

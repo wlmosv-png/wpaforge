@@ -10298,8 +10298,11 @@ public class MainActivity extends Activity {
         flowChevron.setClickable(true);
         flowChevron.setFocusable(true);
         flowChevron.setOnClickListener(v -> toggleStream());
+        // 1.9.68：padding 会把 20dp 画布挤小（padding 吃掉了绘制区），
+        // 所以图标用 22dp 画布 + 6dp 内边距，点击区仍由外层撑到 ~34dp。
+        flowChevron.setPadding(px(6), px(6), px(8), px(6));
         LinearLayout.LayoutParams fcvp = new LinearLayout.LayoutParams(
-                Math.round(20 * dp), Math.round(20 * dp));
+                Math.round(22 * dp), Math.round(22 * dp));
         fcvp.gravity = Gravity.CENTER_VERTICAL;
         flowHeader.addView(flowChevron, fcvp);
 

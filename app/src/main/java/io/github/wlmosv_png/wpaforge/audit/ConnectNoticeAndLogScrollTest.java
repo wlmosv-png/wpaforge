@@ -101,8 +101,8 @@ public final class ConnectNoticeAndLogScrollTest {
                 ma.contains("flowChevron.setPadding(px(10), px(10), px(12), px(10))"), "缺 padding");
         // 1.9.68：图标尺寸由画布决定（20dp），不再用字号；
         // 契约改为「图标固定 20dp 且垂直居中」。
-        ok("④ 折叠图标 20dp 且垂直居中",
-                ma.contains("Math.round(20 * dp)") && ma.contains("Gravity.CENTER_VERTICAL"),
+        ok("④ 折叠图标固定尺寸且垂直居中",
+                ma.contains("Math.round(22 * dp)") && ma.contains("Gravity.CENTER_VERTICAL"),
                 "图标尺寸/对齐未改");
         ok("④ 按钮自带点击（不依赖整行）",
                 ma.contains("flowChevron.setOnClickListener(v -> toggleStream())"), "缺失");

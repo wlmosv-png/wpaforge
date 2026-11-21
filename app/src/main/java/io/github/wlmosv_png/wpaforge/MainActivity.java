@@ -10300,9 +10300,12 @@ public class MainActivity extends Activity {
         flowChevron.setOnClickListener(v -> toggleStream());
         // 1.9.68：padding 会把 20dp 画布挤小（padding 吃掉了绘制区），
         // 所以图标用 22dp 画布 + 6dp 内边距，点击区仍由外层撑到 ~34dp。
-        flowChevron.setPadding(px(6), px(6), px(8), px(6));
+        // 1.9.68：padding 会**吃掉绘制区**（22dp 画布 + 6/8dp padding → 实绘只剩 ~8dp，
+        // 真机上显示成一个小逗号）。现在画布 26dp、padding 只留触控用的 2dp，
+        // 箭头本体占满画布 —— 与「攻击流」标题字等高。
+        flowChevron.setPadding(px(2), px(2), px(2), px(2));
         LinearLayout.LayoutParams fcvp = new LinearLayout.LayoutParams(
-                Math.round(22 * dp), Math.round(22 * dp));
+                Math.round(26 * dp), Math.round(26 * dp));
         fcvp.gravity = Gravity.CENTER_VERTICAL;
         flowHeader.addView(flowChevron, fcvp);
 

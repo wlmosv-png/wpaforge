@@ -170,13 +170,13 @@ public final class StatusIcons extends Drawable {
             }
             case CHEVRON_RIGHT: {
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(u * 0.13f);
+                paint.setStrokeWidth(u * 0.16f);
                 paint.setStrokeCap(Paint.Cap.ROUND);
                 paint.setStrokeJoin(Paint.Join.ROUND);
                 path.reset();
-                path.moveTo(cx - u * 0.10f, cy - u * 0.22f);
-                path.lineTo(cx + u * 0.14f, cy);
-                path.lineTo(cx - u * 0.10f, cy + u * 0.22f);
+                path.moveTo(cx - u * 0.13f, cy - u * 0.28f);
+                path.lineTo(cx + u * 0.17f, cy);
+                path.lineTo(cx - u * 0.13f, cy + u * 0.28f);
                 canvas.drawPath(path, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setStrokeCap(Paint.Cap.BUTT);
@@ -184,13 +184,13 @@ public final class StatusIcons extends Drawable {
             }
             case CHEVRON_DOWN: {
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(u * 0.13f);
+                paint.setStrokeWidth(u * 0.16f);
                 paint.setStrokeCap(Paint.Cap.ROUND);
                 paint.setStrokeJoin(Paint.Join.ROUND);
                 path.reset();
-                path.moveTo(cx - u * 0.22f, cy - u * 0.10f);
-                path.lineTo(cx, cy + u * 0.14f);
-                path.lineTo(cx + u * 0.22f, cy - u * 0.10f);
+                path.moveTo(cx - u * 0.28f, cy - u * 0.13f);
+                path.lineTo(cx, cy + u * 0.17f);
+                path.lineTo(cx + u * 0.28f, cy - u * 0.13f);
                 canvas.drawPath(path, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setStrokeCap(Paint.Cap.BUTT);

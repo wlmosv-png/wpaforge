@@ -94,6 +94,15 @@ public class CrackService extends Service {
         default void onAttemptResultFull(String candidate, boolean hit, long ms,
                                          String detail, CrackEngine.Verdict verdict,
                                          io.github.wlmosv_png.wpaforge.audit
+                                                 .EvidenceGrade.Level grade,
+                                         String reason) {
+            onAttemptResultFull(candidate, hit, ms, detail, verdict, grade);
+        }
+
+        /** 旧签名（无 reason），保留兼容。 */
+        default void onAttemptResultFull(String candidate, boolean hit, long ms,
+                                         String detail, CrackEngine.Verdict verdict,
+                                         io.github.wlmosv_png.wpaforge.audit
                                                  .EvidenceGrade.Level grade) {
             onAttemptResult(candidate, hit, ms, detail, verdict);
         }
@@ -141,6 +150,22 @@ public class CrackService extends Service {
         default void onTallyFull(int confirmed, int inconclusive, int networkAuthFail,
                                  int environmentErrors, int executed, int hit) {
             onTally(confirmed, inconclusive, networkAuthFail);
+        }
+
+        /**
+         * 按**用户可理解类别**的统计（2026-11-22）。
+         *
+         * <p>与 {@link #onTallyFull} 的区别：那一个是既有契约（已证实 / 未确定 /
+         * 网络级 / 环境 / 已执行 / 命中），本方法额外给出：
+         * <ul>
+         *   <li>{@code suspectedWrong}：有失败证据但归因不足（未持久化）</li>
+         *   <li>{@code notFinished}：超时 / 未收敛 / 终止无归因 / 中断</li>
+         *   <li>{@code undecided}：UNKNOWN 且非环境原因</li>
+         * </ul>
+         * 这三个数字让用户能区分「为什么没结论」。
+         */
+        default void onTallyCategorized(int suspectedWrong, int notFinished,
+                                        int undecided, int envErrors) {
         }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
@@ -1503,7 +1528,7 @@ public class CrackService extends Service {
                     // 2026-11-21：额外把**证据等级**交给 UI，
                     // 让「已证实错误」只在 DIRECT 时出现。
                     cb.onAttemptResultFull(a.password, a.isSuccess(), a.elapsedMs, detail,
-                            a.verdict, a.grade);
+                            a.verdict, a.grade, a.reason);
                 }
                 // 实时结论分布（UI 第二轮）：口径与 VerdictTally 一致，
                 // 用引擎的累计值（它本来就是唯一统计入口）。
@@ -1520,6 +1545,8 @@ public class CrackService extends Service {
                         for (UiCallback cb : callbacks) {
                             cb.onTally(c, i, n);
                             cb.onTallyFull(c, i, n, env, exec, hitN);
+                            cb.onTallyCategorized(eng.suspectedWrongCount(),
+                                    eng.notFinishedCount(), eng.undecidedCount(), env);
                         }
                     }
                 }

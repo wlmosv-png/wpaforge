@@ -71,6 +71,25 @@ public final class VerdictTally {
      */
     private int hit;
 
+    /* ── 2026-11-22：按用户可理解类别分桶（只用于 UI，不参与判定）────────
+     *
+     * 修复前 UI 只有「已证实错误 / 未确定」两桶，于是：
+     *   · 目标已连上但 netId 冲突（netid-conflict）→ 落进「未确定」
+     *   · 什么都没观察到（no-evidence）           → 也落进「未确定」
+     *   · 通道出错（ERROR）                       → 单列 environmentErrors
+     * 三者事实完全不同，用户却看到同一个「未确定」。
+     *
+     * 现在按 ResultCategory 分桶，UI 可以分别展示。
+     * **不改变** confirmedFail / inconclusive / networkAuthFail / executed /
+     * environmentErrors / hit 的原有语义 —— 它们是既有契约，被多处断言。
+     */
+    /** 疑似密码错误（AUTH_FAIL 但 grade != DIRECT）。 */
+    private int suspectedWrong;
+    /** 连接未完成（TIMEOUT / INCOMPLETE / TERMINATED_UNKNOWN / ABORTED）。 */
+    private int notFinished;
+    /** 无法判断（UNKNOWN 且非环境原因）。 */
+    private int undecided;
+
     public void reset() {
         confirmedFail = 0;
         inferred = 0;
@@ -79,6 +98,9 @@ public final class VerdictTally {
         executed = 0;
         environmentErrors = 0;
         hit = 0;
+        suspectedWrong = 0;
+        notFinished = 0;
+        undecided = 0;
     }
 
     /**
@@ -123,6 +145,18 @@ public final class VerdictTally {
             return;
         }
         executed++;
+        // 2026-11-22：按用户可理解类别分桶（纯统计，不影响上面任何既有分支）
+        if (v == CrackEngine.Verdict.AUTH_FAIL) {
+            if (!EvidenceGrade.persistable(g)) suspectedWrong++;
+        } else if (v == CrackEngine.Verdict.TIMEOUT
+                || v == CrackEngine.Verdict.INCOMPLETE
+                || v == CrackEngine.Verdict.TERMINATED_UNKNOWN
+                || v == CrackEngine.Verdict.ABORTED) {
+            notFinished++;
+        } else if (v == CrackEngine.Verdict.UNKNOWN) {
+            undecided++;
+        }
+
         if (v == CrackEngine.Verdict.AUTH_FAIL) {
             // 只有**可直接验证**的失败（DIRECT）才算已证实；
             // 推断失败单列，不得伪装成确定结论。
@@ -198,6 +232,21 @@ public final class VerdictTally {
     /** 命中条数（0 或 1）。见 {@link #hit} 的说明。 */
     public int hit() {
         return hit;
+    }
+
+    /** 疑似密码错误条数（AUTH_FAIL 但 grade != DIRECT）—— **未持久化**。 */
+    public int suspectedWrong() {
+        return suspectedWrong;
+    }
+
+    /** 连接未完成条数（超时 / 未收敛 / 终止无归因 / 中断）。 */
+    public int notFinished() {
+        return notFinished;
+    }
+
+    /** 无法判断条数（UNKNOWN 且非环境原因）。 */
+    public int undecided() {
+        return undecided;
     }
 
     /**

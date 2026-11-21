@@ -352,6 +352,14 @@ public class MainActivity extends Activity {
      * 「AUTH_FAIL + INFERRED（推断）」—— 界面上会把后者也说成「已证实错误」。
      */
     private volatile io.github.wlmosv_png.wpaforge.audit.EvidenceGrade.Level lastCrackGrade;
+    /**
+     * 最近一条结论的**机器可读原因码**（2026-11-22）。
+     *
+     * <p>没有它就无法区分 `netid-conflict`（目标已连上但归因存疑）
+     * 与 `no-evidence`（什么都没观察到）—— 两者在 UI 上会显示成同一个
+     * 「无法判断」，但用户该做的事完全不同。
+     */
+    private volatile String lastCrackReason;
 
     private String lastOutcomeLabel = "";
     private int lastOutcomeColor = TEXT_DIM;
@@ -443,6 +451,12 @@ public class MainActivity extends Activity {
     private int lastTallyExecuted = 0;
     /** 命中条数（0 或 1）。 */
     private int lastTallyHit = 0;
+    /** 疑似密码错误（有失败证据但归因不足，未持久化）。 */
+    private int lastTallySuspected = 0;
+    /** 连接未完成（超时 / 未收敛 / 终止无归因 / 中断）。 */
+    private int lastTallyNotFinished = 0;
+    /** 无法判断（UNKNOWN 且非环境原因）。 */
+    private int lastTallyUndecided = 0;
     /** true = 只看关键（里程碑 + 失败原因），默认开 */
     /**
      * 日志级别：true = 只看关键，false = 全部。
@@ -11474,7 +11488,19 @@ public class MainActivity extends Activity {
                                                 .CrackEngine.Verdict v,
                                         io.github.wlmosv_png.wpaforge.audit
                                                 .EvidenceGrade.Level g) {
+            onAttemptResultFull(candidate, hit, ms, detail, v, g, null);
+        }
+
+        @Override
+        public void onAttemptResultFull(String candidate, boolean hit, long ms,
+                                        String detail,
+                                        io.github.wlmosv_png.wpaforge.audit
+                                                .CrackEngine.Verdict v,
+                                        io.github.wlmosv_png.wpaforge.audit
+                                                .EvidenceGrade.Level g,
+                                        String reason) {
             lastCrackGrade = g;
+            lastCrackReason = reason;
             onAttemptResult(candidate, hit, ms, detail, v);
         }
 
@@ -11500,17 +11526,56 @@ public class MainActivity extends Activity {
                             + " 成功  " + pw + "  (" + ms + "ms " + detail + ")", OK_GREEN);
                     showHitCard(candidate, ms, detail);
                 } else if (v != null) {
+                    /*
+                     * 2026-11-22：主标签改用 **ResultCategory**（六类互斥结果）。
+                     *
+                     * <h3>为什么改</h3>
+                     * 真机实测：6 条候选在界面上全部显示「不确定」，
+                     * 而底层它们是 `netid-conflict` / `status-unclear` /
+                     * `no-evidence` 等**完全不同**的情况。
+                     * 尤其 `netid-conflict` 意味着「目标已连上并取得 IP，
+                     * 只是 netId 与本次配置不符」—— 那可能**密码是对的**，
+                     * 却和「什么都没观察到」共用同一个词。
+                     *
+                     * <h3>边界</h3>
+                     * 只改展示，不改判定、不改持久化：
+                     *   · 是否写 TriedSet 仍只看 EvidenceGrade.persistable()
+                     *   · 判定结论仍是后端给的 Verdict，UI 不二次推断
+                     */
+                    io.github.wlmosv_png.wpaforge.ui.ResultCategory.Kind rk =
+                            io.github.wlmosv_png.wpaforge.ui.ResultCategory
+                                    .of(v, lastCrackGrade, lastCrackReason);
                     String sym = io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v);
-                    String lbl = io.github.wlmosv_png.wpaforge.ui.VerdictView.label(v);
-                    // 网络级/通道级用告警色；候选级失败用危险色；其余用暗色
-                    int color = io.github.wlmosv_png.wpaforge.ui.VerdictView
-                            .countsAsProvenWrong(v) ? DANGER
-                            : io.github.wlmosv_png.wpaforge.ui.VerdictView
-                                    .needsAttention(v) ? ACCENT : TEXT_DIM;
-                    // P1b：同结论连续出现时合并为一行并标 ×N，而不是刷几十行。
-                    // 合并键用 **Verdict 本身**：它是裁决层的唯一结论标识，
-                    // 与 UI 同源（不在这里二次推断）。具体判据来源在 detail 里
-                    // 逐条保留，文件日志也逐条落盘 —— 合并只影响视觉密度。
+                    // 标签优先用**用户可理解类别**（六类互斥）；
+                    // 类别与 Verdict 一一对应时退回 VerdictView.label，
+                    // 保证「统一映射」这条既有契约仍然成立。
+                    String lblV = io.github.wlmosv_png.wpaforge.ui.VerdictView.label(v);
+                    String lbl = io.github.wlmosv_png.wpaforge.ui.ResultCategory
+                            .label(rk, L.isZh());
+                    // 颜色按**类别**而非 Verdict：
+                    //   已证实错误 → 危险红
+                    //   疑似 / 网络级 / 未完成 / 无法判断 → 告警黄
+                    //   环境异常 → 危险红（要用户去修环境）
+                    //   其余 → 暗色
+                    int color;
+                    switch (rk) {
+                        case PROVEN_WRONG:
+                        case ENV_ERROR:
+                            color = DANGER; break;
+                        case SUSPECTED_WRONG:
+                        case NETWORK_FAIL:
+                        case NOT_FINISHED:
+                        case UNDECIDED:
+                            color = ACCENT; break;
+                        case VERIFIED_OK:
+                            color = OK_GREEN; break;
+                        default:
+                            color = TEXT_DIM;
+                    }
+                    // 合并键用 **Verdict 本身**（既有契约）：它是裁决层的唯一结论
+                    // 标识，与 UI 同源，不在这里二次推断。
+                    // 同一 Verdict 下不同 reason（netid-conflict vs no-evidence）
+                    // 由说明行的 lastWhyKey 区分，不影响合并键。
                     String key = v.name();
                     /*
                      * 两层文本（2026-11-02 收口）。
@@ -11530,7 +11595,10 @@ public class MainActivity extends Activity {
                             + "  (" + ms + "ms" + (detail == null || detail.isEmpty()
                                     ? "" : " " + detail) + ")";
                     appendStreamDedup(plainLine, color, key, techLine);
-                    String why = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
+                    String whyBase = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
+                    String why = io.github.wlmosv_png.wpaforge.ui.ResultCategory
+                            .hint(rk, lastCrackReason, L.isZh());
+                    if (why == null || why.isEmpty()) why = whyBase;
                     if (why != null && !why.isEmpty() && !key.equals(lastWhyKey)) {
                         lastWhyKey = key;
                         appendStreamDetail("     " + why, TEXT_DIM);
@@ -11612,6 +11680,51 @@ public class MainActivity extends Activity {
                             .thousands(inconclusive) + " \u00b7 \u26a0"
                             + environmentErrors);
                     statUnkView.setTextColor(AmberTheme.WARN);
+                }
+                renderProgressCardState();
+            });
+        }
+
+        /**
+         * 按用户可理解类别的统计（2026-11-22）。
+         *
+         * <p>修复前「未确定」一格把所有非 DIRECT 结论混在一起，
+         * 用户无法区分「疑似密码错误」（值得复核）与「连接未完成」
+         * （等下就好）与「无法判断」（证据不足）。
+         *
+         * <p>现在在「未确定」格下补一行细分副标题，只在**确有细分**时出现，
+         * 不污染正常显示。主数字仍是既有口径（inconclusive），保证与旧断言一致。
+         */
+        @Override
+        public void onTallyCategorized(int suspectedWrong, int notFinished,
+                                       int undecided, int envErrors) {
+            ui.post(() -> {
+                lastTallySuspected = suspectedWrong;
+                lastTallyNotFinished = notFinished;
+                lastTallyUndecided = undecided;
+                if (statUnkView != null) {
+                    int total = suspectedWrong + notFinished + undecided + envErrors;
+                    if (total > 0) {
+                        StringBuilder sb = new StringBuilder();
+                        sb.append(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                .thousands(lastTallyInconclusive));
+                        sb.append("\n");
+                        if (suspectedWrong > 0) {
+                            sb.append(L.s("疑", "S")).append(suspectedWrong).append(' ');
+                        }
+                        if (notFinished > 0) {
+                            sb.append(L.s("未完", "NF")).append(notFinished).append(' ');
+                        }
+                        if (undecided > 0) {
+                            sb.append(L.s("未判", "U")).append(undecided).append(' ');
+                        }
+                        if (envErrors > 0) {
+                            sb.append(L.s("环境", "ENV")).append(envErrors);
+                        }
+                        statUnkView.setText(sb.toString().trim());
+                        statUnkView.setTextColor(suspectedWrong > 0
+                                ? AmberTheme.WARN : ACCENT);
+                    }
                 }
                 renderProgressCardState();
             });
@@ -12377,6 +12490,7 @@ public class MainActivity extends Activity {
         // 可能先显示上一轮的「已证实错误 / 环境错误」—— 那是假信息。
         lastCrackVerdict = null;
         lastCrackGrade = null;
+        lastCrackReason = null;
         lastOutcomeLabel = "";
         if (candLabel != null) candLabel.setText(L.s("正在尝试", "TRYING"));
         // 跳过是"看不见的行为"，必须在**界面**上说出来。

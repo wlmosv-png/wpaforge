@@ -3640,6 +3640,21 @@ public final class CrackEngine {
         return tally.hit();
     }
 
+    /** 疑似密码错误条数（有失败证据但归因不足，**未持久化**）。 */
+    public int suspectedWrongCount() {
+        return tally.suspectedWrong();
+    }
+
+    /** 连接未完成条数（超时 / 未收敛 / 终止无归因 / 中断）。 */
+    public int notFinishedCount() {
+        return tally.notFinished();
+    }
+
+    /** 无法判断条数（UNKNOWN 且非环境原因）。 */
+    public int undecidedCount() {
+        return tally.undecided();
+    }
+
     /** 「未命中」是否站得住（没有任何无结论条目）。 */
     public boolean missProven() {
         return tally.missProven();

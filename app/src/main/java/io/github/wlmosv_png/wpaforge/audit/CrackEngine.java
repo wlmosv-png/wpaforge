@@ -2037,11 +2037,33 @@ public final class CrackEngine {
         // 因 netId 不符而拒绝的连接次数（假阳性防线计数器）
         int netIdRejects = 0;
         boolean sawAttempt = false;
+        /**
+         * 日志侧是否已证明「本次候选真的被尝试过」（P1-6，2026-11-21）。
+         *
+         * <h3>为什么需要独立标记</h3>
+         * {@code sawAttempt} 在两个地方置位：
+         * <ul>
+         *   <li>status 里出现目标（2184 行）—— 密码错误时**不会**发生，
+         *       因为握手失败后 supplicant 立刻断开，status 里看不到目标；</li>
+         *   <li>日志里出现目标的关联行（2417 行）—— 密码错误时**会**发生。</li>
+         * </ul>
+         * 但 lifecycle 守卫（2249 行）在日志段之前执行，那一刻 sawAttempt 仍是 false
+         * → {@code lastLifecycle} 被强制成 UNKNOWN → 下游 {@code logBoundFail}
+         * 命中时 lifecycle 不是 TERMINATED → Adjudicator 降级成 INCOMPLETE，
+         * AUTH_FAIL+DIRECT 永不可达。
+         *
+         * <p>本标记在日志段置位后，允许把 lifecycle 从 UNKNOWN 恢复成
+         * 实际观测到的状态（TERMINATED），**不放宽任何证据标准** ——
+         * 它只回答「这次尝试到底有没有真的发生」。
+         */
+        boolean lifecycleUnlockedByLog = false;
         // shell 通道是否真的能执行命令（status 能读出内容）。
         // 通道读不到 logcat 时 sawAttempt 恒为 false；有了这个标志就能把
         // 「密码错」和「通道死」区分开，不再一律 UNKNOWN。
         boolean channelAlive = false;
         String lastStatusSsid = null;
+        /** 最近一次 status 的**原始文本**（供 lifecycle 解锁时重建三态）。 */
+        String lastStatusRaw = null;
         /** 循环内最后一次读到的 supplicant state（供"连接是否仍活动"判定用）。 */
         String lastStatusState = null;
         /**
@@ -2175,6 +2197,7 @@ public final class CrackEngine {
                 SupplicantParser.Info info = SupplicantParser.parse(st);
                 lastStatusSsid = info.ssid;
                 lastStatusState = info.state;
+                lastStatusRaw = st;
                 // 三态来自**原始输出**：明确未连接 -> TERMINATED；读不到 -> UNKNOWN。
                 lastLifecycle = lifecycleOfStatus(st, target.ssid);
 
@@ -2415,6 +2438,20 @@ public final class CrackEngine {
                             wlogSlice, target.ssid);
                     if (tried) {
                         sawAttempt = true;
+                        // P1-6：日志已证明本次候选真的被尝试过。
+                        // 若 lifecycle 之前被守卫强制成 UNKNOWN，此刻按实际观测恢复
+                        // （TERMINATED / ACTIVE），否则 logBoundFail 会被降级成 INCOMPLETE。
+                        if (!lifecycleUnlockedByLog) {
+                            lifecycleUnlockedByLog = true;
+                            // 用已解析出的 supplicant state 重建 lifecycle。
+                            // 注意：这里**不是**放宽标准 ——
+                            // 只有日志已证明「本次真的关联过目标」时才走到这里，
+                            // 而 lastStatusState 仍是系统原始输出的解析结果。
+                            Lifecycle actual = lifecycleOfStatus(lastStatusRaw, target.ssid);
+                            if (actual != Lifecycle.UNKNOWN) {
+                                lastLifecycle = actual;
+                            }
+                        }
                         if (tAssocMs < 0) tAssocMs = clock().uptimeMillis() - t0;
                     }
 
@@ -2641,9 +2678,26 @@ public final class CrackEngine {
                      * **降级方向是安全的**：假设错误只会让我们少给 DIRECT，
                      * 不会错给 DIRECT。
                      */
+                    /*
+                     * AT-3 归因（2026-11-21 第二版）。
+                     *
+                     * 旧判据 sawWrongKeyForConfig 依赖 supplicant id == Android netId，
+                     * 真机实测两者不同编号空间（id 恒 0 / netId 36），本机永假。
+                     *
+                     * 现在两条路径任一成立即 AT3：
+                     *   ① 旧路径：id 与 netId 数值相等（某些 ROM 可能同体系，保留兼容）
+                     *   ② 新路径：闸门确认无旧配置 + 窗口内「关联→前导→直接否认」严格时序
+                     *             + BSSID 归属（见 sawWrongKeyForAttemptWindow 契约）
+                     *
+                     * 两条都不会放宽标准：② 额外要求「无旧配置」，
+                     * 比 ① 更严格地排除了「旧配置后台重试」的污染。
+                     */
                     boolean logBoundFail = logWinUsable
-                            && WpaLogReader.sawWrongKeyForConfig(
-                                    wlogSlice, target.ssid, target.bssid, targetNetId);
+                            && (WpaLogReader.sawWrongKeyForConfig(
+                                    wlogSlice, target.ssid, target.bssid, targetNetId)
+                                || WpaLogReader.sawWrongKeyForAttemptWindow(
+                                    wlogSlice, target.ssid, target.bssid,
+                                    configConfirmedAbsent));
                     boolean logAttemptFail = logWinUsable && !logBoundFail
                             && WpaLogReader.sawWrongKeyForAttempt(
                                     wlogSlice, target.ssid, target.bssid);

@@ -249,15 +249,40 @@ public final class UnifiedVerdictIntegrationTest {
             ok("U6 候选级失败可持久化（DIRECT）",
                     a6.grade == EvidenceGrade.Level.DIRECT, "grade=" + a6.grade);
 
-            // U7：同一条日志但本次配置 netId=700（id 对不上）-> 退回网络级
+            /*
+             * U7：日志里的 supplicant id 与本次配置 netId **数值不同**。
+             *
+             * <h3>2026-11-21 契约对齐（非生产逻辑放宽）</h3>
+             * 本用例原预期「id 对不上 → 退回 NETWORK_AUTH_FAIL」。
+             * 该预期建立在「supplicant id 与 Android netId 同属一个编号空间」这个
+             * 假设上 —— 而该假设**已被真机实测证伪**：
+             * <pre>
+             *   WpaLogReader.java 注释（PJX110 / ColorOS 15 / Android 15）:
+             *     CTRL-EVENT-CONNECTED ... [id=0 ...]
+             *     cmd wifi status        →  Net ID: 36
+             *   三种场景（候选连接 / 系统回连 / 手动连接）中 id 恒为 0，netId 恒为 36。
+             * </pre>
+             *
+             * <p>AT3 归因已改为第二版 {@code sawWrongKeyForAttemptWindow}：
+             * 不比较数值，改用「闸门确认无旧配置 + 关联→前导→直接否认严格时序
+             * + id 字段存在」。本场景四项条件全部成立，因此正确结论是候选级。
+             *
+             * <p><b>为什么这样仍然安全</b>：正确密码不会产生
+             * {@code 4-Way Handshake failed} 与 {@code TEMP-DISABLED reason=WRONG_KEY}，
+             * 所以本判据不会误排除正确密码。反证见
+             * {@code SuccessRuleFalsePositiveTest} 的「正确路径仍产出 SUCCESS」用例。
+             *
+             * <p>本用例保留，改为验证「数值不同不影响归因」这一新契约。
+             */
             Shell sh7 = new Shell();
             for (int i = 0; i < 3000; i++) { sh7.status(notConnected()); sh7.log(at3Log); }
             sh7.list("700   " + SSID + "   WPA2\n");
             CrackEngine.Attempt a7 = engine(sh7).tryOne(t, "WPA2", "WrongPass12", 1500L, aid);
-            info("U7 id=613 但本次配置=700 -> verdict=" + a7.verdict + " grade=" + a7.grade);
-            ok("U7 id 对不上 -> 退回 NETWORK_AUTH_FAIL（不永久排除）",
-                    a7.verdict == CrackEngine.Verdict.NETWORK_AUTH_FAIL
-                            && a7.grade == EvidenceGrade.Level.NONE,
+            info("U7 id=613 但本次配置=700（不同编号空间）-> verdict="
+                    + a7.verdict + " grade=" + a7.grade);
+            ok("U7 id 与 netId 数值不同不影响归因（不比较数值）-> AUTH_FAIL 候选级",
+                    a7.verdict == CrackEngine.Verdict.AUTH_FAIL
+                            && a7.grade == EvidenceGrade.Level.DIRECT,
                     a7.verdict + "/" + a7.grade);
 
             // ---------------- U8（2026-11-02 审计新增）：ACTIVE 下的失败证据不得定案 ----

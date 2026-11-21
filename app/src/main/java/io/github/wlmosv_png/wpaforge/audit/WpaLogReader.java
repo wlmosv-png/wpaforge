@@ -605,6 +605,102 @@ public final class WpaLogReader {
     }
 
     /**
+     * **AT-3 归因（第二版，2026-11-21）：不依赖 supplicant id 与 Android netId 相等。**
+     *
+     * <h3>为什么需要第二版</h3>
+     * 真机实测（PJX110 / ColorOS 15 / Android 15）：
+     * <pre>
+     *   CTRL-EVENT-CONNECTED ... [id=0 ...]   ← supplicant 内部号，恒为 0
+     *   cmd wifi status        →  Net ID: 36  ← Android framework 号
+     * </pre>
+     * 两者**不是同一编号空间**，`id == netId` 永假。于是第一版
+     * {@link #sawWrongKeyForConfig} 在本机恒 false，AUTH_FAIL+DIRECT 不可达。
+     *
+     * <h3>第二版凭什么能归因</h3>
+     * 用**结构性条件**代替数值相等。以下四条必须**同时**成立：
+     * <ol>
+     *   <li><b>闸门确认无旧配置</b>（{@code configConfirmedAbsent}）——
+     *       命令前实测读到 list-networks，且列表里没有目标。这排除了
+     *       「同 SSID 的旧配置在后台重试失败」这条主要污染源。</li>
+     *   <li><b>本窗口内存在目标的关联行</b>（{@code Trying to associate with SSID 'X'}）
+     *       且**在失败行之前** —— 证明这次失败发生在本次关联之后。</li>
+     *   <li><b>本窗口内存在失败前导</b>（{@code 4-Way Handshake failed} 或
+     *       目标 BSSID 的 {@code RX message 1}），且在关联行之后。</li>
+     *   <li><b>带 SSID 归属的 {@code TEMP-DISABLED reason=WRONG_KEY} 在关联行之后</b>
+     *       —— 这是 wpa_supplicant 对**本次**尝试的直接否认。</li>
+     * </ol>
+     *
+     * <h3>它为什么不会误排除正确密码</h3>
+     * 窗口本身已经由「时间锚点 + 起点标记 {@code WPF_PROBE|attempt=<id>}」隔离
+     * （见 {@link AttemptMarker#sliceAfter}），上一条候选的日志行根本不在切片里。
+     * 再叠加条件 1（无旧配置），「旧配置后台重试」这一最后残留路径也被切断。
+     *
+     * <p>反过来：任一条件不成立 → 返回 false → 降级到 AT1 的
+     * {@code NETWORK_AUTH_FAIL}（不持久化、不推游标）。**降级方向始终安全。**
+     *
+     * @param logcatOutput          本条候选的**窗口切片**（已 sliceAfter）
+     * @param targetSsid            目标 SSID
+     * @param targetBssid           目标 BSSID（可为空）
+     * @param configConfirmedAbsent 命令前是否实测确认「目标旧配置不在已保存列表里」
+     * @return true = 可归因到本次候选的直接否认
+     */
+    public static boolean sawWrongKeyForAttemptWindow(String logcatOutput, String targetSsid,
+                                                      String targetBssid,
+                                                      boolean configConfirmedAbsent) {
+        // 条件 1：闸门必须确认过「没有旧配置」。没确认就一律不升级到 AT3。
+        if (!configConfirmedAbsent) return false;
+        if (targetSsid == null || targetSsid.isEmpty() || logcatOutput == null) return false;
+
+        int assocAt = -1;      // 目标的关联行
+        int preludeAt = -1;    // 失败前导
+        int wrongKeyAt = -1;   // 带 SSID 归属的 WRONG_KEY
+        boolean preludeForTarget = false;
+
+        java.util.List<LogEvent> evs = parse(logcatOutput);
+        for (int i = 0; i < evs.size(); i++) {
+            LogEvent e = evs.get(i);
+            // 条件 2：目标的关联行（只认第一条，用于时序比较）
+            if (assocAt < 0 && KIND_ASSOCIATE.equals(e.kind) && targetSsid.equals(e.ssid)) {
+                assocAt = i;
+            }
+            // 条件 3：失败前导。优先认「目标 BSSID 的 M1」，其次认通用的握手失败行。
+            if (KIND_HANDSHAKE_M1.equals(e.kind) && e.bssid != null
+                    && targetBssid != null && !targetBssid.isEmpty()
+                    && targetBssid.equalsIgnoreCase(e.bssid)) {
+                if (preludeAt < 0) preludeAt = i;
+                preludeForTarget = true;
+            } else if (preludeAt < 0 && KIND_HANDSHAKE_FAILED.equals(e.kind)) {
+                preludeAt = i;
+            }
+            /*
+             * 条件 4：带 SSID 归属的直接否认。
+             *
+             * **额外要求带 id= 字段**（2026-11-21 收紧）：
+             * 真机 TEMP-DISABLED 必然带 `id=N`（实测 id=0）。
+             * 不带 id 的形态只证明「网络发生了认证失败」，按原 D1 契约
+             * 应保持 NETWORK_AUTH_FAIL 降级 —— 这里不越权升级它。
+             *
+             * 注意：id 的**数值**不参与判定（它恒为 0，与 netId 不同体系），
+             * 只要求它**存在**，证明这是 supplicant 对某个具体配置的否认。
+             */
+            if (wrongKeyAt < 0 && KIND_WRONG_KEY.equals(e.kind)
+                    && targetSsid.equals(e.ssid) && e.hasNetId()) {
+                wrongKeyAt = i;
+            }
+        }
+
+        if (wrongKeyAt < 0 || assocAt < 0 || preludeAt < 0) return false;
+        // 时序：关联 -> 失败前导 -> 直接否认，三者必须严格递增
+        if (preludeAt <= assocAt) return false;
+        if (wrongKeyAt <= preludeAt) return false;
+        // BSSID 已知时，前导必须来自目标 AP（否则可能是别的网络在握手）
+        if (targetBssid != null && !targetBssid.isEmpty() && !preludeForTarget) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * 目标 BSSID 有没有完成握手 —— **成功判定必须用这个，不能用 sawNegotiated**。
      *
      * @param targetBssid 目标 AP 的 MAC；为空时返回 false（宁可不判成功，也不能误判）

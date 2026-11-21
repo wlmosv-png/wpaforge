@@ -328,6 +328,8 @@ public class MainActivity extends Activity {
      * 卡片被撑得很高、中间大片留白，看着不精致。
      */
     private LinearLayout statRowView;
+    /** 未确定细分独立信息区（1.9.65）—— 与主统计分开，避免数字格被副标题挤压。 */
+    private TextView breakdownView;
     private LinearLayout footRowView;
     private TextView statRateView;       /** 速率（条/分，来自同一次回调） */
     private TextView statEtaView;        /** 剩余时间（来自同一次回调） */
@@ -941,6 +943,31 @@ public class MainActivity extends Activity {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         lp.rightMargin = px(gapPx);
         return lp;
+    }
+
+    /** 渲染「未确定细分」独立信息区（1.9.65）。零项不出现；全零则隐藏。 */
+    private void renderBreakdown() {
+        if (breakdownView == null) return;
+        java.util.List<io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.Item> items =
+                io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.breakdown(
+                        lastTallySuspected, lastTallyNetAuthFail, lastTallyNotFinished,
+                        lastTallyEnvErrors, lastTallyUndecided);
+        if (items.isEmpty()) {
+            breakdownView.setVisibility(View.GONE);
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(L.s("未确定细分 ", "uncertain: "));
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0) sb.append("   ");
+            io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.Item it = items.get(i);
+            sb.append(L.s(io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.labelZh(it.cat),
+                          io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.labelEn(it.cat)))
+              .append(' ')
+              .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(it.count));
+        }
+        breakdownView.setText(sb.toString());
+        breakdownView.setVisibility(View.VISIBLE);
     }
 
     private LinearLayout.LayoutParams weight() {
@@ -9974,7 +10001,7 @@ public class MainActivity extends Activity {
 
         LinearLayout statRow = new LinearLayout(this);
         statRowView = statRow;
-        statRow.setOrientation(LinearLayout.HORIZONTAL);
+        statRow.setOrientation(LinearLayout.VERTICAL);
         statDoneView = AmberTheme.stat(this);
         statTotalView = AmberTheme.stat(this);
         statWrongView = AmberTheme.stat(this);
@@ -9983,26 +10010,49 @@ public class MainActivity extends Activity {
         statTotalView.setText("—");
         statWrongView.setText("—");
         statUnkView.setText("—");
-        // 未知态一律用弱色：30sp 的亮琥珀「—」看起来像一根进度条，容易被当成数据
+        // 未知态一律用弱色：亮琥珀「—」看起来像一根进度条，容易被当成数据
         statDoneView.setTextColor(AmberTheme.TEXT_FAINT);
         statTotalView.setTextColor(AmberTheme.TEXT_FAINT);
         statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
         statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
-        // 四列：已执行 / 已证实错误 / 未确定 / 总数。
+        // 四项核心统计：窄屏 2×2、宽屏 1×4（1.9.65：不再强行四列，窄屏文字不再挤压）。
         // 「已证实错误」用危险色、「未确定」用告警色 —— 两者视觉上必须不同：
         // 前者说明这条密码被证明了是错的，后者只说明我们没拿到证据。
-        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已执行", "TRIED"), statDoneView),
-                weight());
-        statRow.addView(AmberTheme.statColumn(this, dp, L.s("已证实错误", "PROVEN WRONG"),
-                statWrongView), weight());
-        statRow.addView(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"),
-                statUnkView), weight());
-        statRow.addView(AmberTheme.statColumn(this, dp, L.s("总数", "TOTAL"), statTotalView),
-                weight());
+        final int statCols = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.gridColumns(
+                getResources().getConfiguration().screenWidthDp);
+        java.util.List<LinearLayout> statCells = new java.util.ArrayList<>();
+        statCells.add(AmberTheme.statColumn(this, dp, L.s("已执行", "TRIED"), statDoneView));
+        statCells.add(AmberTheme.statColumn(this, dp, L.s("已证实错误", "PROVEN WRONG"), statWrongView));
+        statCells.add(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"), statUnkView));
+        statCells.add(AmberTheme.statColumn(this, dp, L.s("总数", "TOTAL"), statTotalView));
+        LinearLayout curStatRow = null;
+        for (int ci = 0; ci < statCells.size(); ci++) {
+            if (ci % statCols == 0) {
+                curStatRow = new LinearLayout(this);
+                curStatRow.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                if (ci > 0) rlp.topMargin = px(10);
+                statRow.addView(curStatRow, rlp);
+            }
+            curStatRow.addView(statCells.get(ci), weight());
+        }
         LinearLayout.LayoutParams srlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         srlp.topMargin = px(12);
         progressCard.addView(statRow, srlp);
+
+        // 未确定细分独立信息区（1.9.65）：与主统计分开，不塞进数字格。
+        breakdownView = new TextView(this);
+        breakdownView.setTextSize(AmberTheme.FS_SMALL);
+        breakdownView.setTextColor(AmberTheme.TEXT_DIM);
+        breakdownView.setSingleLine(false);
+        breakdownView.setLineSpacing(px(3), 1f);
+        breakdownView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = px(10);
+        progressCard.addView(breakdownView, blp);
 
         // 进度条沿用既有 StagedProgress（分层 / 流光 / 动画都在它里面），
         // 只把配色接到主题上，避免「页面主色」与「进度条主色」各写一个值。
@@ -10536,6 +10586,10 @@ public class MainActivity extends Activity {
         if (statPctView != null) {
             // 右上角的大数字同理：没数据时不摆一个「—」在那儿
             statPctView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
+        if (breakdownView != null && !hasData) {
+            // 未确定细分同样「没数据就不占位」；有数据时由 renderBreakdown 控制。
+            breakdownView.setVisibility(View.GONE);
         }
         if (actionsHint != null) {
             /* 提示行必须和状态行说同一件事。
@@ -11673,14 +11727,8 @@ public class MainActivity extends Activity {
                 lastTallyEnvErrors = environmentErrors;
                 lastTallyExecuted = executed;
                 lastTallyHit = hit;
-                // 未确定格已有数字时，若存在环境错误就补一行副标题，
-                // 让「差额去哪了」一眼可见。没有环境错误则保持原样。
-                if (statUnkView != null && environmentErrors > 0) {
-                    statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                            .thousands(inconclusive) + " \u00b7 \u26a0"
-                            + environmentErrors);
-                    statUnkView.setTextColor(AmberTheme.WARN);
-                }
+                // 1.9.65：细分不再塞进「未确定」数字格，统一渲染到下方独立信息区。
+                renderBreakdown();
                 renderProgressCardState();
             });
         }
@@ -11692,8 +11740,8 @@ public class MainActivity extends Activity {
          * 用户无法区分「疑似密码错误」（值得复核）与「连接未完成」
          * （等下就好）与「无法判断」（证据不足）。
          *
-         * <p>现在在「未确定」格下补一行细分副标题，只在**确有细分**时出现，
-         * 不污染正常显示。主数字仍是既有口径（inconclusive），保证与旧断言一致。
+         * <p>1.9.65：细分不再塞进「未确定」数字格，而是渲染到下方独立信息区
+         * （{@link #breakdownView}）。「未确定」主数字仍是既有口径（inconclusive）。
          */
         @Override
         public void onTallyCategorized(int suspectedWrong, int notFinished,
@@ -11702,30 +11750,7 @@ public class MainActivity extends Activity {
                 lastTallySuspected = suspectedWrong;
                 lastTallyNotFinished = notFinished;
                 lastTallyUndecided = undecided;
-                if (statUnkView != null) {
-                    int total = suspectedWrong + notFinished + undecided + envErrors;
-                    if (total > 0) {
-                        StringBuilder sb = new StringBuilder();
-                        sb.append(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                .thousands(lastTallyInconclusive));
-                        sb.append("\n");
-                        if (suspectedWrong > 0) {
-                            sb.append(L.s("疑", "S")).append(suspectedWrong).append(' ');
-                        }
-                        if (notFinished > 0) {
-                            sb.append(L.s("未完", "NF")).append(notFinished).append(' ');
-                        }
-                        if (undecided > 0) {
-                            sb.append(L.s("未判", "U")).append(undecided).append(' ');
-                        }
-                        if (envErrors > 0) {
-                            sb.append(L.s("环境", "ENV")).append(envErrors);
-                        }
-                        statUnkView.setText(sb.toString().trim());
-                        statUnkView.setTextColor(suspectedWrong > 0
-                                ? AmberTheme.WARN : ACCENT);
-                    }
-                }
+                renderBreakdown();
                 renderProgressCardState();
             });
         }

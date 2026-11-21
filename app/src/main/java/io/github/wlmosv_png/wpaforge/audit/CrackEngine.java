@@ -2229,7 +2229,33 @@ public final class CrackEngine {
                  *   任一侧为 -1 → 当作证据不足，退回原三条件判定。
                  */
                 long statusNetId = info.netId;
-                boolean netIdMismatch = statusNetId >= 0
+                /*
+                 * 2026-11-22 修复：netId 冲突**只在 status 确实连着目标时**才判定。
+                 *
+                 * <h3>缺陷实证</h3>
+                 * 旧条件 `statusNetId>=0 && targetNetId>=0 && statusNetId!=targetNetId`
+                 * 在真机上会这样触发：
+                 * <pre>
+                 *   命令前连着 B212（netId=5）
+                 *   目标是 2.4G-3（框架建出配置，netId=77）
+                 *   → 5 != 77 成立 → suspectNetIdConflict = true
+                 *   → classifyDeadline 判 netid-conflict → verdict = UNKNOWN
+                 * </pre>
+                 * 但这是**完全正常**的场景：命令前连着别的网、目标没连上。
+                 * 它不该叫「netId 冲突」，更不该让整条候选失去结论。
+                 * 真机 1.9.62 跑 2.4G-3 时 6 条全 UNKNOWN，正是这个原因。
+                 *
+                 * <h3>修复</h3>
+                 * 增加前置条件：status 里的 SSID 必须**就是目标**。
+                 * 只有「连着目标、但 netId 与本次配置不符」才是真正的归属存疑
+                 * （旧配置残留 / 同名网络的另一个 BSSID）。
+                 *
+                 * <p>这条收紧**不会**漏掉任何真实冲突：真实冲突必然伴随
+                 * status 显示目标 SSID；而「连着别的网」由 failover / 无证据路径处理。
+                 */
+                boolean statusOnTarget = target.ssid.equals(info.ssid);
+                boolean netIdMismatch = statusOnTarget          // ← 关键前置条件
+                        && statusNetId >= 0
                         && targetNetId >= 0
                         && statusNetId != targetNetId;
                 if (netIdMismatch) {
@@ -2269,7 +2295,38 @@ public final class CrackEngine {
                 // wpalog) causes Adjudicator rule 4 to produce NETWORK_AUTH_FAIL, which
                 // the ledger treats as a terminated candidate for skip-in-save-time.
                 // Without observed activity, lifecycle must be UNKNOWN, not TERMINATED.
-                if (!sawAttempt) lastLifecycle = Lifecycle.UNKNOWN;
+                /*
+                 * P0 守卫（2026-11-06 引入，2026-11-22 收紧例外）。
+                 *
+                 * <h3>原本要防什么</h3>
+                 * {@code lifecycleOfStatus} 把 "Wifi is not connected" 判 TERMINATED，
+                 * 但那只表示**从未连上**，不等于「连上过又终止」。
+                 * 若误判 TERMINATED，下游会产出 NETWORK_AUTH_FAIL，
+                 * 而账本把它当作「已终止的候选」，在省时档跳过
+                 * —— 一条从未真正执行过的候选被永久排除。
+                 *
+                 * <h3>2026-11-22 发现的过度覆盖</h3>
+                 * 该守卫在「目标从未出现在 status，但 status 明确显示
+                 * **连着别的网络**（如 B212）」时也强制 UNKNOWN，
+                 * 于是 2.4G-3 场景 6 条全落进 no-evidence-state-unknown。
+                 *
+                 * 但「连着别的网络」是**比 not-connected 更强的终止证据**：
+                 * 系统已经回到另一个已保存网络，本次尝试显然已结束。
+                 * 这不是「状态读不到」。
+                 *
+                 * <h3>修复</h3>
+                 * 守卫增加例外：若 status 明确显示连着非目标的已连接网络，
+                 * 允许保留 TERMINATED。其余情况（读不到 / not connected /
+                 * 目标状态不明）仍强制 UNKNOWN，原保护不变。
+                 */
+                boolean lifecycleGuardAllowsOtherNetwork =
+                        info.ssid != null && !info.ssid.isEmpty()
+                                && !target.ssid.equals(info.ssid)
+                                && info.state != null
+                                && "COMPLETED".equalsIgnoreCase(info.state);
+                if (!sawAttempt && !lifecycleGuardAllowsOtherNetwork) {
+                    lastLifecycle = Lifecycle.UNKNOWN;
+                }
 
                 // ---- D3：成功帧到达时，若本条的 netId 还未知，**先补探一次** ----
                 //
@@ -2894,6 +2951,29 @@ public final class CrackEngine {
         // 分层证据摘要（未命中时也给出，方便定位是哪层的问题）
         // R10：原来这里报的「事件N」恒为 0（NetworkWatcher 早就不参与判定）—— **假数字**。
         // 现在改报真正影响结论的东西：本条候选的日志窗口是否可用。
+        /*
+         * 2026-11-22：补充 dumpsys 诊断（**只描述事实，不参与判定**）。
+         *
+         * 真机实测：本机 logcat 的 wpa_supplicant 与 ClientModeImpl 均为 0 行，
+         * 唯一能拿到「断开事件」的通道是 `dumpsys wifi`。
+         * 但它**不能**证明密码错误（reasonCode 是本机恒为 3 的
+         * WIFI_DISABLED_BY_SYSTEM，不是 supplicant 的 WRONG_KEY），
+         * 也到不了 AT3（事件里没有配置 id / netId 对应关系）。
+         *
+         * 所以这里只把它写进 detail，让「系统在反复失败」这件事可见，
+         * 而不是让它变成结论。判定链一行不动。
+         */
+        try {
+            String dumps = shell == null ? null : shell.exec("dumpsys wifi", 4000);
+            if (dumps != null && !dumps.isEmpty()) {
+                String dd = WifiDumpsProbe.describe(
+                        WifiDumpsProbe.disconnects(dumps), target.ssid);
+                if (!dd.isEmpty()) detail = detail + " · " + dd;
+            }
+        } catch (Throwable ignored) {
+            // 诊断失败不影响结论 —— 这正是「只诊断」的含义。
+        }
+
         detail = detail + L.f(" [层: 日志%d/%s · status%d/%s · 窗口%s]",
                 " [layers: log%d/%s status%d/%s window:%s]",
                 logRounds, logReadable ? "可读" : "不可读",

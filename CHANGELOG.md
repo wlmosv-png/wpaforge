@@ -1,5 +1,90 @@
 # Changelog
 
+## [1.9.62] - 2026-11-21
+
+> ### 破解链路判定安全专项：假成功、游标漏跑、暂停恢复
+
+本轮**只修判定安全**，不做 UI 美化。UI 改造（11 种细分状态）完整保留。
+
+#### P0 —— 错误密码可能被记成命中
+
+`cmd wifi list-networks` 的「读不到」与「确实没有」返回同一个 `-1`，
+于是 `forgetTargetByShell` 把错误文本当成「已删净」，净检与基线闸门双双放行。
+此时系统若仍挂着目标旧配置，`SSID + COMPLETED + IP` 立刻成立，
+`SuccessRule` 又因 `netId` 缺失跳过冲突检查 → 判 SUCCESS → 写命中密文与历史。
+
+现在三态严格分离（`>=0` 存在 / `-1` 确认没有 / `-2` 读不到），
+且「读不到」一律走 `UNREADABLE` 闸门，绝不放行。
+`SuccessRule` 新增带闸门强度的重载：只有前置闸门**实测确认**配置已删净时，
+`netId` 缺失才允许放行（保住慢 AP 上的正确密码，不漏判）。
+
+#### P1 —— 暂停时游标被覆盖，正确密码永久跳过
+
+`CrackEngine` 的 ABORTED 分支曾写 `cursor = i`，把「安全续跑边界」
+推到当前条，越过中间所有 TIMEOUT / UNKNOWN / INCOMPLETE 的候选。
+穷举 1528 组合实测触发率 68.2%，且「暂停前存在非 DIRECT」这一必要条件命中率 100%。
+
+现在中断**不推进**边界，保持原值。实测：`P=[A..H]`、`C=TIMEOUT`、F 处暂停
+→ `cursor=2`，续跑从 C 重试，A/B 不重跑。
+
+#### P1 —— 过滤后下标与原始下标混用
+
+引擎的 `cursor` 是**过滤后列表 K** 的下标，却被当成**原始列表 P** 的下标落盘与换算，
+导致位置系统性偏小、已完成的候选被重跑。新增 `kIndexToOriginal()` 做精确映射。
+
+#### P1 —— 暂停后再停止，STOPPED 被覆盖回 PAUSED
+
+收尾时 `pauseFlag` 优先于 `cancelFlag`，于是「先暂停再停止」报 PAUSED，
+`finishTask` 又把 `stopAll()` 刚写的 STOPPED 改回 PAUSED；
+而 `hasWork()` 认 PAUSED 算有活 → **停止后仍会被继续跑**。
+现在取消优先，且 `finishTask` 见盘上 STOPPED 就保持不动。
+
+#### P1 —— 熔断读全局静态标志，健康通道被误熔断
+
+`RootProber.lastTimedOut()` 是 `static volatile`，常驻会话成功返回时**不刷新它**，
+于是任一次旁路 su 超时留下的 `true` 会让后续每条成功命令都被计成超时，
+5 条后 `stopAll()`，多字典计划被永久落 STOPPED（不可续）。
+现在每次调用自己判断，空输出也正确清零。
+
+#### P1 —— AUTH_FAIL + DIRECT 在本机不可达（安全降级，不降门槛）
+
+supplicant 的 `[id=N]` 与 Android Net ID 实测**不是同一编号空间**，
+因此「候选级证伪」实际不可达。这是刻意的安全取舍：
+宁可每轮重试错误密码，也绝不错排除正确密码。
+**未**为提高 TriedSet 命中率放宽任何门槛。
+
+#### 统计与 UI 一致性
+
+- `environmentErrors` 此前只在 `VerdictTally` 内部维护、**全仓无人读取**，
+  导致「已执行 N」与「已证实 + 未确定」对不上且差值无处显示。
+  现在它是 UI 一等数字，恒等式 `tested = executed + envErrors + hit` 成立。
+- `VerdictTally` 新增 `hit` 计数与 `total()`。
+- 破解页状态行：结束态不再用一句 outcome 文案压掉 11 种细分状态。
+- 新任务开始时清掉上一轮的 Verdict / Grade / outcome，避免显示假信息。
+
+#### CrackPhaseView
+
+- **`AUTH_FAIL + INFERRED` / `NONE` 不再显示成「已证实错误」**
+  （只有 `DIRECT` 才算已证实）。这是本轮新发现并修掉的界面安全问题。
+- 镜像补全 `DONE_HIT` / `DONE_MISS`（此前被静默吞成 `STOPPED`）。
+- 新增 `CrackPhaseViewTest`（45 例）—— 类注释声称存在、实际一直缺失。
+
+#### 通道结果语义
+
+- `ShellSession.execFrame()` 保留退出码（此前被 `split()` 之后直接丢弃）。
+- `ShellExec.Result` 区分 `ok()`（仅表示没超时）与 `succeeded()`（退出码 0），
+  新增 `hasExitCode()`。exit 127 / exit 1 / exit 0 / 超时 四者不再混淆。
+
+#### 测试
+
+新增 6 个测试类、共 139 例：`SuccessRuleFalsePositiveTest`、
+`CandidateCursorResumeTest`、`PauseStopRaceTest`、`CrackPhaseViewTest`、
+`ShellCommandResultTest`、`TriedSetPersistenceSafetyTest`。
+门禁 **8418 通过 / 6 失败 / 224 类**；6 条失败为本轮**之前**既有的陈旧用例
+（`P05AttributionTest` / `UnifiedVerdictIntegrationTest`，早于 2026-11-06 的
+`lastLifecycle` 守卫），本轮**未修改**它们，也未放宽任何断言。
+
+
 ## [1.9.60] - 2026-11-15
 
 > ### 手机号字典：先确定规模上界，再谈穷举

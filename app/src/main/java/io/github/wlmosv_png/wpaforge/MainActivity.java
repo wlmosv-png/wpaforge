@@ -10249,16 +10249,19 @@ public class MainActivity extends Activity {
         //   结束后 = 最后尝试（陈述事实，且**不说"完成"**——没找到不算完成）
         candLabel = AmberTheme.label(this, L.s("正在尝试", "TRYING"));
         candRoll = new io.github.wlmosv_png.wpaforge.ui.CandidateRoll(this);
+        // 1.9.68：候选区统一节奏 —— 标签 → 大字 6dp，大字 → 上两条 8dp。
+        // 原来大字是 FrameLayout + WRAP_CONTENT，行高随字体浮动，
+        // 与下方「上两条」之间会忽大忽小（真机截图里大字下面贴着两条小字）。
         LinearLayout.LayoutParams candLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        candLp.topMargin = px(5);
+        candLp.topMargin = px(6);
         candRoll.setLayoutParams(candLp);
         candPrev = new TextView(this);
         candPrev.setTextSize(AmberTheme.FS_SMALL);
         candPrev.setTextColor(AmberTheme.TEXT_FAINT);
         candPrev.setTypeface(Typeface.MONOSPACE);
-        candPrev.setLineSpacing(px(3), 1f);
-        candPrev.setPadding(0, px(4), 0, 0);
+        candPrev.setLineSpacing(px(4), 1f);
+        candPrev.setPadding(0, px(8), 0, 0);
         candPrev.setVisibility(View.GONE);
         candBox = new LinearLayout(this);
         candBox.setOrientation(LinearLayout.VERTICAL);
@@ -10266,7 +10269,8 @@ public class MainActivity extends Activity {
         candBox.addView(candLabel);
         candBox.addView(candRoll);
         candBox.addView(candPrev);
-        eventCard.addView(candBox);
+        eventCard.addView(candBox, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 攻击流工具条：折叠 / 级别筛选 / 清空（语义与回调不变）
         flowHeader = new LinearLayout(this);
@@ -13324,7 +13328,7 @@ public class MainActivity extends Activity {
         streamLines.add(new LogLine(line, c, kind));
         while (streamLines.size() > MAX_LOG_LINES) streamLines.remove(0);
 
-        if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(kind, streamKeyOnly)) {
+        if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(kind, streamKeyOnly, streamDetailMode)) {
             // 被筛掉的行照样留在全量列表里，切「全部」时能看到
             updateFlowHeader();
             updateEmptyHint();
@@ -13454,13 +13458,21 @@ public class MainActivity extends Activity {
         streamBuffer.clear();
         streamBuffer.clearSpans();
         boolean zh = L.isZh();
+        // 1.9.68：相邻两条**同键**记录（类别+reason 相同）只打一次事实行。
+        // 之前每条都跟一句「这条没有连上，继续尝试下一条。」，
+        // 连续未命中时同一句话会连着出现好几次（真机截图复现）。
+        String lastFactKey = null;
         for (LogLine l : streamLines) {
-            if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly)) continue;
+            if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly, streamDetailMode)) continue;
             if (l.rec != null) {
                 StringBuilder sb = new StringBuilder(
                         io.github.wlmosv_png.wpaforge.ui.StreamFormatter.mainLine(l.rec, zh));
-                sb.append('\n').append(
-                        io.github.wlmosv_png.wpaforge.ui.StreamFormatter.factLine(l.rec, zh));
+                boolean sameAsPrev = l.dedupeKey != null && l.dedupeKey.equals(lastFactKey);
+                if (!sameAsPrev) {
+                    sb.append('\n').append(
+                            io.github.wlmosv_png.wpaforge.ui.StreamFormatter.factLine(l.rec, zh));
+                    lastFactKey = l.dedupeKey;
+                }
                 if (streamDetailMode) {
                     sb.append('\n').append(
                             io.github.wlmosv_png.wpaforge.ui.StreamFormatter.detailLine(l.rec, zh));
@@ -13468,6 +13480,7 @@ public class MainActivity extends Activity {
                 appendBuffer(sb, l.color);
                 continue;
             }
+            lastFactKey = null;
             CharSequence body = l.shown(streamKeyOnly);
             if (l.repeat > 1) {
                 StringBuilder sb = new StringBuilder(body);

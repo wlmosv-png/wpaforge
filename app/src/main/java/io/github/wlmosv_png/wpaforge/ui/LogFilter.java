@@ -38,6 +38,10 @@ public final class LogFilter {
         String t = line.trim();
         if (t.isEmpty()) return Kind.DETAIL;
 
+        // ⓪ 技术诊断（1.9.68）：引擎打的事件摘要等，只在「详情」里出现。
+        //    普通用户读不懂「事件 2: B212↑ B212↓」，但它必须保留可追溯。
+        if (t.startsWith("· diag ")) return Kind.DETAIL;
+
         // ① 逐条候选结果：都是「关键」—— 它是运行中的心跳，不是噪音。
         //    （真正该藏的是启动自检，那些会落到末尾的 DETAIL。）
         if (t.startsWith(CAND_FAIL)) return Kind.REASON;
@@ -68,6 +72,18 @@ public final class LogFilter {
 
     /** 某个视图下是否显示 */
     public static boolean visible(Kind k, boolean keyOnly) {
+        return keyOnly ? isKey(k) : true;
+    }
+
+    /**
+     * 三态可见性（1.9.68）：关键 / 全部 / 详情。
+     *
+     * <p>「全部」过去等于「什么都显示」，于是技术诊断（`· diag …`）也混在里面，
+     * 普通用户读不懂。现在「全部」= 用户相关的一切（含逐条结果与节点），
+     * 只有显式打开「详情」才显示 {@link Kind#DETAIL}（诊断/自检/底层事件）。
+     */
+    public static boolean visible(Kind k, boolean keyOnly, boolean detail) {
+        if (k == Kind.DETAIL) return detail;
         return keyOnly ? isKey(k) : true;
     }
 

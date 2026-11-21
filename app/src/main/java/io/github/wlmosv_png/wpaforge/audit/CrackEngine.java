@@ -3716,7 +3716,11 @@ public final class CrackEngine {
                     // 一条都看不见。内容变了才写。
                     if (!wline.equals(lastWatcherLine)) {
                         lastWatcherLine = wline;
-                        l.onLog(wline);
+                        // 1.9.68：这条是**技术诊断**（NetworkWatcher 的事件摘要），
+                        // 普通用户在攻击流里看到「事件 2: B212↑ B212↓」完全读不懂。
+                        // 加 "· diag " 前缀，让 UI 侧按 DETAIL 级别收进「详情」模式，
+                        // 默认视图不显示；原始内容一字未删（审计仍可查）。
+                        l.onLog("· diag " + wline.trim());
                     }
                 }
 

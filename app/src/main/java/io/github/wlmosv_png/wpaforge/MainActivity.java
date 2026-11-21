@@ -310,8 +310,10 @@ public class MainActivity extends Activity {
     private TextView netSecChip;         /** 安全类型胶囊 */
     private TextView statHitView;        /** 已确认成功（SUCCESS / DIRECT） */
     private TextView statWrongView;      /** 已证实错误（AUTH_FAIL / DIRECT） */
-    private TextView statIncompleteView; /** 连接未完成（TIMEOUT/INCOMPLETE/TERMINATED_UNKNOWN） */
-    private TextView statUnkView;        /** 尚无有效判定（疑似/网络级/无法判断/环境异常） */
+    /** 未命中（1.9.68：连接未完成/无证据/网络级/疑似 全部合并到这一格）。 */
+    private TextView statMissView;
+    /** 环境异常（单列；只有它才是用户需要处理的问题）。 */
+    private TextView statEnvView;
     /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
     private TextView planLineView;
     /** 运行参数层（目标 / 模式 / 过滤 / 本次待执行）—— 与计划行分开，避免混排。 */
@@ -337,7 +339,10 @@ public class MainActivity extends Activity {
     private LinearLayout footRowView;
     private TextView statRateView;       /** 速率（条/分，来自同一次回调） */
     private TextView statEtaView;        /** 剩余时间（来自同一次回调） */
-    private TextView stateBig;           /** 当前状态（大字） */
+    /** 当前状态文字（22sp）。 */
+    private TextView stateBig;
+    /** 当前状态图标（Canvas 自绘，与文字同高、同色）。 */
+    private ImageView stateIconView;
     private TextView actionsHint;        /** 底部可用性说明 */
     private LinearLayout progressCard;   /** 任务进度卡 */
     private LinearLayout eventCard;      /** 状态与事件卡 */
@@ -920,26 +925,22 @@ public class MainActivity extends Activity {
         }
         boolean active = running || paused;
 
+        // 1.9.68：禁用态不再整体 alpha 压暗（文字会灰到看不清），
+        // 改为「底色不变、文字转次级色」，按钮尺寸与基线在所有状态下完全稳定。
         if (startBtn != null) {
-            startBtn.setEnabled(!active);
-            startBtn.setAlpha(active ? 0.4f : 1f);
-            startBtn.setText(active
-                    ? L.s("▶ 开始破解", "▶ Start")
-                    : L.s("▶ 开始破解", "▶ Start"));
+            setActionEnabled(startBtn, !active, ON_ACCENT);
+            startBtn.setText(L.s("开始破解", "Start"));
         }
         if (pauseBtn != null) {
-            // paused 时按钮文案会变成「继续」，但旧写法只按 running 判断可用性，
-            // 于是「已暂停」的任务永远点不动「继续」——用户被卡死在暂停态。
+            // paused 时文案变「继续」；可用性按 running || paused（暂停后必须能点继续）。
             boolean canPause = running || paused;
-            pauseBtn.setEnabled(canPause);
-            pauseBtn.setAlpha(canPause ? 1f : 0.4f);
+            setActionEnabled(pauseBtn, canPause, TEXT);
             pauseBtn.setText(paused
-                    ? L.s("▶ 继续", "▶ Resume")
-                    : L.s("‖ 暂停", "‖ Pause"));
+                    ? L.s("继续", "Resume")
+                    : L.s("暂停", "Pause"));
         }
         if (stopBtn != null) {
-            stopBtn.setEnabled(active);
-            stopBtn.setAlpha(active ? 1f : 0.4f);
+            setActionEnabled(stopBtn, active, DANGER);
         }
     }
 
@@ -958,6 +959,14 @@ public class MainActivity extends Activity {
 
     /** 渲染「未确定细分」独立信息区（1.9.65）。零项不出现；全零则隐藏。 */
     /** 四项核心统计 + 未确定细分（唯一入口，数字全部来自 VerdictTally 的累计值）。 */
+    /**
+     * 统计区渲染（1.9.68 用户口径）。
+     *
+     * <p>主统计只留三格：**已确认成功 / 已证实错误 / 未命中**；
+     * 环境异常单列（只有它才是用户需要处理的）。
+     * 「连接未完成 / 无证据 / 网络级 / 疑似」全部并入「未命中」——
+     * 数字仍来自 {@code VerdictTally}，口径没变，只是展示合并。
+     */
     private void renderStats() {
         int hit = lastTallyHit;
         int confirmed = lastTallyConfirmed;
@@ -966,8 +975,8 @@ public class MainActivity extends Activity {
         int networkFail = lastTallyNetAuthFail;
         int undecided = lastTallyUndecided;
         int envErrors = lastTallyEnvErrors;
-        int noVerdict = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
-                .noValidVerdict(suspected, networkFail, undecided, envErrors);
+        final int miss = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
+                .missTotal(notFinished, suspected, networkFail, undecided);
         if (statHitView != null) {
             statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(hit));
             statHitView.setTextColor(hit > 0 ? OK_GREEN : AmberTheme.TEXT_FAINT);
@@ -976,24 +985,24 @@ public class MainActivity extends Activity {
             statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(confirmed));
             statWrongView.setTextColor(confirmed > 0 ? DANGER : AmberTheme.TEXT_FAINT);
         }
-        if (statIncompleteView != null) {
-            statIncompleteView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(notFinished));
-            statIncompleteView.setTextColor(notFinished > 0
+        if (statMissView != null) {
+            // 这一格现在就是「未命中」（不再是「连接未完成」）
+            statMissView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(miss));
+            statMissView.setTextColor(miss > 0
                     ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_FAINT);
         }
-        if (statUnkView != null) {
-            statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(noVerdict));
-            statUnkView.setTextColor(noVerdict <= 0 ? AmberTheme.TEXT_FAINT
-                    : (suspected > 0 ? AmberTheme.ORANGE : AmberTheme.TEXT_DIM));
+        if (statEnvView != null) {
+            // 第四格：环境异常（单列，只有 >0 时才醒目）
+            statEnvView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(envErrors));
+            statEnvView.setTextColor(envErrors > 0 ? DANGER : AmberTheme.TEXT_FAINT);
         }
         if (statSumView != null) {
-            int sum = hit + confirmed + notFinished + noVerdict;
+            int sum = hit + confirmed + miss + envErrors;
             if (sum <= 0) {
                 statSumView.setVisibility(View.GONE);
             } else {
-                // 与 VerdictTally.total() 同一恒等式：hit + 已证实 + 未完成 + 无有效判定
                 boolean ok4 = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
-                        .consistent4(hit, confirmed, notFinished, noVerdict, sum);
+                        .consistent4(hit, confirmed, miss, envErrors, sum);
                 statSumView.setText(L.f("已判定合计 %s 条%s", "adjudicated %s%s",
                         io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(sum),
                         ok4 ? "" : L.s("（分类合计不一致，请反馈）",
@@ -1005,30 +1014,38 @@ public class MainActivity extends Activity {
         renderBreakdown();
     }
 
+
     /** 尚无有效判定的细分（疑似/网络级/无法判断/环境异常），零值隐藏。 */
+    /**
+     * 「未命中」的补充说明（1.9.68）。
+     *
+     * <p>只把**用户真正需要留意的一条**单独说出来：疑似密码错误（可能是接近的候选）。
+     * 其余（无证据 / 网络拒绝 / 无法判断）合并成「其他未命中」，
+     * 不再把内部原因摆成统计分类 —— 那些在详情里都能查到。
+     */
     private void renderBreakdown() {
         if (breakdownView == null) return;
-        java.util.List<io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.Item> items =
-                io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.breakdown(
-                        lastTallySuspected, lastTallyNetAuthFail, lastTallyUndecided,
-                        lastTallyEnvErrors);
-        if (items.isEmpty()) {
+        int suspected = lastTallySuspected;
+        int others = lastTallyNotFinished + lastTallyNetAuthFail + lastTallyUndecided;
+        if (suspected <= 0 && others <= 0) {
             breakdownView.setVisibility(View.GONE);
             return;
         }
         StringBuilder sb = new StringBuilder();
-        sb.append(L.s("尚无有效判定细分 ", "no-verdict split: "));
-        for (int i = 0; i < items.size(); i++) {
-            if (i > 0) sb.append("   ");
-            io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.Item it = items.get(i);
-            sb.append(L.s(io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.catLabelZh(it.cat),
-                          io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.catLabelEn(it.cat)))
-              .append(' ')
-              .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(it.count));
+        if (suspected > 0) {
+            sb.append(L.s("其中疑似密码错误 ", "of which suspected wrong "))
+              .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(suspected));
+        }
+        if (others > 0) {
+            if (sb.length() > 0) sb.append("   ");
+            sb.append(L.s("其他未命中 ", "other misses "))
+              .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(others));
         }
         breakdownView.setText(sb.toString());
+        breakdownView.setTextColor(AmberTheme.TEXT_FAINT);
         breakdownView.setVisibility(View.VISIBLE);
     }
+
 
 
     private LinearLayout.LayoutParams weight() {
@@ -9345,12 +9362,12 @@ public class MainActivity extends Activity {
     /** 状态 -> 标题。 */
     private String verdictLabel(io.github.wlmosv_png.wpaforge.audit.OfflineVerdict v) {
         switch (v.state) {
-            case HIT:          return L.s("✓ 命中", "✓ Hit");
-            case MISS:         return L.s("✗ 未命中（字典已跑完）", "✗ No hit (dictionary exhausted)");
+            case HIT:          return L.s("命中", "Hit");
+            case MISS:         return L.s("未找到匹配密码", "No matching password");
             case CANCELLED:    return L.s("■ 已取消（未跑完，不能算未命中）",
                                           "■ Cancelled (incomplete - not a miss)");
             case BAD_MATERIAL: return L.s("⚠ 材料异常（未执行）", "⚠ Material problem (not executed)");
-            case FAILED:       return L.s("✗ 执行失败", "✗ Failed");
+            case FAILED:       return L.s("执行失败", "Failed");
             default:           return L.s("最近结果", "Last result");
         }
     }
@@ -10018,13 +10035,22 @@ public class MainActivity extends Activity {
         progTop.setOrientation(LinearLayout.HORIZONTAL);
         progTop.setGravity(Gravity.BOTTOM);
 
+        // 1.9.68：主状态行 = **同一套布局**的「图标 + 文字」组件。
+        // 图标用 Canvas 自绘（不用 Unicode 字符），与文字同高度、同色、
+        // 同基线；所有状态只换图标/文字/色，结构不动。
+        stateIconView = new ImageView(this);
+        stateIconView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        stateIconView.setBackground(null);
+        LinearLayout stateRow = new LinearLayout(this);
+        stateRow.setOrientation(LinearLayout.HORIZONTAL);
+        stateRow.setGravity(Gravity.CENTER_VERTICAL);
+        stateRow.addView(stateIconView, stateIconParams(dp));
         stateBig = new TextView(this);
-        // 1.9.67：主状态是卡片的一级信息 —— 用 FS_DISPLAY（22sp）而不是 15sp。
-        // 图标与文字同字号，色盲/低对比环境下也能靠符号区分。
         stateBig.setTextSize(AmberTheme.FS_DISPLAY);
         stateBig.setTextColor(AmberTheme.TEXT_DIM);
         stateBig.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        stateBig.setLetterSpacing(0.01f);
+        stateRow.addView(stateBig, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         /*
          * 状态行**允许折两行**（2026-11-02 收口）。
          *
@@ -10036,7 +10062,7 @@ public class MainActivity extends Activity {
         stateBig.setSingleLine(false);
         stateBig.setMaxLines(2);
         stateBig.setEllipsize(null);
-        progTop.addView(stateBig, new LinearLayout.LayoutParams(
+        progTop.addView(stateRow, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         statPctView = new TextView(this);
@@ -10078,14 +10104,14 @@ public class MainActivity extends Activity {
         statRow.setOrientation(LinearLayout.VERTICAL);
         statHitView = AmberTheme.stat(this);
         statWrongView = AmberTheme.stat(this);
-        statIncompleteView = AmberTheme.stat(this);
-        statUnkView = AmberTheme.stat(this);
+        statMissView = AmberTheme.stat(this);
+        statEnvView = AmberTheme.stat(this);
         statHitView.setText("—"); statWrongView.setText("—");
-        statIncompleteView.setText("—"); statUnkView.setText("—");
+        statMissView.setText("—"); statEnvView.setText("—");
         statHitView.setTextColor(AmberTheme.TEXT_FAINT);
         statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
-        statIncompleteView.setTextColor(AmberTheme.TEXT_FAINT);
-        statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
+        statMissView.setTextColor(AmberTheme.TEXT_FAINT);
+        statEnvView.setTextColor(AmberTheme.TEXT_FAINT);
         final int statCols = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.gridColumns(
                 getResources().getConfiguration().screenWidthDp);
         java.util.List<LinearLayout> statCells = new java.util.ArrayList<>();
@@ -10094,9 +10120,9 @@ public class MainActivity extends Activity {
         statCells.add(AmberTheme.statColumn(this, dp,
                 L.s("已证实错误", "PROVEN WRONG"), statWrongView));
         statCells.add(AmberTheme.statColumn(this, dp,
-                L.s("连接未完成", "NOT FINISHED"), statIncompleteView));
+                L.s("未命中", "NO MATCH"), statMissView));
         statCells.add(AmberTheme.statColumn(this, dp,
-                L.s("未命中", "NO MATCH"), statUnkView));
+                L.s("环境异常", "ENV ERROR"), statEnvView));
         LinearLayout curStatRow = null;
         for (int ci = 0; ci < statCells.size(); ci++) {
             if (ci % statCols == 0) {
@@ -10279,10 +10305,7 @@ public class MainActivity extends Activity {
         fcp.rightMargin = px(12);
         flowHeader.addView(flowCount, fcp);
 
-        chipKey = new TextView(this);
-        chipKey.setText(L.s("关键", "Key"));
-        chipKey.setTextSize(AmberTheme.FS_SMALL);
-        chipKey.setPadding(px(9), px(4), px(9), px(4));
+        chipKey = makeFlowChip(L.s("关键", "Key"), null);
         chipKey.setClickable(true);
         chipKey.setFocusable(true);
         chipKey.setOnClickListener(v -> {
@@ -10290,15 +10313,9 @@ public class MainActivity extends Activity {
             styleFlowChips();
             renderStream();
         });
-        LinearLayout.LayoutParams ckp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ckp.rightMargin = px(6);
-        flowHeader.addView(chipKey, ckp);
+        flowHeader.addView(chipKey);
 
-        chipAll = new TextView(this);
-        chipAll.setText(L.s("全部", "All"));
-        chipAll.setTextSize(AmberTheme.FS_SMALL);
-        chipAll.setPadding(px(9), px(4), px(9), px(4));
+        chipAll = makeFlowChip(L.s("全部", "All"), null);
         chipAll.setClickable(true);
         chipAll.setFocusable(true);
         chipAll.setOnClickListener(v -> {
@@ -10306,33 +10323,19 @@ public class MainActivity extends Activity {
             styleFlowChips();
             renderStream();
         });
-        LinearLayout.LayoutParams chp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        chp.rightMargin = px(10);
-        flowHeader.addView(chipAll, chp);
+        flowHeader.addView(chipAll);
 
-        chipDetail = new TextView(this);
-        chipDetail.setText(L.s("详情", "Detail"));
-        chipDetail.setTextSize(AmberTheme.FS_SMALL);
-        chipDetail.setPadding(px(9), px(4), px(9), px(4));
-        chipDetail.setClickable(true);
-        chipDetail.setFocusable(true);
+        chipDetail = makeFlowChip(L.s("详情", "Detail"), null);
         chipDetail.setOnClickListener(v -> {
             streamDetailMode = !streamDetailMode;
             styleFlowChips();
             renderStream();
         });
-        LinearLayout.LayoutParams cdp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        cdp.rightMargin = px(6);
-        flowHeader.addView(chipDetail, cdp);
+        flowHeader.addView(chipDetail);
         styleFlowChips();
 
-        flowClear = new TextView(this);
-        flowClear.setText(L.s("清空", "Clear"));
-        flowClear.setTextSize(AmberTheme.FS_SMALL);
+        flowClear = makeFlowChip(L.s("清空", "Clear"), null);
         flowClear.setTextColor(DANGER);
-        flowClear.setPadding(px(10), px(4), px(10), px(4));
         flowClear.setBackground(roundBg(AmberTheme.DANGER_BG, AmberTheme.RADIUS_CHIP));
         flowClear.setOnClickListener(v -> {
             streamBuffer.clear();          // SpannableStringBuilder 用 clear()
@@ -10448,23 +10451,24 @@ public class MainActivity extends Activity {
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
 
-        startBtn = primaryAction(L.s("▶ 开始", "▶ Start"), ACCENT, ON_ACCENT);
+        startBtn = primaryAction(L.s("开始破解", "Start"), ACCENT, ON_ACCENT);
         startBtn.setOnClickListener(v -> startConnect());
-        actions.addView(startBtn, actParams(0, 1.6f));
+        actions.addView(startBtn, actParamsV(0, 1.4f));
 
-        pauseBtn = primaryAction(L.s("‖ 暂停", "‖ Pause"), AmberTheme.NEUTRAL_BG);
+        pauseBtn = primaryAction(L.s("暂停", "Pause"), AmberTheme.NEUTRAL_BG, TEXT);
         pauseBtn.setOnClickListener(v -> onPauseResumeClicked());
-        actions.addView(pauseBtn, actParams(8, 1f));
+        actions.addView(pauseBtn, actParamsV(8, 1f));
 
-        stopBtn = primaryAction(L.s("■ 停止", "■ Stop"), AmberTheme.DANGER_BG, DANGER);
+        stopBtn = primaryAction(L.s("停止", "Stop"), AmberTheme.DANGER_BG, DANGER);
         stopBtn.setOnClickListener(v -> onStopClicked());
-        actions.addView(stopBtn, actParams(8, 1f));
+        actions.addView(stopBtn, actParamsV(0, 1f));
         actionsCard.addView(actions);
 
         actionsHint = AmberTheme.label(this, "");
+        actionsHint.setTextSize(AmberTheme.FS_SMALL);
         LinearLayout.LayoutParams ahlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ahlp.topMargin = px(9);
+        ahlp.topMargin = px(10);
         actionsCard.addView(actionsHint, ahlp);
 
         pageConnect.addView(actionsCard, cardLp(AmberTheme.GAP_CARD));
@@ -10552,38 +10556,57 @@ public class MainActivity extends Activity {
      * </ol>
      */
     private String phaseText(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Phase p) {
-        // 1.9.67：主界面只说「用户该知道的」——
-        //   逐条未命中 = 未命中（中性），不是「未确定 / 网络级失败 / 未证伪」。
-        //   真实原因完整保留在详情行与审计页（verdict / grade / reason / src 一个字没改）。
+        // 1.9.68：图标由 StatusIcons（Canvas 自绘）承担，文字里**不再带字符符号**
+        // —— 否则会出现「小三角 + 大字」的临时拼接观感。
         if (p == null) return L.s("未开始", "Idle");
-        String icon = p.icon == null ? "" : p.icon;
-        String sep = icon.isEmpty() ? "" : " ";
         switch (p) {
-            case RUNNING:
-                return icon + sep + L.s("正在运行", "Running");
-            case FINISHING:
-                return icon + sep + L.s("收尾中", "Finishing up");
-            case PAUSED:
-                return icon + sep + L.s("已暂停", "Paused");
-            case PREPARING:
-                return icon + sep + L.s("准备中", "Preparing");
-            case VERIFIED:
-                return icon + sep + L.s("破解成功", "Cracked");
-            case PROVEN_WRONG:
-                return icon + sep + L.s("已证实密码错误", "Proven wrong");
+            case RUNNING:      return L.s("正在运行", "Running");
+            case FINISHING:    return L.s("收尾中", "Finishing up");
+            case PAUSED:       return L.s("已暂停", "Paused");
+            case PREPARING:    return L.s("准备中", "Preparing");
+            case VERIFIED:     return L.s("破解成功", "Cracked");
+            case PROVEN_WRONG: return L.s("已证实密码错误", "Proven wrong");
             case NETWORK_FAIL:
-            case UNCERTAIN:
-                return icon + sep + L.s("未命中", "No match");
-            case ENV_ERROR:
-                return icon + sep + L.s("环境异常", "Environment error");
-            case ABORTED:
-                return icon + sep + L.s("已停止", "Stopped");
+            case UNCERTAIN:    return L.s("未命中", "No match");
+            case ENV_ERROR:    return L.s("环境异常", "Environment error");
+            case ABORTED:      return L.s("已停止", "Stopped");
             case IDLE:
-            default:
-                return icon + sep + L.s("未开始", "Idle");
+            default:           return L.s("未开始", "Idle");
         }
     }
 
+
+
+    /**
+     * 状态图标尺寸（1.9.68）。
+     *
+     * <p>图标画布高度 = 主状态字号（22sp），与文字行高一致，
+     * 既不会「小三角挂大字」，也不会「图标压着文字」。
+     */
+    private LinearLayout.LayoutParams stateIconParams(float density) {
+        float size = AmberTheme.FS_DISPLAY * density;
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                Math.round(size), Math.round(size));
+        lp.rightMargin = px((int) (AmberTheme.FS_DISPLAY * 0.12f));
+        return lp;
+    }
+
+    /** 把状态图标换成对应种类，颜色跟随文字。 */
+    private void applyStateIcon(io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind kind,
+                                int color) {
+        if (stateIconView == null) return;
+        io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind k =
+                kind == null ? io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind.DOT : kind;
+        // 旧图标先换色后复用，避免每帧重建造成闪烁
+        io.github.wlmosv_png.wpaforge.ui.StatusIcons prev =
+                stateIconView.getDrawable() instanceof io.github.wlmosv_png.wpaforge.ui.StatusIcons
+                        ? (io.github.wlmosv_png.wpaforge.ui.StatusIcons) stateIconView.getDrawable() : null;
+        if (prev != null && prev.kind() == k) {
+            prev.setTint(color);
+            return;
+        }
+        stateIconView.setImageDrawable(new io.github.wlmosv_png.wpaforge.ui.StatusIcons(k, color));
+    }
 
     private int crackPhaseColor(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Tone tone) {
         if (tone == null) return AmberTheme.TEXT_DIM;
@@ -10662,6 +10685,10 @@ public class MainActivity extends Activity {
         if (stateBig != null) {
             stateBig.setText(text);
             stateBig.setTextColor(color);
+        }
+        if (stateIconView != null && phase != null) {
+            // 图标与文字同色；尺寸按主字号统一缩放，不随状态变化。
+            applyStateIcon(phase.icon, color);
         }
         // 阶段说明：来自 CrackPhaseView.hint（只描述已有事实）
         if (phaseHintView != null) {
@@ -11165,19 +11192,48 @@ public class MainActivity extends Activity {
     }
 
     /** 底部操作按钮：可指定文字色（琥珀底必须用深色，白字对比度不够） */
+    /**
+     * 底部操作按钮（1.9.68 统一规格）。
+     *
+     * <p>三个按钮**同高（46dp）、同圆角、同字号、同基线**，只有底色与文字色不同。
+     * 高度写死在 LayoutParams 里而不是靠 padding 撑 —— padding 会随字体缩放变化，
+     * 导致「开始」比「暂停」高一截。禁用时用 {@link #setActionEnabled} 保持可读灰。
+     */
     private Button primaryAction(String label, int bg, int fg) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextSize(AmberTheme.FS_ACTION);
+        b.setTextSize(AmberTheme.FS_STATE);
         b.setTextColor(fg);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinWidth(0); b.setMinimumWidth(0);
         b.setMinHeight(0); b.setMinimumHeight(0);
         b.setStateListAnimator(null);
-        b.setPadding(px(8), px(15), px(8), px(15));
-        b.setBackground(roundBg(bg, AmberTheme.RADIUS_BTN));
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(px(10), 0, px(10), 0);
+        b.setBackground(roundBg(bg, AmberTheme.RADIUS_CHIP));
         return b;
+    }
+
+    /** 统一按钮高度（46dp）；weight 决定横向占比。 */
+    private LinearLayout.LayoutParams actParamsV(int rightMargin, float weight) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, Math.round(46 * dp), weight);
+        lp.rightMargin = px(rightMargin);
+        return lp;
+    }
+
+    /**
+     * 按钮启用态（1.9.68）：禁用时只压暗底色、**文字保持可读**。
+     *
+     * <p>系统默认的 disabled alpha 会把文字压到几乎看不见，
+     * 用户分不清「不能用」和「文字没了」。
+     */
+    private void setActionEnabled(Button b, boolean enabled, int fg) {
+        if (b == null) return;
+        b.setEnabled(enabled);
+        b.setAlpha(1f);
+        b.setTextColor(enabled ? fg : AmberTheme.TEXT_DIM);
     }
 
     private LinearLayout.LayoutParams actParams(int rightMargin, float weight) {
@@ -11863,11 +11919,11 @@ public class MainActivity extends Activity {
                 // 这里**不判定**成功/失败，只是把 outcome 换个说法展示。
                 // 1.9.67：收尾文案用用户表达（未找到匹配密码），不再写「已结束 · 未命中」。
                 lastOutcomeLabel = "DONE_HIT".equals(outcome)
-                        ? L.s("✓ 破解成功", "✓ Cracked")
+                        ? L.s("破解成功", "Cracked")
                         : "PAUSED".equals(outcome)
-                            ? L.s("‖ 已暂停", "‖ Paused")
+                            ? L.s("已暂停", "Paused")
                             : "STOPPED".equals(outcome)
-                                ? L.s("■ 已停止", "■ Stopped")
+                                ? L.s("已停止", "Stopped")
                                 : io.github.wlmosv_png.wpaforge.ui.UserOutcome
                                         .finishSummary(false, lastTallyConfirmed,
                                                 lastTallyInconclusive, L.isZh());
@@ -12317,9 +12373,9 @@ public class MainActivity extends Activity {
     private String badgeText(TaskQueue.State st) {
         switch (st) {
             case RUNNING:   return L.s("进行中", "Running");
-            case PAUSED:    return L.s("‖ 已暂停", "‖ Paused");
+            case PAUSED:    return L.s("已暂停", "Paused");
             case PENDING:   return L.s("待处理", "Pending");
-            case DONE_HIT:  return L.s("✓ 已破解", "✓ Cracked");
+            case DONE_HIT:  return L.s("已破解", "Cracked");
             case DONE_MISS: return L.s("未命中", "No match");
             case STOPPED:   return L.s("已停止", "Stopped");
             default: return "?";
@@ -13311,6 +13367,32 @@ public class MainActivity extends Activity {
     }
 
 
+    /**
+     * 攻击流工具条的筛选胶囊（1.9.68 统一规格）。
+     *
+     * <p>四个胶囊（关键/全部/详情/清空）必须**同高、同内边距、同圆角、同间距**，
+     * 否则右侧看起来就是一堆零散按钮。固定高度 30dp，文字垂直居中。
+     */
+    private TextView makeFlowChip(String label, Runnable onClick) {
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextSize(AmberTheme.FS_SMALL);
+        t.setGravity(Gravity.CENTER);
+        t.setSingleLine(true);
+        t.setMinHeight(0);
+        t.setMinimumHeight(0);
+        t.setPadding(px(10), 0, px(10), 0);
+        t.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, Math.round(30 * dp));
+        lp.rightMargin = px(8);
+        t.setLayoutParams(lp);
+        t.setClickable(true);
+        t.setFocusable(true);
+        if (onClick != null) t.setOnClickListener(v -> onClick.run());
+        return t;
+    }
+
     /** 日志分级 chip 的选中态 */
     private void styleFlowChips() {
         if (chipKey == null || chipAll == null) return;
@@ -13364,11 +13446,14 @@ public class MainActivity extends Activity {
             ((TextView) tag).setText(L.s("⚡ 命中 · ", "★ HIT · ") + ssid);
         }
         hitPw.setText(password == null ? "" : password);
+        // 1.9.68：命中卡只写**用户该看的**：一句结论 + 耗时 + 第几条。
+        // 原先把引擎 detail 原样贴在卡片里（会带出 "via: status"、"handshake completed
+        // and IP obtained" 这类英文技术串），普通用户读不懂，像调试输出。
+        // 技术细节仍在攻击流「详情」与审计页里。
         StringBuilder meta = new StringBuilder();
-        meta.append(detail == null ? "" : detail);
+        meta.append(L.s("已确认密码正确，连接验证成功。", "Verified: connected successfully."));
         if (ms > 0) {
-            if (meta.length() > 0) meta.append(" · ");
-            meta.append(ms).append("ms");
+            meta.append(" · ").append(ms).append("ms");
         }
         if (lastTotal > 0) {
             // lastTested 是「命中之前已完成的条数」，命中那条自己是第 +1 条

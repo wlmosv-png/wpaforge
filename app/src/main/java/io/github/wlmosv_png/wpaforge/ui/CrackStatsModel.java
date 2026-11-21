@@ -10,8 +10,10 @@ import java.util.List;
  * <pre>
  *   已确认成功 = hit                                   （SUCCESS / DIRECT）
  *   已证实错误 = confirmedFail                         （AUTH_FAIL / DIRECT）
- *   连接未完成 = notFinished                           （TIMEOUT/INCOMPLETE/TERMINATED_UNKNOWN/ABORTED）
- *   尚无有效判定 = suspected + networkFail + undecided + envErrors
+ *   **未命中** = notFinished + suspected + networkFail + undecided
+ *                （1.9.68：连接未完成 / 无证据 / 网络级 / 疑似 全部是「未命中」，
+ *                 不再在用户统计里拆成多个像故障的分类）
+ *   环境异常 = envErrors（**单列**，只有它才是用户需要处理的问题）
  * <\/pre>
  * 恒等式（本类用 {@link #consistent4} 校验）：
  * <pre>
@@ -49,10 +51,10 @@ public final class CrackStatsModel {
         VERIFIED_OK,
         /** 已证实密码错误（AUTH_FAIL + DIRECT）。 */
         PROVEN_WRONG,
-        /** 连接未完成。 */
-        NOT_FINISHED,
-        /** 尚无有效判定（疑似 + 网络级 + 无法判断 + 环境异常）。 */
-        NO_VALID_VERDICT
+        /** 未命中（1.9.68：连接未完成/无证据/网络级/疑似 全部并入这一格）。 */
+        MISS,
+        /** 环境异常（1.9.68：单列；只有它才是用户需要处理的问题）。 */
+        ENV_ERROR
     }
 
     /** 核心统计项的中文标签（顺序与 {@link Core} 一致）。 */
@@ -60,10 +62,21 @@ public final class CrackStatsModel {
         switch (c) {
             case VERIFIED_OK:     return zh ? "已确认成功" : "VERIFIED";
             case PROVEN_WRONG:    return zh ? "已证实错误" : "PROVEN WRONG";
-            case NOT_FINISHED:    return zh ? "连接未完成" : "NOT FINISHED";
-            case NO_VALID_VERDICT:
+            case MISS:            return zh ? "未命中" : "NO MATCH";
+            case ENV_ERROR:       return zh ? "环境异常" : "ENV ERROR";
             default:              return zh ? "未命中" : "NO MATCH";
         }
+    }
+
+    /**
+     * **未命中**总数（1.9.68 用户口径）。
+     *
+     * <p>= 连接未完成 + 疑似密码错误 + 网络级认证失败 + 无法判断。
+     * 这四类在用户眼里都是「这条没连上，继续下一条」；
+     * 它们的区别只在详情/审计里可见，**不进主统计**。
+     */
+    public static int missTotal(int notFinished, int suspected, int networkFail, int undecided) {
+        return notFinished + suspected + networkFail + undecided;
     }
 
     /** 尚无有效判定 = 疑似 + 网络级 + 无法判断 + 环境异常。 */

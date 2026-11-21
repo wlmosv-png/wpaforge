@@ -1,0 +1,191 @@
+package io.github.wlmosv_png.wpaforge.ui;
+
+import android.graphics.Canvas;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.drawable.Drawable;
+
+/**
+ * 状态图标 —— **全部 Canvas 自绘，不用 Unicode 字符、不用 emoji、不用位图**。
+ *
+ * <h3>为什么必须自绘（1.9.68）<\/h3>
+ * 上一版状态行用 `▶`、`‖`、`✓` 这些 Unicode 符号：不同字体下字形、基线、
+ * 光学大小全不一样，22sp 文字旁边挂一个 8sp 观感的小三角，
+ * 看起来就是「临时拼接」。而且符号无法跟随主题色与尺寸统一缩放。
+ *
+ * <p>现在每个图标都在正方形画布里按短边比例绘制（u = 短边），
+ * 20dp 与 40dp 下比例完全一致；颜色由 {@link #setTint(int)} 统一控制，
+ * 与主状态文字同色。
+ */
+public final class StatusIcons extends Drawable {
+
+    /** 状态图标种类。 */
+    public enum Kind {
+        /** 空心圆：未开始。 */
+        CIRCLE,
+        /** 实心三角（播放）：正在运行。 */
+        PLAY,
+        /** 两条竖杠：已暂停。 */
+        PAUSE,
+        /** 实心方块：已停止。 */
+        STOP,
+        /** 对勾：破解成功。 */
+        CHECK,
+        /** 叉号：已证实密码错误。 */
+        CROSS,
+        /** 小实心圆点：普通未命中（中性，不抢眼）。 */
+        DOT,
+        /** 感叹号：环境异常。 */
+        WARN,
+        /** 三点省略：准备中 / 收尾中。 */
+        DOTS
+    }
+
+    private final Kind kind;
+    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path path = new Path();
+    private final RectF oval = new RectF();
+
+    public StatusIcons(Kind kind, int color) {
+        this.kind = kind == null ? Kind.DOT : kind;
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(color);
+    }
+
+    /** 换色（与主状态文字同色）。 */
+    public void setTint(int color) {
+        paint.setColor(color);
+        invalidateSelf();
+    }
+
+    public Kind kind() {
+        return kind;
+    }
+
+    @Override
+    public void draw(Canvas canvas) {
+        Rect b = getBounds();
+        if (b == null || b.width() <= 0 || b.height() <= 0) return;
+        float u = Math.min(b.width(), b.height());
+        float cx = b.centerX();
+        float cy = b.centerY();
+
+        switch (kind) {
+            case CIRCLE: {
+                // 空心圆：环宽 = u * 0.09
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(u * 0.09f);
+                float r = u * 0.34f;
+                canvas.drawCircle(cx, cy, r, paint);
+                paint.setStyle(Paint.Style.FILL);
+                break;
+            }
+            case PLAY: {
+                // 实心三角，视觉重心右移一点（三角的光学中心偏左）
+                path.reset();
+                float h = u * 0.42f;
+                float w = u * 0.36f;
+                float x0 = cx - w * 0.5f + u * 0.02f;
+                path.moveTo(x0, cy - h * 0.5f);
+                path.lineTo(x0, cy + h * 0.5f);
+                path.lineTo(x0 + w, cy);
+                path.close();
+                canvas.drawPath(path, paint);
+                break;
+            }
+            case PAUSE: {
+                float barW = u * 0.13f;
+                float barH = u * 0.40f;
+                float gap = u * 0.12f;
+                canvas.drawRect(cx - gap * 0.5f - barW, cy - barH * 0.5f,
+                        cx - gap * 0.5f, cy + barH * 0.5f, paint);
+                canvas.drawRect(cx + gap * 0.5f, cy - barH * 0.5f,
+                        cx + gap * 0.5f + barW, cy + barH * 0.5f, paint);
+                break;
+            }
+            case STOP: {
+                float s = u * 0.30f;
+                oval.set(cx - s, cy - s, cx + s, cy + s);
+                canvas.drawRoundRect(oval, u * 0.06f, u * 0.06f, paint);
+                break;
+            }
+            case CHECK: {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(u * 0.11f);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setStrokeJoin(Paint.Join.ROUND);
+                path.reset();
+                path.moveTo(cx - u * 0.26f, cy + u * 0.02f);
+                path.lineTo(cx - u * 0.06f, cy + u * 0.22f);
+                path.lineTo(cx + u * 0.28f, cy - u * 0.20f);
+                canvas.drawPath(path, paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setStrokeCap(Paint.Cap.BUTT);
+                break;
+            }
+            case CROSS: {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(u * 0.11f);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                float d = u * 0.24f;
+                canvas.drawLine(cx - d, cy - d, cx + d, cy + d, paint);
+                canvas.drawLine(cx + d, cy - d, cx - d, cy + d, paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setStrokeCap(Paint.Cap.BUTT);
+                break;
+            }
+            case DOT: {
+                // 小实心圆：普通未命中，刻意做小，不抢视觉
+                canvas.drawCircle(cx, cy, u * 0.16f, paint);
+                break;
+            }
+            case WARN: {
+                // 圆角三角 + 挖空感叹号
+                path.reset();
+                float h = u * 0.40f;
+                float w = u * 0.44f;
+                path.moveTo(cx, cy - h * 0.55f);
+                path.lineTo(cx + w * 0.55f, cy + h * 0.48f);
+                path.lineTo(cx - w * 0.55f, cy + h * 0.48f);
+                path.close();
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(u * 0.085f);
+                paint.setStrokeJoin(Paint.Join.ROUND);
+                canvas.drawPath(path, paint);
+                paint.setStyle(Paint.Style.FILL);
+                // 感叹号
+                canvas.drawRect(cx - u * 0.035f, cy - u * 0.10f,
+                        cx + u * 0.035f, cy + u * 0.10f, paint);
+                canvas.drawCircle(cx, cy + u * 0.20f, u * 0.038f, paint);
+                break;
+            }
+            case DOTS:
+            default: {
+                float r = u * 0.075f;
+                float gap = u * 0.16f;
+                canvas.drawCircle(cx - gap, cy, r, paint);
+                canvas.drawCircle(cx, cy, r, paint);
+                canvas.drawCircle(cx + gap, cy, r, paint);
+                break;
+            }
+        }
+    }
+
+    @Override public void setAlpha(int alpha) {
+        paint.setAlpha(alpha);
+        invalidateSelf();
+    }
+
+    @Override public void setColorFilter(ColorFilter cf) {
+        paint.setColorFilter(cf);
+        invalidateSelf();
+    }
+
+    @Override public int getOpacity() {
+        return PixelFormat.TRANSLUCENT;
+    }
+}

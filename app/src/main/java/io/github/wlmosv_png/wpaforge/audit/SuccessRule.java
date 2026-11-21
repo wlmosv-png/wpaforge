@@ -86,6 +86,39 @@ public final class SuccessRule {
      */
     public static Assessment assess(String targetSsid, String statusSsid, String state,
                                     String ip, long statusNetId, long targetNetId) {
+        // 兼容入口：语义与 1.9.60 **逐字一致**（netId 缺失不否决）。
+        //
+        // <p>为什么保留这个宽松语义：它是「正确密码不被漏判」的防线 ——
+        // 实测慢 AP 上 netId 在命令后 242~324ms 才出现，早取必为 -1，
+        // 硬要求相等会让正确密码整段 12 秒超时（历史事故）。
+        //
+        // <p>生产调用方（{@code CrackEngine.tryOneShell}）**不再走这个入口**，
+        // 它用下面带 {@code gateConfirmedClean} 的重载把「前置闸门到底确认了什么」
+        // 显式传进来。本重载保留给「确实没有闸门信息」的离线场景与既有契约测试。
+        return assess(targetSsid, statusSsid, state, ip, statusNetId, targetNetId, true);
+    }
+
+    /**
+     * 完整评估（P0-1，2026-11-21）。
+     *
+     * <h3>gateConfirmedClean 决定 netId 缺失能否放行</h3>
+     * <ul>
+     *   <li><b>true</b>：命令前已实测确认「目标的旧配置不在已保存列表里」。
+     *       此时命令后出现的「目标 + COMPLETED + 有效 IP」在结构上只可能来自
+     *       本条候选新建的配置 —— netId 取不到（时序问题）**不否决**，
+     *       否则慢 AP 上正确密码会被整段漏判（历史事故：12 秒全超时）。</li>
+     *   <li><b>false</b>：无法确认前置状态（list-networks 是错误文本 / 超时 /
+     *       不可解析）。此时只剩 status 一侧的证据，旧配置残留与旧连接回连
+     *       都能满足「SSID + COMPLETED + IP」—— 必须要求 netId 两侧都有效且相等，
+     *       否则报 UNKNOWN（既不当成功，也不当失败）。</li>
+     * </ul>
+     *
+     * <p><b>安全方向</b>：这个参数只会让「证据不足」的场景更严格，
+     * 不会把原本的失败升级成成功。
+     */
+    public static Assessment assess(String targetSsid, String statusSsid, String state,
+                                    String ip, long statusNetId, long targetNetId,
+                                    boolean gateConfirmedClean) {
         if (!isSuccess(targetSsid, statusSsid, state, ip)) {
             return new Assessment(null, "", "not-a-success-frame");
         }
@@ -95,6 +128,13 @@ public final class SuccessRule {
             // 不判成功（可能误报），也不判失败（可能是慢一步的真实命中）。
             return new Assessment(CrackEngine.Verdict.UNKNOWN,
                     "supplicant-netid-conflict", "netid-conflict");
+        }
+        if (!gateConfirmedClean && !bothValid) {
+            // 前置闸门没确认过「旧配置已删净」，且拿不到可比的 netId：
+            // 「目标 + 握手完成 + 有 IP」完全可能是旧配置 / 旧连接 / 缓存凭据。
+            // 归 UNKNOWN —— 不写命中历史、不触发成功副作用，但也不排除候选。
+            return new Assessment(CrackEngine.Verdict.UNKNOWN,
+                    "supplicant-unattributed", "netid-unverified");
         }
         return new Assessment(CrackEngine.Verdict.SUCCESS,
                 bothValid ? "supplicant+netId" : "supplicant", "ok");

@@ -1381,16 +1381,68 @@ public final class CrackEngine {
      * 用它和 status 里的 Net ID 比对，就能把「连上了目标」归因到「这条候选」。
      */
     private long netIdOfTarget(String ssid) {
-        if (shell == null || ssid == null || ssid.isEmpty()) return -1;
+        return netIdOfTargetState(ssid).netId;
+    }
+
+    /**
+     * 「目标配置在不在」的**三态**查询（P0-1，2026-11-21）。
+     *
+     * <h3>它修的是什么</h3>
+     * 旧 {@code netIdOfTarget} 在「命令失败 / 超时 / 输出是错误文本」时返回 {@code -1}，
+     * 与「命令成功、确实没有目标配置」**同值**。上层据此认为配置已清干净，
+     * 于是旧配置 + 旧连接会被算到当前候选头上 → 假成功。
+     *
+     * <p>返回值语义固定（见 {@link ListNetworksParser#NETID_UNREADABLE}）：
+     * <pre>
+     *   &gt;= 0  目标配置存在（netId）
+     *   -1     确认不存在
+     *   -2     读不到 / 不可判定
+     * </pre>
+     * 调用方必须显式处理 {@code -2}：**不得**把它当成「没有」。
+     */
+    private Probe netIdOfTargetState(String ssid) {
+        if (shell == null || ssid == null || ssid.isEmpty()) {
+            return new Probe(ListNetworksParser.NETID_UNREADABLE, "no-channel", "");
+        }
+        String out;
         try {
-            String out = shell.exec("cmd wifi list-networks", 5000);
-            if (out == null) return -1;
-            for (String line : out.split("\n")) {
-                Long id = parseNetIdLine(line, ssid);
-                if (id != null) return id;
-            }
-        } catch (Throwable ignored) {}
-        return -1;
+            out = shell.exec("cmd wifi list-networks", 5000);
+        } catch (Throwable t) {
+            return new Probe(ListNetworksParser.NETID_UNREADABLE,
+                    "exec-threw:" + t.getClass().getSimpleName(), "");
+        }
+        if (out == null) {
+            return new Probe(ListNetworksParser.NETID_UNREADABLE, "null-output", "");
+        }
+        if (!ListNetworksParser.looksLikeListOutput(out)) {
+            return new Probe(ListNetworksParser.NETID_UNREADABLE,
+                    ListNetworksParser.looksLikeError(out) ? "error-text" : "unparseable",
+                    firstLine(out));
+        }
+        for (String line : out.split("\n")) {
+            Long id = parseNetIdLine(line, ssid);
+            if (id != null) return new Probe(id, "found", "");
+        }
+        return new Probe(-1L, "absent", "");
+    }
+
+    /** 三态探测结果。{@code netId >= 0} 存在；{@code -1} 确认没有；{@code -2} 读不到。 */
+    static final class Probe {
+        final long netId;
+        final String why;
+        final String sample;
+        Probe(long netId, String why, String sample) {
+            this.netId = netId;
+            this.why = why;
+            this.sample = sample == null ? "" : sample;
+        }
+        boolean present() { return netId >= 0; }
+        boolean absent()  { return netId == -1L; }
+        boolean unreadable() { return netId == ListNetworksParser.NETID_UNREADABLE; }
+        @Override public String toString() {
+            return "probe(netId=" + netId + " why=" + why
+                    + (sample.isEmpty() ? "" : " sample=" + sample) + ")";
+        }
     }
 
     /**
@@ -1762,14 +1814,40 @@ public final class CrackEngine {
         //
         // 做法：回读 list-networks，目标只要还挂着 netId，本条就不可能有
         // 可信结论 —— 直接判 UNKNOWN，不让它污染结果。
-        long staleNetId = netIdOfTarget(target.ssid);
-        if (staleNetId >= 0) {
+        Probe stale = netIdOfTargetState(target.ssid);
+        if (stale.present()) {
             return Adjudicator.gateBlocked(password, attemptId,
                     AttemptState.Gate.STALE_CONFIG, clock().uptimeMillis() - t0,
-                    L.s("旧配置未清除（netId=" + staleNetId + "），本条结果不可信",
-                        "stale config not cleared (netId=" + staleNetId
+                    L.s("旧配置未清除（netId=" + stale.netId + "），本条结果不可信",
+                        "stale config not cleared (netId=" + stale.netId
                                 + "); this attempt is unreliable"));
         }
+        // P0-1（2026-11-21）：**读不到 != 没有**。
+        // 旧写法只有 `staleNetId >= 0` 一条分支，-1（读不到）会直接放行 ——
+        // 若此刻系统仍挂着目标的旧配置，命令后的「SSID + COMPLETED + IP」
+        // 就会被算到本条候选头上，把错误密码写成命中。
+        // 现在「不可判定」单独走 UNREADABLE 闸门，绝不放行。
+        if (stale.unreadable()) {
+            return Adjudicator.gateBlocked(password, attemptId,
+                    AttemptState.Gate.UNREADABLE, clock().uptimeMillis() - t0,
+                    L.s("无法确认旧配置是否已清除（list-networks 不可判定：" + stale.why
+                                    + "），本条结果不可信",
+                        "cannot confirm the stale config was cleared (list-networks "
+                                + "undecidable: " + stale.why
+                                + "); this attempt is unreliable"));
+        }
+        /*
+         * 走到这里 = **实测确认**目标配置不在已保存列表里（stale.absent()）。
+         *
+         * 这个事实是成功归因的结构性基础，也是 P0-1 修复后唯一可信的版本：
+         * 修复前 forgetTargetByShell / netIdOfTarget 会把「读不到」当成「没有」，
+         * 于是这里看似成立、实际没验证过。现在两者都三态化，能到这一行
+         * 就意味着「真的读到了列表、且列表里没有目标」。
+         *
+         * 它要传给 SuccessRule：只有它为真时，netId 缺失才允许放行
+         * （保住慢 AP 上的正确密码）；为假时 netId 缺失必须归 UNKNOWN。
+         */
+        final boolean configConfirmedAbsent = stale.absent();
 
         // **如果上一条已经连上了目标，必须先真正断开**。
         //
@@ -1807,7 +1885,9 @@ public final class CrackEngine {
         boolean preListOk = false;
         try {
             preListText = shell.exec("cmd wifi list-networks", 5000);
-            preListOk = preListText != null;
+            // P0-1：`!= null` 不够 —— 错误文本也是非空。
+            // 必须是一份**可判定**的列表输出才算「读到了」。
+            preListOk = ListNetworksParser.looksLikeListOutput(preListText);
         } catch (Throwable ignored) { }
         long preNetId = linkedBySsid ? -2L : (preListOk ? netIdIn(preListText, target.ssid) : -1L);
         boolean linkedByNetId = preNetId >= 0;
@@ -2187,8 +2267,18 @@ public final class CrackEngine {
 
                 // 成功判定走唯一的纯逻辑入口（SuccessRule）—— netId 不参与，
                 // 避免它因时序问题否决一次真实的命中（漏判）。
+                // P0-1（2026-11-21）：把「前置闸门到底确认了什么」传进去。
+                //
+                // configConfirmedAbsent = 命令前**实测读到**了 list-networks，
+                // 且列表里**没有**目标配置。它为真时，「目标 + 握手完成 + 有 IP」
+                // 在结构上只可能来自本条候选新建的配置 —— netId 取不到（时序问题）
+                // 不否决，否则慢 AP 上正确密码会被整段漏判（历史事故 12 秒全超时）。
+                //
+                // 它为假（理论上到不了这里，因为闸门已拦）时只剩 status 一侧证据，
+                // 不足以排除「旧配置残留 / 旧连接回连」—— 必须要求 netId 两侧
+                // 都有效且相等，否则归 UNKNOWN，不写命中历史。
                 SuccessRule.Assessment sa = SuccessRule.assess(target.ssid, info.ssid,
-                        info.state, info.ip, statusNetId, targetNetId);
+                        info.state, info.ip, statusNetId, targetNetId, configConfirmedAbsent);
                 if (sa.verdict != null) {
                     // **不再强制 netId 必须等于「命令后 400ms 取到的那个值」。**
                     //

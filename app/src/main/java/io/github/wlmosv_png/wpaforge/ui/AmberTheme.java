@@ -258,7 +258,9 @@ public final class AmberTheme {
         col.addView(label(c, labelText));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = Math.round(3 * density);
+        // 1.9.68：标签与数字贴紧（3dp → 1dp）。真机上 3dp + 19sp 行高会让
+        // 四个指标显得松散，两行之间空隙过大。
+        lp.topMargin = Math.round(1 * density);
         col.addView(value, lp);
         return col;
     }

@@ -493,7 +493,8 @@ public class MainActivity extends Activity {
     private TextView connectStreamView;
     /** 候选流折叠：头部、箭头、行数、布局参数 */
     private LinearLayout flowHeader;
-    private TextView flowChevron;
+    /** 攻击流折叠箭头（Canvas 矢量，与标题同高）。 */
+    private ImageView flowChevron;
     private TextView flowLabel;
     private TextView flowCount;
     private TextView flowClear;
@@ -10033,7 +10034,10 @@ public class MainActivity extends Activity {
 
         LinearLayout progTop = new LinearLayout(this);
         progTop.setOrientation(LinearLayout.HORIZONTAL);
-        progTop.setGravity(Gravity.BOTTOM);
+        // 1.9.68：状态行与右侧百分比必须**垂直居中对齐**。
+        // 原来用 BOTTOM，图标贴着底部、文字基线也在底部，
+        // 22sp 图标与 30sp 百分比在视觉上就错开了。
+        progTop.setGravity(Gravity.CENTER_VERTICAL);
 
         // 1.9.68：主状态行 = **同一套布局**的「图标 + 文字」组件。
         // 图标用 Canvas 自绘（不用 Unicode 字符），与文字同高度、同色、
@@ -10044,8 +10048,11 @@ public class MainActivity extends Activity {
         LinearLayout stateRow = new LinearLayout(this);
         stateRow.setOrientation(LinearLayout.HORIZONTAL);
         stateRow.setGravity(Gravity.CENTER_VERTICAL);
+        stateRow.setBaselineAligned(false);
         stateRow.addView(stateIconView, stateIconParams(dp));
         stateBig = new TextView(this);
+        // 与 30sp 百分比同一行：文字取 FS_STAT(19sp) 偏上一档，视觉上主次分明，
+        // 又能让「图标+文字」与右侧数字在一条水平线上（不再顶部留空）。
         stateBig.setTextSize(AmberTheme.FS_DISPLAY);
         stateBig.setTextColor(AmberTheme.TEXT_DIM);
         stateBig.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
@@ -10062,8 +10069,10 @@ public class MainActivity extends Activity {
         stateBig.setSingleLine(false);
         stateBig.setMaxLines(2);
         stateBig.setEllipsize(null);
+        // 行高由最高元素（30sp 百分比）决定；stateRow 必须**撑满行高**，
+        // 否则 22sp 文字居中后上下会各留一截空白（真机截图里的「顶部空缺」）。
         progTop.addView(stateRow, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         statPctView = new TextView(this);
         statPctView.setTextSize(AmberTheme.FS_HERO);
@@ -10130,7 +10139,7 @@ public class MainActivity extends Activity {
                 curStatRow.setOrientation(LinearLayout.HORIZONTAL);
                 LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                if (ci > 0) rlp.topMargin = px(10);
+                if (ci > 0) rlp.topMargin = px(14);
                 statRow.addView(curStatRow, rlp);
             }
             curStatRow.addView(statCells.get(ci), weight());
@@ -10210,6 +10219,8 @@ public class MainActivity extends Activity {
         runMetaView.setTextSize(AmberTheme.FS_SMALL);
         runMetaView.setTextColor(AmberTheme.TEXT_FAINT);
         runMetaView.setSingleLine(false);
+        // 1.9.68：参数块整体靠右，与左上角的计划行形成左右分列，不再堆在左侧。
+        runMetaView.setGravity(Gravity.END);
         runMetaView.setVisibility(View.GONE);
         LinearLayout.LayoutParams rmlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -10275,17 +10286,22 @@ public class MainActivity extends Activity {
          *     但屏幕上看到的仍然只是一枚小三角；
          *   · 整行标题依旧可点，双保险。
          */
-        flowChevron = new TextView(this);
-        flowChevron.setTextSize(AmberTheme.FS_STATE);
-        flowChevron.setTextColor(ACCENT);
-        flowChevron.setGravity(Gravity.CENTER);
-        // 视觉是三角，触控靠 padding 撑开（不用固定 LayoutParams，避免又变回大块）
+        // 1.9.68：折叠箭头也改成 Canvas 矢量图标 —— 原来是一枚 15sp 的 Unicode 三角，
+        // 比「攻击流」标题小一大截，看起来像临时拼的符号。现在图标画布 20dp，
+        // 与标题文字行高一致，点击区靠 padding 撑到 44dp。
+        flowChevron = new ImageView(this);
+        flowChevron.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        flowChevron.setImageDrawable(new io.github.wlmosv_png.wpaforge.ui.StatusIcons(
+                io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind.CHEVRON_RIGHT, ACCENT));
         flowChevron.setPadding(px(10), px(10), px(12), px(10));
         flowChevron.setBackground(null);
         flowChevron.setClickable(true);
         flowChevron.setFocusable(true);
         flowChevron.setOnClickListener(v -> toggleStream());
-        flowHeader.addView(flowChevron);
+        LinearLayout.LayoutParams fcvp = new LinearLayout.LayoutParams(
+                Math.round(20 * dp), Math.round(20 * dp));
+        fcvp.gravity = Gravity.CENTER_VERTICAL;
+        flowHeader.addView(flowChevron, fcvp);
 
         flowLabel = new TextView(this);
         flowLabel.setTextSize(AmberTheme.FS_LABEL);
@@ -10584,10 +10600,13 @@ public class MainActivity extends Activity {
      * 既不会「小三角挂大字」，也不会「图标压着文字」。
      */
     private LinearLayout.LayoutParams stateIconParams(float density) {
-        float size = AmberTheme.FS_DISPLAY * density;
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                Math.round(size), Math.round(size));
-        lp.rightMargin = px((int) (AmberTheme.FS_DISPLAY * 0.12f));
+        // 1.9.68：图标比主文字大一档（1.3×），解决「小三角挂大字」。
+        // 用 sp→px 的同一倍率换算，保证任何字体缩放/ROM 下比例一致。
+        float size = AmberTheme.FS_DISPLAY * 1.3f * density;
+        int side = Math.round(size);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(side, side);
+        lp.rightMargin = px(8);
+        lp.gravity = Gravity.CENTER_VERTICAL;
         return lp;
     }
 
@@ -11211,6 +11230,12 @@ public class MainActivity extends Activity {
         b.setStateListAnimator(null);
         b.setGravity(Gravity.CENTER);
         b.setPadding(px(10), 0, px(10), 0);
+        // 1.9.68：Button 默认带 font padding 与 48dp minHeight，
+        // 会导致「开始破解」比另两个高半截。这里全部压平，高度只由 LayoutParams 决定。
+        b.setIncludeFontPadding(false);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setMinimumWidth(0);
         b.setBackground(roundBg(bg, AmberTheme.RADIUS_CHIP));
         return b;
     }
@@ -12321,14 +12346,15 @@ public class MainActivity extends Activity {
             String pol = CrackService.lastSkipPolicyId() == 1
                     ? L.s("省时", "save-time") : L.s("保守", "conservative");
             int work = CrackService.lastWorkTotal();
+            // 1.9.68：目标单独一行，模式/过滤/待执行**另起一行靠右**，
+            // 不再把四段全塞进一行导致换行后堆成一坨。
+            // 1.9.68：参数块**整体靠右**（setGravity(END)），
+            // 与左上角的「目标」形成左右分列；不再把四段挤在同一行。
             StringBuilder mb = new StringBuilder();
-            mb.append(L.s("目标 ", "target "))
-              .append(currentTargetKey().isEmpty()
-                      ? L.s("(未选)", "(none)") : Prefs.targetLabel(this))
-              .append(L.s("  ·  模式 ", "  ·  mode ")).append(mode)
-              .append(L.s("  ·  过滤 ", "  ·  filter ")).append(pol);
+            mb.append(mode);
+            mb.append(L.s(" · 过滤 ", " · filter ")).append(pol);
             if (work > 0) {
-                mb.append(L.s("  ·  待执行 ", "  ·  to run ")).append(work);
+                mb.append(L.s(" · 待执行 ", " · to run ")).append(work);
             }
             boolean show = work > 0 || !currentTargetKey().isEmpty();
             runMetaView.setText(mb.toString());
@@ -13020,7 +13046,11 @@ public class MainActivity extends Activity {
             //   折叠 -> ▶ 朝右（"里面还有内容，点开"）
             //   展开 -> ▼ 朝下（"已经展开到这里了"）
             // 上一版用 ▼/▲ 朝上朝下，折叠态朝下很容易被读成"已经展开了"。
-            flowChevron.setText(streamCollapsed ? "▶" : "▼");
+            flowChevron.setImageDrawable(new io.github.wlmosv_png.wpaforge.ui.StatusIcons(
+                    streamCollapsed
+                            ? io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind.CHEVRON_RIGHT
+                            : io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind.CHEVRON_DOWN,
+                    ACCENT));
             // 无障碍：读屏用户也要知道这个按钮干什么
             flowChevron.setContentDescription(streamCollapsed
                     ? L.s("展开日志", "Expand log") : L.s("收起日志", "Collapse log"));

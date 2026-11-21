@@ -4535,7 +4535,7 @@ public class MainActivity extends Activity {
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = px(8);
+        lp.rightMargin = px(6);
         t.setLayoutParams(lp);
         filterChips.add(t);
         filterChipModes.add(mode);
@@ -10310,22 +10310,34 @@ public class MainActivity extends Activity {
         flowHeader.addView(flowChevron, fcvp);
 
         flowLabel = new TextView(this);
-        flowLabel.setTextSize(AmberTheme.FS_LABEL);
+        flowLabel.setTextSize(AmberTheme.FS_SMALL);
         flowLabel.setTextColor(TEXT_DIM);
-        flowLabel.setLetterSpacing(0.12f);
+        flowLabel.setLetterSpacing(0.04f);
         flowLabel.setText(L.s("攻击流", "CANDIDATES"));
+        // 1.9.68：标题必须**单行 + 不可压缩**。
+        // 原来 weight=1 让它与右侧胶囊抢空间，运行中行数一多就被挤成竖排
+        // （「攻/击/流」三行，真机截图复现）。
+        flowLabel.setSingleLine(true);
+        flowLabel.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         flp.leftMargin = px(6);
+        flp.rightMargin = px(6);
         flowHeader.addView(flowLabel, flp);
 
         flowCount = new TextView(this);
         flowCount.setTextSize(AmberTheme.FS_SMALL);
         flowCount.setTextColor(AmberTheme.TEXT_FAINT);
+        flowCount.setSingleLine(true);
         LinearLayout.LayoutParams fcp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        fcp.rightMargin = px(12);
+        fcp.rightMargin = px(8);
         flowHeader.addView(flowCount, fcp);
+
+        // 弹性空隙：标题/行数靠左成组，四枚胶囊靠右成组。
+        // 中间用 0 宽的 weight 占位，任何宽度下都不会把标题挤成竖排。
+        View flowSpacer = new View(this);
+        flowHeader.addView(flowSpacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
         chipKey = makeFlowChip(L.s("关键", "Key"), null);
         chipKey.setClickable(true);
@@ -13497,11 +13509,11 @@ public class MainActivity extends Activity {
         t.setSingleLine(true);
         t.setMinHeight(0);
         t.setMinimumHeight(0);
-        t.setPadding(px(10), 0, px(10), 0);
+        t.setPadding(px(8), 0, px(8), 0);
         t.setBackground(roundBg(AmberTheme.CARD_2, AmberTheme.RADIUS_CHIP));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, Math.round(30 * dp));
-        lp.rightMargin = px(8);
+        lp.rightMargin = px(6);
         t.setLayoutParams(lp);
         t.setClickable(true);
         t.setFocusable(true);

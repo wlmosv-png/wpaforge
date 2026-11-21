@@ -1,5 +1,137 @@
 # Changelog
 
+## [1.9.64] - 2026-11-22
+
+> ### 判定证据链整改：接入 `dumpsys wifi` 里一直被丢弃的认证失败证据
+
+这一版**不放松任何判定标准**，也不为了让界面好看而把 UNKNOWN 改成结论。
+它做的是相反的事：把本机**已经存在、但被代码主动丢弃**的证据接进来。
+
+### 根因：一条被真机推翻的注释
+
+1.9.63 的 `WifiDumpsProbe` 类注释写着：
+
+> `dumpsys wifi` **不能**证明「密码错误」：`reasonCode` 是
+> `WifiAnnotations.DisconnectReasonCode`，本机实测值恒为 3
+> （WIFI_DISABLED_BY_SYSTEM），**不是** supplicant 的 `reason=WRONG_KEY`。
+
+前半句是对的（`reasonCode` 确实只有 -1 和 3 两个值）。
+但由它推出「整份 dump 没用」是错的。真机复核（PJX110 / ColorOS 15，
+4 MB / 18,187 行 dump 全量）在**同一份输出**里找到三条独立证据链：
+
+| 证据 | 实测条数 | 带什么归属信息 |
+|---|---|---|
+| `WifiMetrics.mConnectionEvents` | 63 条，其中 **16 条 `AUTH_FAILURE_WRONG_PSWD`** | SSID + BSSID + 毫秒时间 + **发起者 uid** |
+| `WifiConfigManager - Log` | 73 ADD / 33 REMOVE / 147 SELECTION，其中 **30 条 `DISABLED_BY_WRONG_PASSWORD`** | configKey（含加密类型）+ **配置创建者 uid** + 毫秒时间 |
+| 内嵌 system log | 2 条 `reason=WRONG_KEY` | 时间戳 + `ssid="..."` |
+
+而 `logcat -s wpa_supplicant` 在本机**恒为 0 行**（ColorOS 配额丢弃）。
+也就是说：1.9.63 唯一依赖的失败通道在本机根本不存在，
+唯一可用的失败通道被注释判定为「不可用」后整段跳过。
+
+### 对照实验（同一台机、同一个 root 通道 uid=0）
+
+| 目标 | framework 记录 | 1.9.63 判定 |
+|---|---|---|
+| `2.4G-3`（密码确实错误） | 连续 14 条 `AUTHENTICATION_FAILURE / AUTH_FAILURE_WRONG_PSWD`，duration 4182–4295ms | `UNKNOWN / netid-conflict`，永久重试 |
+| `whoami`（无失败证据） | 10 条 `NEW_CONNECTION_ATTEMPT / FAILURE_REASON_UNKNOWN` | `UNKNOWN`（**这一条判对了**） |
+
+第二行同样重要：它证明这个字段有真实区分能力，不是恒值；
+也证明「UNKNOWN 多」不等于「证据被漏读」——不能硬造结论。
+
+### 新增：`WifiEvidenceProbe`（纯逻辑，无 Android 依赖）
+
+- 三个解析入口：`connectionEvents` / `configEvents` / `supplicantLines`
+- 三个归属查询：`findWrongPsk` / `findWrongPasswordDisable` / `findNonPskFailure`
+- **归属要求 `uid=0`**：只有 root 通道建的配置 uid 才是 0，
+  系统自己是 1000、应用是 appId —— 三者天然可分，
+  这比「SSID 相同」强一整级
+- 时间窗**必须同天**：`parseStamp` 不含年份，跨天比对会产生巨大假差值，
+  一律判为不可信（宁可少一条永久排除，不可错排除）
+- 本类只解析，不产生 `Verdict`、不碰 `persistable`（有静态断言钉死）
+
+### 新增：判据 D（接入判定链）
+
+在「判据 A（status 四条件）」与「判据 B（supplicant 日志）」之间新增一段：
+
+```
+① 命令前目标配置已删净并回读（前置闸门保证）
+② 窗口内出现 configKey="<目标SSID>" 的 uid=0 的 ADD_OR_UPDATE
+③ 同一窗口内该 configKey 被 framework 标为 DISABLED_BY_WRONG_PASSWORD
+④ 或 mConnectionEvents 里出现同 SSID、uid=0、connectionResult=0、
+   level2FailureReason=AUTH_FAILURE_WRONG_PSWD
+```
+
+`①②③` 同时成立 = **AT3** → `AUTH_FAIL + DIRECT`（可永久排除）。
+`④` 同样要求 `②` 成立，防止旧同名配置的失败被算到本条头上。
+
+**查询时刻表**（相对连接命令发出时刻）：2600ms、3600ms 各一次。
+依据全部来自实测：`dumpsys wifi` 整份 356ms（3 次：355/341/356），
+解析本身只要 7ms/15ms；真机失败记录 4182–4295ms 才写入 framework 记账；
+正确密码在 950ms 内已由判据 A 命中并提前返回，走不到这里。
+
+### 修正：解析器漏掉 11/63 条记录
+
+真机 `startTime` 的时/分/秒**不补前导零**：
+
+```
+startTime=11-22 1:0:6.775      ← 时、分、秒全是 1 位
+startTime=11-21 18:18:4.284    ← 秒是 1 位
+```
+
+原正则要求 `\d{2}`，63 条里静默丢掉 11 条。已改为 `\d{1,2}`。
+
+### 修正：`netid-conflict` 的 UI 提示在误导用户
+
+1.9.63 把 `netid-conflict` 归为「目标曾连上并取得 IP，请人工复核」。
+真机 `2.4G-3` 连续 14 次 `connectionResult=0`，**一次都没连上过** ——
+那是在让用户复核一个不存在的命中。
+
+`netid-conflict` 的真实含义是「netId 与本次配置不符」，**不蕴含**「连上过」。
+真正的「连上过」只有 `status-unclear` 与 `on-target-unattributed` 能证明。
+现在文案改为「连接归属存疑（netId 与本次配置不符）—— 未记录，下次会重试」。
+
+### 修正：`no-evidence` 的文案说不清「为什么没结论」
+
+真机 `whoami` 的 14 条属于「系统确实试过、确实失败、但原因不是密钥错误」。
+旧文案「没拿到可归因的证据」会让用户以为是应用没跑。
+现在这一类的文案明确写出「系统记录到本次连接失败，但原因不是『密钥错误』
+（例如关联超时 / AP 无响应）—— 未记录，下次会重试」。
+
+### 修正：收尾重复跑 `dumpsys wifi`
+
+1.9.63 在每条候选收尾时又跑一次 `dumpsys wifi`（+356ms），
+而判据 D 已在窗口内查过同一份 dump。已删除重复调用，
+并改为直接复用判据 D 采集到的事实。
+
+### 测试
+
+| 测试类 | 用例 | 覆盖 |
+|---|---|---|
+| `WifiEvidenceProbeTest` | **83** | 逐条真机原文解析 + 归属查询 + 边界 |
+| `WifiEvidenceProbeRealDumpTest` | **25** | 整份 4 MB dump 全量回归（含时间窗隔离、反例） |
+| `DumpsVerdictChainTest` | **68** | 判据 D → Adjudicator 的完整契约 |
+| `VerdictScenarioMatrixTest` | **62** | 任务书 §九 的 20 个场景 + 3 条核心不变式 |
+| `ResultCategorySemanticsTest` | **58** | UI 语义修正 |
+
+三条核心不变式（穷举核对，不是抽查）：
+
+1. **错误密码不能被误判为 SUCCESS**：`WRONG_KEY` 在任何来源 × 归属 ×
+   生命周期组合下都不产 SUCCESS（`Evidence.Source` × `Attribution` ×
+   `Lifecycle` 全组合穷举）
+2. **正确密码不能被误判为 AUTH_FAIL + DIRECT**：只可能来自
+   `WRONG_KEY + AT3 + TERMINATED`（`Claim` × `Attribution` × `Lifecycle` 全组合穷举）
+3. **NONE / INFERRED / UNKNOWN / INCOMPLETE 不能永久排除**：
+   `persistable` / `advancesCursor` 当且仅当 `DIRECT`
+
+### 仍然做不到的（如实记录）
+
+- `mConnectionEvents` 只保留最近 63 条、`WifiConfigManager - Log` 只保留 122 行。
+  长跑任务里早期条目会被挤掉，所以必须**每次尝试结束就查**，不能攒到最后。
+- 若某 ROM 的 `dumpsys wifi` 不输出 `uid` 字段，判据 D 会整体退化为
+  「查不到」→ 保持 UNKNOWN，不会误判。
+- 真机端到端验证需要手动执行（见交付报告 §八），本轮未做联网真机测试。
+
 ## [1.9.63] - 2026-11-22
 
 > ### 判定结果语义分类：六类互斥，不再一个「不确定」包打天下

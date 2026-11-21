@@ -53,7 +53,23 @@ public final class Evidence {
         /** status 四条件同行（SSID+COMPLETED+IP+netId）。 */
         SUCCESS_STATUS,
         /** 日志里目标 BSSID 的 Key negotiation completed。 */
-        SUCCESS_LOG
+        SUCCESS_LOG,
+        /**
+         * {@code dumpsys wifi} 里 framework 自己的「密钥错误」判定。
+         *
+         * <h3>与 WPALOG_A 的区别（为什么单列一个源）</h3>
+         * {@code WPALOG_A} 来自 wpa_supplicant 日志，本机（ColorOS 15）
+         * {@code logcat -s wpa_supplicant} 恒为 0 行 → 该源在本机**永不可达**。
+         * 本源来自 framework 自己的记账：
+         * <ul>
+         *   <li>{@code WifiConfigManager}: {@code DISABLED_BY_WRONG_PASSWORD}</li>
+         *   <li>{@code WifiMetrics.mConnectionEvents}:
+         *       {@code level2FailureReason=AUTH_FAILURE_WRONG_PSWD}</li>
+         * </ul>
+         * 两者都带 {@code configKey}/SSID、毫秒时间戳，且配置级那条带
+         * **创建者 uid** —— 这是日志行永远给不了的归属维度。
+         */
+        DUMPS_WRONG_KEY
     }
 
     /**

@@ -115,20 +115,52 @@ public final class ResultCategoryTest {
             ok("★ UNKNOWN + netid-conflict → 无法判断（但标注「曾连上」）",
                     ResultCategory.of(CrackEngine.Verdict.UNKNOWN, N, "netid-conflict")
                             == ResultCategory.Kind.UNDECIDED);
-            ok("★ netid-conflict 被识别为「目标可能连上过」",
-                    ResultCategory.targetMayHaveConnected("netid-conflict"));
-            ok("★ status-unclear 被识别为「目标可能连上过」",
+            /*
+             * 2026-11-22 修正（真机证伪，不是放宽）：
+             *
+             * 原断言要求 netid-conflict 被识别为「目标可能连上过」，
+             * 于是 UI 提示「目标曾连上并取得 IP，请人工复核」。
+             *
+             * 真机实测（PJX110 / ColorOS 15，dumpsys wifi 全量 63 条连接事件）：
+             *   2.4G-3 连续 14 次尝试，connectionResult 恒为 0，
+             *   level2FailureCode 恒为 AUTHENTICATION_FAILURE，
+             *   **一次都没连上过**，而 1.9.63 仍把它标成 netid-conflict
+             *   并让用户去「人工复核」—— 那是在复核一个不存在的命中。
+             *
+             * netid-conflict 的真实含义是「netId 与本次配置不符」，
+             * 它**不蕴含**「连上过」。真正的「连上过」只有 status-unclear
+             * 与 on-target-unattributed 能证明（两者都由「status 显示目标」触发）。
+             */
+            ok("★ netid-conflict **不**被识别为「目标可能连上过」（真机证伪）",
+                    !ResultCategory.targetMayHaveConnected("netid-conflict"));
+            ok("★ status-unclear 仍被识别为「目标可能连上过」",
                     ResultCategory.targetMayHaveConnected("status-unclear"));
+            ok("★ on-target-unattributed 仍被识别为「目标可能连上过」",
+                    ResultCategory.targetMayHaveConnected("on-target-unattributed"));
             ok("★ no-evidence 不被识别为「连上过」",
                     !ResultCategory.targetMayHaveConnected("no-evidence"));
-            ok("★ netid-conflict 的文案说「曾连上并取得 IP，请人工复核」",
-                    ResultCategory.hint(ResultCategory.Kind.UNDECIDED, "netid-conflict", true)
-                            .contains("连上"),
+            ok("★ netid-conflict 的文案不再说「曾连上」，改说归属存疑",
+                    !ResultCategory.hint(ResultCategory.Kind.UNDECIDED,
+                            "netid-conflict", true).contains("曾连上")
+                            && ResultCategory.hint(ResultCategory.Kind.UNDECIDED,
+                                    "netid-conflict", true).contains("netId"),
                     ResultCategory.hint(ResultCategory.Kind.UNDECIDED, "netid-conflict", true));
-            ok("★ no-evidence 的文案说「没拿到证据」",
+            /*
+             * no-evidence / not-connected-terminated 这一类现在的文案是
+             * 「系统记录到本次连接失败，但原因不是『密钥错误』…」。
+             *
+             * 这不是变弱，而是**变准**：真机 whoami 的 14 条全是
+             * NEW_CONNECTION_ATTEMPT —— 系统确实试过、确实没连上，
+             * 但没有密钥不符的证据。旧文案「没拿到证据」会让用户
+             * 以为是应用没跑，而实际是 AP 没给结论。
+             */
+            ok("★ no-evidence 的文案说「系统记录到失败、但不是密钥错误」",
                     ResultCategory.hint(ResultCategory.Kind.UNDECIDED, "no-evidence", true)
-                            .contains("没拿到"),
+                            .contains("不是「密钥错误」"),
                     ResultCategory.hint(ResultCategory.Kind.UNDECIDED, "no-evidence", true));
+            ok("★ 该文案仍明确说「未记录、下次会重试」",
+                    ResultCategory.hint(ResultCategory.Kind.UNDECIDED, "no-evidence", true)
+                            .contains("未记录"));
 
             // ------------------------------------------------ 7. 穷举不遗漏
             System.out.println();

@@ -32,11 +32,29 @@ public final class WifiEvidenceProbeRealDumpTest {
 
     private static void info(String s) { System.out.println("  ·    " + s); }
 
-    /** 真机 dump 的候选路径（设备侧与桌面侧各一份）。 */
-    private static final String[] DUMP_PATHS = {
-            "/data/local/tmp/wpf-dumpsys.txt",
-            "/workspace/wpf-1964-audit/logs/dumpsys-wifi-baseline-20261122.txt",
-    };
+    /**
+     * 真机 dump 的候选路径。
+     *
+     * <p>第一项是设备侧原始位置；后两项经 {@link io.github.wlmosv_png.wpaforge.TestPaths}
+     * 解析——门禁要求「读文件的测试必须经 TestPaths」，否则把项目根换一份跑时
+     * 测试实际读的仍是写死的那份，属于假绿。
+     */
+    private static String[] dumpPaths() {
+        String root;
+        try {
+            root = io.github.wlmosv_png.wpaforge.TestPaths.root();
+        } catch (Throwable t) {
+            root = null;
+        }
+        java.util.List<String> ps = new java.util.ArrayList<>();
+        ps.add("/data/local/tmp/wpf-dumpsys.txt");
+        if (root != null) {
+            ps.add(root + "/wpf-dumpsys.txt");
+            ps.add(root + "/logs/dumpsys-wifi-baseline-20261122.txt");
+        }
+        ps.add("/workspace/wpf-1964-audit/logs/dumpsys-wifi-baseline-20261122.txt");
+        return ps.toArray(new String[0]);
+    }
 
     public static void main(String[] args) {
         System.out.println("== 真机整份 dumpsys 全量回归 ==");
@@ -235,7 +253,7 @@ public final class WifiEvidenceProbeRealDumpTest {
     }
 
     private static String load() {
-        for (String p : DUMP_PATHS) {
+        for (String p : dumpPaths()) {
             try {
                 java.io.File f = new java.io.File(p);
                 if (!f.isFile() || f.length() < 100_000L) continue;

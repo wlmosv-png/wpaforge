@@ -601,6 +601,26 @@ public final class CrackEngine {
     private static final long WPLOG_INFERRED_CONFIRM_MS = M1_RETRY_CONFIRM_MS;
 
     /**
+     * 判据 D（dumpsys framework 级证据）的查询时刻表，单位毫秒，
+     * 相对**连接命令发出时刻**（{@code commandAt}）。
+     *
+     * <h3>取值依据（全部来自真机实测，不是估算）</h3>
+     * <ul>
+     *   <li>{@code dumpsys wifi} 整份约 **356ms**（3 次实测：355/341/356），
+     *       解析本身只要 7ms/15ms —— 开销全在 dump 上，所以不能每轮查；</li>
+     *   <li>真机的失败记录在 **4182~4295ms** 才写进
+     *       {@code mConnectionEvents} / {@code WifiConfigManager}
+     *       （2.4G-3 连续 14 条 duration 实测）；</li>
+     *   <li>正确密码的成功证据在 950ms 内由判据 A（{@code cmd wifi status}
+     *       四条件同行）命中并提前 return，走不到这里。</li>
+     * </ul>
+     *
+     * <p>所以只需要「在 4.2s 之前留两次机会」：2600ms 与 3600ms。
+     * 两次合计约 712ms，且只在这条候选**还没有结论**时付出。
+     */
+    private static final long[] DUMPS_PROBE_AT_MS = { 2600L, 3600L };
+
+    /**
      * 第二级早退判据（纯函数，便于离线单测）。
      *
      * @param m1Seen       本次尝试已见到 M1（RX message 1 of 4-Way Handshake）
@@ -1028,6 +1048,7 @@ public final class CrackEngine {
             case WPALOG_B: return "wpalog";
             case SUCCESS_STATUS: return "supplicant";
             case SUCCESS_LOG: return "wpalog";
+            case DUMPS_WRONG_KEY: return "dumpsys";
             default: return "";
         }
     }
@@ -2030,6 +2051,24 @@ public final class CrackEngine {
         boolean leftBaseline = false;
         // 是否出现过「连着目标但 netId 对不上」——只用于收尾时把话说清楚，不作否决
         boolean suspectNetIdConflict = false;
+        /**
+         * 本条候选已经查到第几个 {@link #DUMPS_PROBE_AT_MS} 时刻（判据 D）。
+         *
+         * <p>用「已查到第几个时刻」而不是布尔量，是因为真机的失败记录
+         * **4182~4295ms** 才写入 framework 记账（2.4G-3 连续 14 条实测）。
+         * 只查一次（必然在早期）会永远查不到 —— 那是「看起来生效实则无效」。
+         */
+        int dumpsProbedSlot = -1;
+        /**
+         * 判据 D 观察到的「非密码错失败」摘要（诊断用，**不参与判定**）。
+         *
+         * <p>真机实测 {@code whoami} 就是这一类：framework 记的是
+         * {@code NEW_CONNECTION_ATTEMPT / FAILURE_REASON_UNKNOWN}，
+         * 说明系统确实试过、且没连上，但**没有**密钥不符的证据。
+         * 把它写进判词，用户才知道「不是我们没试，是 AP 没给结论」——
+         * 而不是永远看到一句笼统的「无结论」。
+         */
+        String lastDumpsOtherFailure = null;
         // 是否因「目标出现在 status」而延长过看门狗（只延一次）
         boolean extendedForTargetSight = false;
 
@@ -2456,6 +2495,108 @@ public final class CrackEngine {
                                 L.f("系统已回连到其它网络 %s —— 目标这次没连上（无归因证据）",
                                     "system fell back to %s - the target did not connect (no attributable evidence)",
                                     info.ssid));
+                    }
+                }
+            }
+
+            // ---------- 判据 D（2026-11-22 新增）：dumpsys wifi 的 framework 级认证失败 ----------
+            //
+            // 为什么需要它：本机 `logcat -s wpa_supplicant` 恒为 0 行（ColorOS 配额丢弃），
+            // 于是判据 B 整段（含唯一能给 AUTH_FAIL+DIRECT 的支A-AT3）在本机**永不生效**。
+            // 实测（4 MB dump 全量）：logcat 侧 0 条真实 supplicant 行，
+            // 而 `dumpsys wifi` 里有 16 条 AUTH_FAILURE_WRONG_PSWD + 30 条
+            // DISABLED_BY_WRONG_PASSWORD —— 证据一直在，只是通道选错了。
+            //
+            // 归属链（逐层可验，比判据 B 的支A 更硬）：
+            //   ① 命令前目标配置已删净并回读（configConfirmedAbsent，前置闸门保证）
+            //   ② 窗口内出现 configKey="<目标SSID>" 的 uid=0 的 ADD_OR_UPDATE
+            //      —— uid=0 就是 root 通道，系统自己是 1000、应用是 appId，三者天然可分
+            //   ③ 同一窗口内该 configKey 被 framework 标为
+            //      NETWORK_SELECTION_DISABLED_BY_WRONG_PASSWORD
+            //   ④ 或 mConnectionEvents 里出现同 SSID、uid=0、connectionResult=0、
+            //      level2FailureReason=AUTH_FAILURE_WRONG_PSWD 的记录
+            //
+            // ①②③ 同时成立 = 「本条命令建的配置被 framework 判定为密码错误」= AT3。
+            // ④ 单独成立时同样要求 ② 也成立（防止旧同名配置的失败被算到本条头上）。
+            //
+            // 频率（2026-11-22 修正）：按**墙钟毫秒**在固定时刻各查一次，
+            // 不用轮次计数。
+            //
+            // 为什么不能用轮次：主循环间隔是自适应的 —— 前 1.2 秒 20ms/轮，
+            // 之后 80ms/轮。同一个「第 15 轮」在不同负载下对应的时刻能差 3 倍，
+            // 用它做闸等于让探测时机随机。
+            //
+            // 为什么不能「每条只查一次」：真机的失败记录是 **4182~4295ms**
+            // 才写进 framework 记账的（2.4G-3 连续 14 条实测 duration 4182–4295）。
+            // 若只查一次（必然在早期），就永远查不到 —— 这条实现过、测过，
+            // 单条耗时降下来了但一条失败都判不出，是「看起来生效实则无效」。
+            //
+            // 现在的时刻表（相对命令发出时刻）：
+            //   2600ms —— 慢 AP 的握手失败已写入，快 AP 若成功早已由判据 A 命中
+            //   3600ms —— 覆盖 4182ms 之前最后一次机会
+            // 两查共约 712ms 额外开销，只发生在**这条候选还没结论**时；
+            // 一旦判据 A 命中成功就提前 return，不会白付。
+            final long dumpsElapsed = clock().uptimeMillis() - commandAt;
+            int dumpsSlot = -1;
+            for (int i = 0; i < DUMPS_PROBE_AT_MS.length; i++) {
+                if (dumpsElapsed >= DUMPS_PROBE_AT_MS[i]) dumpsSlot = i;
+            }
+            if (configConfirmedAbsent && dumpsSlot >= 0 && dumpsSlot > dumpsProbedSlot) {
+                dumpsProbedSlot = dumpsSlot;
+                // 窗口起点用墙钟（logcat/dumpsys 的时间戳是墙钟，单调时钟喂不进去）。
+                final long probeFrom = WifiEvidenceProbe.stampOfEpoch(windowFromMs);
+                // 窗口终点**不读第二遍墙钟**：用「墙钟起点 + 单调已过时间」推导。
+                // 两个理由：
+                //   · 判定路径的时钟契约是单调时钟（EngineClockTest / R2TimeoutTest 钉死
+                //     「墙钟只用在 runId 与日志窗口起点」）——新增第三处墙钟读取会破坏它；
+                //   · 推导值比再读一次墙钟更准：它精确等于「起点之后真实过了多少毫秒」，
+                //     不受两次读取之间的系统时间调整（NTP / 用户改时间）影响。
+                final long probeTo = windowFromMs > 0
+                        ? WifiEvidenceProbe.stampOfEpoch(
+                                windowFromMs + (clock().uptimeMillis() - commandAt))
+                        : -1L;
+                String dumpsText = null;
+                try {
+                    dumpsText = shell.exec("dumpsys wifi", 8000);
+                } catch (Throwable ignored) {}
+                if (dumpsText != null && !dumpsText.isEmpty()) {
+                    // ---- 通道级：配置被 framework 标为密码错误（AT3 强度最高）----
+                    WifiEvidenceProbe.ConfigEvent cfgWrong =
+                            WifiEvidenceProbe.findWrongPasswordDisable(
+                                    WifiEvidenceProbe.configEvents(dumpsText),
+                                    target.ssid, probeFrom, probeTo, true);
+                    // ---- 连接级：framework 的 mConnectionEvents 明确 WRONG_PSWD ----
+                    WifiEvidenceProbe.ConnEvent connWrong =
+                            WifiEvidenceProbe.findWrongPsk(
+                                    WifiEvidenceProbe.connectionEvents(dumpsText),
+                                    target.ssid, probeFrom, probeTo, true);
+                    if (cfgWrong != null || connWrong != null) {
+                        String src = cfgWrong != null ? "config" : "connevent";
+                        android.util.Log.i(TAG, "快速失败(dumpsys/" + src + "): " + target.ssid
+                                + " cfg=" + cfgWrong + " conn=" + connWrong);
+                        long ms = clock().uptimeMillis() - t0;
+                        return judge(password, lastLifecycle, AttemptState.Gate.OK,
+                                Evidence.Source.DUMPS_WRONG_KEY, Evidence.Claim.WRONG_KEY,
+                                Evidence.Attribution.AT3, attemptId,
+                                targetNetId >= 0, ms,
+                                L.s("系统框架确认密钥错误（dumpsys 归属到本次新建的配置）",
+                                    "framework confirms wrong key (dumpsys, bound to this "
+                                        + "attempt's config)")
+                                        + " · " + (cfgWrong != null
+                                            ? "disableReason=WRONG_PASSWORD"
+                                            : "level2FailureReason=AUTH_FAILURE_WRONG_PSWD"));
+                    }
+                    // ---- 诊断级：有失败但 reason 不是 WRONG_PSWD ----
+                    // 真机实测 whoami 就是这一类（NEW_CONNECTION_ATTEMPT）。
+                    // **不能**判密码错，但记下来让用户知道「系统确实试过、且失败了」。
+                    WifiEvidenceProbe.ConnEvent connOther =
+                            WifiEvidenceProbe.findNonPskFailure(
+                                    WifiEvidenceProbe.connectionEvents(dumpsText),
+                                    target.ssid, probeFrom, probeTo);
+                    if (connOther != null) {
+                        lastDumpsOtherFailure = connOther.level2FailureCode
+                                + "/" + connOther.level2FailureReason
+                                + " dur=" + connOther.durationMs + "ms";
                     }
                 }
             }
@@ -2952,26 +3093,34 @@ public final class CrackEngine {
         // R10：原来这里报的「事件N」恒为 0（NetworkWatcher 早就不参与判定）—— **假数字**。
         // 现在改报真正影响结论的东西：本条候选的日志窗口是否可用。
         /*
-         * 2026-11-22：补充 dumpsys 诊断（**只描述事实，不参与判定**）。
+         * 2026-11-22 整改：这里**不再重复跑 `dumpsys wifi`**。
          *
-         * 真机实测：本机 logcat 的 wpa_supplicant 与 ClientModeImpl 均为 0 行，
-         * 唯一能拿到「断开事件」的通道是 `dumpsys wifi`。
-         * 但它**不能**证明密码错误（reasonCode 是本机恒为 3 的
-         * WIFI_DISABLED_BY_SYSTEM，不是 supplicant 的 WRONG_KEY），
-         * 也到不了 AT3（事件里没有配置 id / netId 对应关系）。
+         * <h3>为什么删掉</h3>
+         * ① 它每条候选多付 **356ms**（真机实测 3 次：355/341/356），
+         *    而判据 D 已经在窗口内（2600ms / 3600ms 两个时刻）查过同一份 dump，
+         *    结论就存在 `lastDumpsOtherFailure` 里 —— 重复调用纯属浪费；
+         * ② 它用的 `WifiDumpsProbe` 只看 `NETWORK_DISCONNECTION_EVENT` 的
+         *    `reasonCode`，而该通道的结论已被真机证伪（reasonCode 恒为 3 =
+         *    WIFI_DISABLED_BY_SYSTEM，与密码无关）。真正能区分「密码错」的
+         *    `AUTH_FAILURE_WRONG_PSWD` / `DISABLED_BY_WRONG_PASSWORD` 它一个都不看。
          *
-         * 所以这里只把它写进 detail，让「系统在反复失败」这件事可见，
-         * 而不是让它变成结论。判定链一行不动。
+         * <h3>现在做什么</h3>
+         * 直接把判据 D 已采集到的事实写进判词。它**不改变结论**，
+         * 只回答「这条候选为什么没有结论」——
+         * 这是任务书 §八 要求的「UNKNOWN 必须显示具体 reason 和可读解释」。
          */
-        try {
-            String dumps = shell == null ? null : shell.exec("dumpsys wifi", 4000);
-            if (dumps != null && !dumps.isEmpty()) {
-                String dd = WifiDumpsProbe.describe(
-                        WifiDumpsProbe.disconnects(dumps), target.ssid);
-                if (!dd.isEmpty()) detail = detail + " · " + dd;
-            }
-        } catch (Throwable ignored) {
-            // 诊断失败不影响结论 —— 这正是「只诊断」的含义。
+        if (lastDumpsOtherFailure != null) {
+            detail = detail + L.s(" · 系统记录到本次连接失败（", " · system recorded a failed ")
+                    + lastDumpsOtherFailure
+                    + L.s("），但原因不是「密钥错误」，所以不能判密码错",
+                          " attempt, but the reason is not a wrong key, "
+                              + "so it cannot be treated as a wrong passphrase");
+        } else if (configConfirmedAbsent && dumpsProbedSlot < 0) {
+            // 连一次 dumps 都没查过（例如候选在 2600ms 前就结束了）——
+            // 如实说明「这条没做 framework 级核查」，而不是假装查过了。
+            detail = detail + L.s(" · 本次未做 framework 级核查（候选在 2.6s 前结束）",
+                    " · no framework-level check was performed "
+                        + "(the candidate finished before 2.6s)");
         }
 
         detail = detail + L.f(" [层: 日志%d/%s · status%d/%s · 窗口%s]",

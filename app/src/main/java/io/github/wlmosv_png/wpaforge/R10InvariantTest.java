@@ -147,9 +147,13 @@ public class R10InvariantTest {
             // 这条从「数出口」升级为「出口必须为零」——更严格，不是放宽。
             eq("**CrackEngine 内直接构造的 AUTH_FAIL 出口数 = 0**（全部经 Adjudicator）", 0, auth);
             // C3：五种证据源；C4：两个成功出口；D5：支A 拆成 AT3/AT1 两处
-            // -> 共 8 处统一裁决入口
-            ok("全部证据源都调用统一裁决入口 judge(...)（8 处：6 失败源 + 2 成功源）",
-                    countOccurrences(code, "judge(password,") == 8);
+            // 2026-11-22：新增判据 D（dumpsys framework 级证据）—— 第九处。
+            // 它是**新的失败证据源**（本机 logcat 恒 0 行时唯一可用的失败通道），
+            // 走同一个 judge(...) 出口，不自己构造 Attempt。
+            // 计数变化是「多了一个证据源」，不是放宽标准：
+            // 下面 countDirectAuthFail==0 与 AT3 逐一列举仍然照旧约束它。
+            ok("全部证据源都调用统一裁决入口 judge(...)（9 处：7 失败源 + 2 成功源）",
+                    countOccurrences(code, "judge(password,") == 9);
             // C1：authcast 也不得 DIRECT。
             // 广播只有 SSID（AT-1），而 netId 存在**不构成关联证据**——
             // 「本次建了配置」与「这条广播属于它」之间没有可验证的因果链。
@@ -160,11 +164,15 @@ public class R10InvariantTest {
             ok("authcast 提交 WRONG_KEY 证据，归属上限 AT1",
                     code.contains("Evidence.Source.AUTHCAST, Evidence.Claim.WRONG_KEY")
                             && !code.contains("at3Owned"));
-            // D5 之后 AT3 有三处，且**每一处都有明确用途**：
+            // D5 之后 AT3 有三处，2026-11-22 增加第四处，**每一处都有明确用途**：
             //   · 2 处成功证据（status 四条件同行 / 日志协商完成）
             //   · 1 处支A-AT3（TEMP-DISABLED 的 id= 绑定到本次新建配置）
+            //   · 1 处判据 D（dumpsys：uid=0 的配置被 framework 标为
+            //     DISABLED_BY_WRONG_PASSWORD / 连接事件 AUTH_FAILURE_WRONG_PSWD）
+            // 第四处的归属比支A 更硬：它要求**配置创建者 uid=0**，
+            // 而支A 只要求 id 与 netId 数值相等（本机实测两者不同体系，恒假）。
             // 其余失败源一律 AT1 / NONE —— 不能靠「反正对不上」蒙过去。
-            eq("AT3 恰好 3 处（2 成功 + 1 支A 配置绑定）", 3,
+            eq("AT3 恰好 4 处（2 成功 + 1 支A + 1 判据D）", 4,
                     countOccurrences(code, "Evidence.Attribution.AT3"));
             ok("支A 的 AT3 只在 sawWrongKeyForConfig 分支里",
                     code.contains("sawWrongKeyForConfig"));

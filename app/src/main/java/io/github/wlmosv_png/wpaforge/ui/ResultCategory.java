@@ -110,13 +110,45 @@ public final class ResultCategory {
     /**
      * 这条 UNKNOWN 是否意味着「目标其实连上过」。
      *
-     * <p>用于 UI 明确区分「什么都没观察到」与「连上了但归因存疑」。
+     * <h3>2026-11-22 修正：netid-conflict 被移出本集合</h3>
+     * 修复前它返回 true，UI 因此提示
+     * 「目标曾连上并取得 IP，但无法确认是这条口令造成的 —— 请人工复核」。
+     *
+     * <p>真机证伪（PJX110 / ColorOS 15）：{@code 2.4G-3} 连续 14 次尝试
+     * 全部是 {@code AUTHENTICATION_FAILURE / AUTH_FAILURE_WRONG_PSWD}，
+     * **一次都没连上过**（{@code connectionResult} 恒为 0），
+     * 而 1.9.63 仍把它标成 {@code netid-conflict} 并提示人工复核 ——
+     * 那是在让用户去复核一个不存在的命中。
+     *
+     * <p>{@code netid-conflict} 的真实含义是「观察到了 netId 与本次配置不符」，
+     * 它**不蕴含**「连上过」。真正的「连上过」只有
+     * {@code status-unclear} 与 {@code on-target-unattributed} 能证明
+     * （两者都由「status 显示目标」触发）。
      */
     public static boolean targetMayHaveConnected(String reason) {
         if (reason == null) return false;
-        return "netid-conflict".equals(reason)
-                || "status-unclear".equals(reason)
+        return "status-unclear".equals(reason)
                 || "on-target-unattributed".equals(reason);
+    }
+
+    /**
+     * 这条 UNKNOWN 是否属于「系统记录了失败，但原因不是密钥错误」。
+     *
+     * <p>真机实例（whoami，2026-11-22）：framework 的
+     * {@code mConnectionEvents} 记的是
+     * {@code NEW_CONNECTION_ATTEMPT / FAILURE_REASON_UNKNOWN}，
+     * 连续 10 次，每次 duration 3.1~10.7 秒。
+     *
+     * <p>含义：**系统确实试过、也确实没连上**，但没有密钥不符的证据。
+     * 这与「什么都没观察到」是两种不同的事实，UI 必须分开说 ——
+     * 否则用户会以为是应用没跑，而实际是 AP 没给结论。
+     */
+    public static boolean systemRecordedFailure(String reason) {
+        if (reason == null) return false;
+        return "not-connected-terminated".equals(reason)
+                || "no-evidence".equals(reason)
+                || "wrong-key-active".equals(reason)
+                || "wrong-key-state-unknown".equals(reason);
     }
 
     /** 中文短标签。 */
@@ -164,6 +196,25 @@ public final class ResultCategory {
                     return zh ? "目标曾连上并取得 IP，但无法确认是这条口令造成的 —— 请人工复核"
                             : "the target did connect with an IP, but it cannot be "
                                     + "confirmed as caused by this candidate - review manually";
+                }
+                if ("netid-conflict".equals(reason)) {
+                    // 2026-11-22：不再说「曾连上」。真机实测这条 reason 对应的
+                    // 是「netId 与本次配置不符」，与「连上过」无关。
+                    return zh ? "连接归属存疑（netId 与本次配置不符）—— 未记录，下次会重试"
+                            : "connection attribution is doubtful (netId differs from "
+                                    + "this attempt's config) - not recorded, will be retried";
+                }
+                if ("status-unclear".equals(reason)) {
+                    return zh ? "通道正常但结束时没拿到足够证据 —— 未记录，下次会重试"
+                            : "channel was alive but evidence was insufficient at the end "
+                                    + "- not recorded, will be retried";
+                }
+                if (systemRecordedFailure(reason)) {
+                    return zh ? "系统记录到本次连接失败，但原因不是「密钥错误」"
+                                    + "（例如关联超时 / AP 无响应）—— 未记录，下次会重试"
+                            : "the system recorded a failed attempt, but the reason is not "
+                                    + "a wrong key (e.g. association timeout / AP unresponsive) "
+                                    + "- not recorded, will be retried";
                 }
                 return zh ? "没拿到可归因的证据 —— 未记录，下次会重试"
                         : "no attributable evidence - not recorded, will be retried";

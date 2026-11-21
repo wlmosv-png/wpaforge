@@ -1,5 +1,64 @@
 # Changelog
 
+## [1.9.65] - 2026-11-22
+
+> ### 判据 D 采集时序整改：从「固定时刻各查一次」改为「生命周期驱动 + 有限轮询」
+
+1.9.64 已经能从 `dumpsys wifi` 读出真实认证失败，但**采集时序**有缺陷：
+只在 `commandAt+2600ms`、`+3600ms` 两个固定时刻各查一次，且 `dumpsProbedSlot`
+是一次性计数——查过之后不再查。而真机的认证失败事件常在连接尝试结束后
+**3.8~4.9 秒**才写入 `mConnectionEvents`（部分 AP / ROM / 弱信号重试更晚），
+两个固定探测点都早于这部分事件，于是真实的 `AUTH_FAILURE_WRONG_PSWD`
+被漏读、错误密码降级为 UNKNOWN。
+
+### 修复：采集时序抽成纯逻辑类 `DumpsProbePlan`
+
+- **固定时刻表兜底**：2600 / 3600 / **5200ms**（5200 覆盖真机 3.8~4.9s 落盘区间；
+  它是兜底，不是唯一修复）。
+- **生命周期终止立即触发**：观察到连接进入 `TERMINATED`，立刻再查一次，
+  不必等下一个固定时刻。
+- **主循环退出后有限轮询**：循环按时间预算退出时，在 **3s 截止时间**内
+  按 600ms 有间隔地有限轮询；达到截止仍无证据，才交给裁决层降级为 UNKNOWN / INCOMPLETE。
+- **一次未命中不再永久封锁**：`dumpsProbedSlot` 的一次性限制移除，
+  固定时刻、终止触发、兜底轮询三条路径并行。
+
+### 归因收紧：`DumpsAttribution`（与测试共用同一份代码）
+
+认证失败必须**同时**满足：当前 attempt 的时间窗口、窗口内 target SSID 的
+`uid=0` `ADD_OR_UPDATE` 配置关联、明确的 `AUTH_FAILURE_WRONG_PSWD` 或
+`DISABLED_BY_WRONG_PASSWORD`、事件时间在窗口内；连接级还要求 BSSID 收窄
+（同 SSID 不同 BSSID 不误认）。`uid=0` 本身**不能**单独证明失败属于当前候选。
+
+### 判定与持久化不变量（不变）
+
+| 结果 | 允许行为 |
+|---|---|
+| AUTH_FAIL + DIRECT | 写 TriedSet、推进 Cursor |
+| AUTH_FAIL + INFERRED | 不永久排除 |
+| UNKNOWN / INCOMPLETE | 不永久排除 |
+| NETWORK_AUTH_FAIL | 不冒充候选级密码错误 |
+| SUCCESS | 必须满足原有严格成功条件 |
+
+### `m1retry` 来源审计
+
+`m1retry` 来自 `logcat -d -s wpa_supplicant` 的「RX message 1 of 4-Way Handshake」
+计数，且只在上一条目标记之后（`AttemptMarker.sliceAfter`）的切片里统计；
+归属等级 AT1 / `NOT_CONNECTED`，**永不产生 AUTH_FAIL**。本机（PJX110）
+`wpa_supplicant` 日志恒为 0 行，`m1retry` 实际不会触发——真正的候选级证据只能
+来自判据 D（dumpsys），这正是本轮修复的对象。
+
+### 破解页 UI：统计区 2×2 网格 + 未确定细分独立信息区
+
+- 统计区由四列横排改为**窄屏 2×2 网格 / 宽屏 1×4**，每个指标独立容器，
+  标签与数字分离，窄屏不再互相挤压。
+- 「未确定」的细分（疑似密码错误 / 网络认证失败 / 连接未完成 / 环境异常 /
+  无法判断）从「未确定」数字格里挪出，改为下方**独立信息区**，固定顺序、零值隐藏。
+
+### 门禁
+
+236 个测试类全部通过（+3 类 / +81 用例：DumpsProbePlanTest 27、
+DumpsAttributionSafetyTest 27、CrackStatsModelTest 27）。
+
 ## [1.9.64] - 2026-11-22
 
 > ### 判定证据链整改：接入 `dumpsys wifi` 里一直被丢弃的认证失败证据

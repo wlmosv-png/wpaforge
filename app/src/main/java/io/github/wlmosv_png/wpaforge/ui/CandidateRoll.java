@@ -57,6 +57,10 @@ public class CandidateRoll extends FrameLayout {
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
         t.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        // 1.9.68：等宽大字带字形留白，视觉上比下方 FS_SMALL 的历史行偏左。
+        // 给大字 1dp 光学补偿，让「大字」与「历史候选」「攻击流标题」左边缘对齐。
+        float d = getResources().getDisplayMetrics().density;
+        t.setPadding(Math.round(1 * d), 0, 0, 0);
         LayoutParams lp = new LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
         t.setLayoutParams(lp);

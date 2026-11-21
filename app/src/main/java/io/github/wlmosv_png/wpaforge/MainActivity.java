@@ -10307,7 +10307,9 @@ public class MainActivity extends Activity {
         // 1.9.68：padding 会**吃掉绘制区**（22dp 画布 + 6/8dp padding → 实绘只剩 ~8dp，
         // 真机上显示成一个小逗号）。现在画布 26dp、padding 只留触控用的 2dp，
         // 箭头本体占满画布 —— 与「攻击流」标题字等高。
-        flowChevron.setPadding(px(2), px(2), px(2), px(2));
+        // 1.9.68：箭头不能有左内边距 —— 它要与上方「正在尝试」「66668888」
+        // 以及下方攻击流日志左边缘落在同一条线上。
+        flowChevron.setPadding(0, px(2), px(2), px(2));
         LinearLayout.LayoutParams fcvp = new LinearLayout.LayoutParams(
                 Math.round(26 * dp), Math.round(26 * dp));
         fcvp.gravity = Gravity.CENTER_VERTICAL;

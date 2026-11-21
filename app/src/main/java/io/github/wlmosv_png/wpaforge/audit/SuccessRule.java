@@ -84,17 +84,26 @@ public final class SuccessRule {
      * @param statusNetId  同一行的 netId（{@code <0} = 取不到）
      * @param targetNetId  本次命令建出的配置 netId（{@code <0} = 取不到）
      */
+    @Deprecated
     public static Assessment assess(String targetSsid, String statusSsid, String state,
                                     String ip, long statusNetId, long targetNetId) {
-        // 兼容入口：语义与 1.9.60 **逐字一致**（netId 缺失不否决）。
-        //
-        // <p>为什么保留这个宽松语义：它是「正确密码不被漏判」的防线 ——
-        // 实测慢 AP 上 netId 在命令后 242~324ms 才出现，早取必为 -1，
-        // 硬要求相等会让正确密码整段 12 秒超时（历史事故）。
-        //
-        // <p>生产调用方（{@code CrackEngine.tryOneShell}）**不再走这个入口**，
-        // 它用下面带 {@code gateConfirmedClean} 的重载把「前置闸门到底确认了什么」
-        // 显式传进来。本重载保留给「确实没有闸门信息」的离线场景与既有契约测试。
+        /*
+         * ⚠️ **生产路径禁止调用本重载**（2026-11-21 判定链专项审计加固）。
+         *
+         * 它把 gateConfirmedClean 硬编码为 true —— 等于**假设**「前置闸门已确认
+         * 目标旧配置被删净」。这个假设在离线契约测试里成立，但在生产里必须由
+         * CrackEngine 用实测结果显式传入，否则 P0-1 的 fail-closed 保护会被绕过：
+         *   · list-networks 返回错误文本却当成「已删净」
+         *   · 旧配置残留 + 系统回连 → SSID+COMPLETED+IP 全真 → 假成功
+         *
+         * 生产调用方请用 7 参重载并传真实闸门结论。
+         * 门禁：VerdictOverloadGuardTest 静态钉住「CrackEngine 不得调用 6 参版本」。
+         *
+         * 语义与 1.9.60 **逐字一致**（netId 缺失不否决）：
+         * 实测慢 AP 上 netId 在命令后 242~324ms 才出现，早取必为 -1，
+         * 硬要求相等会让正确密码整段 12 秒超时（历史事故）。
+         * 本重载保留给「确实没有闸门信息」的离线场景与既有契约测试。
+         */
         return assess(targetSsid, statusSsid, state, ip, statusNetId, targetNetId, true);
     }
 

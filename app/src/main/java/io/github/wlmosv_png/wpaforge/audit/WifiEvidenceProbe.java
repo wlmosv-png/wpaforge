@@ -393,13 +393,47 @@ public final class WifiEvidenceProbe {
             if (!e.wrongPsk()) continue;
             if (e.connectionResult != 0) continue;
             if (requireRoot && e.uid != 0) continue;
-            if (fromMs >= 0 && e.timeMs >= 0 && e.timeMs < fromMs) continue;
-            if (toMs >= 0 && e.timeMs >= 0 && e.timeMs > toMs) continue;
+            if (!inAttemptWindow(e, fromMs, toMs)) continue;
             if (best == null || (e.timeMs >= 0 && (best.timeMs < 0 || e.timeMs < best.timeMs))) {
                 best = e;
             }
         }
         return best;
+    }
+
+    /**
+     * 事件是否属于本次 attempt 的窗口（1.9.66 修正）。
+     *
+     * <h3>为什么不能只比 {@code startTime}<\/h3>
+     * {@code mConnectionEvents} 的 {@code startTime} 是**连接开始**时刻，
+     * 而这条记录要等连接结束（{@code startTime + durationMillis}）才写进 dump。
+     * 若只用 startTime 卡窗口终点，则「本次尝试在窗口内开始、但记录在窗口终点之后
+     * 才落盘」的事件会被误判为窗口外 —— 那正是 3.8~4.9 秒延迟落盘的场景。
+     *
+     * <p>因此判定用**两个区间取并**：
+     * <ul>
+     *   <li>开始时间落在窗口内（常规）；<\/li>
+     *   <li>或「开始时间不晚于窗口终点」且「结束时间（start+duration）不早于窗口起点」
+     *       —— 即这条连接的生命期与本次窗口有交叠。<\/li>
+     * <\/ul>
+     * duration 缺失（-1）时退回只看 startTime，绝不因缺字段而放宽。
+     */
+    static boolean inAttemptWindow(ConnEvent e, long fromMs, long toMs) {
+        if (e == null) return false;
+        long start = e.timeMs;
+        if (start < 0) return false;              // 时间解析失败 → 不认（宁可漏判）
+        if (fromMs >= 0 && start < fromMs && e.durationMs <= 0) return false;
+        if (toMs >= 0 && start > toMs) return false;   // 开始晚于窗口终点 → 不是本次
+        if (e.durationMs > 0) {
+            long end = start + e.durationMs;
+            // 生命期与窗口无交叠 → 不认
+            if (toMs >= 0 && start > toMs) return false;
+            if (fromMs >= 0 && end < fromMs) return false;
+        } else {
+            if (fromMs >= 0 && start < fromMs) return false;
+            if (toMs >= 0 && start > toMs) return false;
+        }
+        return true;
     }
 
     /**

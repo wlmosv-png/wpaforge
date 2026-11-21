@@ -333,6 +333,14 @@ public final class CrackEngine {
 
     /** shell 通道（Root），null 表示没接上 */
     private ShellChannel shell;
+    /**
+     * 上一条**已被认领**的连接事件开始时间（{@code parseStamp} 坐标；-1=无）。
+     *
+     * <p>防重复消费：同一条 {@code mConnectionEvents} 记录不得被两个 attempt 先后认领。
+     * 每个候选开始时清零（见 tryOneShell），因此它只在「同一次采集的多次轮询」内生效，
+     * 不会跨候选污染。
+     */
+    private volatile long lastClaimedEventStartMs = -1L;
 
     /** 通道测速：连续 N 条都超时，说明这个通道在当前环境跑不动 */
     private int consecutiveTimeouts = 0;
@@ -1075,6 +1083,20 @@ public final class CrackEngine {
                                            String attemptId, long probeFrom, long probeTo,
                                            long elapsedMs, Lifecycle lifecycle,
                                            boolean configConfirmedAbsent, long targetNetId) {
+        return checkDumpsEvidence(shell, target, password, attemptId, probeFrom, probeTo,
+                elapsedMs, lifecycle, configConfirmedAbsent, targetNetId, -1L);
+    }
+
+    /**
+     * 同上，但可排除**上一个 attempt 已认领的事件开始时间**（防重复消费）。
+     *
+     * @param excludeStartMs 已认领事件开始时间（parseStamp 坐标）；-1 = 不排除
+     */
+    private DumpsCheck checkDumpsEvidence(ShellChannel shell, NetRecord target, String password,
+                                           String attemptId, long probeFrom, long probeTo,
+                                           long elapsedMs, Lifecycle lifecycle,
+                                           boolean configConfirmedAbsent, long targetNetId,
+                                           long excludeStartMs) {
         if (shell == null || !configConfirmedAbsent) return new DumpsCheck(null, null);
         String dumpsText = null;
         try {
@@ -1085,7 +1107,10 @@ public final class CrackEngine {
         // 归因（窗口 + uid=0 配置关联 + WRONG_PSWD + BSSID 收窄）统一走纯逻辑类，
         // 与单元测试共用同一份代码，避免「测的是一套、跑的是另一套」。
         DumpsAttribution.Result ar = DumpsAttribution.evaluate(
-                dumpsText, target.ssid, target.bssid, probeFrom, probeTo);
+                dumpsText, target.ssid, target.bssid, probeFrom, probeTo, excludeStartMs);
+        if (ar.isWrongKey() && ar.claimedStartMs >= 0) {
+            lastClaimedEventStartMs = ar.claimedStartMs;
+        }
         if (ar.isWrongKey()) {
             android.util.Log.i(TAG, "快速失败(dumpsys/" + ar.source + "): " + target.ssid);
             return new DumpsCheck(judge(password, lifecycle, AttemptState.Gate.OK,
@@ -2135,6 +2160,8 @@ public final class CrackEngine {
          * 主循环退出后截止时间内的有限轮询。
          */
         final DumpsProbePlan dumpsPlan = new DumpsProbePlan();
+        // 每条候选独立清零：上一个候选认领过的事件不得算到本条头上。
+        lastClaimedEventStartMs = -1L;
         /**
          * 判据 D 观察到的「非密码错失败」摘要（诊断用，**不参与判定**）。
          *
@@ -2629,7 +2656,8 @@ public final class CrackEngine {
                         : -1L;
                 DumpsCheck dc = checkDumpsEvidence(shell, target, password, attemptId,
                         probeFrom, probeTo, clock().uptimeMillis() - t0,
-                        lastLifecycle, configConfirmedAbsent, targetNetId);
+                        lastLifecycle, configConfirmedAbsent, targetNetId,
+                        lastClaimedEventStartMs);
                 if (dc.hit != null) return dc.hit;
                 if (dc.otherFailure != null) lastDumpsOtherFailure = dc.otherFailure;
             }
@@ -3055,8 +3083,16 @@ public final class CrackEngine {
         //  有限轮询 dumpsys；命中即结案；截止仍无证据才交给 classifyDeadline 降级。
         //  暂停 / 停止 / 取消一律不轮询，保证「中断期间不推进判定」。
         // ══════════════════════════════════════════════════════════════════
+        // 1.9.66 修正：兜底补采**不再只认 TERMINATED**。
+        // 循环退出时若状态读不到（UNKNOWN），同样是「事件可能还没落盘」的场景；
+        // 只认 TERMINATED 会让「读不到状态」这一整类漏判永远补不上。
+        // 安全边界不变：只有 TERMINATED 才可能落到 AUTH_FAIL + DIRECT
+        // （见 Adjudicator 规则 3），UNKNOWN 下补采到的证据最多是网络级，
+        // 绝不会因为「补采」而把候选判成已证实错误。
+        // ACTIVE 不补采：连接还在进行，INCOMPLETE 才是正确语义，也不该白等 3 秒。
         if (configConfirmedAbsent && sawAttempt && channelAlive
-                && lastLifecycle == Lifecycle.TERMINATED
+                && (lastLifecycle == Lifecycle.TERMINATED
+                        || lastLifecycle == Lifecycle.UNKNOWN)
                 && !cancelFlag.get() && !pauseFlag.get()) {
             final long graceDeadline = dumpsPlan.graceDeadlineMs(
                     clock().uptimeMillis() - commandAt);
@@ -3069,7 +3105,8 @@ public final class CrackEngine {
                         : -1L;
                 DumpsCheck dc = checkDumpsEvidence(shell, target, password, attemptId,
                         probeFrom, probeTo, clock().uptimeMillis() - t0,
-                        lastLifecycle, configConfirmedAbsent, targetNetId);
+                        lastLifecycle, configConfirmedAbsent, targetNetId,
+                        lastClaimedEventStartMs);
                 if (dc.hit != null) return dc.hit;
                 if (dc.otherFailure != null) lastDumpsOtherFailure = dc.otherFailure;
                 if (clock().uptimeMillis() - commandAt >= graceDeadline) break;

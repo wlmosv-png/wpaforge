@@ -138,6 +138,16 @@ public final class DumpsAttributionSafetyTest {
                     ADD_ROOT + CONN_WRONG, "2.4G-3", BSSID, fromB, toB);
             ok("★候选 B 窗口读不到候选 A 的失败 → NONE", !r12.isWrongKey(), r12.toString());
 
+            // 12b. 重复消费防护（1.9.66）：同一条事件不得被第二个 attempt 再认领
+            DumpsAttribution.Result first = DumpsAttribution.evaluate(
+                    ADD_ROOT + CONN_WRONG, "2.4G-3", BSSID, from, to, -1L);
+            ok("★首个 attempt 认领成功并给出事件起点",
+                    first.isWrongKey() && first.claimedStartMs >= 0, first.toString());
+            DumpsAttribution.Result second = DumpsAttribution.evaluate(
+                    ADD_ROOT + CONN_WRONG, "2.4G-3", BSSID, from, to, first.claimedStartMs);
+            ok("★已认领事件不被第二个 attempt 重复认领",
+                    !second.isWrongKey(), second.toString());
+
             // 13. 裁决链：WRONG_KEY + AT3 + TERMINATED → AUTH_FAIL/DIRECT
             String aid = "t-1";
             AttemptState term = new AttemptState(aid, CrackEngine.Lifecycle.TERMINATED,

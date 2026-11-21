@@ -41,10 +41,19 @@ public final class DumpsAttribution {
         /** 诊断摘要：有失败但原因不是密码错（例如 NEW_CONNECTION_ATTEMPT），否则 {@code null}。 */
         public final String otherFailure;
 
+        /** 命中事件的开始时间（{@code parseStamp} 坐标）；未命中为 -1。
+         *  引擎据此把「已认领的事件」排除在后续 attempt 之外，防重复消费。 */
+        public final long claimedStartMs;
+
         Result(Verdict verdict, String source, String otherFailure) {
+            this(verdict, source, otherFailure, -1L);
+        }
+
+        Result(Verdict verdict, String source, String otherFailure, long claimedStartMs) {
             this.verdict = verdict;
             this.source = source;
             this.otherFailure = otherFailure;
+            this.claimedStartMs = claimedStartMs;
         }
 
         static Result none(String otherFailure) {
@@ -73,6 +82,18 @@ public final class DumpsAttribution {
      */
     public static Result evaluate(String dumpsText, String ssid, String bssid,
                                   long fromMs, long toMs) {
+        return evaluate(dumpsText, ssid, bssid, fromMs, toMs, -1L);
+    }
+
+    /**
+     * 纯归属判定（带**已认领事件排除**）。
+     *
+     * @param excludeStartMs 上一个 attempt 已认领事件的开始时间；同一条事件
+     *                       不会被第二个 attempt 再次认领（防重复消费）。
+     *                       传 -1 表示不排除。
+     */
+    public static Result evaluate(String dumpsText, String ssid, String bssid,
+                                  long fromMs, long toMs, long excludeStartMs) {
         if (dumpsText == null || dumpsText.isEmpty()) return Result.none(null);
         if (ssid == null || ssid.isEmpty()) return Result.none(null);
         if (!WifiEvidenceProbe.windowUsable(fromMs, toMs)) return Result.none(null);
@@ -94,9 +115,15 @@ public final class DumpsAttribution {
                 ? WifiEvidenceProbe.findWrongPsk(conns, ssid, bssid, fromMs, toMs, true)
                 : null;
 
+        // 已认领事件排除：同一条连接级事件不得被下一个 attempt 再认领。
+        if (connWrong != null && excludeStartMs >= 0 && connWrong.timeMs == excludeStartMs) {
+            connWrong = null;
+        }
         if (cfgWrong != null || connWrong != null) {
+            long claimed = connWrong != null ? connWrong.timeMs
+                    : (cfgWrong != null ? cfgWrong.timeMs : -1L);
             return new Result(Verdict.WRONG_KEY,
-                    cfgWrong != null ? "config" : "connevent", null);
+                    cfgWrong != null ? "config" : "connevent", null, claimed);
         }
         // 诊断级：有失败但 reason 不是 WRONG_PSWD（不能判密码错，只如实记录）。
         WifiEvidenceProbe.ConnEvent connOther =

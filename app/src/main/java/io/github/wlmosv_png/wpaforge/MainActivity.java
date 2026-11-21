@@ -10472,7 +10472,9 @@ public class MainActivity extends Activity {
 
         startBtn = primaryAction(L.s("开始破解", "Start"), ACCENT, ON_ACCENT);
         startBtn.setOnClickListener(v -> startConnect());
-        actions.addView(startBtn, actParamsV(0, 1.4f));
+        // 1.9.68：三个按钮等宽（原 1.4:1:1 让「开始破解」明显过宽），
+        // 主次只靠底色区分，不再靠宽度。
+        actions.addView(startBtn, actParamsV(8, 1f));
 
         pauseBtn = primaryAction(L.s("暂停", "Pause"), AmberTheme.NEUTRAL_BG, TEXT);
         pauseBtn.setOnClickListener(v -> onPauseResumeClicked());

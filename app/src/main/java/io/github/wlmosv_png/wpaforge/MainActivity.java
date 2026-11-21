@@ -332,6 +332,8 @@ public class MainActivity extends Activity {
     private LinearLayout statRowView;
     /** 未确定细分独立信息区（1.9.65）—— 与主统计分开，避免数字格被副标题挤压。 */
     private TextView breakdownView;
+    /** 合计核对行：四项核心之和（让用户能自己验证统计一致）。 */
+    private TextView statSumView;
     private LinearLayout footRowView;
     private TextView statRateView;       /** 速率（条/分，来自同一次回调） */
     private TextView statEtaView;        /** 剩余时间（来自同一次回调） */
@@ -983,6 +985,22 @@ public class MainActivity extends Activity {
             statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(noVerdict));
             statUnkView.setTextColor(noVerdict <= 0 ? AmberTheme.TEXT_FAINT
                     : (suspected > 0 ? AmberTheme.ORANGE : AmberTheme.TEXT_DIM));
+        }
+        if (statSumView != null) {
+            int sum = hit + confirmed + notFinished + noVerdict;
+            if (sum <= 0) {
+                statSumView.setVisibility(View.GONE);
+            } else {
+                // 与 VerdictTally.total() 同一恒等式：hit + 已证实 + 未完成 + 无有效判定
+                boolean ok4 = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
+                        .consistent4(hit, confirmed, notFinished, noVerdict, sum);
+                statSumView.setText(L.f("已判定合计 %s 条%s", "adjudicated %s%s",
+                        io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(sum),
+                        ok4 ? "" : L.s("（分类合计不一致，请反馈）",
+                                " (category sum mismatch - please report)")));
+                statSumView.setTextColor(ok4 ? AmberTheme.TEXT_FAINT : AmberTheme.WARN);
+                statSumView.setVisibility(View.VISIBLE);
+            }
         }
         renderBreakdown();
     }
@@ -10093,6 +10111,16 @@ public class MainActivity extends Activity {
         srlp.topMargin = px(12);
         progressCard.addView(statRow, srlp);
 
+        statSumView = new TextView(this);
+        statSumView.setTextSize(AmberTheme.FS_SMALL);
+        statSumView.setTextColor(AmberTheme.TEXT_FAINT);
+        statSumView.setSingleLine(false);
+        statSumView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams smlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        smlp.topMargin = px(8);
+        progressCard.addView(statSumView, smlp);
+
         breakdownView = new TextView(this);
         breakdownView.setTextSize(AmberTheme.FS_SMALL);
         breakdownView.setTextColor(AmberTheme.TEXT_DIM);
@@ -10665,6 +10693,9 @@ public class MainActivity extends Activity {
         if (statPctView != null) {
             // 右上角的大数字同理：没数据时不摆一个「—」在那儿
             statPctView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
+        if (statSumView != null && !hasData) {
+            statSumView.setVisibility(View.GONE);
         }
         if (breakdownView != null && !hasData) {
             // 未确定细分同样「没数据就不占位」；有数据时由 renderBreakdown 控制。

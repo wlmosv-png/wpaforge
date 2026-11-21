@@ -12155,15 +12155,41 @@ public class MainActivity extends Activity {
 
     /** 单个任务卡片 */
     private View taskCard(TaskQueue.Task task) {
-        // 暂停 / 进行中用不同底色，一眼能分辨
-        int cardBg = SURFACE;
-        if (task.state == TaskQueue.State.PAUSED) cardBg = PAUSE_BG;
-        else if (task.state == TaskQueue.State.RUNNING) cardBg = AmberTheme.OK_BG;
+        // 1.9.68 质感重做：不再用整块纯色底（真机上像三块深灰砖头），
+        // 改成「统一卡面色 + 一条 3dp 状态色条 + 极低对比描边」：
+        //   · 卡面色统一 → 列表成组，不像三种不同材质拼起来
+        //   · 左侧色条承载状态（命中绿 / 暂停琥珀 / 进行中琥珀 / 停止红灰）
+        //   · 描边让卡片边界立得住（近黑底上同色矩形本来分不开）
+        int accentBar = task.state == TaskQueue.State.DONE_HIT ? OK_GREEN
+                : task.state == TaskQueue.State.PAUSED ? AMBER
+                : task.state == TaskQueue.State.RUNNING ? AMBER
+                : task.state == TaskQueue.State.STOPPED ? DANGER
+                : AmberTheme.TEXT_FAINT;
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setBackground(io.github.wlmosv_png.wpaforge.ui.UiKit.roundStroked(
+                AmberTheme.CARD, AmberTheme.EDGE,
+                dp(AmberTheme.RADIUS_CARD), dp(0.8f)));
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rowLp.bottomMargin = px(10);
+        row.setLayoutParams(rowLp);
+
+        // 左侧状态色条（圆角，与卡片同高）
+        View barLeft = new View(this);
+        barLeft.setBackground(roundBg(accentBar, 2f));
+        LinearLayout.LayoutParams blp0 = new LinearLayout.LayoutParams(px(3),
+                ViewGroup.LayoutParams.MATCH_PARENT);
+        blp0.setMargins(px(10), px(14), px(0), px(14));
+        row.addView(barLeft, blp0);
 
         LinearLayout item = new LinearLayout(this);
         item.setOrientation(LinearLayout.VERTICAL);
-        item.setBackground(roundBg(cardBg, AmberTheme.RADIUS_CARD));
-        item.setPadding(px(16), px(15), px(16), px(15));
+        item.setBackground(null);
+        item.setPadding(px(14), px(15), px(16), px(15));
+        row.addView(item, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = px(9);
@@ -12208,14 +12234,16 @@ public class MainActivity extends Activity {
         String hit = task.hitPassword == null || task.hitPassword.isEmpty()
                 ? "" : L.f("\n口令: %s", "\nPassphrase: %s", task.hitPassword);
         String modeTag = L.s("Root", "Root");
-        meta.setText(L.f("%s 模式\n字典 %s（%s）\n进度 %d / %d%s%s%s",
-                "%s mode\nDictionary %s (%s)\nProgress %d / %d%s%s%s",
+        // 1.9.68：进度用 completedCount（续跑边界 + 本轮已试），
+        // 与「本轮试了 N 条」自洽 —— 不再出现「进度 0 / 3336」却「本轮试了 22 条」。
+        meta.setText(L.f("%s 模式 · 字典 %s（%s）\n已试 %d / %d%s%s%s",
+                "%s mode · dictionary %s (%s)\nTried %d / %d%s%s%s",
                 modeTag,
                 task.dictName,
                 io.github.wlmosv_png.wpaforge.audit.DictRule.formatCount(task.dictSize),
-                task.offset, task.dictSize,
+                task.completedCount(), task.dictSize,
                 task.testedThisRun > 0
-                    ? L.f("   本轮试了 %d 条", "   %d tried this run", task.testedThisRun) : "",
+                    ? L.f("   · 本轮 %d 条", "   · %d this run", task.testedThisRun) : "",
                 hit,
                 missCaveat(task)));
         meta.setTextSize(AmberTheme.FS_SMALL);
@@ -12226,18 +12254,16 @@ public class MainActivity extends Activity {
 
         // 进度条（细线）
         if (task.dictSize > 0) {
-            View bar = new View(this);
-            android.graphics.drawable.GradientDrawable g =
-                    new android.graphics.drawable.GradientDrawable();
-            g.setColor(TEXT_DIM);
-            g.setCornerRadius(px(2));
-            android.graphics.drawable.LayerDrawable ld =
-                    new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{
-                            trackDrawable(), progressDrawable(task)});
-            bar.setBackground(ld);
+            // 1.9.68：进度条改为**自绘**（TrackBar）。原来用 LayerDrawable +
+            // 「widthPixels * p - px(64)」猜宽度，p=0 时算出负数、p 稍大就溢满，
+            // 真机表现为「0 / 3336 却满格」。自绘按实际测量宽度画，0 就是 0。
+            TrackBar bar = new TrackBar(this);
+            bar.set(task.displayProgress(),
+                    task.state == TaskQueue.State.DONE_HIT ? OK_GREEN
+                            : task.state == TaskQueue.State.PAUSED ? AMBER : ACCENT);
             LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, px(3));
-            blp.topMargin = px(10);
+                    ViewGroup.LayoutParams.MATCH_PARENT, px(4));
+            blp.topMargin = px(12);
             item.addView(bar, blp);
         }
 
@@ -12246,7 +12272,7 @@ public class MainActivity extends Activity {
             TextView tip = new TextView(this);
             tip.setText(L.f("已暂停在 %d / %d，点「继续」从这里接着跑",
                     "Paused at %d / %d — tap Resume to continue from here",
-                    task.offset, task.dictSize));
+                    task.completedCount(), task.dictSize));
             tip.setTextSize(AmberTheme.FS_SMALL);
             tip.setTextColor(AMBER);
             tip.setPadding(0, px(10), 0, 0);
@@ -12281,7 +12307,7 @@ public class MainActivity extends Activity {
         }));
         item.addView(ops);
 
-        return item;
+        return row;
     }
 
     private android.graphics.drawable.Drawable trackDrawable() {
@@ -12293,15 +12319,67 @@ public class MainActivity extends Activity {
     }
 
     /** 已经跑过的那一段 */
+    /**
+     * 任务卡里的细进度条（1.9.68 自绘）。
+     *
+     * <p>为什么不用 LayerDrawable：它的前景层没有可靠的「按父宽裁切」语义，
+     * 之前只能靠猜像素宽度，p=0 会算出负数、p 稍大就满格 ——
+     * 这就是「进度 0 / 3336 但条是满的」的根因。
+     * 自绘按 {@code getWidth()} 精确裁剪，比例永远等于数值。
+     */
+    private static final class TrackBar extends View {
+        private final Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private float ratio;
+
+        TrackBar(Context c) {
+            super(c);
+            bgPaint.setColor(AmberTheme.CARD_3);
+        }
+
+        void set(float ratio, int color) {
+            this.ratio = Math.max(0f, Math.min(1f, ratio));
+            fgPaint.setColor(color);
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas cv) {
+            float h = getHeight();
+            float r = h / 2f;
+            rect.set(0, 0, getWidth(), h);
+            cv.drawRoundRect(rect, r, r, bgPaint);
+            if (ratio > 0f) {
+                rect.set(0, 0, Math.max(h, getWidth() * ratio), h);
+                cv.drawRoundRect(rect, r, r, fgPaint);
+            }
+        }
+    }
+
+    /**
+     * 进度条的**前景**（1.9.68 重做）。
+     *
+     * <p>旧实现用 {@code widthPixels * p - px(64)} 猜宽度：屏幕宽与卡片内宽不是一回事，
+     * 再减去 64px 后，p=0 时会得到负数、p 稍大就溢满整条 ——
+     * 真机上就出现「进度 0 / 3336」但进度条却是满格。
+     *
+     * <p>现在改用 {@link android.graphics.drawable.ClipDrawable} 包裹渐变前景：
+     * 宽度由父层决定，只裁切比例，0 就是 0。
+     */
     private android.graphics.drawable.Drawable progressDrawable(TaskQueue.Task task) {
-        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
-        g.setColor(task.state == TaskQueue.State.DONE_HIT ? OK_GREEN
-                : task.state == TaskQueue.State.PAUSED ? AMBER : ACCENT);
-        g.setCornerRadius(px(2));
-        float p = task.progress();
-        g.setBounds(0, 0, (int) (getResources().getDisplayMetrics().widthPixels * p
-                - px(64)), px(3));
-        return g;
+        int c1 = task.state == TaskQueue.State.DONE_HIT ? OK_GREEN
+                : task.state == TaskQueue.State.PAUSED ? AMBER : ACCENT;
+        android.graphics.drawable.GradientDrawable g =
+                new android.graphics.drawable.GradientDrawable(
+                        android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                        new int[]{c1, c1});
+        g.setCornerRadius(px(3));
+        int level = Math.round(task.displayProgress() * 10000f);
+        android.graphics.drawable.ClipDrawable clip =
+                new android.graphics.drawable.ClipDrawable(g, Gravity.START,
+                        android.graphics.drawable.ClipDrawable.HORIZONTAL);
+        clip.setLevel(Math.max(0, Math.min(10000, level)));
+        return clip;
     }
 
     /**

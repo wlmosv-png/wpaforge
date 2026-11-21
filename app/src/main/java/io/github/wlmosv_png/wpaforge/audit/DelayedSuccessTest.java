@@ -135,7 +135,10 @@ public class DelayedSuccessTest {
         for (int i = 0; i < switchAt; i++) { st.add(mid); lg.add(failOnly); }
         for (int i = 0; i < 3000; i++) { st.add(okFrame()); lg.add(withSucc); }
 
-        TestEngineClock clock = new TestEngineClock(ScriptedShell.V0, 1L, 0L);
+        // 1.9.68：realBlockCap 0 → 2ms。与 AuthCastAttributionTest 同因：
+        // 窗口里有真实线程投递（watcher / shell 回调），零真实等待会让
+        // 「连接进行中」偶发读到 TERMINATED_UNKNOWN（实测 15 次约 1 次）。
+        TestEngineClock clock = new TestEngineClock(ScriptedShell.V0, 1L, 2L);
         CrackEngine e = newEngine(clock);
         ScriptedShell sh = new ScriptedShell(st, lg);
         sh.clock = clock;

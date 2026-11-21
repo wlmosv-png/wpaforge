@@ -189,6 +189,29 @@ public final class TaskQueue {
             return Math.min(1f, (float) offset / dictSize);
         }
 
+        /**
+         * **已经跑到第几条**（1.9.68 修正）。
+         *
+         * <p>{@code offset} 只在任务**结束时**才由服务写回（它的语义是「续跑安全边界」，
+         * 跑动中不能动，否则断点续跑会跳过未排除的候选）。
+         * 于是运行中/暂停时卡片一直显示「进度 0 / 3336」，而「本轮试了 22 条」——
+         * 两个数字互相矛盾。
+         *
+         * <p>这里给出**纯展示口径**：已完成 = 续跑边界 + 本轮已试。不写回任何字段，
+         * 不参与断点续跑，只在 UI 上让数字自洽。
+         */
+        public int completedCount() {
+            long n = (long) offset + Math.max(0, testedThisRun);
+            if (dictSize > 0 && n > dictSize) n = dictSize;
+            return (int) Math.max(0, n);
+        }
+
+        /** 展示用进度（0..1），与 {@link #completedCount()} 同源。 */
+        public float displayProgress() {
+            if (dictSize <= 0) return 0f;
+            return Math.min(1f, (float) completedCount() / dictSize);
+        }
+
         public String stateLabel() {
             switch (state) {
                 case PENDING: return L.s("排队中", "Queued");

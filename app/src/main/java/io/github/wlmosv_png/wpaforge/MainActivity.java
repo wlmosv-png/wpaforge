@@ -345,6 +345,13 @@ public class MainActivity extends Activity {
      * **不参与任何判定、不改变任何业务行为。**
      */
     private volatile io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict lastCrackVerdict;
+    /**
+     * 最近一条结论的**证据等级**（2026-11-21）。
+     *
+     * <p>没有它就无法区分「AUTH_FAIL + DIRECT（已证实）」与
+     * 「AUTH_FAIL + INFERRED（推断）」—— 界面上会把后者也说成「已证实错误」。
+     */
+    private volatile io.github.wlmosv_png.wpaforge.audit.EvidenceGrade.Level lastCrackGrade;
 
     private String lastOutcomeLabel = "";
     private int lastOutcomeColor = TEXT_DIM;
@@ -430,6 +437,12 @@ public class MainActivity extends Activity {
     private int lastTallyConfirmed = 0;
     private int lastTallyInconclusive = 0;
     private int lastTallyNetAuthFail = 0;
+    /** 环境错误条数（来自 onTallyFull，只用于显示）。 */
+    private int lastTallyEnvErrors = 0;
+    /** 已执行条数（不含命中与环境错误）。 */
+    private int lastTallyExecuted = 0;
+    /** 命中条数（0 或 1）。 */
+    private int lastTallyHit = 0;
     /** true = 只看关键（里程碑 + 失败原因），默认开 */
     /**
      * 日志级别：true = 只看关键，false = 全部。
@@ -10441,15 +10454,30 @@ public class MainActivity extends Activity {
         io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Phase phase =
                 io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.derive(
                         io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.TaskQueueState.of(st),
-                        finishingNow, lastCrackVerdict, !lastOutcomeLabel.isEmpty());
+                        finishingNow, lastCrackVerdict, lastCrackGrade,
+                        !lastOutcomeLabel.isEmpty());
         // 文案走 L.s 双语（既有契约：状态文案必须双语且带前缀符号，
         // 让色盲/低对比环境下也能靠符号区分）。
         text = phaseText(phase);
         color = crackPhaseColor(phase.tone);
 
-        // 上轮结束语优先覆盖（它带 outcome 语义：命中/未命中/停止），
-        // 但仍沿用原配色，保证与既有行为一致。
-        if (st != TaskQueue.State.RUNNING && st != TaskQueue.State.PAUSED
+        /*
+         * 结束态覆盖（2026-11-21 修复）。
+         *
+         * 旧实现：队列非 RUNNING/PAUSED/PENDING 且存在上轮结束语时，
+         * **无条件**用一句 outcome 文案覆盖掉 11 种细分状态 ——
+         * 「网络级失败 / 未确定 / 环境错误」这些本轮新增的表达
+         * 在任务结束后立刻被压成「已结束 · 未命中」，改造价值被吃掉大半。
+         *
+         * 新规则：只在**没有具体 Verdict** 时才用 outcome 兜底。
+         * 有 Verdict 就显示它的真实细分状态（PROVEN_WRONG / NETWORK_FAIL /
+         * UNCERTAIN / ENV_ERROR …），因为那才是后端真正给出的结论。
+         */
+        boolean hasVerdictDetail = lastCrackVerdict != null
+                && io.github.wlmosv_png.wpaforge.ui.CrackPhaseView
+                        .concluded(phase);
+        if (!hasVerdictDetail
+                && st != TaskQueue.State.RUNNING && st != TaskQueue.State.PAUSED
                 && st != TaskQueue.State.PENDING && !lastOutcomeLabel.isEmpty()) {
             text = lastOutcomeLabel;
             color = lastOutcomeColor;
@@ -11434,6 +11462,23 @@ public class MainActivity extends Activity {
         }
 
         /**
+         * 带**证据等级**的展示入口（2026-11-21）。
+         *
+         * <p>只做一件事：把 Verdict 与 Grade 一起记下来给状态行用，
+         * 然后转交给既有 5 参实现（日志与候选行渲染逻辑一行不动）。
+         */
+        @Override
+        public void onAttemptResultFull(String candidate, boolean hit, long ms,
+                                        String detail,
+                                        io.github.wlmosv_png.wpaforge.audit
+                                                .CrackEngine.Verdict v,
+                                        io.github.wlmosv_png.wpaforge.audit
+                                                .EvidenceGrade.Level g) {
+            lastCrackGrade = g;
+            onAttemptResult(candidate, hit, ms, detail, v);
+        }
+
+        /**
          * 带 Verdict 的展示入口（U1）。
          *
          * <p><b>关键改动</b>：非成功不再一律打 ✗。旧代码的 {@code else} 分支
@@ -11500,6 +11545,8 @@ public class MainActivity extends Activity {
                 // 不判定、不推算、不改业务。
                 if (v != null) {
                     lastCrackVerdict = v;
+                    // grade 由 onTallyFull 之前的回调路径传入（见 onAttemptResult 重载）；
+                    // 拿不到时保持上一次的值不影响安全方向：只有显式 DIRECT 才显示「已证实」。
                     renderProgressCardState();
                 }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
@@ -11536,6 +11583,37 @@ public class MainActivity extends Activity {
                 lastTallyInconclusive = inconclusive;
                 lastTallyNetAuthFail = networkAuthFail;
                 refreshPlanLine();
+            });
+        }
+
+        /**
+         * 完整统计（2026-11-21）。
+         *
+         * <p>把「环境错误」真正显示出来 —— 修复前它只是 VerdictTally 内部
+         * 一个没人读的计数器，导致界面上「已执行 N」与「已证实 + 未确定」
+         * 对不上时没有任何解释。现在差额有归属：
+         * <pre>
+         *   已执行 = 已证实错误 + 未确定 + 环境错误 + 命中
+         * </pre>
+         *
+         * <p>只在**确实有环境错误**时才改写未确定格，避免污染正常显示。
+         */
+        @Override
+        public void onTallyFull(int confirmed, int inconclusive, int networkAuthFail,
+                                int environmentErrors, int executed, int hit) {
+            ui.post(() -> {
+                lastTallyEnvErrors = environmentErrors;
+                lastTallyExecuted = executed;
+                lastTallyHit = hit;
+                // 未确定格已有数字时，若存在环境错误就补一行副标题，
+                // 让「差额去哪了」一眼可见。没有环境错误则保持原样。
+                if (statUnkView != null && environmentErrors > 0) {
+                    statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                            .thousands(inconclusive) + " \u00b7 \u26a0"
+                            + environmentErrors);
+                    statUnkView.setTextColor(AmberTheme.WARN);
+                }
+                renderProgressCardState();
             });
         }
 
@@ -12294,6 +12372,12 @@ public class MainActivity extends Activity {
         lastRestoreSummary = "";
         finishingNow = false;          // 防上轮异常残留，导致状态一直显示"收尾中"
         ui.removeCallbacks(finishingTick);
+        // 2026-11-21：**新任务必须清掉上轮的结论**。
+        // 旧实现 lastCrackVerdict 只写不读清，于是开新任务时状态行
+        // 可能先显示上一轮的「已证实错误 / 环境错误」—— 那是假信息。
+        lastCrackVerdict = null;
+        lastCrackGrade = null;
+        lastOutcomeLabel = "";
         if (candLabel != null) candLabel.setText(L.s("正在尝试", "TRYING"));
         // 跳过是"看不见的行为"，必须在**界面**上说出来。
         // 用户不看日志的话，3000 条的字典只跑 1200 条只会让他以为坏了。

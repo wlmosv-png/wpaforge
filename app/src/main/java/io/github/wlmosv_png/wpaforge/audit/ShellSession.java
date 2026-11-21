@@ -148,6 +148,23 @@ public final class ShellSession {
      * @return 命令输出；**null = 这一帧没拿到**（超时/会话失联），调用方必须降级或走异常分支
      */
     public synchronized String exec(String cmd, long timeoutMs) {
+        Frame f = execFrame(cmd, timeoutMs);
+        return f == null ? null : f.output;
+    }
+
+    /**
+     * 与 {@link #exec} 相同，但**保留退出码**（2026-11-21 通道语义修复）。
+     *
+     * <h3>为什么必须暴露它</h3>
+     * 旧 {@code exec} 在 {@code split()} 之后只取 {@code f.output}，
+     * 把 {@code f.code} 直接丢掉 —— 于是「命令不存在（exit 127）」
+     * 「su 被拒（exit 1）」「真的没有输出（exit 0）」在通道层**完全无法区分**，
+     * 上层只能靠「文本像不像」猜，probeChannel 因此把三者都归成
+     * 「通道返回内容异常」，用户被引导去换 AP 而不是去查 root 授权。
+     *
+     * @return null = 这一帧没拿到（超时 / 会话失联）；否则含输出与退出码
+     */
+    public synchronized Frame execFrame(String cmd, long timeoutMs) {
         if (!alive() && !start()) return null;
 
         long mySeq = ++seq;
@@ -204,7 +221,7 @@ public final class ShellSession {
             close();
             return null;
         }
-        return f.output;
+        return f;
     }
 
     /** 关掉会话与整棵进程树（并关流，让读线程立刻退出）。 */

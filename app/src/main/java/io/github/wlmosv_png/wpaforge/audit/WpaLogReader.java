@@ -573,6 +573,21 @@ public final class WpaLogReader {
      * 这一点是它能被采用的关键理由 —— 它不是靠假设成立来保证安全，
      * 而是靠假设**失败时的降级方向**来保证安全。
      *
+     * <h3>本机实测状态（2026-11-21 P1-4 复核）</h3>
+     * 本机（ColorOS 15）wpa_supplicant 的 {@code [id=N]} 实测**恒为 0**，
+     * 而 Android Net ID 是从 0 开始递增的配置编号。两者**不是同一编号空间**
+     * 已在真机日志里观察到，但「是否有任何机型两者恰好重合」尚未证实。
+     *
+     * <p>因此 {@code AUTH_FAIL + DIRECT}（唯一能写 TriedSet 的失败结论）
+     * 在当前设备上**实际不可达**。这是**刻意的安全降级**，不是缺陷：
+     * <ul>
+     *   <li>可达时：能永久排除已证实错误的候选（省时间）；</li>
+     *   <li>不可达时：错误密码每轮重试（费时间），但**绝不会**因为一次
+     *       误判把正确密码永久排除。</li>
+     * </ul>
+     * <b>禁止**为了让 TriedSet 有数据而放宽这里**：只凭 SSID 或只凭 BSSID
+     * 都不能升级到 AT3 —— 同 SSID 多配置与后台重试旧配置都会造成误排除。
+     *
      * @param targetNetId 本次命令新建配置的 netId；{@code < 0} 表示没拿到（直接 false）
      */
     public static boolean sawWrongKeyForConfig(String logcatOutput, String targetSsid,

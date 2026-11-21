@@ -1,6 +1,7 @@
 package io.github.wlmosv_png.wpaforge.ui;
 
 import io.github.wlmosv_png.wpaforge.audit.CrackEngine;
+import io.github.wlmosv_png.wpaforge.audit.EvidenceGrade;
 
 /**
  * **破解页任务状态的 UI 派生器**（2026-11-21 UI 专项）。
@@ -110,6 +111,27 @@ public final class CrackPhaseView {
      */
     public static Phase derive(TaskQueueState queueState, boolean finishing,
                                CrackEngine.Verdict lastVerdict, boolean hasOutcomeLabel) {
+        return derive(queueState, finishing, lastVerdict, null, hasOutcomeLabel);
+    }
+
+    /**
+     * 带**证据等级**的派生（2026-11-21 修复）。
+     *
+     * <h3>为什么要 grade</h3>
+     * 旧实现只看 {@code v == AUTH_FAIL} 就报「已证实错误」（{@link Phase#PROVEN_WRONG}）。
+     * 但 {@code AUTH_FAIL} 有两种等级：
+     * <ul>
+     *   <li>{@code DIRECT} —— 绑到本次配置的直接否认，可以叫「已证实」；</li>
+     *   <li>{@code INFERRED} —— 推断（{@code EvidenceGrade.defaultOf} 的默认值），
+     *       证据不足，**不能**叫「已证实」。</li>
+     * </ul>
+     * 修复前把两者都显示成「已证实错误」，等于在界面上把推断升级成事实。
+     *
+     * <p>{@code grade} 为 {@code null}（旧调用方）时保持原行为，避免破坏既有接线。
+     */
+    public static Phase derive(TaskQueueState queueState, boolean finishing,
+                               CrackEngine.Verdict lastVerdict,
+                               EvidenceGrade.Level grade, boolean hasOutcomeLabel) {
         // ① 队列事实优先：有任务在动就显示任务状态
         if (queueState == TaskQueueState.RUNNING) {
             return finishing ? Phase.FINISHING : Phase.RUNNING;
@@ -118,7 +140,7 @@ public final class CrackPhaseView {
         if (queueState == TaskQueueState.PENDING) return Phase.PREPARING;
 
         // ② 队列已停 / 空：看最近一条结论
-        Phase fromVerdict = ofVerdict(lastVerdict);
+        Phase fromVerdict = ofVerdict(lastVerdict, grade);
         if (fromVerdict != null) return fromVerdict;
 
         // ③ 有上轮结束语但还没有具体 Verdict（例如队列刚清空）
@@ -136,9 +158,31 @@ public final class CrackPhaseView {
      * @return null = 没有结论（尚未开始）
      */
     public static Phase ofVerdict(CrackEngine.Verdict v) {
+        return ofVerdict(v, null);
+    }
+
+    /**
+     * Verdict + 证据等级 → Phase 的**唯一映射**（2026-11-21）。
+     *
+     * <p>核心约束：**只有 {@code AUTH_FAIL + DIRECT} 才是「已证实错误」**。
+     * {@code AUTH_FAIL + INFERRED} 必须显示成「未确定」——
+     * 界面上不允许把推断说成事实。
+     *
+     * <p>{@code grade == null}（旧调用方）时按 {@code AUTH_FAIL} 原样映射，
+     * 保持既有行为；生产接线必须传真实等级。
+     */
+    public static Phase ofVerdict(CrackEngine.Verdict v, EvidenceGrade.Level grade) {
         if (v == null) return null;
         if (v == CrackEngine.Verdict.SUCCESS) return Phase.VERIFIED;
-        if (v == CrackEngine.Verdict.AUTH_FAIL) return Phase.PROVEN_WRONG;
+        if (v == CrackEngine.Verdict.AUTH_FAIL) {
+            // 关键：推断级失败**不得**显示成「已证实错误」。
+            // **只有 DIRECT 才叫「已证实错误」**。
+            // INFERRED / NONE 都是证据不足，必须落到「未确定」。
+            if (grade == EvidenceGrade.Level.DIRECT) return Phase.PROVEN_WRONG;
+            if (grade != null) return Phase.UNCERTAIN;
+            // grade == null：旧调用方，保持原行为（生产接线已改为传真实等级）
+            return Phase.PROVEN_WRONG;
+        }
         if (v == CrackEngine.Verdict.NETWORK_AUTH_FAIL) return Phase.NETWORK_FAIL;
         if (v == CrackEngine.Verdict.TIMEOUT) return Phase.UNCERTAIN;
         if (v == CrackEngine.Verdict.UNKNOWN) return Phase.UNCERTAIN;
@@ -159,15 +203,25 @@ public final class CrackPhaseView {
      * 「镜像与真实枚举一一对应」，防止两边漂移。
      */
     public enum TaskQueueState {
-        RUNNING, PAUSED, PENDING, STOPPED;
+        RUNNING, PAUSED, PENDING, DONE_HIT, DONE_MISS, STOPPED;
 
-        /** 把真实枚举映射过来（真实枚举为 null 时返回 null）。 */
+        /**
+         * 把真实枚举映射过来（真实枚举为 null 时返回 null）。
+         *
+         * <p>2026-11-21 修复：旧镜像只有 4 个值，{@code DONE_HIT} /
+         * {@code DONE_MISS} 被静默吞成 {@code STOPPED} —— 两个**语义完全不同**的
+         * 终态（已命中 / 未命中）在界面上长得一样。
+         * 现在逐个对应，且 {@link CrackPhaseViewTest} 用断言钉死「镜像与真实枚举
+         * 一一对应」，防止再次漂移。
+         */
         public static TaskQueueState of(Object realState) {
             if (realState == null) return null;
             String n = realState.toString();
             if ("RUNNING".equals(n)) return RUNNING;
             if ("PAUSED".equals(n)) return PAUSED;
             if ("PENDING".equals(n)) return PENDING;
+            if ("DONE_HIT".equals(n)) return DONE_HIT;
+            if ("DONE_MISS".equals(n)) return DONE_MISS;
             return STOPPED;
         }
     }

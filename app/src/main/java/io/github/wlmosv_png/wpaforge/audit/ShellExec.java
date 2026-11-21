@@ -32,14 +32,49 @@ public final class ShellExec {
         public final String output;
         /** true = 到点被强制终止（输出可能不完整） */
         public final boolean timedOut;
+        /**
+         * 进程退出码；{@code -1} = 拿不到（异常 / 被强杀 / 还没退出）。
+         *
+         * <h3>为什么必须区分它与 timedOut（2026-11-21）</h3>
+         * 旧 {@code ok()} 只返回 {@code !timedOut}，含义是「没超时」，
+         * 却被到处当成「命令成功」用。于是 exit 127（命令不存在）、
+         * exit 1（su 被拒）都会得到 {@code ok()==true} —— 语义彻底错位。
+         * 现在三件事分开：
+         * <pre>
+         *   timedOut = true          → 超时（结果不可信）
+         *   exitCode != 0            → 命令失败（错误类型由调用方按文本再分）
+         *   exitCode == 0            → 命令成功
+         * </pre>
+         */
+        public final int exitCode;
 
         Result(String output, boolean timedOut) {
-            this.output = output == null ? "" : output;
-            this.timedOut = timedOut;
+            this(output, timedOut, -1);
         }
 
+        Result(String output, boolean timedOut, int exitCode) {
+            this.output = output == null ? "" : output;
+            this.timedOut = timedOut;
+            this.exitCode = exitCode;
+        }
+
+        /**
+         * **只表示「没有超时」**，不代表命令成功。
+         *
+         * <p>保留它是为了不破坏既有调用方；新代码请用 {@link #succeeded()}。
+         */
         public boolean ok() {
             return !timedOut;
+        }
+
+        /** 命令**确实成功**：没超时 **且** 退出码为 0（拿不到退出码时保守返回 false）。 */
+        public boolean succeeded() {
+            return !timedOut && exitCode == 0;
+        }
+
+        /** 退出码是否可用（能区分成功与失败）。 */
+        public boolean hasExitCode() {
+            return exitCode >= 0;
         }
     }
 
@@ -71,10 +106,17 @@ public final class ShellExec {
                 String line;
                 while ((line = r.readLine()) != null) sb.append(line).append('\n');
             }
-            p.waitFor(500, TimeUnit.MILLISECONDS);
-            return new Result(sb.toString(), killed.get());
+            // 拿退出码：超时被强杀时退出码没有意义，保持 -1。
+            int code = -1;
+            try {
+                if (p.waitFor(500, TimeUnit.MILLISECONDS)) {
+                    code = p.exitValue();
+                }
+            } catch (Throwable ignored) {}
+            if (killed.get()) code = -1;
+            return new Result(sb.toString(), killed.get(), code);
         } catch (Throwable t) {
-            return new Result("", killed.get());
+            return new Result("", killed.get(), -1);
         } finally {
             if (p != null) {
                 try { p.destroy(); } catch (Throwable ignored) {}

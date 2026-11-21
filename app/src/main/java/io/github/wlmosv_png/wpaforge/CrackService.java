@@ -85,6 +85,20 @@ public class CrackService extends Service {
         }
 
         /**
+         * 带**证据等级**的结果回调（2026-11-21）。
+         *
+         * <p>UI 需要它来区分「AUTH_FAIL + DIRECT（已证实错误）」与
+         * 「AUTH_FAIL + INFERRED（推断）」—— 后者**不得**显示成「已证实」。
+         * 旧回调只带 Verdict，UI 无从判断。
+         */
+        default void onAttemptResultFull(String candidate, boolean hit, long ms,
+                                         String detail, CrackEngine.Verdict verdict,
+                                         io.github.wlmosv_png.wpaforge.audit
+                                                 .EvidenceGrade.Level grade) {
+            onAttemptResult(candidate, hit, ms, detail, verdict);
+        }
+
+        /**
          * 实时**结论分布**（UI 第二轮：让「已证实错误 / 未确定」在运行时就能看见）。
          *
          * <p>为什么需要单独一条回调：{@code onProgress} 只带 tested/total/rate/eta，
@@ -103,6 +117,31 @@ public class CrackService extends Service {
          * <p>用 default 实现：老实现类不必改。
          */
         default void onTally(int confirmed, int inconclusive, int networkAuthFail) { }
+
+        /**
+         * 完整统计口径（2026-11-21 新增）。
+         *
+         * <p>恒等式（服务端已保证，UI 可直接展示）：
+         * <pre>
+         *   tested == executed + environmentErrors + hit
+         * </pre>
+         *
+         * <p>旧回调 {@link #onTally(int,int,int)} 无法表达
+         * 「环境错误」与「命中」两项，于是界面上的「已执行」
+         * 与「已证实 + 未确定」在对不上时**没有任何解释入口**。
+         *
+         * @param confirmed      已证实错误（AUTH_FAIL + DIRECT）
+         * @param inconclusive   未确定（TIMEOUT/UNKNOWN/INCOMPLETE/TERMINATED_UNKNOWN
+         *                       + NETWORK_AUTH_FAIL + 推断失败）
+         * @param networkAuthFail 网络级认证失败（含在 inconclusive 里，单列便于表达）
+         * @param environmentErrors 环境错误（通道异常 / 命令没生效 / 目标消失）
+         * @param executed       已执行（不含命中与环境错误）
+         * @param hit            命中条数（0 或 1）
+         */
+        default void onTallyFull(int confirmed, int inconclusive, int networkAuthFail,
+                                 int environmentErrors, int executed, int hit) {
+            onTally(confirmed, inconclusive, networkAuthFail);
+        }
         void onProgress(int tested, int total, double rate, long etaMs);
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
@@ -146,6 +185,14 @@ public class CrackService extends Service {
     private Thread silentThread;
     private volatile boolean silentRunning = false;
     private List<Candidate> currentDict = new ArrayList<>();
+    /**
+     * 本轮「过滤前的原始候选列表 P」（P1-2）。
+     *
+     * <p>{@code null} = 本轮没发生过滤（K == P），换算恒等。
+     */
+    private java.util.List<Candidate> originalDictForResume;
+    /** 本轮「过滤后的候选列表 K」（P1-2）。引擎的 cursor 是它的下标。 */
+    private java.util.List<Candidate> keptDictForResume;
     private long taskStartAt;
     /** 上次把 offset 写盘的时刻（节流用） */
     private long lastOffsetSaveAt = 0L;
@@ -1224,6 +1271,11 @@ public class CrackService extends Service {
             }
 
             currentDict = work;
+            // P1-2（2026-11-21）：保存「原列表 P」与「过滤后列表 K」，
+            // 供 onCursor 把引擎的 K 下标换算成 P 下标再落盘。
+            // 不换算的话，续跑时会把 K 下标当 P 下标用 → 位置偏小 → 重复执行。
+            originalDictForResume = workBeforeFilter;
+            keptDictForResume = work;
             if (task.dictSize <= 0) {
                 task.dictSize = currentDict.size();
                 TaskQueue.update(this, task);
@@ -1307,7 +1359,20 @@ public class CrackService extends Service {
         engine.setShellChannel(new CrackEngine.ShellChannel() {
             @Override
             public String exec(String cmd, long timeoutMs) {
+                // P1-5（2026-11-21 修复）：**不能用全局静态 lastTimedOut 判断本轮是否超时**。
+                //
+                // 旧实现读 RootProber.lastTimedOut()，那是 `private static volatile`，
+                // 只有 RootProber.exec 会写。而常驻会话成功返回时**根本不调**
+                // RootProber.exec —— 于是静态值保留着**上一次**（可能是
+                // EnvDiagnostics 的 `su -c id`、或 ensureSystemWhitelist 的 su）
+                // 的结果。任一次超时留下 true，后续每条**成功**命令都会被计成超时，
+                // 5 条后熔断 → stopAll() → 任务 STOPPED、计划永久 STOPPED（不可续），
+                // 而日志写的是「任务已暂停，点继续即可」。
+                //
+                // 现在改为**每次调用自己判断**：只有「本次确实没拿到输出」
+                // 才计入超时。语义与文案「连续多次」一致。
                 String out = sessOff[0] ? null : sess.exec(cmd, timeoutMs);
+                boolean thisTimedOut = false;
                 if (out == null) {
                     // 这一帧没拿到（超时 / 会话死了）。连续几次就彻底不再试，
                     // 免得每轮白付一次启动成本。
@@ -1317,25 +1382,33 @@ public class CrackService extends Service {
                                 "persistent shell unavailable; falling back to per-call su"));
                     }
                     out = RootProber.exec(null, new String[]{"su", "-c", cmd}, timeoutMs);
+                    // RootProber.exec 本次调用后才更新 lastTimedOut ——
+                    // 在**同一线程的同一调用**里立刻读它是安全的，
+                    // 不会跨命令串扰（旧 bug 是读到了别的调用的残留值）。
+                    thisTimedOut = RootProber.lastTimedOut();
                 } else {
                     sessFails[0] = 0;
+                    thisTimedOut = false;
                 }
                 // ---- 通道熔断 ----
                 // 连续多次命令超时，说明通道已经不可用（进程被系统限制、su 被反复卡住……）。
                 // 这时继续跑只会让每条候选都耗在超时上 —— 界面看着像「在跑」，
                 // 实际一步没动。与其无声卡住，不如停下来把情况讲清楚。
                 {
-                    if (RootProber.lastTimedOut()) {
+                    if (thisTimedOut) {
                         if (++execTimeouts >= EXEC_TIMEOUT_LIMIT) {
                             execTimeouts = 0;
                             log(L.s(
-                                    "连续多次命令超时 —— 通道已被系统限制，任务已暂停。"
-                                    + "回到应用界面后点继续即可（前台运行时不受此限制）。",
-                                    "Repeated command timeouts - channel throttled. Task paused; "
-                                    + "reopen the app and press resume."));
+                                    "连续多次命令超时 —— 通道已被系统限制，任务已停止。"
+                                    + "重新开始任务即可（前台运行时不受此限制）。",
+                                    "Repeated command timeouts - channel throttled. Task stopped; "
+                                    + "restart the task from the app."));
                             stopAll();
                         }
-                    } else if (out != null) {
+                    } else {
+                        // 只要这一次**没有超时**就清零 —— 旧写法要求 out != null，
+                        // 于是合法的空输出（命令成功但无内容）不清零，
+                        // 5 次超时不必连续也能累加到熔断，与文案矛盾。
                         execTimeouts = 0;
                     }
                 }
@@ -1427,15 +1500,26 @@ public class CrackService extends Service {
                 for (UiCallback cb : callbacks) {
                     cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail,
                             a.verdict);
+                    // 2026-11-21：额外把**证据等级**交给 UI，
+                    // 让「已证实错误」只在 DIRECT 时出现。
+                    cb.onAttemptResultFull(a.password, a.isSuccess(), a.elapsedMs, detail,
+                            a.verdict, a.grade);
                 }
                 // 实时结论分布（UI 第二轮）：口径与 VerdictTally 一致，
                 // 用引擎的累计值（它本来就是唯一统计入口）。
                 {
                     CrackEngine eng = engineRef;
                     if (eng != null) {
+                        int c = eng.confirmedFailCount();
+                        int i = eng.inconclusiveCount();
+                        int n = eng.networkAuthFailCount();
+                        int env = eng.environmentErrorCount();
+                        int hitN = eng.hitCount();
+                        int exec = eng.testedCount() - env - hitN;
+                        if (exec < 0) exec = 0;
                         for (UiCallback cb : callbacks) {
-                            cb.onTally(eng.confirmedFailCount(),
-                                    eng.inconclusiveCount(), eng.networkAuthFailCount());
+                            cb.onTally(c, i, n);
+                            cb.onTallyFull(c, i, n, env, exec, hitN);
                         }
                     }
                 }
@@ -1453,7 +1537,13 @@ public class CrackService extends Service {
             public void onCursor(int cursor) {
                 // 断点续跑的关键：把「安全续跑边界」写盘。cursor 只由 DIRECT 推进，
                 // 任何未定结论都钉住它，保证续跑不会漏掉未排除的候选。
-                saveProgress(ft, cursor, false);
+                //
+                // P1-2（2026-11-21）：引擎给的是**过滤后列表 K** 的下标，
+                // 而落盘/续跑换算的语义是**原始列表 P** 的下标。这里必须换算，
+                // 否则 K 下标被当成 P 下标用 → 位置偏小 → 已完成的候选被重跑。
+                int pOffset = kIndexToOriginal(originalDictForResume,
+                        keptDictForResume, cursor);
+                saveProgress(ft, pOffset, false);
             }
 
             @Override
@@ -1461,6 +1551,9 @@ public class CrackService extends Service {
 
             @Override
             public void onFinished(int tested, int offset, String hitPassword, String outcome) {
+                // P1-2：offset 同样是**过滤后列表 K** 的下标，落盘前换成 P 下标。
+                // 否则任务结束时写下的 offset 与续跑换算的口径不一致。
+                offset = kIndexToOriginal(originalDictForResume, keptDictForResume, offset);
                 // C1 修复：先把本轮结论分布取出来，再清 engineRef。
                 // 旧顺序（先 null 再读）让 missConfirmedFail/missInconclusive 恒为 0。
                 // C1 修复：**先取快照，再清 engineRef**。
@@ -2365,6 +2458,54 @@ public class CrackService extends Service {
                 tried == null ? null : tried::contains, offset);
     }
 
+    /**
+     * 把「过滤后列表 K 的下标」换算成「原始列表 P 的下标」（P1-2 修复，2026-11-21）。
+     *
+     * <h3>为什么必须有这一步</h3>
+     * {@code CrackEngine.run()} 的 {@code cursor} 是**过滤后列表 K** 的下标
+     * （它遍历的 {@code candidates} 就是 K）。而 {@link #resumeIndexAfterFilter}
+     * 的入参语义是**原始列表 P** 的下标（它按 {@code P[0..o)} 统计被删条数）。
+     *
+     * <p>修复前两者混用：K 下标被直接当成 P 下标写盘，续跑时再按 P 语义换算。
+     * 后果是位置系统性偏小 —— 表现为**重复执行**已完成的候选
+     * （最坏情形下叠加 ABORTED 覆盖还会漏判，见 P1-1）。
+     *
+     * <h3>映射规则</h3>
+     * K 是 P 的保序子序列（过滤只删不改序），所以：
+     * <pre>
+     *   k &lt; K.size()  → 返回 K[k] 在 P 中的位置
+     *   k == K.size()  → 返回 P.size()（全部跑完）
+     * </pre>
+     * 语义校验：K[0..k) 全部是 DIRECT（在 triedSet 里），P 中排在 K[k] 之前、
+     * 但不在 K 里的候选全部是被过滤掉的（也已排除）。两类都可以安全跳过，
+     * 所以「P 下标」正好等于「续跑应开始的位置」。
+     *
+     * @param original 过滤前的候选列表 P；{@code null} 表示没有发生过滤（K == P）
+     * @param kept     过滤后的候选列表 K
+     * @param k        K 下标
+     * @return P 下标（无法换算时保守返回 {@code k}）
+     */
+    public static int kIndexToOriginal(java.util.List<Candidate> original,
+                                       java.util.List<Candidate> kept, int k) {
+        if (original == null || kept == null) return Math.max(0, k);
+        if (k <= 0) return 0;
+        if (k >= kept.size()) return original.size();
+        int ki = 0;
+        for (int pi = 0; pi < original.size(); pi++) {
+            Candidate pc = original.get(pi);
+            Candidate kc = kept.get(ki);
+            String pp = pc == null ? null : pc.password;
+            String kp = kc == null ? null : kc.password;
+            if (pp != null && pp.equals(kp)) {
+                if (ki == k) return pi;
+                ki++;
+                if (ki >= kept.size()) break;
+            }
+        }
+        // 理论上到不了（K 必为 P 的子序列）。到不了就保守：不换算。
+        return Math.max(0, Math.min(k, original.size()));
+    }
+
     private interface PwMatch { boolean test(String pw); }
 
     private static int resumeIndexAfterFilterInternal(List<Candidate> original,
@@ -2435,6 +2576,18 @@ public class CrackService extends Service {
                 ft.state = TaskQueue.State.PENDING;
                 log(L.s("暂停收尾期间已点过「继续」，保持待运行",
                         "resume was clicked while pausing; keeping it queued"));
+            } else if (onDisk != null && onDisk.state == TaskQueue.State.STOPPED) {
+                // P1-3（2026-11-21）：**用户已经点过停止，不得改回暂停**。
+                //
+                // 旧实现只看 PENDING，其余一律写 PAUSED。于是「暂停 → 停止」连按时，
+                // stopAll() 刚落的 STOPPED 会被这里覆盖回 PAUSED；
+                // 而 TaskQueue.hasWork() 把 PAUSED 也算「有活」，
+                // 单字典模式下会被 startQueue() 再跑起来 —— 停止形同虚设。
+                //
+                // 停止是比暂停更强的意图：盘上已经是 STOPPED 就保持不动。
+                ft.state = TaskQueue.State.STOPPED;
+                log(L.s("暂停收尾期间用户已点「停止」，保持已停止",
+                        "stop was pressed while pausing; keeping it stopped"));
             } else {
                 ft.state = TaskQueue.State.PAUSED;
                 log(L.f("已暂停，进度 %d/%d", "Paused at %d/%d", offset, ft.dictSize));

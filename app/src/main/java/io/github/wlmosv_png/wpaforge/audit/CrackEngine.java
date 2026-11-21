@@ -3178,7 +3178,24 @@ public final class CrackEngine {
                 if (a.verdict == Verdict.ABORTED) {
                     // 2026-11-20：tested++ 已移到 tally.add 之后，
                     // ABORTED 走不到那里（下面直接 break），所以不再需要 tested--。
-                    cursor = i;
+                    //
+                    // P1-1（2026-11-21 修复）：**不得覆盖成 i**。
+                    //
+                    // cursor 的语义是「它之前的候选全部拿到了 DIRECT 结论」，
+                    // 是**安全续跑边界**，不是「当前执行到哪」。旧写法 `cursor = i`
+                    // 把边界直接推到当前条，越过中间所有 TIMEOUT / UNKNOWN /
+                    // INCOMPLETE 的候选 —— 它们既不在 triedSet、也不在 ledger，
+                    // 续跑永不重试，正确密码可能就此永久跳过。
+                    //
+                    // 复现（穷举 1528 组合实测）：P=[A..H]、C=TIMEOUT、
+                    // 在 F 处暂停 → 落盘 offset=5 → 第 2 轮从 1 起跑
+                    // → 只执行 [F,G,H]，C 被永久越过（触发率 68.2%，
+                    // 且「暂停前存在非 DIRECT」这一必要条件命中率 100%）。
+                    //
+                    // 正确语义：中断**不推进**边界，保持原有值（可能小于 i）。
+                    // 不写成 Math.min(cursor, i) 是因为 cursor 恒 <= i
+                    // （边界只会在已确认的候选之后），min 是恒等的噪音。
+                    // 中断那一条本身没有结论，边界自然停在它之前的位置。
                     l.onAttemptResult(a);
                     break;
                 }
@@ -3434,14 +3451,32 @@ public final class CrackEngine {
                 l.onLog("  " + L.s("最近判定: ", "recent verdicts: ") + vb);
             }
             // 收尾如实报账（后台跑时这是唯一能看出"到底有多少条真被证实"的地方）
-            l.onLog(L.f("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条（共执行 %d 条）",
-                    "Verdicts this run: %d confirmed failures, %d inconclusive (%d executed)",
-                    tally.confirmedFail(), tally.inconclusive(), tally.executed()));
+            // 统计口径（2026-11-21）：五个数字必须能对上，否则用户无法判断
+            // 「到底试过几条、其中多少条真有结论、多少条是环境问题」。
+            //
+            // 保留原句（既有门禁与用户习惯都认这一句），在括号里补全新维度。
+            l.onLog(L.f("本轮结论分布：已证实失败 %d 条 · 无结论 %d 条（共执行 %d 条）"
+                            + "  [网络级失败 %d · 环境错误 %d · 命中 %d]",
+                    "Verdicts this run: %d confirmed failures, %d inconclusive "
+                            + "(%d executed)  [network-level %d, env errors %d, hit %d]",
+                    tally.confirmedFail(), tally.inconclusive(), tally.executed(),
+                    tally.networkAuthFail(), tally.environmentErrors(), tally.hit()));
 
             String outcome;
+            /*
+             * P1-3（2026-11-21 修复）：**取消优先于暂停**。
+             *
+             * 旧顺序是 pauseFlag 先判，于是「先按暂停、再按停止」时两个标志都为真，
+             * 引擎报 PAUSED → CrackService.finishTask 的 PAUSED 分支
+             * 把 stopAll() 刚写下的 STOPPED 覆盖回 PAUSED
+             * → TaskQueue.hasWork() 认 PAUSED 算有活 → **停止后仍会被继续跑**。
+             *
+             * 语义上「停止」是比「暂停」更强的用户意图：它要求终止整条队列
+             * 且不得自动恢复。所以只要有 cancel 就是 STOPPED。
+             */
             if (hit != null) outcome = "DONE_HIT";
-            else if (pauseFlag.get()) outcome = "PAUSED";
             else if (cancelFlag.get()) outcome = "STOPPED";
+            else if (pauseFlag.get()) outcome = "PAUSED";
             else outcome = "DONE_MISS";
             l.onFinished(tested, cursor, hit, outcome);
         }
@@ -3524,6 +3559,31 @@ public final class CrackEngine {
 
     public int inconclusiveCount() {
         return tally.inconclusive() + tally.networkAuthFail() + tally.inferred();
+    }
+
+    /**
+     * 本轮**环境类**结论条数（通道抛异常 / 命令没生效 / 目标消失）。
+     *
+     * <h3>为什么必须暴露出来（2026-11-21 统计口径修复）</h3>
+     * {@code tested} 对 ERROR / TARGET_GONE **也**自增，而 {@code tally.executed}
+     * 把它们排除（单列进 environmentErrors）。于是恒等式实际是：
+     * <pre>
+     *   tested = executed + environmentErrors + (命中 ? 1 : 0)
+     * </pre>
+     * 只要通道出错，界面「已执行」就会比「已证实 + 未确定」多出若干条，
+     * 而差值**无处显示** —— 用户看到一组自相矛盾的数字
+     * （历史现场：「已执行 27 / 已证实 0 / 未确定 0」）。
+     *
+     * <p>修复前 {@code environmentErrors} 只在 {@code VerdictTally} 内部维护，
+     * 全仓没有任何读者。现在它是 UI 的一等数字。
+     */
+    public int environmentErrorCount() {
+        return tally.environmentErrors();
+    }
+
+    /** 命中条数（0 或 1）—— 命中即终止本轮，所以最多 1。 */
+    public int hitCount() {
+        return tally.hit();
     }
 
     /** 「未命中」是否站得住（没有任何无结论条目）。 */

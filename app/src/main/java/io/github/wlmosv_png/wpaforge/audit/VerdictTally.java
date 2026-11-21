@@ -59,6 +59,18 @@ public final class VerdictTally {
 
     private int executed;
 
+    /**
+     * **命中**条数（{@link CrackEngine.Verdict#SUCCESS}）。
+     *
+     * <p>命中即终止本轮，所以取值只可能是 0 或 1。
+     *
+     * <p>为什么不并进 executed：命中不是「试过一条失败的候选」，
+     * 它有自己的持久化与 UI 呈现（命中卡片、HistStore 记录）。
+     * 但**必须单独计数**，否则「已执行 + 环境错误 + 命中」这条恒等式
+     * 少了最后一项，数字仍然对不上。
+     */
+    private int hit;
+
     public void reset() {
         confirmedFail = 0;
         inferred = 0;
@@ -66,6 +78,7 @@ public final class VerdictTally {
         networkAuthFail = 0;
         executed = 0;
         environmentErrors = 0;
+        hit = 0;
     }
 
     /**
@@ -81,7 +94,13 @@ public final class VerdictTally {
         // 「SUCCESS 由命中路径单独处理，不计入 executed」——
         // 命中时任务即刻结束，那条不是「试了一条失败」。
         // 这是既定契约，不是缺陷；改动它属于行为变更，不移植。
-        if (v == CrackEngine.Verdict.SUCCESS || v == CrackEngine.Verdict.ABORTED) return;
+        if (v == CrackEngine.Verdict.SUCCESS) {
+            // 命中单独计数：它是**成功**，不属于「已执行（失败口径）」，
+            // 但必须能对上「已执行 = 已证实 + 未确定 + 环境错误 + 命中」。
+            hit++;
+            return;
+        }
+        if (v == CrackEngine.Verdict.ABORTED) return;
         // U3 修复：「算不算试过」必须与 {@code VerdictView.countsAsTested} **同一口径**。
         // ERROR（通道出错 / 命令没生效）与 TARGET_GONE（目标不在范围）都不算试过 ——
         // 它们衡量的是环境，不是「这条候选被验证过」。
@@ -174,6 +193,25 @@ public final class VerdictTally {
     /** 执行过的条数（不含 SUCCESS/ABORTED）。 */
     public int executed() {
         return executed;
+    }
+
+    /** 命中条数（0 或 1）。见 {@link #hit} 的说明。 */
+    public int hit() {
+        return hit;
+    }
+
+    /**
+     * 总条数：**必须**等于本轮真正处理过的候选数。
+     *
+     * <p>它与 {@code CrackEngine.tested} 的关系是恒等式：
+     * <pre>
+     *   tested == executed + environmentErrors + hit
+     * </pre>
+     * 这条等式是 UI 数字自洽的唯一依据；任何一项漏算都会让界面
+     * 出现「已执行 N 但分类加起来不是 N」。
+     */
+    public int total() {
+        return executed + environmentErrors + hit;
     }
 
     /**

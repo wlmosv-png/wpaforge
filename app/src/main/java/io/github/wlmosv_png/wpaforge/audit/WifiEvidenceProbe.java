@@ -370,10 +370,26 @@ public final class WifiEvidenceProbe {
      */
     public static ConnEvent findWrongPsk(List<ConnEvent> events, String ssid,
                                          long fromMs, long toMs, boolean requireRoot) {
+        return findWrongPsk(events, ssid, null, fromMs, toMs, requireRoot);
+    }
+
+    /**
+     * 连接级 WRONG_PSWD 归属（带 BSSID 收窄，1.9.65 新增）。
+     *
+     * <p>task 要求「同 SSID 不同 BSSID 不得错误归因」：当目标 BSSID 已知、
+     * 且事件本身带 BSSID 时，必须逐字相等；事件没带 BSSID 时无法判断，
+     * 退回 SSID 匹配（宁可漏判不可误判）。{@code bssid == null/空} 时等价于
+     * 不带 BSSID 收窄的旧行为（5 参重载即如此）。
+     */
+    public static ConnEvent findWrongPsk(List<ConnEvent> events, String ssid, String bssid,
+                                         long fromMs, long toMs, boolean requireRoot) {
         if (events == null || ssid == null || ssid.isEmpty()) return null;
         ConnEvent best = null;
         for (ConnEvent e : events) {
             if (!ssid.equals(e.ssid)) continue;
+            if (bssid != null && !bssid.isEmpty()
+                    && e.bssid != null && !e.bssid.isEmpty()
+                    && !bssid.equalsIgnoreCase(e.bssid)) continue;
             if (!e.wrongPsk()) continue;
             if (e.connectionResult != 0) continue;
             if (requireRoot && e.uid != 0) continue;

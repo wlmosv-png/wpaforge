@@ -615,10 +615,23 @@ public final class CrackEngine {
      *       四条件同行）命中并提前 return，走不到这里。</li>
      * </ul>
      *
-     * <p>所以只需要「在 4.2s 之前留两次机会」：2600ms 与 3600ms。
-     * 两次合计约 712ms，且只在这条候选**还没有结论**时付出。
+     * <p>所以固定时刻表必须覆盖到 4.2s 之后 —— 但**固定时刻不是唯一机制**。
+     *
+     * <h3>1.9.65 的修正：生命周期驱动 + 有限轮询</h3>
+     * 固定时刻只能覆盖已观测样本，无法保证未来样本（不同 AP 的连接失败时间、
+     * 不同 ROM 的事件落盘时机、弱信号重试与驱动调度都可能延长连接生命周期）。
+     * 因此采集时序抽到 {@link DumpsProbePlan}（纯逻辑、可离线穷举）：
+     * <ul>
+     *   <li>固定时刻表 {@link DumpsProbePlan#SCHEDULE_MS}（2600/3600/5200）作为兜底；</li>
+     *   <li>观察到连接生命周期进入 {@link Lifecycle#TERMINATED} 后立即采一次；</li>
+     *   <li>主循环退出后，在 {@link DumpsProbePlan#TERMINATION_GRACE_MS} 截止时间内
+     *       按 {@link DumpsProbePlan#TERMINATION_POLL_MS} 有间隔地有限轮询；</li>
+     *   <li>一次查询没有证据，绝不永久标记「已探测完毕」。</li>
+     * </ul>
+     * 达到截止时间仍无证据，才交给裁决层降级为 UNKNOWN / INCOMPLETE。
      */
-    private static final long[] DUMPS_PROBE_AT_MS = { 2600L, 3600L };
+    // 固定时刻表已迁至 DumpsProbePlan.SCHEDULE_MS（2600 / 3600 / 5200）；
+    // 生命周期终止触发与主循环退出后的兜底轮询见 tryOneShell 内的 DumpsProbePlan 用法。
 
     /**
      * 第二级早退判据（纯函数，便于离线单测）。
@@ -1027,6 +1040,67 @@ public final class CrackEngine {
      * @param ms          本条耗时
      * @param humanDetail 人为可读补充（沿用原判词口径，便于对比迁移前后）
      */
+    /** 判据 D 单次采集的结果：命中则带可直接结案的 Attempt，否则带诊断摘要。 */
+    private static final class DumpsCheck {
+        final Attempt hit;
+        final String otherFailure;
+        DumpsCheck(Attempt hit, String otherFailure) {
+            this.hit = hit;
+            this.otherFailure = otherFailure;
+        }
+    }
+
+    /**
+     * 判据 D 的**单次** dumpsys 采集与归因（只做归属判定，不决定时序）。
+     *
+     * <p>归因条件（1.9.65 收紧，全部必须同时满足）：
+     * <ul>
+     *   <li>{@code configConfirmedAbsent} 为真（前置闸门已确认目标配置删净）；</li>
+     *   <li>窗口可用：{@link WifiEvidenceProbe#windowUsable} —— 两端同天且顺序正确；</li>
+     *   <li>窗口内存在**本次候选对应的新增配置事件**：target SSID 的 uid=0
+     *       {@code ADD_OR_UPDATE}（{@link WifiEvidenceProbe#hasRootAddInWindow}）——
+     *       没有它，连接级 WRONG_PSWD 一律不认，防同 SSID 历史配置污染；</li>
+     *   <li>明确的 {@code AUTHENTICATION_FAILURE / AUTH_FAILURE_WRONG_PSWD}
+     *       或等价的 {@code DISABLED_BY_WRONG_PASSWORD}；</li>
+     *   <li>事件时间落在当前 attempt 的窗口 [probeFrom, probeTo] 内。</li>
+     * </ul>
+     * uid=0 本身**不能**单独证明某条失败属于当前候选 —— 必须同时有本次配置关联。
+     * 命中即 WRONG_KEY + AT3；能否落到 AUTH_FAIL + DIRECT 仍由 {@link Adjudicator}
+     * 结合生命周期决定（TERMINATED 才是 DIRECT）。
+     *
+     * @return 命中返回可结案的 Attempt（{@code hit} 非空）；无证据返回 {@code hit=null}
+     *         并附「非密码错失败」诊断摘要，供判词说明
+     */
+    private DumpsCheck checkDumpsEvidence(ShellChannel shell, NetRecord target, String password,
+                                           String attemptId, long probeFrom, long probeTo,
+                                           long elapsedMs, Lifecycle lifecycle,
+                                           boolean configConfirmedAbsent, long targetNetId) {
+        if (shell == null || !configConfirmedAbsent) return new DumpsCheck(null, null);
+        String dumpsText = null;
+        try {
+            dumpsText = shell.exec("dumpsys wifi", 8000);
+        } catch (Throwable ignored) {}
+        if (dumpsText == null || dumpsText.isEmpty()) return new DumpsCheck(null, null);
+
+        // 归因（窗口 + uid=0 配置关联 + WRONG_PSWD + BSSID 收窄）统一走纯逻辑类，
+        // 与单元测试共用同一份代码，避免「测的是一套、跑的是另一套」。
+        DumpsAttribution.Result ar = DumpsAttribution.evaluate(
+                dumpsText, target.ssid, target.bssid, probeFrom, probeTo);
+        if (ar.isWrongKey()) {
+            android.util.Log.i(TAG, "快速失败(dumpsys/" + ar.source + "): " + target.ssid);
+            return new DumpsCheck(judge(password, lifecycle, AttemptState.Gate.OK,
+                    Evidence.Source.DUMPS_WRONG_KEY, Evidence.Claim.WRONG_KEY,
+                    Evidence.Attribution.AT3, attemptId,
+                    targetNetId >= 0, elapsedMs,
+                    L.s("系统框架确认密钥错误（dumpsys 归属到本次新建的配置）",
+                        "framework confirms wrong key (dumpsys, bound to this attempt's config)")
+                            + " · " + ("config".equals(ar.source)
+                                ? "disableReason=WRONG_PASSWORD"
+                                : "level2FailureReason=AUTH_FAILURE_WRONG_PSWD")), null);
+        }
+        return new DumpsCheck(null, ar.otherFailure);
+    }
+
     private Attempt judge(String password, Lifecycle lifecycle, AttemptState.Gate gate,
                           Evidence.Source source, Evidence.Claim claim,
                           Evidence.Attribution attribution, String attemptId,
@@ -2052,13 +2126,15 @@ public final class CrackEngine {
         // 是否出现过「连着目标但 netId 对不上」——只用于收尾时把话说清楚，不作否决
         boolean suspectNetIdConflict = false;
         /**
-         * 本条候选已经查到第几个 {@link #DUMPS_PROBE_AT_MS} 时刻（判据 D）。
+         * 判据 D 的采集时序（生命周期驱动 + 有限轮询）。见 {@link DumpsProbePlan}。
          *
-         * <p>用「已查到第几个时刻」而不是布尔量，是因为真机的失败记录
-         * **4182~4295ms** 才写入 framework 记账（2.4G-3 连续 14 条实测）。
-         * 只查一次（必然在早期）会永远查不到 —— 那是「看起来生效实则无效」。
+         * <p>1.9.64 用「已查到第几个固定时刻」的一次性计数，查过就不再查；
+         * 真机失败记录 4182~4295ms（甚至更晚）才写入 framework 记账，
+         * 于是晚到的 WRONG_PSWD 被漏读、错误密码降级为 UNKNOWN。
+         * 1.9.65 改为：固定时刻兜底 + 生命周期终止立即触发 +
+         * 主循环退出后截止时间内的有限轮询。
          */
-        int dumpsProbedSlot = -1;
+        final DumpsProbePlan dumpsPlan = new DumpsProbePlan();
         /**
          * 判据 D 观察到的「非密码错失败」摘要（诊断用，**不参与判定**）。
          *
@@ -2531,18 +2607,15 @@ public final class CrackEngine {
             // 若只查一次（必然在早期），就永远查不到 —— 这条实现过、测过，
             // 单条耗时降下来了但一条失败都判不出，是「看起来生效实则无效」。
             //
-            // 现在的时刻表（相对命令发出时刻）：
-            //   2600ms —— 慢 AP 的握手失败已写入，快 AP 若成功早已由判据 A 命中
-            //   3600ms —— 覆盖 4182ms 之前最后一次机会
-            // 两查共约 712ms 额外开销，只发生在**这条候选还没结论**时；
-            // 一旦判据 A 命中成功就提前 return，不会白付。
+            // 采集时序见 DumpsProbePlan（固定时刻兜底 + 生命周期终止触发 + 兜底轮询）：
+            //   2600/3600/5200ms —— 覆盖已观测的落盘区间，快 AP 若成功早已由判据 A 命中
+            //   终止触发        —— 连接一进 TERMINATED 立即再查一次
+            //   兜底轮询        —— 主循环退出后，截止时间内有间隔地有限轮询
+            // 只在**这条候选还没结论**时付出；一旦判据 A 命中成功就提前 return，不会白付。
             final long dumpsElapsed = clock().uptimeMillis() - commandAt;
-            int dumpsSlot = -1;
-            for (int i = 0; i < DUMPS_PROBE_AT_MS.length; i++) {
-                if (dumpsElapsed >= DUMPS_PROBE_AT_MS[i]) dumpsSlot = i;
-            }
-            if (configConfirmedAbsent && dumpsSlot >= 0 && dumpsSlot > dumpsProbedSlot) {
-                dumpsProbedSlot = dumpsSlot;
+            if (dumpsPlan.due(dumpsElapsed, configConfirmedAbsent, lastLifecycle)) {
+                dumpsPlan.markProbed(dumpsElapsed);
+                if (lastLifecycle == Lifecycle.TERMINATED) dumpsPlan.markTerminationProbed();
                 // 窗口起点用墙钟（logcat/dumpsys 的时间戳是墙钟，单调时钟喂不进去）。
                 final long probeFrom = WifiEvidenceProbe.stampOfEpoch(windowFromMs);
                 // 窗口终点**不读第二遍墙钟**：用「墙钟起点 + 单调已过时间」推导。
@@ -2552,53 +2625,13 @@ public final class CrackEngine {
                 //   · 推导值比再读一次墙钟更准：它精确等于「起点之后真实过了多少毫秒」，
                 //     不受两次读取之间的系统时间调整（NTP / 用户改时间）影响。
                 final long probeTo = windowFromMs > 0
-                        ? WifiEvidenceProbe.stampOfEpoch(
-                                windowFromMs + (clock().uptimeMillis() - commandAt))
+                        ? WifiEvidenceProbe.stampOfEpoch(windowFromMs + dumpsElapsed)
                         : -1L;
-                String dumpsText = null;
-                try {
-                    dumpsText = shell.exec("dumpsys wifi", 8000);
-                } catch (Throwable ignored) {}
-                if (dumpsText != null && !dumpsText.isEmpty()) {
-                    // ---- 通道级：配置被 framework 标为密码错误（AT3 强度最高）----
-                    WifiEvidenceProbe.ConfigEvent cfgWrong =
-                            WifiEvidenceProbe.findWrongPasswordDisable(
-                                    WifiEvidenceProbe.configEvents(dumpsText),
-                                    target.ssid, probeFrom, probeTo, true);
-                    // ---- 连接级：framework 的 mConnectionEvents 明确 WRONG_PSWD ----
-                    WifiEvidenceProbe.ConnEvent connWrong =
-                            WifiEvidenceProbe.findWrongPsk(
-                                    WifiEvidenceProbe.connectionEvents(dumpsText),
-                                    target.ssid, probeFrom, probeTo, true);
-                    if (cfgWrong != null || connWrong != null) {
-                        String src = cfgWrong != null ? "config" : "connevent";
-                        android.util.Log.i(TAG, "快速失败(dumpsys/" + src + "): " + target.ssid
-                                + " cfg=" + cfgWrong + " conn=" + connWrong);
-                        long ms = clock().uptimeMillis() - t0;
-                        return judge(password, lastLifecycle, AttemptState.Gate.OK,
-                                Evidence.Source.DUMPS_WRONG_KEY, Evidence.Claim.WRONG_KEY,
-                                Evidence.Attribution.AT3, attemptId,
-                                targetNetId >= 0, ms,
-                                L.s("系统框架确认密钥错误（dumpsys 归属到本次新建的配置）",
-                                    "framework confirms wrong key (dumpsys, bound to this "
-                                        + "attempt's config)")
-                                        + " · " + (cfgWrong != null
-                                            ? "disableReason=WRONG_PASSWORD"
-                                            : "level2FailureReason=AUTH_FAILURE_WRONG_PSWD"));
-                    }
-                    // ---- 诊断级：有失败但 reason 不是 WRONG_PSWD ----
-                    // 真机实测 whoami 就是这一类（NEW_CONNECTION_ATTEMPT）。
-                    // **不能**判密码错，但记下来让用户知道「系统确实试过、且失败了」。
-                    WifiEvidenceProbe.ConnEvent connOther =
-                            WifiEvidenceProbe.findNonPskFailure(
-                                    WifiEvidenceProbe.connectionEvents(dumpsText),
-                                    target.ssid, probeFrom, probeTo);
-                    if (connOther != null) {
-                        lastDumpsOtherFailure = connOther.level2FailureCode
-                                + "/" + connOther.level2FailureReason
-                                + " dur=" + connOther.durationMs + "ms";
-                    }
-                }
+                DumpsCheck dc = checkDumpsEvidence(shell, target, password, attemptId,
+                        probeFrom, probeTo, clock().uptimeMillis() - t0,
+                        lastLifecycle, configConfirmedAbsent, targetNetId);
+                if (dc.hit != null) return dc.hit;
+                if (dc.otherFailure != null) lastDumpsOtherFailure = dc.otherFailure;
             }
 
             // ---------- 判据 B：wpa_supplicant 握手日志（参考 bszapp 的做法） ----------
@@ -3010,6 +3043,40 @@ public final class CrackEngine {
         // 旧实现在最后一种情形返回 AUTH_FAIL —— 那是把「没有成功证据」当成
         // 「失败已被证明」，是本次修复的核心根因之一。
         // D4：生命周期**作为输入**交给统一裁决，不再拿到结果后二次覆盖。
+        // ══════════════════════════════════════════════════════════════════
+        //  判据 D 的生命周期驱动兜底（1.9.65 新增）
+        //
+        //  主循环按时间预算退出时，认证失败事件可能尚未落盘 —— 真机实测
+        //  3.8~4.9s（部分 AP / ROM / 弱信号重试更晚）。1.9.64 只在循环内固定
+        //  时刻查一次，循环一退就不再查，晚到的 WRONG_PSWD 被漏读、降级 UNKNOWN。
+        //
+        //  现在：连接确实被尝试过、前置闸门确认配置删净、且**连接已终止**
+        //  （TERMINATED 才可能落到 AUTH_FAIL+DIRECT）时，在截止时间内有间隔地
+        //  有限轮询 dumpsys；命中即结案；截止仍无证据才交给 classifyDeadline 降级。
+        //  暂停 / 停止 / 取消一律不轮询，保证「中断期间不推进判定」。
+        // ══════════════════════════════════════════════════════════════════
+        if (configConfirmedAbsent && sawAttempt && channelAlive
+                && lastLifecycle == Lifecycle.TERMINATED
+                && !cancelFlag.get() && !pauseFlag.get()) {
+            final long graceDeadline = dumpsPlan.graceDeadlineMs(
+                    clock().uptimeMillis() - commandAt);
+            while (!cancelFlag.get() && !pauseFlag.get()) {
+                final long elapsed = clock().uptimeMillis() - commandAt;
+                dumpsPlan.markTerminationProbed();
+                final long probeFrom = WifiEvidenceProbe.stampOfEpoch(windowFromMs);
+                final long probeTo = windowFromMs > 0
+                        ? WifiEvidenceProbe.stampOfEpoch(windowFromMs + elapsed)
+                        : -1L;
+                DumpsCheck dc = checkDumpsEvidence(shell, target, password, attemptId,
+                        probeFrom, probeTo, clock().uptimeMillis() - t0,
+                        lastLifecycle, configConfirmedAbsent, targetNetId);
+                if (dc.hit != null) return dc.hit;
+                if (dc.otherFailure != null) lastDumpsOtherFailure = dc.otherFailure;
+                if (clock().uptimeMillis() - commandAt >= graceDeadline) break;
+                sleep(DumpsProbePlan.TERMINATION_POLL_MS);
+            }
+        }
+
         DeadlineOutcome out = classifyDeadline(
                 targetNetId < 0 && !sawAttempt && channelAlive,          // 命令未生效
                 currentOnTarget,
@@ -3115,12 +3182,12 @@ public final class CrackEngine {
                     + L.s("），但原因不是「密钥错误」，所以不能判密码错",
                           " attempt, but the reason is not a wrong key, "
                               + "so it cannot be treated as a wrong passphrase");
-        } else if (configConfirmedAbsent && dumpsProbedSlot < 0) {
-            // 连一次 dumps 都没查过（例如候选在 2600ms 前就结束了）——
+        } else if (configConfirmedAbsent && !dumpsPlan.everProbed()) {
+            // 连一次 dumps 都没查过（例如候选在首个固定时刻前就结束）——
             // 如实说明「这条没做 framework 级核查」，而不是假装查过了。
-            detail = detail + L.s(" · 本次未做 framework 级核查（候选在 2.6s 前结束）",
+            detail = detail + L.s(" · 本次未做 framework 级核查（候选在首个探测时刻前结束）",
                     " · no framework-level check was performed "
-                        + "(the candidate finished before 2.6s)");
+                        + "(the candidate finished before the first probe)");
         }
 
         detail = detail + L.f(" [层: 日志%d/%s · status%d/%s · 窗口%s]",

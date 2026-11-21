@@ -99,6 +99,20 @@ public class CrackService extends Service {
             onAttemptResultFull(candidate, hit, ms, detail, verdict, grade);
         }
 
+        /**
+         * **唯一结果落地入口**（1.9.66）：额外带 attemptId 与确认来源。
+         *
+         * <p>服务端只调用本方法（不再分别调 5 参与 7 参），避免每条结果被追加两次；
+         * 默认转交旧 Full 实现，老实现类无需改动。
+         */
+        default void onAttemptResultDetail(String candidate, boolean hit, long ms, String detail,
+                                          CrackEngine.Verdict verdict,
+                                          io.github.wlmosv_png.wpaforge.audit
+                                                  .EvidenceGrade.Level grade,
+                                          String reason, String attemptId, String source) {
+            onAttemptResultFull(candidate, hit, ms, detail, verdict, grade, reason);
+        }
+
         /** 旧签名（无 reason），保留兼容。 */
         default void onAttemptResultFull(String candidate, boolean hit, long ms,
                                          String detail, CrackEngine.Verdict verdict,
@@ -1523,12 +1537,10 @@ public class CrackService extends Service {
                     detail = L.s(detail + "（依据: ", detail + " (via: ") + a.confirmedBy + "）";
                 }
                 for (UiCallback cb : callbacks) {
-                    cb.onAttemptResult(a.password, a.isSuccess(), a.elapsedMs, detail,
-                            a.verdict);
-                    // 2026-11-21：额外把**证据等级**交给 UI，
-                    // 让「已证实错误」只在 DIRECT 时出现。
-                    cb.onAttemptResultFull(a.password, a.isSuccess(), a.elapsedMs, detail,
-                            a.verdict, a.grade, a.reason);
+                    // 1.9.66：只调唯一入口，带 attemptId 与来源，每条只落一次
+                    // （修复旧实现「5 参 + 7 参」导致的双重追加）。
+                    cb.onAttemptResultDetail(a.password, a.isSuccess(), a.elapsedMs, detail,
+                            a.verdict, a.grade, a.reason, a.attemptId, a.confirmedBy);
                 }
                 // 实时结论分布（UI 第二轮）：口径与 VerdictTally 一致，
                 // 用引擎的累计值（它本来就是唯一统计入口）。

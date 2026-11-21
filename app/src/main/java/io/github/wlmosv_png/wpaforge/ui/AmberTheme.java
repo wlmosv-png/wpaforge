@@ -124,6 +124,10 @@ public final class AmberTheme {
      * 「在跑」还是「停了」——两种状态必须有色差。
      */
     public static final int WARN = 0xFFE39A28;
+    /** 疑似错误用的橙（与品牌琥珀 ACCENT 区分开）。 */
+    public static final int ORANGE = 0xFFF08A24;
+    /** 环境异常用的紫灰（克制警示，不抢眼）。 */
+    public static final int ENV_TONE = 0xFFA99AC7;
 
     /** 危险（失败） */
     public static final int DANGER = 0xFFFF5A5F;

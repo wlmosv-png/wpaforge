@@ -308,14 +308,16 @@ public class MainActivity extends Activity {
      */
     private TextView netMetaView;        /** 网络卡第二层：信号 · 信道 · 频段 */
     private TextView netSecChip;         /** 安全类型胶囊 */
-    private TextView statDoneView;       /** 已完成 */
-    /** 已证实错误（候选级 AUTH_FAIL/DIRECT）—— 与「未确定」严格分开。 */
-    private TextView statWrongView;
-    /** 未确定（无结论 + 网络级失败 + 推断失败）—— 绝不显示成「密码错误」。 */
-    private TextView statUnkView;
+    private TextView statHitView;        /** 已确认成功（SUCCESS / DIRECT） */
+    private TextView statWrongView;      /** 已证实错误（AUTH_FAIL / DIRECT） */
+    private TextView statIncompleteView; /** 连接未完成（TIMEOUT/INCOMPLETE/TERMINATED_UNKNOWN） */
+    private TextView statUnkView;        /** 尚无有效判定（疑似/网络级/无法判断/环境异常） */
     /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
     private TextView planLineView;
-    private TextView statTotalView;      /** 总数 */
+    /** 运行参数层（目标 / 模式 / 过滤 / 本次待执行）—— 与计划行分开，避免混排。 */
+    private TextView runMetaView;
+    /** 已执行 / 总数 一行（进度层，不与结果统计混排）。 */
+    private TextView countsLineView;
 
     /** 阶段说明行（2026-11-21 UI 专项）—— 只显示已有事实，不预测。 */
     private TextView phaseHintView;
@@ -362,6 +364,10 @@ public class MainActivity extends Activity {
      * 「无法判断」，但用户该做的事完全不同。
      */
     private volatile String lastCrackReason;
+    /** 最近一条尝试的 attemptId（详情行展示；来自后端 Attempt.attemptId）。 */
+    private volatile String lastAttemptId = "";
+    /** 最近一条结论的确认来源（Attempt.confirmedBy；空=未记录）。 */
+    private volatile String lastCrackSource = "";
 
     private String lastOutcomeLabel = "";
     private int lastOutcomeColor = TEXT_DIM;
@@ -468,8 +474,11 @@ public class MainActivity extends Activity {
      * 至少能看出"程序在动、这条不对"。
      */
     private boolean streamKeyOnly = false;
+    /** 攻击流详情模式：显示 attempt/verdict/grade/reason 等可追溯字段。 */
+    private boolean streamDetailMode = false;
     private TextView chipKey;
     private TextView chipAll;
+    private TextView chipDetail;
     private int lastTested = 0, lastTotal = 0;
     /** 当前候选在字典里的位置（1 起）—— 脱敏后靠它把日志对回字典 */
     private int curCandIndex = 0;
@@ -946,29 +955,63 @@ public class MainActivity extends Activity {
     }
 
     /** 渲染「未确定细分」独立信息区（1.9.65）。零项不出现；全零则隐藏。 */
+    /** 四项核心统计 + 未确定细分（唯一入口，数字全部来自 VerdictTally 的累计值）。 */
+    private void renderStats() {
+        int hit = lastTallyHit;
+        int confirmed = lastTallyConfirmed;
+        int notFinished = lastTallyNotFinished;
+        int suspected = lastTallySuspected;
+        int networkFail = lastTallyNetAuthFail;
+        int undecided = lastTallyUndecided;
+        int envErrors = lastTallyEnvErrors;
+        int noVerdict = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
+                .noValidVerdict(suspected, networkFail, undecided, envErrors);
+        if (statHitView != null) {
+            statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(hit));
+            statHitView.setTextColor(hit > 0 ? OK_GREEN : AmberTheme.TEXT_FAINT);
+        }
+        if (statWrongView != null) {
+            statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(confirmed));
+            statWrongView.setTextColor(confirmed > 0 ? DANGER : AmberTheme.TEXT_FAINT);
+        }
+        if (statIncompleteView != null) {
+            statIncompleteView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(notFinished));
+            statIncompleteView.setTextColor(notFinished > 0
+                    ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_FAINT);
+        }
+        if (statUnkView != null) {
+            statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(noVerdict));
+            statUnkView.setTextColor(noVerdict <= 0 ? AmberTheme.TEXT_FAINT
+                    : (suspected > 0 ? AmberTheme.ORANGE : AmberTheme.TEXT_DIM));
+        }
+        renderBreakdown();
+    }
+
+    /** 尚无有效判定的细分（疑似/网络级/无法判断/环境异常），零值隐藏。 */
     private void renderBreakdown() {
         if (breakdownView == null) return;
         java.util.List<io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.Item> items =
                 io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.breakdown(
-                        lastTallySuspected, lastTallyNetAuthFail, lastTallyNotFinished,
-                        lastTallyEnvErrors, lastTallyUndecided);
+                        lastTallySuspected, lastTallyNetAuthFail, lastTallyUndecided,
+                        lastTallyEnvErrors);
         if (items.isEmpty()) {
             breakdownView.setVisibility(View.GONE);
             return;
         }
         StringBuilder sb = new StringBuilder();
-        sb.append(L.s("未确定细分 ", "uncertain: "));
+        sb.append(L.s("尚无有效判定细分 ", "no-verdict split: "));
         for (int i = 0; i < items.size(); i++) {
             if (i > 0) sb.append("   ");
             io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.Item it = items.get(i);
-            sb.append(L.s(io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.labelZh(it.cat),
-                          io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.labelEn(it.cat)))
+            sb.append(L.s(io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.catLabelZh(it.cat),
+                          io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.catLabelEn(it.cat)))
               .append(' ')
               .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(it.count));
         }
         breakdownView.setText(sb.toString());
         breakdownView.setVisibility(View.VISIBLE);
     }
+
 
     private LinearLayout.LayoutParams weight() {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -9999,32 +10042,40 @@ public class MainActivity extends Activity {
         phaseHintView.setPadding(0, px(4), 0, 0);
         progressCard.addView(phaseHintView);
 
+        countsLineView = new TextView(this);
+        countsLineView.setTextSize(AmberTheme.FS_BODY);
+        countsLineView.setTextColor(AmberTheme.TEXT_DIM);
+        countsLineView.setSingleLine(false);
+        countsLineView.setText(L.s("已执行 —  /  总数 —", "tried —  /  total —"));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.topMargin = px(8);
+        progressCard.addView(countsLineView, clp);
+
         LinearLayout statRow = new LinearLayout(this);
         statRowView = statRow;
         statRow.setOrientation(LinearLayout.VERTICAL);
-        statDoneView = AmberTheme.stat(this);
-        statTotalView = AmberTheme.stat(this);
+        statHitView = AmberTheme.stat(this);
         statWrongView = AmberTheme.stat(this);
+        statIncompleteView = AmberTheme.stat(this);
         statUnkView = AmberTheme.stat(this);
-        statDoneView.setText("—");
-        statTotalView.setText("—");
-        statWrongView.setText("—");
-        statUnkView.setText("—");
-        // 未知态一律用弱色：亮琥珀「—」看起来像一根进度条，容易被当成数据
-        statDoneView.setTextColor(AmberTheme.TEXT_FAINT);
-        statTotalView.setTextColor(AmberTheme.TEXT_FAINT);
+        statHitView.setText("—"); statWrongView.setText("—");
+        statIncompleteView.setText("—"); statUnkView.setText("—");
+        statHitView.setTextColor(AmberTheme.TEXT_FAINT);
         statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
+        statIncompleteView.setTextColor(AmberTheme.TEXT_FAINT);
         statUnkView.setTextColor(AmberTheme.TEXT_FAINT);
-        // 四项核心统计：窄屏 2×2、宽屏 1×4（1.9.65：不再强行四列，窄屏文字不再挤压）。
-        // 「已证实错误」用危险色、「未确定」用告警色 —— 两者视觉上必须不同：
-        // 前者说明这条密码被证明了是错的，后者只说明我们没拿到证据。
         final int statCols = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.gridColumns(
                 getResources().getConfiguration().screenWidthDp);
         java.util.List<LinearLayout> statCells = new java.util.ArrayList<>();
-        statCells.add(AmberTheme.statColumn(this, dp, L.s("已执行", "TRIED"), statDoneView));
-        statCells.add(AmberTheme.statColumn(this, dp, L.s("已证实错误", "PROVEN WRONG"), statWrongView));
-        statCells.add(AmberTheme.statColumn(this, dp, L.s("未确定", "UNCERTAIN"), statUnkView));
-        statCells.add(AmberTheme.statColumn(this, dp, L.s("总数", "TOTAL"), statTotalView));
+        statCells.add(AmberTheme.statColumn(this, dp,
+                L.s("已确认成功", "VERIFIED"), statHitView));
+        statCells.add(AmberTheme.statColumn(this, dp,
+                L.s("已证实错误", "PROVEN WRONG"), statWrongView));
+        statCells.add(AmberTheme.statColumn(this, dp,
+                L.s("连接未完成", "NOT FINISHED"), statIncompleteView));
+        statCells.add(AmberTheme.statColumn(this, dp,
+                L.s("尚无有效判定", "NO VERDICT"), statUnkView));
         LinearLayout curStatRow = null;
         for (int ci = 0; ci < statCells.size(); ci++) {
             if (ci % statCols == 0) {
@@ -10042,7 +10093,6 @@ public class MainActivity extends Activity {
         srlp.topMargin = px(12);
         progressCard.addView(statRow, srlp);
 
-        // 未确定细分独立信息区（1.9.65）：与主统计分开，不塞进数字格。
         breakdownView = new TextView(this);
         breakdownView.setTextSize(AmberTheme.FS_SMALL);
         breakdownView.setTextColor(AmberTheme.TEXT_DIM);
@@ -10098,6 +10148,16 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         pllp.topMargin = px(8);
         progressCard.addView(planLineView, pllp);
+
+        runMetaView = new TextView(this);
+        runMetaView.setTextSize(AmberTheme.FS_SMALL);
+        runMetaView.setTextColor(AmberTheme.TEXT_FAINT);
+        runMetaView.setSingleLine(false);
+        runMetaView.setVisibility(View.GONE);
+        LinearLayout.LayoutParams rmlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rmlp.topMargin = px(4);
+        progressCard.addView(runMetaView, rmlp);
 
         finishNote = new TextView(this);
         finishNote.setTextSize(AmberTheme.FS_SMALL);
@@ -10219,6 +10279,22 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         chp.rightMargin = px(10);
         flowHeader.addView(chipAll, chp);
+
+        chipDetail = new TextView(this);
+        chipDetail.setText(L.s("详情", "Detail"));
+        chipDetail.setTextSize(AmberTheme.FS_SMALL);
+        chipDetail.setPadding(px(9), px(4), px(9), px(4));
+        chipDetail.setClickable(true);
+        chipDetail.setFocusable(true);
+        chipDetail.setOnClickListener(v -> {
+            streamDetailMode = !streamDetailMode;
+            styleFlowChips();
+            renderStream();
+        });
+        LinearLayout.LayoutParams cdp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cdp.rightMargin = px(6);
+        flowHeader.addView(chipDetail, cdp);
         styleFlowChips();
 
         flowClear = new TextView(this);
@@ -10577,6 +10653,9 @@ public class MainActivity extends Activity {
                 || !lastOutcomeLabel.isEmpty()
                 || lastTallyConfirmed > 0
                 || lastTallyInconclusive > 0;
+        if (countsLineView != null) {
+            countsLineView.setVisibility(hasData ? View.VISIBLE : View.GONE);
+        }
         if (statRowView != null) {
             statRowView.setVisibility(hasData ? View.VISIBLE : View.GONE);
         }
@@ -11494,9 +11573,11 @@ public class MainActivity extends Activity {
                 curCandIndex = index;
                 // 总条数在第一条候选开始时就已经确定（服务传进来的 total），
                 // 这里只是把它显示出来 —— 不额外查询、不重新统计。
-                if (statTotalView != null && total > 0) {
-                    statTotalView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                            .thousands(total));
+                if (countsLineView != null && total > 0) {
+                    countsLineView.setText(L.f("已执行 %s  /  总数 %s",
+                            "tried %s  /  total %s",
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(lastTested),
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(total)));
                 }
                 renderProgressCardState();
                 // 方案 A：候选不再塞在进度条脚下的小字里，
@@ -11525,153 +11606,64 @@ public class MainActivity extends Activity {
 
         @Override
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail) {
-            // 兼容入口：没有 Verdict 时按「不确定」展示，绝不冒充「密码错误」。
-            onAttemptResult(candidate, hit, ms, detail, null);
+            onAttemptResultDetail(candidate, hit, ms, detail, null, null, null, null, null);
         }
 
-        /**
-         * 带**证据等级**的展示入口（2026-11-21）。
-         *
-         * <p>只做一件事：把 Verdict 与 Grade 一起记下来给状态行用，
-         * 然后转交给既有 5 参实现（日志与候选行渲染逻辑一行不动）。
-         */
-        @Override
-        public void onAttemptResultFull(String candidate, boolean hit, long ms,
-                                        String detail,
-                                        io.github.wlmosv_png.wpaforge.audit
-                                                .CrackEngine.Verdict v,
-                                        io.github.wlmosv_png.wpaforge.audit
-                                                .EvidenceGrade.Level g) {
-            onAttemptResultFull(candidate, hit, ms, detail, v, g, null);
-        }
-
-        @Override
-        public void onAttemptResultFull(String candidate, boolean hit, long ms,
-                                        String detail,
-                                        io.github.wlmosv_png.wpaforge.audit
-                                                .CrackEngine.Verdict v,
-                                        io.github.wlmosv_png.wpaforge.audit
-                                                .EvidenceGrade.Level g,
-                                        String reason) {
-            lastCrackGrade = g;
-            lastCrackReason = reason;
-            onAttemptResult(candidate, hit, ms, detail, v);
-        }
-
-        /**
-         * 带 Verdict 的展示入口（U1）。
-         *
-         * <p><b>关键改动</b>：非成功不再一律打 ✗。旧代码的 {@code else} 分支
-         * 把 AUTH_FAIL / NETWORK_AUTH_FAIL / TIMEOUT / INCOMPLETE /
-         * TERMINATED_UNKNOWN / ERROR 全部显示成同一个 ✗ —— 用户会认为
-         * 「这批密码都错了」，而其中三种其实「可能马上就成功」或「与密码无关」。
-         *
-         * <p>现在符号、标签、说明、颜色全部来自
-         * {@link io.github.wlmosv_png.wpaforge.ui.VerdictView} 这一处定义，
-         * 页面不再自行解释 Verdict。
-         */
         @Override
         public void onAttemptResult(String candidate, boolean hit, long ms, String detail,
                                     io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v) {
+            onAttemptResultDetail(candidate, hit, ms, detail, v, null, null, null, null);
+        }
+
+        @Override
+        public void onAttemptResultFull(String candidate, boolean hit, long ms, String detail,
+                                        io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v,
+                                        io.github.wlmosv_png.wpaforge.audit.EvidenceGrade.Level g) {
+            onAttemptResultDetail(candidate, hit, ms, detail, v, g, null, null, null);
+        }
+
+        @Override
+        public void onAttemptResultFull(String candidate, boolean hit, long ms, String detail,
+                                        io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v,
+                                        io.github.wlmosv_png.wpaforge.audit.EvidenceGrade.Level g,
+                                        String reason) {
+            onAttemptResultDetail(candidate, hit, ms, detail, v, g, reason, null, null);
+        }
+
+        /**
+         * **唯一的结果落地入口**（1.9.66）：带 attemptId 与来源，**每条只追加一次**。
+         *
+         * <p>修复 1.9.65 的双重追加：CrackService 先调 5 参、再调 7 参，7 参又回调
+         * 5 参 → 每条结果被追加两次（合并成 ×2，且首次用陈旧 grade）。现在
+         * 服务端只调本方法，本方法 append 一次，grade/reason/attemptId/source 全新鲜。
+         */
+        @Override
+        public void onAttemptResultDetail(String candidate, boolean hit, long ms, String detail,
+                                          io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v,
+                                          io.github.wlmosv_png.wpaforge.audit.EvidenceGrade.Level g,
+                                          String reason, String attemptId, String source) {
+            lastCrackGrade = g;
+            lastCrackReason = reason;
+            if (attemptId != null) lastAttemptId = attemptId;
+            if (source != null) lastCrackSource = source;
+            final String fReason = reason;
+            final String fAttempt = attemptId == null ? "" : attemptId;
+            final String fSource = source == null ? "" : source;
             ui.post(() -> {
                 String pw = io.github.wlmosv_png.wpaforge.ui.Redact.pwAt(curCandIndex, candidate);
-                if (hit) {
-                    appendStreamColored(io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v)
-                            + " 成功  " + pw + "  (" + ms + "ms " + detail + ")", OK_GREEN);
-                    showHitCard(candidate, ms, detail);
-                } else if (v != null) {
-                    /*
-                     * 2026-11-22：主标签改用 **ResultCategory**（六类互斥结果）。
-                     *
-                     * <h3>为什么改</h3>
-                     * 真机实测：6 条候选在界面上全部显示「不确定」，
-                     * 而底层它们是 `netid-conflict` / `status-unclear` /
-                     * `no-evidence` 等**完全不同**的情况。
-                     * 尤其 `netid-conflict` 意味着「目标已连上并取得 IP，
-                     * 只是 netId 与本次配置不符」—— 那可能**密码是对的**，
-                     * 却和「什么都没观察到」共用同一个词。
-                     *
-                     * <h3>边界</h3>
-                     * 只改展示，不改判定、不改持久化：
-                     *   · 是否写 TriedSet 仍只看 EvidenceGrade.persistable()
-                     *   · 判定结论仍是后端给的 Verdict，UI 不二次推断
-                     */
-                    io.github.wlmosv_png.wpaforge.ui.ResultCategory.Kind rk =
-                            io.github.wlmosv_png.wpaforge.ui.ResultCategory
-                                    .of(v, lastCrackGrade, lastCrackReason);
-                    String sym = io.github.wlmosv_png.wpaforge.ui.VerdictView.symbol(v);
-                    // 标签优先用**用户可理解类别**（六类互斥）；
-                    // 类别与 Verdict 一一对应时退回 VerdictView.label，
-                    // 保证「统一映射」这条既有契约仍然成立。
-                    String lblV = io.github.wlmosv_png.wpaforge.ui.VerdictView.label(v);
-                    String lbl = io.github.wlmosv_png.wpaforge.ui.ResultCategory
-                            .label(rk, L.isZh());
-                    // 颜色按**类别**而非 Verdict：
-                    //   已证实错误 → 危险红
-                    //   疑似 / 网络级 / 未完成 / 无法判断 → 告警黄
-                    //   环境异常 → 危险红（要用户去修环境）
-                    //   其余 → 暗色
-                    int color;
-                    switch (rk) {
-                        case PROVEN_WRONG:
-                        case ENV_ERROR:
-                            color = DANGER; break;
-                        case SUSPECTED_WRONG:
-                        case NETWORK_FAIL:
-                        case NOT_FINISHED:
-                        case UNDECIDED:
-                            color = ACCENT; break;
-                        case VERIFIED_OK:
-                            color = OK_GREEN; break;
-                        default:
-                            color = TEXT_DIM;
-                    }
-                    // 合并键用 **Verdict 本身**（既有契约）：它是裁决层的唯一结论
-                    // 标识，与 UI 同源，不在这里二次推断。
-                    // 同一 Verdict 下不同 reason（netid-conflict vs no-evidence）
-                    // 由说明行的 lastWhyKey 区分，不影响合并键。
-                    String key = v.name();
-                    /*
-                     * 两层文本（2026-11-02 收口）。
-                     *
-                     * 普通视图给人看：结论 + **第几条** + 秒数。
-                     *   · 不再出现 `#130548(len=9)` 这种哈希串 —— 那是技术标识，
-                     *     普通用户既读不懂也记不住，只觉得软件很乱。
-                     *   · 耗时用秒（0.1s）而不是毫秒（123ms），人脑对秒更有直觉。
-                     *
-                     * 技术视图给排查用：保留 attemptId、候选哈希与归属来源，
-                     * 切到「全部」就能看到，**原始证据一条没少**。
-                     */
-                    String plainLine = sym + "  " + lbl
-                            + "  ·  " + L.s("第 " + curCandIndex + " 条", "#" + curCandIndex)
-                            + "  ·  " + fmtSeconds(ms);
-                    String techLine = sym + "  " + lbl + "  " + pw
-                            + "  (" + ms + "ms" + (detail == null || detail.isEmpty()
-                                    ? "" : " " + detail) + ")";
-                    appendStreamDedup(plainLine, color, key, techLine);
-                    String whyBase = io.github.wlmosv_png.wpaforge.ui.VerdictView.description(v);
-                    String why = io.github.wlmosv_png.wpaforge.ui.ResultCategory
-                            .hint(rk, lastCrackReason, L.isZh());
-                    if (why == null || why.isEmpty()) why = whyBase;
-                    if (why != null && !why.isEmpty() && !key.equals(lastWhyKey)) {
-                        lastWhyKey = key;
-                        appendStreamDetail("     " + why, TEXT_DIM);
-                    }
-                } else {
-                    // 没有 Verdict（旧路径）：保持中性，不冒充失败
-                    appendStreamDetail("·  "
-                            + pw + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
+                if (v == null) {
+                    appendStreamDetail("·  " + pw + " (" + ms + "ms " + detail + ")", TEXT_DIM);
+                    updateConnectMode();
+                    return;
                 }
-                // **记下最近一条 Verdict**（2026-11-21 UI 专项）。
-                // 这是后端已经交给我们的既有数据，只是存起来给状态行用。
-                // 不判定、不推算、不改业务。
-                if (v != null) {
-                    lastCrackVerdict = v;
-                    // grade 由 onTallyFull 之前的回调路径传入（见 onAttemptResult 重载）；
-                    // 拿不到时保持上一次的值不影响安全方向：只有显式 DIRECT 才显示「已证实」。
-                    renderProgressCardState();
-                }
-                // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
+                io.github.wlmosv_png.wpaforge.ui.ResultCategory.Kind rk =
+                        io.github.wlmosv_png.wpaforge.ui.ResultCategory.of(v, g, reason);
+                int color = colorForTone(io.github.wlmosv_png.wpaforge.ui.ResultCopy.toneOf(rk));
+                appendResultRecord(rk, fReason, curCandIndex, ms, System.currentTimeMillis(),
+                        fAttempt, v, g, fSource, color);
+                if (hit) showHitCard(candidate, ms, detail);
+                lastCrackVerdict = v;
+                renderProgressCardState();
                 updateConnectMode();
             });
         }
@@ -11691,35 +11683,14 @@ public class MainActivity extends Activity {
         @Override
         public void onTally(int confirmed, int inconclusive, int networkAuthFail) {
             ui.post(() -> {
-                if (statWrongView != null) {
-                    statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                            .thousands(confirmed));
-                    statWrongView.setTextColor(confirmed > 0 ? DANGER : AmberTheme.TEXT_FAINT);
-                }
-                if (statUnkView != null) {
-                    statUnkView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                            .thousands(inconclusive));
-                    statUnkView.setTextColor(inconclusive > 0 ? ACCENT : AmberTheme.TEXT_FAINT);
-                }
                 lastTallyConfirmed = confirmed;
                 lastTallyInconclusive = inconclusive;
                 lastTallyNetAuthFail = networkAuthFail;
+                renderStats();
                 refreshPlanLine();
             });
         }
 
-        /**
-         * 完整统计（2026-11-21）。
-         *
-         * <p>把「环境错误」真正显示出来 —— 修复前它只是 VerdictTally 内部
-         * 一个没人读的计数器，导致界面上「已执行 N」与「已证实 + 未确定」
-         * 对不上时没有任何解释。现在差额有归属：
-         * <pre>
-         *   已执行 = 已证实错误 + 未确定 + 环境错误 + 命中
-         * </pre>
-         *
-         * <p>只在**确实有环境错误**时才改写未确定格，避免污染正常显示。
-         */
         @Override
         public void onTallyFull(int confirmed, int inconclusive, int networkAuthFail,
                                 int environmentErrors, int executed, int hit) {
@@ -11727,22 +11698,11 @@ public class MainActivity extends Activity {
                 lastTallyEnvErrors = environmentErrors;
                 lastTallyExecuted = executed;
                 lastTallyHit = hit;
-                // 1.9.65：细分不再塞进「未确定」数字格，统一渲染到下方独立信息区。
-                renderBreakdown();
+                renderStats();
                 renderProgressCardState();
             });
         }
 
-        /**
-         * 按用户可理解类别的统计（2026-11-22）。
-         *
-         * <p>修复前「未确定」一格把所有非 DIRECT 结论混在一起，
-         * 用户无法区分「疑似密码错误」（值得复核）与「连接未完成」
-         * （等下就好）与「无法判断」（证据不足）。
-         *
-         * <p>1.9.65：细分不再塞进「未确定」数字格，而是渲染到下方独立信息区
-         * （{@link #breakdownView}）。「未确定」主数字仍是既有口径（inconclusive）。
-         */
         @Override
         public void onTallyCategorized(int suspectedWrong, int notFinished,
                                        int undecided, int envErrors) {
@@ -11750,7 +11710,9 @@ public class MainActivity extends Activity {
                 lastTallySuspected = suspectedWrong;
                 lastTallyNotFinished = notFinished;
                 lastTallyUndecided = undecided;
-                renderBreakdown();
+                // onTallyCategorized 也带 envErrors，二者取并集更稳（取最新）
+                if (envErrors > lastTallyEnvErrors) lastTallyEnvErrors = envErrors;
+                renderStats();
                 renderProgressCardState();
             });
         }
@@ -11782,15 +11744,11 @@ public class MainActivity extends Activity {
                 // **不重新计算任何东西** —— tested/total/rate/etaMs 全部是服务
                 // 在这次回调里传进来的原始值，格式化仍走既有的 CrackHud。
                 // 速率/剩余拿不到时显示「待测/待估」，不编一个数字出来。
-                if (statDoneView != null) {
-                    statDoneView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                            .thousands(tested));
-                    statDoneView.setTextColor(TEXT);
-                }
-                if (statTotalView != null) {
-                    statTotalView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
-                            .thousands(total));
-                    statTotalView.setTextColor(TEXT);
+                if (countsLineView != null) {
+                    countsLineView.setText(L.f("已执行 %s  /  总数 %s",
+                            "tried %s  /  total %s",
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(tested),
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(total)));
                 }
                 if (statPctView != null) {
                     boolean known = total > 0;
@@ -12211,40 +12169,30 @@ public class MainActivity extends Activity {
      * 单字典、无历史时不该多出一行噪音。
      */
     private void refreshPlanLine() {
-        if (planLineView == null) return;
         String plan = CrackService.planSummary();
         int sc = CrackService.lastSkippedConfirmed();
         int su = CrackService.lastSkippedUndetermined();
-        StringBuilder sb = new StringBuilder();
-        if (plan != null && !plan.isEmpty()) sb.append(plan);
-        // 透明化（第七节）：当前目标 / 模式 / 过滤档位 / 待执行条数。
-        {
-            String mode = usePlanMode ? L.s("计划", "Plan") : L.s("单字典", "Single");
-            String pol = CrackService.lastSkipPolicyId() == 1
-                    ? L.s("省时", "save-time") : L.s("保守", "conservative");
-            int work = CrackService.lastWorkTotal();
-            if (work > 0 || sc + su > 0) {
-                if (sb.length() > 0) sb.append("\n");
-                sb.append(L.s("目标 ", "Target ")).append(currentTargetKey().isEmpty()
-                                ? L.s("(未选)", "(none)") : Prefs.targetLabel(this))
-                        .append(L.s(" · 模式 ", " · mode ")).append(mode)
-                        .append(L.s(" · 过滤 ", " · filter ")).append(pol);
-                if (work > 0) {
-                    sb.append(L.s(" · 本次待执行 ", " · to run ")).append(work);
-                }
-            }
+
+        // 第一层：计划与跳过（planLineView）
+        StringBuilder pb = new StringBuilder();
+        if (plan != null && !plan.isEmpty()) pb.append(plan);
+        if (sc + su > 0) {
+            if (pb.length() > 0) pb.append("\n");
+            pb.append(L.s("跳过 " + (sc + su) + " 条（已证实错误 " + sc
+                            + " · 没跑出结果 " + su + "）",
+                    "skipped " + (sc + su) + " (" + sc + " proven · " + su + " no result)"));
         }
-        // 计划模式下补一行「第几本 / 当前 / 下一本 / 整体进度」，数据来自服务端活计划。
-        // 计划终态（命中/全部跑完/停止）时**不显示**「当前/下一本」——那会让人以为还在跑。
+        // 计划模式：第几本 / 当前 / 下一本 / 整体进度（单独一行，不与其他信息混排）
         if (usePlanMode) {
             CrackService svc = liveService();
-            io.github.wlmosv_png.wpaforge.audit.DictPlan live = svc == null ? null : svc.planForDisplay();
+            io.github.wlmosv_png.wpaforge.audit.DictPlan live =
+                    svc == null ? null : svc.planForDisplay();
             if (live != null && !live.items.isEmpty() && !live.state.isTerminal()) {
                 io.github.wlmosv_png.wpaforge.audit.DictPlan.Item cur = live.current();
                 String next = (live.index + 1 < live.items.size())
                         ? live.items.get(live.index + 1).name : L.s("（最后一本）", "(last)");
-                if (sb.length() > 0) sb.append("\n");
-                sb.append(L.f("第 %d/%d 本 · 当前「%s」%s · 下一本「%s」 · 整体 %d%%",
+                if (pb.length() > 0) pb.append("\n");
+                pb.append(L.f("第 %d/%d 本 · 当前「%s」%s · 下一本「%s」 · 整体 %d%%",
                         "#%d of %d · now \"%s\" %s · next \"%s\" · %d%% overall",
                         live.displayIndex(), live.items.size(),
                         cur == null ? "-" : cur.name,
@@ -12252,14 +12200,30 @@ public class MainActivity extends Activity {
                         next, Math.round(live.progress() * 100)));
             }
         }
-        if (sc + su > 0) {
-            if (sb.length() > 0) sb.append("   ·   ");
-            sb.append(L.s("跳过 " + (sc + su) + " 条（已证实错误 " + sc
-                            + " · 没跑出结果 " + su + "）",
-                    "skipped " + (sc + su) + " (" + sc + " proven · " + su + " no result)"));
+        if (planLineView != null) {
+            planLineView.setText(pb.toString());
+            planLineView.setVisibility(pb.length() == 0 ? View.GONE : View.VISIBLE);
         }
-        planLineView.setText(sb.toString());
-        planLineView.setVisibility(sb.length() == 0 ? View.GONE : View.VISIBLE);
+
+        // 第二层：运行参数（目标 / 模式 / 过滤 / 待执行）—— 独立视图
+        if (runMetaView != null) {
+            String mode = usePlanMode ? L.s("计划", "Plan") : L.s("单字典", "Single");
+            String pol = CrackService.lastSkipPolicyId() == 1
+                    ? L.s("省时", "save-time") : L.s("保守", "conservative");
+            int work = CrackService.lastWorkTotal();
+            StringBuilder mb = new StringBuilder();
+            mb.append(L.s("目标 ", "target "))
+              .append(currentTargetKey().isEmpty()
+                      ? L.s("(未选)", "(none)") : Prefs.targetLabel(this))
+              .append(L.s("  ·  模式 ", "  ·  mode ")).append(mode)
+              .append(L.s("  ·  过滤 ", "  ·  filter ")).append(pol);
+            if (work > 0) {
+                mb.append(L.s("  ·  待执行 ", "  ·  to run ")).append(work);
+            }
+            boolean show = work > 0 || !currentTargetKey().isEmpty();
+            runMetaView.setText(mb.toString());
+            runMetaView.setVisibility(show ? View.VISIBLE : View.GONE);
+        }
     }
 
     /**
@@ -12996,43 +12960,30 @@ public class MainActivity extends Activity {
         final CharSequence text;
         final int color;
         final io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind;
-        /**
-         * 降噪合并键（P1b）。{@code null} 表示这一行不参与合并。
-         *
-         * <p>逐条候选结果里同一类结论会连续出现几十次（真机实测：错误密码下
-         * 系统不断回连其它网络 → 每条都是「未证实」）。旧实现每条追加两行
-         * （主行 + 说明），日志区被同一句话刷满，真正的信息反而看不见。
-         * 相同键的相邻行会合并成一行并显示 {@code ×N}。
-         */
         final String dedupeKey;
-        /** 已合并的条数（1 = 只有本行）。 */
         final int repeat;
-        /**
-         * **技术详情版文本**（2026-11-02 收口：日志分两层）。
-         *
-         * <p>普通视图（「关键」）显示人能读的：结论 + 第几条 + 耗时；
-         * 技术视图（「全部」）显示可追溯的：attemptId、候选哈希、归属来源。
-         * 两个版本同时存在，切换筛选时只是换一段文本，**原始证据不丢**。
-         */
         final CharSequence textTech;
-        /** 合并行的时间跨度（毫秒，墙钟）；0 表示未记录。 */
         final long firstAtMs;
         final long lastAtMs;
+        /** 结构化结果记录（1.9.66）；非空时按 StreamFormatter 渲染多行块。 */
+        final io.github.wlmosv_png.wpaforge.ui.StreamFormatter.Record rec;
 
         LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind) {
-            this(text, color, kind, null, 1, null, 0L, 0L);
+            this(text, color, kind, null, 1, null, 0L, 0L, null);
         }
-
-        LogLine(CharSequence text, int color,
-                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+        LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
                 String dedupeKey, int repeat) {
-            this(text, color, kind, dedupeKey, repeat, null, 0L, 0L);
+            this(text, color, kind, dedupeKey, repeat, null, 0L, 0L, null);
         }
-
-        LogLine(CharSequence text, int color,
-                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+        LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
                 String dedupeKey, int repeat,
                 CharSequence textTech, long firstAtMs, long lastAtMs) {
+            this(text, color, kind, dedupeKey, repeat, textTech, firstAtMs, lastAtMs, null);
+        }
+        LogLine(CharSequence text, int color, io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind kind,
+                String dedupeKey, int repeat,
+                CharSequence textTech, long firstAtMs, long lastAtMs,
+                io.github.wlmosv_png.wpaforge.ui.StreamFormatter.Record rec) {
             this.text = text;
             this.color = color;
             this.kind = kind;
@@ -13041,6 +12992,7 @@ public class MainActivity extends Activity {
             this.textTech = textTech;
             this.firstAtMs = firstAtMs;
             this.lastAtMs = lastAtMs;
+            this.rec = rec;
         }
 
         /** 按当前视图取文本。 */
@@ -13048,6 +13000,7 @@ public class MainActivity extends Activity {
             return (tech && textTech != null) ? textTech : text;
         }
     }
+
 
     private void appendStreamColored(String line, int color) {
         appendStreamColored(line, color, null);
@@ -13212,17 +13165,73 @@ public class MainActivity extends Activity {
                 android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
 
+    /** 结果色调 → 具体颜色（唯一映射，避免各处硬编码）。 */
+    private int colorForTone(io.github.wlmosv_png.wpaforge.ui.ResultCopy.Tone t) {
+        if (t == null) return AmberTheme.TEXT_DIM;
+        switch (t) {
+            case OK: return OK_GREEN;
+            case PROVEN: return DANGER;
+            case SUSPECTED: return AmberTheme.ORANGE;
+            case WARN: return AmberTheme.WARN;
+            case ENV: return AmberTheme.ENV_TONE;
+            case NEUTRAL:
+            default: return AmberTheme.TEXT_DIM;
+        }
+    }
+
+    /**
+     * 追加一条**结构化结果记录**（1.9.66）。相邻同键（类别+reason）合并，
+     * 但保留候选序号范围，不丢独立尝试身份；渲染走 StreamFormatter。
+     */
+    private void appendResultRecord(io.github.wlmosv_png.wpaforge.ui.ResultCategory.Kind kind,
+                                    String reason, int idx, long ms, long now,
+                                    String attemptId,
+                                    io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict v,
+                                    io.github.wlmosv_png.wpaforge.audit.EvidenceGrade.Level g,
+                                    String source, int color) {
+        if (kind == null) return;
+        long t = now > 0 ? now : System.currentTimeMillis();
+        String key = io.github.wlmosv_png.wpaforge.ui.StreamFormatter.mergeKey(kind, reason);
+        io.github.wlmosv_png.wpaforge.ui.StreamFormatter.Record nr =
+                new io.github.wlmosv_png.wpaforge.ui.StreamFormatter.Record(
+                        kind, reason, idx, ms, t, attemptId,
+                        v == null ? "" : v.name(), g == null ? "" : g.name(), source);
+        if (!streamLines.isEmpty()) {
+            LogLine last = streamLines.get(streamLines.size() - 1);
+            if (last.rec != null && key.equals(last.dedupeKey)) {
+                last.rec.absorb(nr);
+                renderStream();
+                return;
+            }
+        }
+        streamLines.add(new LogLine("", color,
+                io.github.wlmosv_png.wpaforge.ui.LogFilter.Kind.REASON, key, 1,
+                null, t, t, nr));
+        while (streamLines.size() > MAX_LOG_LINES) streamLines.remove(0);
+        renderStream();
+    }
+
     /** 按当前筛选从全量列表重建可见日志。切筛选、清空、回到本页时调用。 */
     private void renderStream() {
         streamBuffer.clear();
         streamBuffer.clearSpans();
+        boolean zh = L.isZh();
         for (LogLine l : streamLines) {
             if (!io.github.wlmosv_png.wpaforge.ui.LogFilter.visible(l.kind, streamKeyOnly)) continue;
+            if (l.rec != null) {
+                StringBuilder sb = new StringBuilder(
+                        io.github.wlmosv_png.wpaforge.ui.StreamFormatter.mainLine(l.rec, zh));
+                sb.append('\n').append(
+                        io.github.wlmosv_png.wpaforge.ui.StreamFormatter.factLine(l.rec, zh));
+                if (streamDetailMode) {
+                    sb.append('\n').append(
+                            io.github.wlmosv_png.wpaforge.ui.StreamFormatter.detailLine(l.rec, zh));
+                }
+                appendBuffer(sb, l.color);
+                continue;
+            }
             CharSequence body = l.shown(streamKeyOnly);
             if (l.repeat > 1) {
-                // 合并显示：文本 + ×N + 时间跨度。
-                // 「最近什么时候发生的」比「第几条」更常被问到 —— 用户想知道的是
-                // 「这是刚才那批，还是十分钟前的」。
                 StringBuilder sb = new StringBuilder(body);
                 sb.append("   ×").append(l.repeat);
                 if (l.firstAtMs > 0) {
@@ -13242,9 +13251,11 @@ public class MainActivity extends Activity {
         applyStreamHeight();
         updateEmptyHint();
         if (streamAutoScroll && streamScroll != null) {
-            streamScroll.post(() -> streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
+            streamScroll.post(() ->
+                    streamScroll.fullScroll(android.view.View.FOCUS_DOWN));
         }
     }
+
 
     /** 日志分级 chip 的选中态 */
     private void styleFlowChips() {
@@ -13257,6 +13268,12 @@ public class MainActivity extends Activity {
         chipAll.setBackground(roundBg(
                 streamKeyOnly ? AmberTheme.CARD_2 : AmberTheme.ACCENT_BG,
                 AmberTheme.RADIUS_CHIP));
+        if (chipDetail != null) {
+            chipDetail.setTextColor(streamDetailMode ? ACCENT : TEXT_DIM);
+            chipDetail.setBackground(roundBg(
+                    streamDetailMode ? AmberTheme.ACCENT_BG : AmberTheme.CARD_2,
+                    AmberTheme.RADIUS_CHIP));
+        }
     }
 
     /** 刷新「正在试」区：当前候选等宽大字，上面两条淡出 */

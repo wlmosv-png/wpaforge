@@ -98,9 +98,10 @@ public class CrackPageLayoutTest {
                 "flowLabel", "flowCount", "chipKey", "chipAll", "flowClear",
                 "connectStreamView", "streamScroll", "streamParams", "jumpLatestBtn",
                 "connectEmptyHint", "startBtn", "pauseBtn", "stopBtn", "queueBox",
-                "netMetaView", "netSecChip", "statDoneView", "statTotalView", "statPctView",
+                "netMetaView", "netSecChip", "statHitView", "statIncompleteView",
+                "countsLineView", "statPctView",
                 "statRateView", "statEtaView", "stateBig", "actionsHint",
-                "statWrongView", "statUnkView",
+                "statWrongView", "statUnkView", "breakdownView", "runMetaView", "chipDetail",
                 "progressCard", "eventCard", "actionsCard"};
         int missing = 0;
         StringBuilder miss = new StringBuilder();
@@ -304,11 +305,12 @@ public class CrackPageLayoutTest {
          * 旧词「当前候选」跑完还挂在那儿，会让人以为还在跑，所以这里一并钉住新词。 */
         // UI 第二轮：统计行从两列扩到四列，标签用 L.s 双语。
         // 「已完成」→「已执行」（避免与任务完成混淆），新增「已证实错误 / 未确定」。
-        ok("新增文案都走 L.s 双语", theme != null
-                && ma.contains("L.s(\"已执行\", \"TRIED\")")
+        ok("新增文案都走 L.s 双语（1.9.66 四项核心）", theme != null
+                && ma.contains("L.s(\"已确认成功\", \"VERIFIED\")")
                 && ma.contains("L.s(\"已证实错误\", \"PROVEN WRONG\")")
-                && ma.contains("L.s(\"未确定\", \"UNCERTAIN\")")
-                && ma.contains("L.s(\"总数\", \"TOTAL\")")
+                && ma.contains("L.s(\"连接未完成\", \"NOT FINISHED\")")
+                && ma.contains("L.s(\"尚无有效判定\", \"NO VERDICT\")")
+                && ma.contains("L.f(\"已执行 %s")
                 && ma.contains("L.s(\"正在尝试\", \"TRYING\")")
                 && ma.contains("L.s(\"最后尝试\", \"LAST TRIED\")"));
         // 收口：状态文案加了前缀符号（▶ 运行中 / ‖ 已暂停 / … 准备中），

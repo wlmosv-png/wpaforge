@@ -63,9 +63,12 @@ public final class UiRefactorTest {
                 ma.contains("streamScroll.post(() -> streamScroll.fullScroll"), "缺失");
 
         // ---- ② 统计四列 ----
-        for (String label : new String[]{"已执行", "已证实错误", "未确定", "总数"}) {
+        // 1.9.66：四项核心统计改为「已确认成功 / 已证实错误 / 连接未完成 / 尚无有效判定」，
+        // 「已执行 / 总数」下沉为进度层的一行计数（countsLineView）。
+        for (String label : new String[]{"已确认成功", "已证实错误", "连接未完成", "尚无有效判定"}) {
             ok("② 统计列存在: " + label, ma.contains("\"" + label + "\""), label);
         }
+        ok("② 已执行/总数 下沉为进度层计数行", ma.contains("countsLineView"), "缺失");
         ok("② 有独立的未确定视图（statUnkView）", ma.contains("statUnkView"), "缺失");
         ok("② 有独立的已证实错误视图（statWrongView）", ma.contains("statWrongView"), "缺失");
         ok("② 「已证实错误」用危险色、非零才点亮",
@@ -82,8 +85,10 @@ public final class UiRefactorTest {
         // ---- ④ 日志降噪 ----
         ok("④ 存在降噪入口 appendStreamDedup", ma.contains("private void appendStreamDedup("),
                 "缺失");
-        ok("④ 合并键用 Verdict 本身（不二次推断）",
-                ma.contains("String key = v.name();"), "键来源不对");
+        // 1.9.66：合并键改为「类别 + reason」（更严格：同类不同原因不合并），
+        // 且键仍由后端数据构成，UI 不二次推断 Verdict。
+        ok("④ 合并键 = 类别+reason（不二次推断）",
+                ma.contains("StreamFormatter.mergeKey(kind, reason)"), "键来源不对");
         // 收口后合并行还带时间跨度，所以不再是简单字符串拼接。
         ok("④ 合并显示带 ×N 与时间跨度",
                 ma.contains("sb.append(\"   ×\").append(l.repeat)")

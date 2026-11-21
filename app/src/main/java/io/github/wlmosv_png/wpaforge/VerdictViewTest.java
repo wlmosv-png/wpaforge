@@ -156,13 +156,24 @@ public final class VerdictViewTest {
                     + "wpaforge/CrackService.java");
             String act = readOrEmpty(root, "app/src/main/java/io/github/wlmosv_png/"
                     + "wpaforge/MainActivity.java");
-            ok("CrackService 把 Verdict 传给 UI 回调",
-                    svc.contains("a.verdict);"), "未接线");
+            // 1.9.66：服务端改为单点入口 onAttemptResultDetail（带 attemptId 与来源），
+            // 不再分别调 5 参与 7 参（那会导致每条结果被追加两次）。
+            ok("CrackService 把 Verdict 传给 UI 回调（单点 Detail 入口）",
+                    svc.contains("cb.onAttemptResultDetail(") && svc.contains("a.verdict,"),
+                    "未接线");
             ok("MainActivity 覆盖了带 Verdict 的回调（@Override）",
                     act.contains("CrackEngine.Verdict v"), "未覆盖");
-            ok("MainActivity 用 VerdictView 决定符号/标签/说明",
-                    act.contains("VerdictView.symbol") && act.contains("VerdictView.label")
-                            && act.contains("VerdictView.description"), "未使用统一映射");
+            // 1.9.66：统一映射收敛到 ResultCopy（VerdictView 仍是符号来源）。
+            String sf = readOrEmpty(root, "app/src/main/java/io/github/wlmosv_png/"
+                    + "wpaforge/ui/StreamFormatter.java");
+            ok("MainActivity 用统一映射决定符号/标签/说明",
+                    act.contains("colorForTone")
+                            && act.contains("ResultCategory.of")
+                            && act.contains("ResultCopy.toneOf")
+                            && act.contains("appendResultRecord")
+                            // 事实文案由 StreamFormatter 调用 ResultCopy.shortFact
+                            && sf.contains("ResultCopy.shortFact"),
+                    "未使用统一映射");
             ok("旧的「非成功一律 ✗」分支已消失",
                     !act.contains("appendStreamDetail(\"✗  \""), "旧分支仍在");
 

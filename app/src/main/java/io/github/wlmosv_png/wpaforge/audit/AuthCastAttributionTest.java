@@ -106,7 +106,13 @@ public final class AuthCastAttributionTest {
         CrackEngine e = (CrackEngine) ctor.newInstance(0);
         Method sc = CrackEngine.class.getDeclaredMethod("setClockForTest", EngineClock.class);
         sc.setAccessible(true);
-        sc.invoke(e, new TestEngineClock(2_000_000L, 1L, 0L));
+        // 1.9.68 修复既有随机性：这里驱动的是**真实线程投递**的 authcast 广播
+        // （WifiAuthFailureWatcher 在自己的线程里写 lastErrorAt）。
+        // 原来 realBlockCap=0 → 主循环零真实等待，广播偶尔来不及送达，
+        // 导致「连接未终止 → INCOMPLETE」的断言约 10 次失败 1 次。
+        // 给它 2ms 真实阻塞：仍然很快（一轮 3000ms 虚拟时间 ≈ 1500 轮 ≈ 3s 真实），
+        // 但足以让对端线程把广播写进去，结果稳定。
+        sc.invoke(e, new TestEngineClock(2_000_000L, 1L, 2L));
         Method bypass = CrackEngine.class.getDeclaredMethod("bypassWifiCheckForTest");
         bypass.setAccessible(true);
         bypass.invoke(e);

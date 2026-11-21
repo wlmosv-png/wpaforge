@@ -309,19 +309,19 @@ public class CrackPageLayoutTest {
                 && ma.contains("L.s(\"已确认成功\", \"VERIFIED\")")
                 && ma.contains("L.s(\"已证实错误\", \"PROVEN WRONG\")")
                 && ma.contains("L.s(\"连接未完成\", \"NOT FINISHED\")")
-                && ma.contains("L.s(\"尚无有效判定\", \"NO VERDICT\")")
+                && ma.contains("L.s(\"未命中\", \"NO MATCH\")")
                 && ma.contains("L.f(\"已执行 %s")
                 && ma.contains("L.s(\"正在尝试\", \"TRYING\")")
                 && ma.contains("L.s(\"最后尝试\", \"LAST TRIED\")"));
         // 收口：状态文案加了前缀符号（▶ 运行中 / ‖ 已暂停 / … 准备中），
         // 目的是让三种状态在色盲/低对比环境下也能靠符号区分。
-        ok("状态文案区分 运行中/暂停/停止/命中/未命中/空闲",
-                ma.contains("L.s(\"▶ 运行中\", \"▶ Running\")")
-                        && ma.contains("L.s(\"‖ 已暂停 · 进度已保留\", \"‖ Paused · progress kept\")")
+        ok("状态文案区分 运行/暂停/停止/成功/未命中/空闲（1.9.67）",
+                ma.contains("L.s(\"正在运行\", \"Running\")")
+                        && ma.contains("L.s(\"已暂停\", \"Paused\")")
                         && ma.contains("L.s(\"已停止\", \"Stopped\")")
-                        && ma.contains("L.s(\"已命中\", \"Hit\")")
-                        && ma.contains("L.s(\"已结束 · 未命中\", \"Finished · no match\")")
-                        && ma.contains("L.s(\"空闲 · 未开始\", \"Idle · not started\")"));
+                        && ma.contains("L.s(\"破解成功\", \"Cracked\")")
+                        && ma.contains("L.s(\"未命中\", \"No match\")")
+                        && ma.contains("L.s(\"未开始\", \"Idle\")"));
 
         System.out.println();
         System.out.println("=== 破解页布局测试: " + pass + " 通过, " + fail + " 失败 ===");

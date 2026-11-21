@@ -62,7 +62,7 @@ public final class CrackStatsModel {
             case PROVEN_WRONG:    return zh ? "已证实错误" : "PROVEN WRONG";
             case NOT_FINISHED:    return zh ? "连接未完成" : "NOT FINISHED";
             case NO_VALID_VERDICT:
-            default:              return zh ? "尚无有效判定" : "NO VERDICT";
+            default:              return zh ? "未命中" : "NO MATCH";
         }
     }
 
@@ -140,12 +140,21 @@ public final class CrackStatsModel {
         return n;
     }
 
-    /** 细分项中文标签。 */
+    /**
+     * 细分项中文标签（1.9.67 用户表达层）。
+     *
+     * <p>「网络认证失败 / 无法判断」这类词会让普通用户以为软件出错。
+     * 这里改成「需要你处理的」与「可以忽略的」两分：
+     * <ul>
+     *   <li>环境异常 —— 真的需要用户去修（唯一需要处理的项）；<\/li>
+     *   <li>其余全部归到「未连上」语义，技术真相留在详情与审计页。<\/li>
+     * <\/ul>
+     */
     public static String catLabelZh(Cat c) {
         switch (c) {
             case SUSPECTED_WRONG: return "疑似密码错误";
-            case NETWORK_FAIL:    return "网络认证失败";
-            case UNDECIDED:       return "无法判断";
+            case NETWORK_FAIL:    return "未连上（网络拒绝）";
+            case UNDECIDED:       return "未连上（无证据）";
             case ENV_ERROR:       return "环境异常";
             default:              return "";
         }
@@ -155,8 +164,8 @@ public final class CrackStatsModel {
     public static String catLabelEn(Cat c) {
         switch (c) {
             case SUSPECTED_WRONG: return "suspected wrong";
-            case NETWORK_FAIL:    return "network auth fail";
-            case UNDECIDED:       return "undecided";
+            case NETWORK_FAIL:    return "not connected (rejected)";
+            case UNDECIDED:       return "not connected (no evidence)";
             case ENV_ERROR:       return "env error";
             default:              return "";
         }

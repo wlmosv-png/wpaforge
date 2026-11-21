@@ -43,36 +43,48 @@ public final class CrackPhaseView {
     /** 界面状态。 */
     public enum Phase {
         /** 没有任务、也没有上轮结论。 */
-        IDLE("空闲 · 未开始", "idle", Tone.NEUTRAL),
+        IDLE("未开始", "idle", Tone.NEUTRAL, "○"),
         /** 队列里有 PENDING 任务。 */
-        PREPARING("准备中", "preparing", Tone.NEUTRAL),
+        PREPARING("准备中", "preparing", Tone.NEUTRAL, "…"),
         /** 队列里有 RUNNING 任务。 */
-        RUNNING("运行中", "running", Tone.ACCENT),
+        RUNNING("正在运行", "running", Tone.ACCENT, "▶"),
         /** RUNNING 且服务在收尾。 */
-        FINISHING("收尾中", "finishing", Tone.ACCENT),
+        FINISHING("收尾中", "finishing", Tone.ACCENT, "…"),
         /** 队列里有 PAUSED 任务。 */
-        PAUSED("已暂停 · 进度已保留", "paused", Tone.WARN),
+        PAUSED("已暂停", "paused", Tone.WARN, "‖"),
         /** 最近一条结论是 SUCCESS。 */
-        VERIFIED("已验证成功", "verified", Tone.OK),
-        /** 最近一条结论是 AUTH_FAIL（候选级证伪）。 */
-        PROVEN_WRONG("已证实错误", "proven-wrong", Tone.DANGER),
-        /** 最近一条是网络级认证失败（不可归因到候选）。 */
-        NETWORK_FAIL("网络级失败 · 未证伪", "network-fail", Tone.WARN),
-        /** 最近一条没有可归因证据。 */
-        UNCERTAIN("未确定", "uncertain", Tone.WARN),
-        /** 最近一条是通道/环境问题。 */
-        ENV_ERROR("环境错误", "env-error", Tone.DANGER),
+        VERIFIED("破解成功", "verified", Tone.OK, "✓"),
+        /** 最近一条结论是 AUTH_FAIL + DIRECT（候选级证伪）。 */
+        PROVEN_WRONG("已证实密码错误", "proven-wrong", Tone.DANGER, "✗"),
+        /**
+         * 最近一条是网络级认证失败（不可归因到候选）。
+         *
+         * <p>1.9.67：主界面口径改为**中性「未命中」** —— 逐条尝试失败是正常过程，
+         * 不是软件故障。真实原因仍完整保留在详情行与审计页。
+         */
+        NETWORK_FAIL("未命中", "no match", Tone.NEUTRAL, "·"),
+        /**
+         * 最近一条没有可归因证据（UNKNOWN / TIMEOUT / INCOMPLETE / TERMINATED_UNKNOWN）。
+         *
+         * <p>1.9.67：同样改为中性「未命中」。底层 Verdict/Grade/reason 一个字未改。
+         */
+        UNCERTAIN("未命中", "no match", Tone.NEUTRAL, "·"),
+        /** 最近一条是通道/环境问题 —— 这是**真正需要用户处理**的异常。 */
+        ENV_ERROR("环境异常", "env-error", Tone.DANGER, "!"),
         /** 最近一条被用户中断。 */
-        ABORTED("已中断", "aborted", Tone.NEUTRAL);
+        ABORTED("已停止", "stopped", Tone.NEUTRAL, "■");
 
         public final String zh;
         public final String key;
         public final Tone tone;
+        /** 状态图标（与文字同用，色盲也能分辨）。 */
+        public final String icon;
 
-        Phase(String zh, String key, Tone tone) {
+        Phase(String zh, String key, Tone tone, String icon) {
             this.zh = zh;
             this.key = key;
             this.tone = tone;
+            this.icon = icon;
         }
 
         public String label(boolean isZh) {

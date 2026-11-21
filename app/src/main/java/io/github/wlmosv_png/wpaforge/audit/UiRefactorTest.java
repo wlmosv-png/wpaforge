@@ -65,7 +65,7 @@ public final class UiRefactorTest {
         // ---- ② 统计四列 ----
         // 1.9.66：四项核心统计改为「已确认成功 / 已证实错误 / 连接未完成 / 尚无有效判定」，
         // 「已执行 / 总数」下沉为进度层的一行计数（countsLineView）。
-        for (String label : new String[]{"已确认成功", "已证实错误", "连接未完成", "尚无有效判定"}) {
+        for (String label : new String[]{"已确认成功", "已证实错误", "连接未完成", "未命中"}) {
             ok("② 统计列存在: " + label, ma.contains("\"" + label + "\""), label);
         }
         ok("② 已执行/总数 下沉为进度层计数行", ma.contains("countsLineView"), "缺失");

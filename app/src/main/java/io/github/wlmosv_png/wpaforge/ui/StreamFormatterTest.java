@@ -29,14 +29,16 @@ public final class StreamFormatterTest {
             StreamFormatter.Record r = rec(ResultCategory.Kind.UNDECIDED, "no-evidence", 5, 180, t0);
 
             String main = StreamFormatter.mainLine(r, true);
-            ok("★主行含类别", main.contains("尚无有效判定"), main);
+            // 1.9.67：主行用**用户表达**（未命中），技术类别只在详情里。
+            ok("★主行含用户表达（未命中）", main.contains("未命中"), main);
             ok("★主行含序号", main.contains("第 5 条"), main);
             ok("主行含耗时", main.contains("0.1s"), main);
-            ok("★主行不含事实措辞（不重复）", !main.contains("未观察到"), main);
+            ok("★主行不含事实措辞（不重复）",
+                    !main.contains("继续尝试") && !main.contains("下一条"), main);
 
             String fact = StreamFormatter.factLine(r, true);
             ok("事实行非空", !fact.isEmpty());
-            ok("★事实行不含类别名（不重复主行）", !fact.contains("尚无有效判定"), fact);
+            ok("★事实行不含主行标签（不重复）", !fact.contains("未命中"), fact);
             ok("事实行以缩进开头", fact.startsWith("  "), fact);
 
             String detail = StreamFormatter.detailLine(r, true);
@@ -66,14 +68,20 @@ public final class StreamFormatterTest {
             // 合并键：同类别不同 reason 不合并
             String k1 = StreamFormatter.mergeKey(ResultCategory.Kind.UNDECIDED, "no-evidence");
             String k2 = StreamFormatter.mergeKey(ResultCategory.Kind.UNDECIDED, "netid-conflict");
-            ok("★同类别不同 reason 键不同", !k1.equals(k2), k1 + " vs " + k2);
+            // 1.9.67：普通未命中按用户语义合并（reason 不拆块），避免刷屏；
+            // 只有环境异常才按 reason 分开（见下方用例）。
+            ok("★普通未命中不同 reason 仍合并（防刷屏）", k1.equals(k2), k1 + " vs " + k2);
             String k3 = StreamFormatter.mergeKey(ResultCategory.Kind.UNDECIDED, "no-evidence");
             ok("同类别同 reason 键相同", k1.equals(k3));
+            // 环境异常必须按 reason 分开（真正需要处理的问题不能并进别的错误）
+            String e1 = StreamFormatter.mergeKey(ResultCategory.Kind.ENV_ERROR, "channel-no-response");
+            String e2 = StreamFormatter.mergeKey(ResultCategory.Kind.ENV_ERROR, "gate-stale-config");
+            ok("★环境异常不同 reason 键不同", !e1.equals(e2), e1 + " vs " + e2);
 
             // 合并键：不同类别不同
-            ok("★不同类别键不同",
+            ok("★不同用户类别键不同",
                     !StreamFormatter.mergeKey(ResultCategory.Kind.PROVEN_WRONG, "wrong-key")
-                            .equals(StreamFormatter.mergeKey(ResultCategory.Kind.SUSPECTED_WRONG,
+                            .equals(StreamFormatter.mergeKey(ResultCategory.Kind.VERIFIED_OK,
                                     "wrong-key")));
 
             // 单条不显示 ×N

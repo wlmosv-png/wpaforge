@@ -166,13 +166,19 @@ public final class VerdictViewTest {
             // 1.9.66：统一映射收敛到 ResultCopy（VerdictView 仍是符号来源）。
             String sf = readOrEmpty(root, "app/src/main/java/io/github/wlmosv_png/"
                     + "wpaforge/ui/StreamFormatter.java");
+            String uo = readOrEmpty(root, "app/src/main/java/io/github/wlmosv_png/"
+                    + "wpaforge/ui/UserOutcome.java");
+            // 1.9.67：统一映射分两层 ——
+            //   技术层：ResultCategory.of + ResultCopy（详情/审计用）
+            //   用户层：UserOutcome（主界面用）
             ok("MainActivity 用统一映射决定符号/标签/说明",
                     act.contains("colorForTone")
                             && act.contains("ResultCategory.of")
-                            && act.contains("ResultCopy.toneOf")
+                            && act.contains("UserOutcome.of")
                             && act.contains("appendResultRecord")
-                            // 事实文案由 StreamFormatter 调用 ResultCopy.shortFact
-                            && sf.contains("ResultCopy.shortFact"),
+                            // 事实文案由 StreamFormatter 调用 UserOutcome.fact
+                            && sf.contains("UserOutcome.fact")
+                            && uo.contains("public static String fact"),
                     "未使用统一映射");
             ok("旧的「非成功一律 ✗」分支已消失",
                     !act.contains("appendStreamDetail(\"✗  \""), "旧分支仍在");

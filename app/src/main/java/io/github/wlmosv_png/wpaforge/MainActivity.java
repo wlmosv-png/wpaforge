@@ -10019,9 +10019,12 @@ public class MainActivity extends Activity {
         progTop.setGravity(Gravity.BOTTOM);
 
         stateBig = new TextView(this);
-        stateBig.setTextSize(AmberTheme.FS_STATE);
+        // 1.9.67：主状态是卡片的一级信息 —— 用 FS_DISPLAY（22sp）而不是 15sp。
+        // 图标与文字同字号，色盲/低对比环境下也能靠符号区分。
+        stateBig.setTextSize(AmberTheme.FS_DISPLAY);
         stateBig.setTextColor(AmberTheme.TEXT_DIM);
         stateBig.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        stateBig.setLetterSpacing(0.01f);
         /*
          * 状态行**允许折两行**（2026-11-02 收口）。
          *
@@ -10093,7 +10096,7 @@ public class MainActivity extends Activity {
         statCells.add(AmberTheme.statColumn(this, dp,
                 L.s("连接未完成", "NOT FINISHED"), statIncompleteView));
         statCells.add(AmberTheme.statColumn(this, dp,
-                L.s("尚无有效判定", "NO VERDICT"), statUnkView));
+                L.s("未命中", "NO MATCH"), statUnkView));
         LinearLayout curStatRow = null;
         for (int ci = 0; ci < statCells.size(); ci++) {
             if (ci % statCols == 0) {
@@ -10549,32 +10552,38 @@ public class MainActivity extends Activity {
      * </ol>
      */
     private String phaseText(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Phase p) {
+        // 1.9.67：主界面只说「用户该知道的」——
+        //   逐条未命中 = 未命中（中性），不是「未确定 / 网络级失败 / 未证伪」。
+        //   真实原因完整保留在详情行与审计页（verdict / grade / reason / src 一个字没改）。
+        if (p == null) return L.s("未开始", "Idle");
+        String icon = p.icon == null ? "" : p.icon;
+        String sep = icon.isEmpty() ? "" : " ";
         switch (p) {
             case RUNNING:
-                return L.s("▶ 运行中", "▶ Running");
+                return icon + sep + L.s("正在运行", "Running");
             case FINISHING:
-                return L.s("▶ 收尾中", "▶ Finishing up");
+                return icon + sep + L.s("收尾中", "Finishing up");
             case PAUSED:
-                return L.s("‖ 已暂停 · 进度已保留", "‖ Paused · progress kept");
+                return icon + sep + L.s("已暂停", "Paused");
             case PREPARING:
-                return L.s("… 准备中", "… Preparing");
+                return icon + sep + L.s("准备中", "Preparing");
             case VERIFIED:
-                return L.s("已验证成功", "Verified");
+                return icon + sep + L.s("破解成功", "Cracked");
             case PROVEN_WRONG:
-                return L.s("已证实错误", "Proven wrong");
+                return icon + sep + L.s("已证实密码错误", "Proven wrong");
             case NETWORK_FAIL:
-                return L.s("网络级失败 · 未证伪", "Network failed · unproven");
             case UNCERTAIN:
-                return L.s("未确定", "Uncertain");
+                return icon + sep + L.s("未命中", "No match");
             case ENV_ERROR:
-                return L.s("环境错误", "Environment error");
+                return icon + sep + L.s("环境异常", "Environment error");
             case ABORTED:
-                return L.s("已中断", "Interrupted");
+                return icon + sep + L.s("已停止", "Stopped");
             case IDLE:
             default:
-                return L.s("空闲 · 未开始", "Idle · not started");
+                return icon + sep + L.s("未开始", "Idle");
         }
     }
+
 
     private int crackPhaseColor(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Tone tone) {
         if (tone == null) return AmberTheme.TEXT_DIM;
@@ -11689,7 +11698,18 @@ public class MainActivity extends Activity {
                 }
                 io.github.wlmosv_png.wpaforge.ui.ResultCategory.Kind rk =
                         io.github.wlmosv_png.wpaforge.ui.ResultCategory.of(v, g, reason);
-                int color = colorForTone(io.github.wlmosv_png.wpaforge.ui.ResultCopy.toneOf(rk));
+                // 1.9.67：颜色按**用户表达**决定 —— 普通未命中一律中性灰，
+                // 只有命中(绿)/已证实错误(红)/环境异常(红)才上色。
+                // 逐条未命中不再是「故障」，不该满屏红色。
+                io.github.wlmosv_png.wpaforge.ui.UserOutcome.Kind uk =
+                        io.github.wlmosv_png.wpaforge.ui.UserOutcome.of(rk);
+                int color;
+                switch (uk) {
+                    case HIT: color = OK_GREEN; break;
+                    case PROVEN_WRONG: color = DANGER; break;
+                    case ENV_ERROR: color = DANGER; break;
+                    default: color = AmberTheme.TEXT_DIM;
+                }
                 appendResultRecord(rk, fReason, curCandIndex, ms, System.currentTimeMillis(),
                         fAttempt, v, g, fSource, color);
                 if (hit) showHitCard(candidate, ms, detail);
@@ -11841,13 +11861,16 @@ public class MainActivity extends Activity {
                 }
                 // 只用于显示：把服务报回来的真实结论记下来给进度卡的状态行用。
                 // 这里**不判定**成功/失败，只是把 outcome 换个说法展示。
+                // 1.9.67：收尾文案用用户表达（未找到匹配密码），不再写「已结束 · 未命中」。
                 lastOutcomeLabel = "DONE_HIT".equals(outcome)
-                        ? L.s("已命中", "Hit")
+                        ? L.s("✓ 破解成功", "✓ Cracked")
                         : "PAUSED".equals(outcome)
-                            ? L.s("已暂停 · 进度已保留", "Paused · progress kept")
+                            ? L.s("‖ 已暂停", "‖ Paused")
                             : "STOPPED".equals(outcome)
-                                ? L.s("已停止", "Stopped")
-                                : L.s("已结束 · 未命中", "Finished · no match");
+                                ? L.s("■ 已停止", "■ Stopped")
+                                : io.github.wlmosv_png.wpaforge.ui.UserOutcome
+                                        .finishSummary(false, lastTallyConfirmed,
+                                                lastTallyInconclusive, L.isZh());
                 lastOutcomeColor = "DONE_HIT".equals(outcome) ? OK_GREEN
                         : "STOPPED".equals(outcome) ? DANGER : io.github.wlmosv_png
                                 .wpaforge.ui.AmberTheme.TEXT_DIM;

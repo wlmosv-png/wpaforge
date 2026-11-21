@@ -25,8 +25,16 @@ public final class StreamFormatter {
 
     /** 一条攻击流记录。 */
     public static final class Record {
-        /** 用户可理解的类别（来自 ResultCategory）。 */
+        /** 用户可理解的类别（来自 ResultCategory）—— 只用于详情与审计。 */
         public ResultCategory.Kind kind;
+        /**
+         * **用户表达层**类别（1.9.67）：主行只显示这个。
+         *
+         * <p>逐条未命中在用户眼里就是「未命中」，不该显示
+         * 「尚无有效判定 / 连接未完成」这类技术措辞。技术真相仍存在 {@link #kind}
+         * 与详情行里。
+         */
+        public UserOutcome.Kind userKind;
         /** 机器可读原因码（用于分类内的进一步说明，也让合并键区分不同 reason）。 */
         public String reason = "";
         /** 首条候选序号（1 基）。 */
@@ -53,6 +61,7 @@ public final class StreamFormatter {
                       long atMs, String attemptId, String verdictName, String gradeName,
                       String source) {
             this.kind = kind;
+            this.userKind = UserOutcome.of(kind);
             this.reason = reason == null ? "" : reason;
             this.firstIdx = idx;
             this.lastIdx = idx;
@@ -84,9 +93,26 @@ public final class StreamFormatter {
         }
     }
 
-    /** 合并键：类别 + reason（不同 reason 的同类结果**不合并**，避免混淆）。 */
+    /**
+     * 合并键（1.9.67）。
+     *
+     * <h3>为什么不再用「类别 + reason」<\/h3>
+     * 连续 18 条未命中在底层可能是 no-evidence / netid-conflict / status-unclear
+     * 混着出现 —— 按 reason 分键会生成 3 个块、每块都很短，用户看到的仍是刷屏。
+     * 用户视角这些都是「未命中」，应当合并成一条「第 21–38 条 ×18」。
+     *
+     * <h3>但异常不能强行合并<\/h3>
+     * 环境异常（通道 / 权限 / Wi-Fi 服务）是**真正需要处理**的问题，
+     * 不同原因必须分开，否则「Wi-Fi 服务不可用」会被并进别的错误里。
+     */
     public static String mergeKey(ResultCategory.Kind kind, String reason) {
-        return (kind == null ? "?" : kind.name()) + "|" + (reason == null ? "" : reason);
+        UserOutcome.Kind uk = UserOutcome.of(kind);
+        if (UserOutcome.needsAttention(uk)) {
+            // 异常：按用户类别 + reason 分开，绝不合并不同原因
+            return uk.name() + "|" + (reason == null ? "" : reason);
+        }
+        // 普通未命中 / 命中 / 已证实：只按用户类别合并（reason 不影响用户理解）
+        return uk.name();
     }
 
     /** 候选序号或范围：单条「第 5 条」，合并「第 5–21 条」。 */
@@ -101,10 +127,14 @@ public final class StreamFormatter {
         if (r == null) return "";
         StringBuilder sb = new StringBuilder();
         String range = candidateRange(r.firstIdx, r.lastIdx, zh);
+        // 1.9.67：主行用**用户表达**（未命中 / 破解成功 / 环境异常），
+        // 不用内部技术类别；技术类别在 detailLine 里原样可见。
+        String label = UserOutcome.label(r.userKind != null
+                ? r.userKind : UserOutcome.of(r.kind), zh);
         if (range.isEmpty()) {
-            sb.append(ResultCopy.primaryLabel(r.kind, zh));
+            sb.append(label);
         } else {
-            sb.append(ResultCopy.primaryLabel(r.kind, zh))
+            sb.append(label)
               .append(" · ").append(range)
               .append(" · ").append(fmtSeconds(r.durationMs));
         }
@@ -121,7 +151,10 @@ public final class StreamFormatter {
     /** 事实行：缩进 + 一句事实（不重复类别）。 */
     public static String factLine(Record r, boolean zh) {
         if (r == null) return "";
-        return "  " + ResultCopy.shortFact(r.kind, r.reason, zh);
+        // 1.9.67：事实行同样走用户表达（「这条没连上，继续尝试下一条」）。
+        // 技术原因（netid-conflict / no-evidence …）留在 detailLine。
+        return "  " + UserOutcome.fact(r.userKind != null
+                ? r.userKind : UserOutcome.of(r.kind), zh);
     }
 
     /** 详情行：缩进 + 技术字段（展开时）。 */

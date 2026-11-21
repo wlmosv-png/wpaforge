@@ -175,8 +175,9 @@ public final class CrackPhaseViewTest {
                     CrackPhaseView.Phase.PROVEN_WRONG.tone == CrackPhaseView.Tone.DANGER);
             ok("ENV_ERROR 是 DANGER（红）",
                     CrackPhaseView.Phase.ENV_ERROR.tone == CrackPhaseView.Tone.DANGER);
-            ok("UNCERTAIN 是 WARN（黄，不是红）",
-                    CrackPhaseView.Phase.UNCERTAIN.tone == CrackPhaseView.Tone.WARN);
+            ok("★UNCERTAIN 是 NEUTRAL（1.9.67：未命中用中性灰，不再当告警）",
+                    CrackPhaseView.Phase.UNCERTAIN.tone == CrackPhaseView.Tone.NEUTRAL,
+                    "" + CrackPhaseView.Phase.UNCERTAIN.tone);
             ok("IDLE 是 NEUTRAL（灰）",
                     CrackPhaseView.Phase.IDLE.tone == CrackPhaseView.Tone.NEUTRAL);
 

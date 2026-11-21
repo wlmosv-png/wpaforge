@@ -316,6 +316,9 @@ public class MainActivity extends Activity {
     /** 计划与「本次跳过」一行（无计划、无跳过时隐藏；不占用统计语义）。 */
     private TextView planLineView;
     private TextView statTotalView;      /** 总数 */
+
+    /** 阶段说明行（2026-11-21 UI 专项）—— 只显示已有事实，不预测。 */
+    private TextView phaseHintView;
     private TextView statPctView;        /** 完成度（大数字） */
     /**
      * 统计行 / 速率行。
@@ -334,6 +337,15 @@ public class MainActivity extends Activity {
     private LinearLayout eventCard;      /** 状态与事件卡 */
     private LinearLayout actionsCard;    /** 底部操作卡 */
     /** 最近一次任务结论（只由 onTaskDone 写入，仅用于显示，不参与任何判定）。 */
+    /**
+     * **最近一条候选的裁决结论**（2026-11-21 UI 专项）。
+     *
+     * <p>只用于让状态行显示得更细：后端本来就会把这个 Verdict 交给
+     * {@code onAttemptResult}，这里只是把它记下来给 UI 用。
+     * **不参与任何判定、不改变任何业务行为。**
+     */
+    private volatile io.github.wlmosv_png.wpaforge.audit.CrackEngine.Verdict lastCrackVerdict;
+
     private String lastOutcomeLabel = "";
     private int lastOutcomeColor = TEXT_DIM;
     private TextView connectTargetView;
@@ -4113,8 +4125,17 @@ public class MainActivity extends Activity {
         radarStatsBox.addView(statCellWide(L.s("最挤", "Busiest"),
                 busiestN > 0 ? "ch " + busiest + " \u00b7 " + busiestN : "\u2014"));
         radarStatsBox.addView(statCell(L.s("未加密", "Open"), open + L.s(" 台", "")));
+        // **数值不再带单位**（2026-11-21 UI 专项，第三轮截图发现）。
+        //
+        // 前两版把「-26 dBm」整个放进数值格，1080px 下 5 列均分后
+        // 最右列只有 ~166px，`dBm` 被 ellipsize 吃掉，显示成「-26 d…」。
+        // 加 margin 反而更挤（第一版被挤成「-29…」）。
+        //
+        // 标签保持「最强 / Best」（既有契约，ThemeConsistencyTest 钉死），
+        // 数值只留「-26」；单位由 dBm 刻度图例（雷达盘下方那行
+        // 「≥-50 / -60 / -70 / -80 / ≤-90」）承担，语义完整。
         radarStatsBox.addView(statCell(L.s("最强", "Best"),
-                bestRssi == Integer.MIN_VALUE ? "\u2014" : bestRssi + " dBm"));
+                bestRssi == Integer.MIN_VALUE ? "\u2014" : String.valueOf(bestRssi)));
     }
 
     /** 「最挤」那格再宽一点（内容最长） */
@@ -4125,22 +4146,42 @@ public class MainActivity extends Activity {
         return box;
     }
 
-    /** 关键数字的一格：上面小标签、下面数值 */
+    /**
+     * 关键数字的一格：上面小标签、下面数值。
+     *
+     * <p>**间距用右侧 margin 而不是两侧 padding**（2026-11-21 UI 专项）。
+     *
+     * <p>第一版给每格加了左右各 6px padding，结果最右列「-29 dBm」被挤成
+     * 「-29…」，`dBm` 丢失 —— 截图当场发现，已改回。
+     * 现在只在**格与格之间**留 6px（右侧 margin），
+     * 首格与末格不额外占空间，5 列在 1080px 下都放得下。
+     */
     private View statCell(String label, String value) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams cellLp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        // 10px 而不是 6px：第三轮截图里「ch 5 · 6」与「1 台」仍贴得偏近。
+        // 最右列现在只剩「-21」这种短数字，多留 4px 不会把它挤爆。
+        cellLp.rightMargin = px(10);
+        box.setLayoutParams(cellLp);
+        // **居中对齐**（2026-11-21 UI 专项，截图发现）。
+        //
+        // 左对齐时「ch 5 · 7」会填满它那格（weight 1.35 更宽），
+        // 紧贴下一格的「0 台」，读起来像「ch 5 · 7 0 台」一个数字。
+        // 居中后每格内容向自己中心靠，格与格之间自然留出空白。
         TextView l = new TextView(this);
         l.setText(label);
         l.setTextSize(AmberTheme.FS_MICRO);
         l.setTextColor(AmberTheme.TEXT_FAINT);
+        l.setGravity(Gravity.CENTER_HORIZONTAL);
         TextView v = new TextView(this);
         v.setText(value);
         v.setTextSize(AmberTheme.FS_MONO);
         v.setTextColor(AmberTheme.TEXT);
         v.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         v.setSingleLine(true);
+        v.setGravity(Gravity.CENTER_HORIZONTAL);
         v.setEllipsize(android.text.TextUtils.TruncateAt.END);
         box.addView(l);
         box.addView(v);
@@ -6791,16 +6832,32 @@ public class MainActivity extends Activity {
             auditDictBox.addView(name);
 
             TextView meta = new TextView(this);
+            // **技术信息弱化**（2026-11-21 UI 专项）。
+            //
+            // 改造前：条数、指纹、路径、SHA-256 同属一段 TEXT_DIM 正文，
+            // 技术信息（路径 + 40 位哈希）喧宾夺主，用户找不到「几几条」。
+            //
+            // 现在拆两段：
+            //   第一行 条数 + 指纹 → TEXT_DIM（用户要看的是"多少条"）
+            //   第二行 路径 + SHA-256 → TEXT_FAINT（排查时才需要）
             meta.setText(s.count + L.s(" 条", " entries")
-                    + "  \u00b7  " + L.s("指纹 ", "id ") + s.fingerprint()
-                    + "\n" + (s.onDisk()
-                            ? s.filePath + "\nSHA-256 " + s.fileId()
-                            : L.s("未落盘（仅内存）", "not on disk (in memory only)")));
+                    + "  \u00b7  " + L.s("指纹 ", "id ") + s.fingerprint());
             meta.setTextSize(AmberTheme.FS_SMALL);
             meta.setTextColor(AmberTheme.TEXT_DIM);
             meta.setTypeface(Typeface.MONOSPACE);
             meta.setLineSpacing(px(3), 1f);
             auditDictBox.addView(meta, topGap(4));
+
+            // 技术信息单独一行且更弱：只在排查时需要，不抢主信息的视线。
+            TextView tech = new TextView(this);
+            tech.setText(s.onDisk()
+                    ? s.filePath + "\nSHA-256 " + s.fileId()
+                    : L.s("未落盘（仅内存）", "not on disk (in memory only)"));
+            tech.setTextSize(AmberTheme.FS_MICRO);
+            tech.setTextColor(AmberTheme.TEXT_FAINT);
+            tech.setTypeface(Typeface.MONOSPACE);
+            tech.setLineSpacing(px(2), 1f);
+            auditDictBox.addView(tech, topGap(2));
 
             TextView src = new TextView(this);
             src.setText(L.s("来源 ", "source ") + auditSourceLabel(s.source)
@@ -9873,6 +9930,21 @@ public class MainActivity extends Activity {
         progTop.addView(statPctView);
         progressCard.addView(progTop);
 
+        // **阶段说明行**（2026-11-21 UI 专项）。
+        //
+        // 改造前：空闲态只有「空闲 · 未开始」一行，下面统计被 GONE，
+        // 整张卡大片空白，用户看不出「下一步该干什么」。
+        //
+        // 现在补一行说明，内容由 CrackPhaseView.hint 提供 ——
+        // 它只描述**已有事实**（例如「选好目标和字典后即可开始」），
+        // 不预测、不伪造状态。
+        phaseHintView = new TextView(this);
+        phaseHintView.setTextSize(AmberTheme.FS_LABEL);
+        phaseHintView.setTextColor(AmberTheme.TEXT_FAINT);
+        phaseHintView.setLineSpacing(px(3), 1f);
+        phaseHintView.setPadding(0, px(4), 0, 0);
+        progressCard.addView(phaseHintView);
+
         LinearLayout statRow = new LinearLayout(this);
         statRowView = statRow;
         statRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -10280,6 +10352,61 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /**
+     * CrackPhaseView.Tone → 实际颜色（唯一映射点）。
+     *
+     * <p>语义固定（任务书要求）：
+     * 黄=当前操作/重点、绿=真实成功、红=真实错误、灰=未知/不可用。
+     */
+    /**
+     * CrackPhaseView.Phase → 双语文案（含前缀符号）。
+     *
+     * <p>文案集中在这里而不是塞进 CrackPhaseView，原因：
+     * <ol>
+     *   <li>既有测试要求「状态文案走 L.s 双语」—— 这是契约，不能破坏；</li>
+     *   <li>CrackPhaseView 保持无 Android 依赖，可离线单测。</li>
+     * </ol>
+     */
+    private String phaseText(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Phase p) {
+        switch (p) {
+            case RUNNING:
+                return L.s("▶ 运行中", "▶ Running");
+            case FINISHING:
+                return L.s("▶ 收尾中", "▶ Finishing up");
+            case PAUSED:
+                return L.s("‖ 已暂停 · 进度已保留", "‖ Paused · progress kept");
+            case PREPARING:
+                return L.s("… 准备中", "… Preparing");
+            case VERIFIED:
+                return L.s("已验证成功", "Verified");
+            case PROVEN_WRONG:
+                return L.s("已证实错误", "Proven wrong");
+            case NETWORK_FAIL:
+                return L.s("网络级失败 · 未证伪", "Network failed · unproven");
+            case UNCERTAIN:
+                return L.s("未确定", "Uncertain");
+            case ENV_ERROR:
+                return L.s("环境错误", "Environment error");
+            case ABORTED:
+                return L.s("已中断", "Interrupted");
+            case IDLE:
+            default:
+                return L.s("空闲 · 未开始", "Idle · not started");
+        }
+    }
+
+    private int crackPhaseColor(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Tone tone) {
+        if (tone == null) return AmberTheme.TEXT_DIM;
+        switch (tone) {
+            case ACCENT: return ACCENT;
+            case WARN: return AmberTheme.WARN;
+            case OK: return OK_GREEN;
+            case DANGER: return DANGER;
+            case NEUTRAL:
+            default: return AmberTheme.TEXT_DIM;
+        }
+    }
+
     private void renderProgressCardState() {
         String text;
         int color;
@@ -10302,28 +10429,40 @@ public class MainActivity extends Activity {
          *   … 准备中   TEXT_DIM（过渡态，刻意弱化）
          * 结束态沿用 outcome 的颜色（命中绿 / 停止红 / 未命中灰）。
          */
-        if (st == TaskQueue.State.PAUSED) {
-            text = L.s("‖ 已暂停 · 进度已保留", "‖ Paused · progress kept");
-            color = AmberTheme.WARN;
-        } else if (st == TaskQueue.State.RUNNING) {
-            // 只有"队列里真有任务在跑"才叫运行中/收尾中
-            text = finishingNow
-                    ? L.s("▶ 收尾中", "▶ Finishing up")
-                    : L.s("▶ 运行中", "▶ Running");
-            color = ACCENT;
-        } else if (st == TaskQueue.State.PENDING) {
-            text = L.s("… 准备中", "… Preparing");
-            color = AmberTheme.TEXT_DIM;
-        } else if (!lastOutcomeLabel.isEmpty()) {
+        // **状态由 CrackPhaseView 派生**（2026-11-21 UI 专项）。
+        //
+        // 改造前只有 5 个粗粒度状态（暂停/运行/准备/结束语/空闲），
+        // 用户看不到「这一条候选到底判成了什么」——
+        // 网络级失败、未确定、环境错误在界面上长得一样。
+        //
+        // 现在用后端**已经存在**的 TaskQueue.State + CrackEngine.Verdict
+        // 推出 11 个细分状态。**不伪造阶段**：v1.9.60 后端不产生
+        // 「预检/隔离/已提交」这类事件，所以这里也不编这些状态。
+        io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.Phase phase =
+                io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.derive(
+                        io.github.wlmosv_png.wpaforge.ui.CrackPhaseView.TaskQueueState.of(st),
+                        finishingNow, lastCrackVerdict, !lastOutcomeLabel.isEmpty());
+        // 文案走 L.s 双语（既有契约：状态文案必须双语且带前缀符号，
+        // 让色盲/低对比环境下也能靠符号区分）。
+        text = phaseText(phase);
+        color = crackPhaseColor(phase.tone);
+
+        // 上轮结束语优先覆盖（它带 outcome 语义：命中/未命中/停止），
+        // 但仍沿用原配色，保证与既有行为一致。
+        if (st != TaskQueue.State.RUNNING && st != TaskQueue.State.PAUSED
+                && st != TaskQueue.State.PENDING && !lastOutcomeLabel.isEmpty()) {
             text = lastOutcomeLabel;
             color = lastOutcomeColor;
-        } else {
-            text = L.s("空闲 · 未开始", "Idle · not started");
-            color = AmberTheme.TEXT_DIM;
         }
         if (stateBig != null) {
             stateBig.setText(text);
             stateBig.setTextColor(color);
+        }
+        // 阶段说明：来自 CrackPhaseView.hint（只描述已有事实）
+        if (phaseHintView != null) {
+            phaseHintView.setText(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView
+                    .hint(phase, L.isZh()));
+            phaseHintView.setVisibility(View.VISIBLE);
         }
         // 持续输出信号：跑起来时状态大字自己呼吸（停下来立刻恢复，不留半透明）
         setRunPulse(st == TaskQueue.State.RUNNING);
@@ -11355,6 +11494,13 @@ public class MainActivity extends Activity {
                     // 没有 Verdict（旧路径）：保持中性，不冒充失败
                     appendStreamDetail("·  "
                             + pw + "  (" + ms + "ms " + detail + ")", TEXT_DIM);
+                }
+                // **记下最近一条 Verdict**（2026-11-21 UI 专项）。
+                // 这是后端已经交给我们的既有数据，只是存起来给状态行用。
+                // 不判定、不推算、不改业务。
+                if (v != null) {
+                    lastCrackVerdict = v;
+                    renderProgressCardState();
                 }
                 // 每条都刷新状态行的实时速率 —— 否则用户看到的一直是上一个任务的数字
                 updateConnectMode();
@@ -14141,18 +14287,20 @@ public class MainActivity extends Activity {
 
             int m = Prefs.mode(this);
             StringBuilder sb = new StringBuilder();
+            // **说明精简**（2026-11-21 UI 专项）。
+            //
+            // 改造前这里是一整段 5 行文字，把「怎么工作」「需要什么」
+            // 和「1.9.24 为什么移除 Shizuku/免 Root」的历史沿革全铺在一起，
+            // 用户读完仍不知道「我该做什么」。
+            //
+            // 现在只留当前模式 + 一句工作机制 + 一句前提条件。
+            // 历史沿革收进「?」说明里（那里才是查资料的地方）。
             sb.append(L.s("当前: Root 模式（推荐）", "Current: root mode (recommended)")).append("\n\n");
             sb.append(L.s(
-                    "通过 su 调用系统的 cmd wifi 命令，完全自动、不弹窗。\n"
-                    + "进度与暂停都可控，速度见下方实测值。\n"
-                    + "需要设备已 root 并给本应用授权。\n"
-                    + "（Shizuku 与免 Root 通道已在 1.9.24 移除：前者每次关联都要借 binder、"
-                    + "后者每条候选都要弹一次系统确认框，都撑不起逐条字典遍历。）",
-                    "Invokes the system's cmd wifi via su — fully automatic, no dialogs.\n"
-                    + "Precise progress and pause; see the measured speed below.\n"
-                    + "Requires a rooted device with root granted to this app.\n"
-                    + "(The Shizuku and root-free channels were removed in 1.9.24: they cannot "
-                    + "sustain per-candidate dictionary traversal.)"));
+                    "通过 su 调用系统的 cmd wifi，全自动、不弹窗。\n"
+                    + "需要设备已 root 并授权本应用。",
+                    "Invokes cmd wifi via su — fully automatic, no dialogs.\n"
+                    + "Requires a rooted device with root granted to this app."));
             // 口径改成「秒/条」：原先这里写「0.1 条/秒」而上一段静态文案写
             //「实测约 1 秒/条」，同一张卡上自相矛盾（0.1 条/秒 = 10 秒/条）。
             sb.append("\n\n").append(L.f("当前实测速度: %s 秒/条",

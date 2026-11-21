@@ -1,5 +1,5 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.62 · 破解链路判定安全专项（假成功 / 游标 / 暂停恢复） -->
-<!-- tag: v1.9.62   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.63 · 判定结果语义分类（六类互斥） -->
+<!-- tag: v1.9.63   target: main -->
 
 WPAForge 1.9.60 · 手机号字典 / WPS 退避 / 释放链修复 / 低版本适配
 

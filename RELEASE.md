@@ -1,80 +1,60 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.65 · 判据 D 采集时序整改（认证失败不再漏判） -->
-<!-- tag: v1.9.65   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.66 · 破解页重设计 + 采集窗口修正 -->
+<!-- tag: v1.9.66   target: main -->
 
-## 1.9.64 能读证据了，但读得太早
+## 这一版做了两件事：页面重排，和把「查得太早」彻底修掉
 
-1.9.64 已经把 `dumpsys wifi` 里一直被丢弃的三条认证失败证据链接进来，
-方向是对的。但它的**采集时序**有真实缺陷：
+### 一、破解页：从「一堆数字」变成能读懂的面板
 
-```
-DUMPS_PROBE_AT_MS = { 2600, 3600 }     ← 只有两个固定时刻
-dumpsProbedSlot    = 一次性            ← 查过之后不再查
-```
+**统计区**改成四项互斥的核心指标，并把「已执行 / 总数」下沉为进度层的一行：
 
-而真机的认证失败事件，通常在连接尝试**结束之后**才写进
-`mConnectionEvents`，实测耗时 **3.8~4.9 秒**（部分 AP / 部分 ROM /
-弱信号重试会更晚）。2600ms 与 3600ms 两个探测点都早于这部分事件，
-加上 `dumpsProbedSlot` 的一次性限制，结果就是——
-
-> 真实的 `AUTH_FAILURE_WRONG_PSWD` 明明已经写进 `dumpsys`，
-> 界面上却显示「未确定」。
-
-## 这一版改什么
-
-### 1. 采集时序：从「固定时刻」到「生命周期驱动 + 有限轮询」
-
-时序逻辑抽成纯逻辑类 `DumpsProbePlan`（可离线穷举、有单元测试）：
-
-- **固定时刻兜底**：2600 / 3600 / **5200ms**。5200 覆盖真机 3.8~4.9s 的落盘区间，
-  它是**兜底，不是唯一修复**。
-- **生命周期终止立即触发**：观察到连接进入 `TERMINATED`，立刻再查一次，
-  不必等下一个固定时刻。
-- **主循环退出后有限轮询**：连接生命周期结束、主循环按时间预算退出后，
-  在 **3 秒截止时间**内按 600ms 有间隔地**有限**轮询；达到截止仍无证据，
-  才交给裁决层降级为 UNKNOWN / INCOMPLETE。
-- **一次未命中不再永久封锁**：`dumpsProbedSlot` 的一次性限制**已移除**，
-  固定时刻、终止触发、兜底轮询三条路径并行。
-
-### 2. 归因：`DumpsAttribution`（与测试共用同一份代码）
-
-认证失败必须**同时**满足，缺一不认：
-
-1. 当前 attempt 的时间窗口（两端同天、顺序正确）；
-2. 窗口内 target SSID 的 `uid=0` `ADD_OR_UPDATE`——**本次新建的配置**；
-3. 明确的 `AUTH_FAILURE_WRONG_PSWD` 或等价的 `DISABLED_BY_WRONG_PASSWORD`；
-4. 事件时间落在窗口内；
-5. 连接级还要求 **BSSID 收窄**（同 SSID 不同 BSSID 不误认）。
-
-**`uid=0` 本身不能单独证明某条失败属于当前候选**——必须同时有本次配置关联，
-否则会读到上一条候选、或同 SSID 历史配置的失败。
-
-### 3. 判定与持久化不变量：一个字都不放松
-
-| 结果 | 允许行为 |
+| 指标 | 含义 |
 |---|---|
-| AUTH_FAIL + DIRECT | 写 TriedSet、推进 Cursor |
-| AUTH_FAIL + INFERRED | **不**永久排除 |
-| UNKNOWN / INCOMPLETE | **不**永久排除 |
-| NETWORK_AUTH_FAIL | **不**冒充候选级密码错误 |
-| SUCCESS | 必须满足原有严格成功条件 |
+| 已确认成功 | SUCCESS + DIRECT |
+| 已证实错误 | AUTH_FAIL + DIRECT |
+| 连接未完成 | TIMEOUT / INCOMPLETE / TERMINATED_UNKNOWN / ABORTED |
+| 尚无有效判定 | 疑似 + 网络级 + 无法判断 + 环境异常 |
 
-### 4. `m1retry` 来源审计结论
+「尚无有效判定」的细分独立成一行（疑似密码错误 / 网络认证失败 / 无法判断 / 环境异常），
+零值隐藏、数字与标签分离。四项之和恒等于总数，细分之和恒等于「尚无有效判定」。
 
-`m1retry` 来自 `logcat -d -s wpa_supplicant` 的
-「RX message 1 of 4-Way Handshake」计数，只在上一条目标记
-（`AttemptMarker.sliceAfter`）之后的切片里统计，归属 **AT1 / NOT_CONNECTED**，
-**永不产生 AUTH_FAIL**——不可能被当成「已证实密码错误」。本机（PJX110）
-`wpa_supplicant` 日志恒为 0 行，`m1retry` 实际不会触发；候选级证据只能来自判据 D。
+**攻击流**改成三层，不再同一句话说两遍：
 
-### 5. 破解页 UI：统计区重排
+```
+已证实密码错误 · 第 5–21 条 · 4.2s   ×17  03:35–03:36
+  系统观察到归属于本次尝试的错误密钥 —— 已记录，不再重试。
+  （点「详情」后）attempt=run#3#21 · verdict=AUTH_FAIL · grade=DIRECT
+                · reason=wrong-key · src=dumpsys · triedSet=写入 · cursor=推进
+```
 
-- 四列横排 → **窄屏 2×2 网格 / 宽屏 1×4**，每个指标独立容器、标签与数字分离。
-- 「未确定」细分（疑似密码错误 / 网络认证失败 / 连接未完成 / 环境异常 / 无法判断）
-  从数字格里挪出，改为**独立信息区**，固定顺序、零值隐藏。
+同时修掉一个真实缺陷：服务端曾先调 5 参回调、再调 7 参回调，7 参又回调 5 参，
+**每条结果被追加两次**。现在只有一个落地入口。
 
-## 验证
+**文案与颜色**：`UNKNOWN` 不再叫「密码错误」，`INCOMPLETE` 不再叫「密码错误」，
+`INFERRED` 不冒充 `DIRECT`。成功绿 / 已证实红 / 疑似橙 / 未完成中性灰 /
+无有效判定中性灰 / 环境紫灰；品牌琥珀只承担强调。
 
-- 全量门禁：**236 个测试类全部通过**（+3 类 / +81 用例）。
-- 新增：`DumpsProbePlanTest`（时序 27）、`DumpsAttributionSafetyTest`（归因 27）、
-  `CrackStatsModelTest`（布局/分类 27）。
-- 真机：错误密码必须落到「已证实错误」而不是「未确定」；正确密码仍由原有严格成功条件独占判定。
+### 二、判定链：窗口按「落盘时刻」算，兜底补采覆盖 UNKNOWN
+
+`mConnectionEvents` 的 `startTime` 是连接**开始**时刻，记录要等
+`startTime + durationMillis` 才写进 dump（真机实测 3.8~4.9 秒）。
+1.9.65 只用 startTime 卡窗口终点，于是「本次开始、但几秒后才落盘」的
+`AUTH_FAILURE_WRONG_PSWD` 被判成窗口外 —— 这仍是漏判。
+
+现在：
+
+- **窗口**：开始时刻落在窗口内，**或**连接生命期与窗口有交叠，都认；
+  开始时刻晚于窗口终点的下一次尝试仍不认（防串线）。
+- **兜底补采**：`TERMINATED` 与 `UNKNOWN` 都触发（读不到状态时事件可能还没落盘）；
+  `ACTIVE` 不触发（连接还在跑，INCOMPLETE 才对）。
+- **防重复消费**：同一条连接事件不会被两个 attempt 先后认领。
+
+**安全边界一字未动**：只有 `TERMINATED` 才可能落到 `AUTH_FAIL + DIRECT`；
+UNKNOWN 下补采到的证据最多是网络级；只有 DIRECT 才写 TriedSet、推进 Cursor。
+
+### 三、验证
+
+- 全量门禁全部通过（测试类与用例数见仓库 CHANGELOG）。
+- 新增：`DumpsWindowSemanticsTest`（窗口含延迟落盘）、`DumpsGraceCoverageTest`
+  （兜底覆盖与持久化边界）、`ResultCopyTest`、`StreamFormatterTest`、
+  `CrackStatsModelTest`。
+- **未做真机错误密码/正确密码实跑**：需要真实连接 Wi-Fi，留给使用者按报告步骤执行。

@@ -11100,12 +11100,28 @@ public class MainActivity extends Activity {
     }
 
     /** 当前阶段 {done, total} —— 进度条 / 百分比 / 剩余时间共用这一对。 */
+    /**
+     * 进度条的 {done, total} —— **唯一口径**（1.9.69 续跑专项）。
+     *
+     * <h3>为什么不能按阶段各自算</h3>
+     * 旧写法在复验轮返回 {@code {phaseDone, phaseTotal}}，而 phaseDone 从 0 起 →
+     * 第一轮刚跑完的 100% 会**掉回 0%**（用户看到「进度倒退」/「错误 100%」）。
+     *
+     * <h3>现在的定义（单调不减）</h3>
+     * <pre>
+     *   第一轮：done = execCursor,        total = dictSize
+     *   复验轮：done = dictSize + phaseDone, total = dictSize + phaseTotal
+     * </pre>
+     * 复验轮是**追加**在字典之后的第二阶段，所以整体分母加上复验条数；
+     * 这样进度只会往前走，永远不会倒退，也不会出现「首轮完成即 100% 但其实还要复验」。
+     * 阶段内部进度（复验 a/b）另由 {@link #renderCountsLine()} 的 phaseTag 表达。
+     */
     private int[] progressPair() {
+        final int dict = Math.max(0, pgDictSize);
         if (pgPhase == 2 && pgPhaseTotal > 0) {
-            return new int[]{Math.max(0, pgPhaseDone), pgPhaseTotal};
+            return new int[]{dict + Math.max(0, pgPhaseDone), dict + pgPhaseTotal};
         }
-        int total = pgDictSize > 0 ? pgDictSize : 0;
-        return new int[]{Math.max(0, pgExec), total};
+        return new int[]{Math.max(0, pgExec), dict};
     }
 
     /** 「已试 / 已排除 / 待复验 / 共」四个数 —— 唯一渲染点（1.9.69）。 */
@@ -12036,16 +12052,25 @@ public class MainActivity extends Activity {
                     renderQueue();
                 }
                 if (connectProgress != null && pgPhase == 2 && pgPhaseTotal > 0) {
+                    // 复验轮：进度条与百分比都走 progressPair（整体口径，单调不减），
+                    // 阶段进度另用文字「复验 a/b」表达，两者不混。
+                    final int[] p2 = progressPair();
+                    final int d2 = p2[0];
+                    final int t2 = p2[1] > 0 ? p2[1] : d2;
                     connectProgress.setVisibility(View.VISIBLE);
                     java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
                             new java.util.ArrayList<>();
                     st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                            (float) pgPhaseDone / pgPhaseTotal,
-                            io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                    .percentLabel(pgPhaseDone, pgPhaseTotal)));
+                            t2 > 0 ? (float) d2 / t2 : 0f,
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud.percentLabel(d2, t2)));
                     connectProgress.setStages(st);
                     connectProgress.setDone(false);
-                    connectProgress.setText(L.s("复验轮 " + pgPhaseDone + " / " + pgPhaseTotal,
+                    if (statPctView != null) {
+                        statPctView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                .percentLabel(d2, t2));
+                        statPctView.setTextColor(ACCENT);
+                    }
+                    connectProgress.setText(L.s("复验 " + pgPhaseDone + " / " + pgPhaseTotal,
                             "Recheck " + pgPhaseDone + " / " + pgPhaseTotal), "");
                 }
             });

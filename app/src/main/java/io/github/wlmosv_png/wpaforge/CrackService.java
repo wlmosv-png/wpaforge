@@ -1317,6 +1317,10 @@ public class CrackService extends Service {
                     skipPolicy = AttemptLedger.SkipPolicy.CONSERVATIVE;
                     forceRerun = true;
                     task.offset = 0;
+                    task.execIndex = -1;
+                    task.recheckCsv = "";
+                    task.phase = 1;
+                    task.resumeSig = "";
                     work = workBeforeFilter;
                     workBeforeFilter = null;
                     filteredBeforeRun = false;
@@ -1336,6 +1340,38 @@ public class CrackService extends Service {
                 task.dictSize = currentDict.size();
                 TaskQueue.update(this, task);
             }
+        }
+
+        /* ── 续跑状态有效性校验（1.9.69 加固）───────────────────────────
+         * execIndex / recheckCsv 都是**原始列表（P 空间）下标**。只要 P 空间变化
+         * （字典内容/顺序、目标派生、智能排序、线索、目标网络、强制重跑），
+         * 旧下标就会指向别的候选 —— 必须先作废再从头，绝不能套用到新集合。
+         * 失效后：已由 DIRECT 证实错误的仍在 TriedSet 中被跳过；**尚未证实的都会重跑**。 */
+        {
+            java.util.List<Candidate> pSpace =
+                    workBeforeFilter != null ? workBeforeFilter : currentDict;
+            io.github.wlmosv_png.wpaforge.audit.ResumeGuard.Decision rg =
+                    io.github.wlmosv_png.wpaforge.audit.ResumeGuard.validate(
+                            pSpace, TriedSet.targetKey(task.bssid, task.ssid), task.forceRerun,
+                            task.execIndex, task.recheckCsv, task.phase, task.resumeSig);
+            if (rg.reset) {
+                log(L.s("续跑状态失效（" + rg.reason + "）→ 执行游标与复验队列作废，本次从头跑"
+                                + "（已证实错误的仍被跳过、未证实的都会重试）",
+                        "resume state invalidated (" + rg.reason + "); restarting from scratch "
+                                + "(proven-wrong kept skipped, unproven retried)"));
+                task.execIndex = -1;
+                task.recheckCsv = "";
+                task.phase = 1;
+                task.offset = 0;
+            } else {
+                task.execIndex = rg.execIndex;
+                task.setRecheckIndices(rg.recheckP);
+                task.phase = rg.phase;
+            }
+            if (!rg.sig.equals(task.resumeSig)) {
+                task.resumeSig = rg.sig;
+            }
+            TaskQueue.update(this, task);   // 落盘校验结果（含签名），供崩溃后恢复
         }
 
         if (currentDict.isEmpty()) {
@@ -1911,6 +1947,11 @@ public class CrackService extends Service {
             task.dictPath = cur.path;
             task.dictName = cur.name;
             task.dictSize = 0;
+            // 换字典 → 旧 P 下标/复验队列/签名全部作废（offset 由计划 cur.offset 决定）
+            task.execIndex = -1;
+            task.recheckCsv = "";
+            task.phase = 1;
+            task.resumeSig = "";
             log(L.f("按计划换用字典「%s」（第 %d/%d 本）",
                     "switching to plan dictionary \"%s\" (#%d of %d)",
                     cur.name, p.displayIndex(), p.items.size()));
@@ -2739,6 +2780,10 @@ public class CrackService extends Service {
 
         if (hitPassword != null && !hitPassword.isEmpty()) {
             ft.setHitPassword(hitPassword);   // R12：标签/密文一并生成，明文不落盘
+            ft.execIndex = -1;                // 命中即终态：续跑状态作废
+            ft.recheckCsv = "";
+            ft.phase = 1;
+            ft.resumeSig = "";
             ft.state = TaskQueue.State.DONE_HIT;
             log(L.f("任务结束: %s 已命中（试了 %d 条）",
                     "Task finished: %s hit (%d tried)", ft.ssid, tested));

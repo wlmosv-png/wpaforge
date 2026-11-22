@@ -110,6 +110,12 @@ public final class TaskQueue {
         public String recheckCsv = "";
         /** 1 = 第一轮，2 = 复验轮。 */
         public int phase = 1;
+        /**
+         * 续跑状态**签名**（1.9.69 加固）：P 空间 + 目标 + 强制重跑的指纹。
+         * 与 execIndex/recheckCsv/phase 一起落盘；恢复时重算比对，不一致即作废从头。
+         * 空串 = 未记录（历史任务/首次加固）→ 不重置，只回填。
+         */
+        public String resumeSig = "";
 
         /** 待复验候选下标（P 坐标）。非法项自动丢弃，绝不因脏数据崩。 */
         public int[] recheckIndices() {
@@ -327,6 +333,7 @@ public final class TaskQueue {
                 o.put("execIndex", execIndex);
                 o.put("recheck", recheckCsv == null ? "" : recheckCsv);
                 o.put("phase", phase);
+                o.put("resumeSig", resumeSig == null ? "" : resumeSig);
                 o.put("missFail", missConfirmedFail);
                 o.put("missUnk", missInconclusive);
                 // R12：**绝不写明文**。
@@ -371,6 +378,7 @@ public final class TaskQueue {
             t.execIndex = o.optInt("execIndex", -1);
             t.recheckCsv = o.optString("recheck", "");
             t.phase = Math.max(1, Math.min(2, o.optInt("phase", 1)));
+            t.resumeSig = o.optString("resumeSig", "");
             // 旧数据缺这两个字段 → 0（不猜）
             t.missConfirmedFail = o.optInt("missFail", 0);
             t.missInconclusive = o.optInt("missUnk", 0);

@@ -261,6 +261,27 @@ public final class CrackEngine {
          * 默认空实现：仅持久化方（CrackService）需要覆盖。
          */
         default void onCursor(int cursor) { }
+
+        /**
+         * **执行游标**（1.9.69）：本阶段「下一条要执行的候选」的 K 下标。
+         *
+         * <p>它和 {@link #onCursor} 是两个量，必须分开 —— 这是真续跑的前提：
+         * <ul>
+         *   <li>{@code onExecCursor} = 执行到哪。**每执行完一条就 +1，与结论无关**。
+         *       续跑起点用它。旧实现拿 cursor 当续跑起点，于是「本轮全是无结论」时
+         *       游标永不前进，写盘 offset 恒 0，用户点继续就从第 1 条重跑。</li>
+         *   <li>{@code onCursor} = 判定边界（只由 DIRECT 推进），继续服务账本/审计。</li>
+         * </ul>
+         * 默认空实现：仅持久化方需要覆盖。
+         */
+        default void onExecCursor(int nextKIndex) { }
+
+        /** 待复验队列快照（K 下标）：已尝试但**没有 DIRECT 结论**的候选。默认空实现。 */
+        default void onRecheck(int[] kIndices) { }
+
+        /** 阶段进度：{@code phase}=1 第一轮 / 2 复验轮。默认空实现。 */
+        default void onPhase(int phase, int total, int done) { }
+
         default void onLog(String line) { }
         void onFinished(int tested, int total, String hitPassword, String outcome);
         void onBlocked(String title, String detail);
@@ -938,6 +959,15 @@ public final class CrackEngine {
      * @param grade  当前候选的证据等级
      * @return 新的边界
      */
+    /** Set&lt;Integer&gt; → int[]（顺序保持插入序，便于落盘后复现）。 */
+    private static int[] toIntArray(java.util.Collection<Integer> set) {
+        if (set == null || set.isEmpty()) return new int[0];
+        int[] out = new int[set.size()];
+        int i = 0;
+        for (Integer v : set) out[i++] = v == null ? 0 : v;
+        return out;
+    }
+
     public static int nextCursor(int cursor, int i, EvidenceGrade.Level grade) {
         // 两个条件缺一不可：
         //   ① 本条是 DIRECT（可直接验证的结论）
@@ -3286,6 +3316,18 @@ public final class CrackEngine {
      */
     public void run(NetRecord target, List<Candidate> candidates, int startOffset,
                     long timeoutMsPerItem, Listener l) {
+        run(target, candidates, startOffset, timeoutMsPerItem, l, null, 1);
+    }
+
+    /**
+     * 带「待复验队列 + 阶段」的入口（1.9.69）。
+     *
+     * @param recheckSeed 上次运行留下的待复验候选（K 下标），可为 {@code null}
+     * @param phase       1 = 从 {@code startOffset} 开始跑第一轮；2 = 直接进入复验轮
+     */
+    public void run(NetRecord target, List<Candidate> candidates, int startOffset,
+                    long timeoutMsPerItem, Listener l,
+                    int[] recheckSeed, int phase) {
         CheckResult chk = check();
         if (!chk.ok) { l.onBlocked(chk.title, chk.detail); return; }
         if (target == null || target.ssid == null || target.ssid.isEmpty()) {
@@ -3425,10 +3467,29 @@ public final class CrackEngine {
         long perItem = basePerItem;
         final String security = securityArg(target);
         final int total = candidates.size();
-        final int start = Math.max(0, Math.min(startOffset, total));
+        /* 1.9.69：执行游标（execNext）与判定边界（cursor）彻底分离。
+         *
+         * 旧设计只有一个 cursor，且它只由 DIRECT 推进，同时又拿它当续跑起点。
+         * 目标不给证据时（连续 TIMEOUT → NONE）cursor 钉死在起点、写盘 offset 恒 0，
+         * 用户点「继续」引擎真的从第 1 条重跑，而界面写着「已试 52 条」。
+         *
+         * 现在：
+         *   · execNext —— 执行到哪，执行完一条就前进，与结论无关 → 续跑起点；
+         *   · cursor   —— 判定边界（DIRECT 连续），继续喂账本/审计，不再决定起点；
+         *   · recheck  —— 有尝试、但没拿到 DIRECT 结论的候选 → 复验轮用，且持久化。
+         */
+        final int start = phase == 2 ? total
+                : Math.max(0, Math.min(startOffset, total));
 
         int tested = 0;
         int cursor = start;
+        int execNext = start;
+        final java.util.LinkedHashSet<Integer> recheck = new java.util.LinkedHashSet<>();
+        if (recheckSeed != null) {
+            for (int k : recheckSeed) {
+                if (k >= 0 && k < total) recheck.add(k);
+            }
+        }
         int consecutiveNoEvidence = 0;
         String hit = null;
         long beginAt = clock().uptimeMillis();
@@ -3475,7 +3536,9 @@ public final class CrackEngine {
                       " (every verdict in this run carries it)"));
 
         /** 主循环里结论为 INFERRED（证据不足）的候选下标，供补充验证使用。 */
-        final java.util.List<Integer> infRetryIdx = new java.util.ArrayList<>();
+        /* 待复验队列（原 infRetryIdx）：现在收集「所有非 DIRECT 且未命中」的候选，
+         * 不再只看 INFERRED —— NONE / TIMEOUT / UNKNOWN 同样没有有效结论，
+         * 同样必须保留再次尝试的机会。它既不写 triedSet，也不算密码错误。 */
 
         try {
             for (int i = start; i < total; i++) {
@@ -3597,11 +3660,6 @@ public final class CrackEngine {
                 //   新写法：A 是非 DIRECT -> cursor 停在 0；B 虽 DIRECT 但
                 //   cursor(0) != 1 -> 不推进；C 同理 -> 最终 cursor = 0，
                 //   续跑会从 A 重新验证，不会漏掉任何未确认的候选。
-                // 记录「证据不足」的候选，供主循环结束后的补充验证使用。
-                // 它们既不是确定成功，也不是确定失败 —— 给它们第二次机会。
-                if (a.grade == EvidenceGrade.Level.INFERRED) {
-                    infRetryIdx.add(i);
-                }
                 cursor = nextCursor(cursor, i, a.grade);
                 pureTryMs += itemMs;
                 livePureTryMs = pureTryMs;
@@ -3615,6 +3673,21 @@ public final class CrackEngine {
                 // 不会再出现「已执行 N 条但所有分类都是 0」的自相矛盾数字。
                 tested++;
                 testedCount = tested;
+
+                /* 1.9.69：**执行游标无条件前进** —— 这一条已经执行完了，
+                 * 不论证据是 DIRECT / INFERRED / NONE。续跑起点只看它。
+                 * 同时把「没拿到 DIRECT 结论」的候选记进待复验队列：
+                 *   · 非命中、且不是 DIRECT → 入队（下次复验）
+                 *   · 命中、或拿到 DIRECT 判错 → 出队
+                 * 入队不等于判错：不写 triedSet、不进「已证实错误」。 */
+                execNext = i + 1;
+                l.onExecCursor(execNext);
+                boolean isDirect = a.grade == EvidenceGrade.Level.DIRECT;
+                if (!a.isSuccess() && !isDirect) {
+                    if (recheck.add(i)) l.onRecheck(toIntArray(recheck));
+                } else if (recheck.remove(i)) {
+                    l.onRecheck(toIntArray(recheck));
+                }
 
                 // 攒够 20 条写一行汇总。四段分解 + 判定归类，
                 // 让「后台跑」也有实测数据可看（否则界面一关就全瞎）。
@@ -3781,12 +3854,19 @@ public final class CrackEngine {
             //    · 仍为 INFERRED / NONE 的保持不确定，绝不强制判失败；
             //    · 中断则直接停止，未完成的重试交给下一次运行（cursor 未推进）。
             // ══════════════════════════════════════════════════════════════
-            if (hit == null && !cancelFlag.get() && !pauseFlag.get() && !infRetryIdx.isEmpty()) {
-                l.onLog(L.f("补充验证：对 %d 条证据不足的候选再试一轮",
-                        "Follow-up pass: retrying %d inconclusive candidates",
-                        infRetryIdx.size()));
+            if (hit == null && !cancelFlag.get() && !pauseFlag.get() && !recheck.isEmpty()) {
+                /* 1.9.69：复验轮 = 第二阶。队列来源有三处：
+                 *   ① 本次第一轮里没有拿到 DIRECT 结论的候选；
+                 *   ② 上一次运行持久化下来的待复验队列（暂停/退出不清空）；
+                 *   ③ 上次第一轮全部无结论、这次直接从 phase=2 进来。
+                 * 复验仍没结论的**保留在队列里**，不写 triedSet、不判失败。 */
+                final int rcTotal = recheck.size();
+                l.onPhase(2, rcTotal, 0);
+                l.onLog(L.f("复验轮：对 %d 条「本次未取得有效结论」的候选再试一轮",
+                        "Recheck pass: retrying %d candidates with no conclusive verdict",
+                        rcTotal));
                 int retried = 0;
-                for (int idx : infRetryIdx) {
+                for (int idx : new java.util.ArrayList<>(recheck)) {
                     if (cancelFlag.get() || pauseFlag.get()) break;
                     Candidate c = candidates.get(idx);
                     // **补充验证不重复计入 tested**（2026-11-20）。
@@ -3811,7 +3891,15 @@ public final class CrackEngine {
                         a2.attemptId = AttemptId.wellFormed(aid2) ? aid2 : "";
                     }
                     retried++;
-                    // 不计入 tally：避免把补充验证混进「已证实失败」的口径统计。
+                    /* 复验拿到 DIRECT（判错）或命中 → 出队；仍无结论的留在队列里，
+                     * 下次运行继续复验（这是「正确密码不会因为一次没证据就永久失去
+                     * 再来一次的机会」的落点）。 */
+                    boolean direct2 = a2.grade == EvidenceGrade.Level.DIRECT;
+                    if (a2.isSuccess() || direct2) {
+                        if (recheck.remove(idx)) l.onRecheck(toIntArray(recheck));
+                    }
+                    l.onPhase(2, rcTotal, retried);
+                    // 不计入 tally：避免把复验混进「已证实失败」的口径统计。
                     // 结果照常通过 onAttemptResult 输出，保留独立记录。
                     l.onAttemptResult(a2);
                     if (a2.isSuccess()) {
@@ -3819,12 +3907,22 @@ public final class CrackEngine {
                         break;
                     }
                 }
-                l.onLog(L.f("补充验证完成：重试 %d 条；未产生新结论的仍保持不确定",
-                        "Follow-up pass done: %d retried; inconclusive ones remain inconclusive",
-                        retried));
+                l.onLog(L.f("复验轮完成：重试 %d 条；仍未取得结论的 %d 条保留为「待复验」"
+                                + "（既不算密码错误，也不会被永久跳过）",
+                        "Recheck done: %d retried; %d still inconclusive and kept for next run",
+                        retried, recheck.size()));
             }
         } finally {
             lastPureTryMs = pureTryMs;
+            /* 1.9.69：收尾（含暂停/停止/命中）前再报一次执行游标与待复验队列。
+             * 旧实现只靠 onCursor 落盘，而它只由 DIRECT 推进 —— 结果「本轮全无结论」
+             * 时盘上 offset 永远是 0，续跑必然从头跑。 */
+            try {
+                l.onExecCursor(execNext);
+                l.onRecheck(toIntArray(recheck));
+            } catch (Throwable ignored) {
+                // 回调方异常不得影响收尾
+            }
             if (watcher != null) watcher.stop();
             if (authWatch != null) authWatch.stop();
             // 常驻 shell 会话必须显式关掉：否则一轮任务跑完，

@@ -169,28 +169,49 @@ public final class StatusIcons extends Drawable {
                 break;
             }
             case CHEVRON_RIGHT: {
+                // 1.9.69：箭头几何重定 —— **尺寸只由高度决定、墨迹贴住左缘**。
+                //
+                // 旧写法用 u = min(w,h) 且把三角画在 cx 两侧，于是 26dp 方形视图里
+                // 真正的墨迹只有中间 ~11dp，左右各白扔 7dp。图标本身没错，错在
+                // 「它以为自己占 26dp，其实只画了 11dp」——视图左缘与被看到的左缘
+                // 差 23px（density 3 下 ≈7.7dp），真机截图里箭头明显比「正在尝试」
+                // 「候选大字」那一列往右缩进去一小块。
+                //
+                // 现在：横向用 b.height() 定尺寸（窄高图标不能按宽度缩），
+                // 路径起点 = b.left + 描边半宽 → 圆头笔帽外沿正好落在 b.left，
+                // 于是「箭头墨迹左缘 == 卡片内容左缘 == 文字列左缘」。
+                float uh = b.height();
+                float sw = uh * 0.16f;
+                float x0 = b.left + sw * 0.5f;
+                float x1 = x0 + uh * 0.30f;
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(u * 0.16f);
+                paint.setStrokeWidth(sw);
                 paint.setStrokeCap(Paint.Cap.ROUND);
                 paint.setStrokeJoin(Paint.Join.ROUND);
                 path.reset();
-                path.moveTo(cx - u * 0.13f, cy - u * 0.28f);
-                path.lineTo(cx + u * 0.17f, cy);
-                path.lineTo(cx - u * 0.13f, cy + u * 0.28f);
+                path.moveTo(x0, cy - uh * 0.28f);
+                path.lineTo(x1, cy);
+                path.lineTo(x0, cy + uh * 0.28f);
                 canvas.drawPath(path, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setStrokeCap(Paint.Cap.BUTT);
                 break;
             }
             case CHEVRON_DOWN: {
+                // 与 CHEVRON_RIGHT 同一套口径：左缘固定、宽度受视图宽度约束。
+                // 展开态标题的左边缘与折叠态完全一致 → 点开/收起时标题不会横跳。
+                float uh = b.height();
+                float sw = uh * 0.16f;
+                float dx0 = b.left + sw * 0.5f;
+                float dx1 = dx0 + uh * 0.30f;
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(u * 0.16f);
+                paint.setStrokeWidth(sw);
                 paint.setStrokeCap(Paint.Cap.ROUND);
                 paint.setStrokeJoin(Paint.Join.ROUND);
                 path.reset();
-                path.moveTo(cx - u * 0.28f, cy - u * 0.13f);
-                path.lineTo(cx, cy + u * 0.17f);
-                path.lineTo(cx + u * 0.28f, cy - u * 0.13f);
+                path.moveTo(dx0, cy - uh * 0.13f);
+                path.lineTo((dx0 + dx1) * 0.5f, cy + uh * 0.17f);
+                path.lineTo(dx1, cy - uh * 0.13f);
                 canvas.drawPath(path, paint);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setStrokeCap(Paint.Cap.BUTT);

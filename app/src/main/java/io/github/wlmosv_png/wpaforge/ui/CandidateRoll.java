@@ -57,10 +57,12 @@ public class CandidateRoll extends FrameLayout {
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
         t.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        // 1.9.68：等宽大字带字形留白，视觉上比下方 FS_SMALL 的历史行偏左。
-        // 给大字 1dp 光学补偿，让「大字」与「历史候选」「攻击流标题」左边缘对齐。
-        float d = getResources().getDisplayMetrics().density;
-        t.setPadding(Math.round(1 * d), 0, 0, 0);
+        // 1.9.69：**不要**给大字加左内边距。
+        // 1.9.68 曾按「等宽大字字形留白偏左」的猜测补了 1dp，实测反而把大字推右：
+        // 真机 1080x2376/density3 上大字墨迹 101px、历史行 98px（差 3px），
+        // 两条线从此不在同一条竖直线上。等宽字体各字号的字形留白本来就按
+        // 字号等比缩放，两端同源 → 补偿是伪需求，只有 0 才是对齐。
+        t.setPadding(0, 0, 0, 0);
         LayoutParams lp = new LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
         t.setLayoutParams(lp);

@@ -214,11 +214,13 @@ public class CrackPageLayoutTest {
                 ma.contains("cm.setPrimaryClip(android.content.ClipData.newPlainText(\"WPAForge\", pw));"));
 
         System.out.println("== 4. 大数字区不得自己算业务数字 ==");
+        // 1.9.69：百分比同样改用统一口径 done/denom（仍是既有 CrackHud.percentLabel）。
         ok("完成度用既有 CrackHud.percentLabel",
-                progressCb.contains("CrackHud\n                            .percentLabel(tested, total)")
-                        || progressCb.contains("percentLabel(tested, total)"));
+                progressCb.contains("percentLabel(done, denom)"));
+        // 1.9.69：进度口径统一 —— 数字不再是 onProgress 的 tested/total 原值，
+        // 而是 done/denom（任务累计 / 字典总条数），仍走既有 CrackHud.thousands。
         ok("已完成/总数用既有 CrackHud.thousands",
-                progressCb.contains("thousands(tested)") && progressCb.contains("thousands(total)"));
+                progressCb.contains("thousands(done)") && progressCb.contains("thousands(denom)"));
         ok("速率用既有 CrackHud.ratePerMin",
                 progressCb.contains("ratePerMin(rate)"));
         ok("剩余时间用既有 CrackHud.etaLabel",
@@ -310,7 +312,7 @@ public class CrackPageLayoutTest {
                 && ma.contains("L.s(\"已证实错误\", \"PROVEN WRONG\")")
                 && ma.contains("L.s(\"未命中\", \"NO MATCH\")")
                 && ma.contains("L.s(\"环境异常\", \"ENV ERROR\")")
-                && ma.contains("L.f(\"已执行 %s  /  总数 %s\""));
+                && ma.contains("L.f(\"已试 %s 条 · 已排除 %s 条 / 共 %s 条\""));
 
         // 收口：状态文案加了前缀符号（▶ 运行中 / ‖ 已暂停 / … 准备中），
         // 目的是让三种状态在色盲/低对比环境下也能靠符号区分。

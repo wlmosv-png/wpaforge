@@ -182,6 +182,23 @@ public class CrackService extends Service {
                                         int undecided, int envErrors) {
         }
         void onProgress(int tested, int total, double rate, long etaMs);
+
+        /**
+         * 执行游标 / 待复验 / 阶段（1.9.69）。
+         *
+         * <p>界面只有拿到它，才能把「已试 / 已排除 / 待复验 / 待执行」四个数
+         * 和阶段进度一次画对 —— 旧的 {@link #onProgress} 只有一个 tested，
+         * 分母还来自计划口径，于是同一屏出现过 15.5% 与 1.2% 两个百分比。
+         *
+         * @param execIndexP  执行游标（原始字典下标，= 已执行条数）
+         * @param recheckCount 待复验条数
+         * @param phase       1 = 第一轮，2 = 复验轮
+         * @param phaseTotal  当前阶段总条数
+         * @param phaseDone   当前阶段已完成条数
+         */
+        default void onCursorState(int execIndexP, int recheckCount, int phase,
+                                   int phaseTotal, int phaseDone) { }
+
         void onTaskDone(TaskQueue.Task task, String hitPassword, String outcome);
         void onLog(String line);
         /**
@@ -1349,15 +1366,26 @@ public class CrackService extends Service {
         // 旧实现走 effectiveStartOffset(offset, filtered)，过滤时无条件返回 0，
         // 续跑会把 offset 之前的未试候选全部重跑一遍 —— 真机表现就是「从零开始」。
         // 现在按「原列表前 o 条里被删掉几条」精确换算（过滤保持顺序，位置可算）。
+        /* 1.9.69：续跑起点改用**执行游标**（execIndex），不是判定边界 offset。
+         *
+         * 旧实现拿 offset 当起点，而 offset 只由 DIRECT 推进 —— 目标网络不给证据时
+         * （连续 TIMEOUT → NONE）offset 恒为 0，用户点「继续」引擎真的从第 1 条重跑，
+         * 界面却写着「已试 52 条」。真机日志（2026-11-22 10:13）：
+         *   「引擎点火：弹药 331 发」→「已暂停，进度 0/336」。
+         *
+         * 现在：resumeFrom() 优先取 execIndex（执行到哪），旧数据才回退 offset；
+         * offset 继续保留「DIRECT 边界」语义，喂账本/审计，不再决定起点。
+         */
+        final int resumeP = task.resumeFrom();
         final int startOffset = workBeforeFilter != null
                 ? resumeIndexAfterFilter(workBeforeFilter, triedSet, ledger, skipPolicy,
-                        task.offset, forceRerun)
-                : effectiveStartOffset(task.offset, filteredBeforeRun);
-        if (startOffset != task.offset) {
-            log(L.s("续跑位置按「已试过滤」换算：第 " + task.offset + " 条 -> 第 "
+                        resumeP, forceRerun)
+                : effectiveStartOffset(resumeP, filteredBeforeRun);
+        if (startOffset != resumeP) {
+            log(L.s("续跑位置按「已试过滤」换算：第 " + resumeP + " 条 -> 第 "
                             + startOffset + " 条（过滤后列表内）",
-                    "resume offset remapped after tried-filtering: "
-                            + task.offset + " -> " + startOffset));
+                    "resume cursor remapped after tried-filtering: "
+                            + resumeP + " -> " + startOffset));
         } else if (startOffset > 0) {
             log(L.s("从第 ", "Resuming from ") + startOffset + L.s(" 条继续", " entries"));
         }
@@ -1380,6 +1408,31 @@ public class CrackService extends Service {
      * 判定全在引擎里，不分正两份。
      */
     private void runViaEngine(final TaskQueue.Task ft, int startOffset) {
+        /* 1.9.69：阶段与待复验队列（必须在 runViaEngine 里算 —— executeTask 的作用域
+         * 到不了引擎调用点）。待复验队列持久化在 P 坐标，进引擎前换算成 K 下标：
+         * 换算错位会让复验指向别的候选，比"从头跑"更严重。 */
+        final java.util.List<Candidate> pList =
+                workBeforeFilter != null ? workBeforeFilter : currentDict;
+        final int[] p2k = pToKMap(pList, currentDict);
+        final int resumePhase = (ft.phase == 2 && ft.recheckCount() > 0) ? 2 : 1;
+        int[] seedTmp = new int[0];
+        if (ft.recheckCount() > 0) {
+            int[] src = ft.recheckIndices();
+            int[] tmp = new int[src.length];
+            int n = 0;
+            for (int pIdx : src) {
+                int k = (pIdx >= 0 && pIdx < p2k.length) ? p2k[pIdx] : -1;
+                if (k >= 0) tmp[n++] = k;
+            }
+            seedTmp = new int[n];
+            System.arraycopy(tmp, 0, seedTmp, 0, n);
+            log(L.s("待复验队列: " + ft.recheckCount() + " 条 · 阶段 " + resumePhase,
+                    "Recheck queue: " + ft.recheckCount() + " · phase " + resumePhase));
+        } else if (ft.phase == 2) {
+            ft.phase = 1;   // 队列已空 → 阶段回到第一轮
+        }
+        final int[] recheckSeedK = seedTmp;
+
         logFile = null;   // 每次任务新建一个日志文件
         final CrackEngine engine = new CrackEngine(this, ft.crackMode);
         // D2：运行序号从落盘基线续接 —— bootId 读不到时，
@@ -1569,7 +1622,57 @@ public class CrackService extends Service {
                 // tested = 已尝试数，只用于进度显示。
                 // **不要拿它写盘 offset** —— 那会让断点续跑跳过未排除的候选
                 // （正确密码判 INFERRED 后被跳过，2026-11-02 真机事故）。
+                // 1.9.69：把本轮实时绝对位置写给任务对象 —— 任务卡、
+                // 进度卡、进度条从此都从 Task.completedCount() 取同一个数。
+                // 只用于显示：不落盘、不参与续跑（offset 仍只由 onCursor 写）。
+                if (ft != null && tested > ft.liveRoundTested) ft.liveRoundTested = tested;
                 for (UiCallback cb : callbacks) cb.onProgress(tested, total, rate, etaMs);
+            }
+
+            @Override
+            public void onExecCursor(int nextK) {
+                /* 1.9.69：执行游标 —— 执行到哪，与结论无关。
+                 * 只前进不回退（重启后从新位置继续，不会把已执行的候选重跑）。
+                 * K 下标 → P 下标落盘，与 offset 口径一致。 */
+                int p = kIndexToOriginal(originalDictForResume, currentDict, nextK);
+                if (p > ft.execIndex) ft.execIndex = p;
+                if (ft.phase != 2) ft.phase = 1;
+                saveCursorState(ft, false);
+                for (UiCallback cb : callbacks) {
+                    cb.onCursorState(Math.max(0, ft.execIndex), ft.recheckCount(),
+                            ft.phase, 0, 0);
+                }
+            }
+
+            @Override
+            public void onRecheck(int[] kIndices) {
+                /* 待复验队列快照 → 转 P 坐标立即落盘。
+                 * 队列变化是「下次能不能再试到正确密码」的唯一依据，所以不节流。 */
+                int n = kIndices == null ? 0 : kIndices.length;
+                int[] tmp = new int[n];
+                int m = 0;
+                for (int i2 = 0; i2 < n; i2++) {
+                    int p = kIndexToOriginal(originalDictForResume, currentDict, kIndices[i2]);
+                    if (p >= 0) tmp[m++] = p;
+                }
+                int[] out = new int[m];
+                System.arraycopy(tmp, 0, out, 0, m);
+                ft.setRecheckIndices(out);
+                saveCursorState(ft, true);
+                for (UiCallback cb : callbacks) {
+                    cb.onCursorState(Math.max(0, ft.execIndex), ft.recheckCount(),
+                            ft.phase, 0, 0);
+                }
+            }
+
+            @Override
+            public void onPhase(int phase, int total2, int done) {
+                ft.phase = Math.max(1, Math.min(2, phase));
+                saveCursorState(ft, true);
+                for (UiCallback cb : callbacks) {
+                    cb.onCursorState(Math.max(0, ft.execIndex), ft.recheckCount(),
+                            ft.phase, total2, done);
+                }
             }
 
             @Override
@@ -1625,7 +1728,7 @@ public class CrackService extends Service {
                 notifyQueue();
                 stopSelfSafe();
             }
-        });
+        }, recheckSeedK, resumePhase);
     }
 
     /**
@@ -2101,6 +2204,48 @@ public class CrackService extends Service {
             return TriedSet.targetKey(t.bssid, t.ssid);
         }
         return "";
+    }
+
+    /** 上次落盘「续跑三件套」的时刻（节流用）。 */
+    private long lastCursorSaveAt = 0L;
+
+    /**
+     * 落盘执行游标 / 待复验队列 / 阶段（1.9.69）。
+     *
+     * <p>为什么不能复用 {@link #saveProgress}：它要求 {@code offset > 0}，
+     * 而「本轮全是无结论」时 offset 恰好是 0 —— 正是最需要落盘的时刻。
+     * 这也就是旧版「点继续从不接着跑」的最后一块拼图。
+     *
+     * @param force true = 忽略节流（队列/阶段变化必须立刻落）
+     */
+    private void saveCursorState(TaskQueue.Task ft, boolean force) {
+        if (ft == null) return;
+        long now = System.currentTimeMillis();
+        if (!force && now - lastCursorSaveAt < 1500L) return;
+        lastCursorSaveAt = now;
+        try {
+            TaskQueue.updateCursorState(this, ft.id, Math.max(0, ft.execIndex),
+                    ft.recheckCsv, ft.phase);
+        } catch (Throwable ignored) {
+            // 展示/续跑信息写失败不应炸掉破解流程
+        }
+    }
+
+    /** P（原始字典）下标 → K（过滤后列表）下标；对不上给 -1。 */
+    static int[] pToKMap(java.util.List<Candidate> original,
+                         java.util.List<Candidate> kept) {
+        int[] map = new int[original == null ? 0 : original.size()];
+        java.util.Arrays.fill(map, -1);
+        if (original == null || kept == null) return map;
+        int ki = 0;
+        for (int pi = 0; pi < original.size() && ki < kept.size(); pi++) {
+            Candidate pc = original.get(pi);
+            Candidate kc = kept.get(ki);
+            String pp = pc == null ? null : pc.password;
+            String kp = kc == null ? null : kc.password;
+            if (pp != null && pp.equals(kp)) { map[pi] = ki; ki++; }
+        }
+        return map;
     }
 
     private void saveProgress(TaskQueue.Task ft, int offset, boolean force) {
@@ -2589,6 +2734,7 @@ public class CrackService extends Service {
         flushLedger();
         ft.offset = offset;
         ft.testedThisRun += tested;
+        ft.liveRoundTested = 0;      // 本轮实时值并进 testedThisRun，避免重复计数
         ft.elapsedMs += System.currentTimeMillis() - taskStartAt;
 
         if (hitPassword != null && !hitPassword.isEmpty()) {

@@ -97,12 +97,18 @@ public final class ConnectNoticeAndLogScrollTest {
         ok("④ 不再有大圆底", !ma.contains("roundBg(ACCENT, chev / 2f)"), "圆底仍在");
         ok("④ 无背景（flowChevron.setBackground(null)）",
                 ma.contains("flowChevron.setBackground(null)"), "仍有背景");
-        ok("④ 触控靠 padding 撑开（不是靠放大视觉）",
-                ma.contains("flowChevron.setPadding(px(10), px(10), px(12), px(10))"), "缺 padding");
-        // 1.9.68：图标尺寸由画布决定（20dp），不再用字号；
-        // 契约改为「图标固定 20dp 且垂直居中」。
-        ok("④ 折叠图标固定尺寸且垂直居中",
-                ma.contains("Math.round(26 * dp)") && ma.contains("Gravity.CENTER_VERTICAL"),
+        // 1.9.69：契约反转 —— padding 必须为 0。
+        // 历史上的 6/8dp padding 吃的是**绘制区**，把 22dp 画布挤到实绘 8dp，
+        // 真机上箭头成了一个小逗号。触摸区不靠它撑：整行 flowHeader 本来就可点。
+        ok("④ 箭头无内边距（padding 会吃掉绘制区）",
+                ma.contains("flowChevron.setPadding(0, 0, 0, 0)")
+                        && !ma.contains("flowChevron.setPadding(px(10)"),
+                "padding 契约不对");
+        // 1.9.69：箭头视图是窄高的（13dp × 26dp），尺寸由高度决定，
+        // 不再白占 26dp 见方 —— 那样视图左缘与墨迹左缘会差出 ~7.7dp。
+        ok("④ 折叠图标窄高且垂直居中",
+                ma.contains("Math.round(13 * dp), Math.round(26 * dp)")
+                        && ma.contains("Gravity.CENTER_VERTICAL"),
                 "图标尺寸/对齐未改");
         ok("④ 按钮自带点击（不依赖整行）",
                 ma.contains("flowChevron.setOnClickListener(v -> toggleStream())"), "缺失");

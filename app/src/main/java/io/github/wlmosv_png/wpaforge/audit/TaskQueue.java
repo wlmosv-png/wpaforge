@@ -91,6 +91,64 @@ public final class TaskQueue {
         public long elapsedMs;
         /** 本次实际试过多少条（不算续跑前的） */
         public int testedThisRun;
+        /** 本轮实时的绝对位置（服务每次进度回调写入，**不落盘**、不参与续跑判定）。
+         *  只用于让「进度卡 / 任务卡 / 进度条」三处显示同一个数字。 */
+        public int liveRoundTested;
+        /**
+         * **执行游标**（1.9.69，P 坐标 = 原始字典下标）：下一条要执行的候选。
+         *
+         * <p>与 {@link #offset} 的区别（这是真续跑的核心）：
+         * <ul>
+         *   <li>{@code offset} = 判定边界，只由 DIRECT 推进 —— 目标不给证据时它不动；</li>
+         *   <li>{@code execIndex} = 执行到哪，**执行完一条就 +1，与结论无关**。</li>
+         * </ul>
+         * 旧版本拿 offset 当续跑起点，于是「本轮全是无结论」时续跑必然从头跑。
+         * {@code -1} = 旧数据/尚未开始（此时回退到 offset，保持向后兼容）。
+         */
+        public int execIndex = -1;
+        /** 待复验候选的 P 下标（逗号分隔，空串 = 无）。持久化，暂停/退出不丢。 */
+        public String recheckCsv = "";
+        /** 1 = 第一轮，2 = 复验轮。 */
+        public int phase = 1;
+
+        /** 待复验候选下标（P 坐标）。非法项自动丢弃，绝不因脏数据崩。 */
+        public int[] recheckIndices() {
+            if (recheckCsv == null || recheckCsv.isEmpty()) return new int[0];
+            String[] parts = recheckCsv.split(",");
+            int[] tmp = new int[parts.length];
+            int n = 0;
+            for (String p : parts) {
+                try {
+                    int v = Integer.parseInt(p.trim());
+                    if (v >= 0) tmp[n++] = v;
+                } catch (Exception ignored) { }
+            }
+            int[] out = new int[n];
+            System.arraycopy(tmp, 0, out, 0, n);
+            return out;
+        }
+
+        /** 写入待复验下标（去重 + 保序由调用方保证；这里只做序列化）。 */
+        public void setRecheckIndices(int[] idx) {
+            if (idx == null || idx.length == 0) { recheckCsv = ""; return; }
+            StringBuilder sb = new StringBuilder();
+            for (int v : idx) {
+                if (v < 0) continue;
+                if (sb.length() > 0) sb.append(',');
+                sb.append(v);
+            }
+            recheckCsv = sb.toString();
+        }
+
+        /** 待复验条数（界面「待复验」一栏的唯一来源）。 */
+        public int recheckCount() {
+            return recheckIndices().length;
+        }
+
+        /** 续跑起点（P 坐标）：优先执行游标，旧数据回退到 offset。 */
+        public int resumeFrom() {
+            return execIndex >= 0 ? execIndex : Math.max(0, offset);
+        }
         /**
          * 上次运行里**已证实失败**（AUTH_FAIL）的条数。
          * <p>与 {@link #missInconclusive} 一起回答：「未命中」到底是"试过了没有"，
@@ -201,7 +259,13 @@ public final class TaskQueue {
          * 不参与断点续跑，只在 UI 上让数字自洽。
          */
         public int completedCount() {
-            long n = (long) offset + Math.max(0, testedThisRun);
+            // 1.9.69：两个口径取**较大者**，两者都是真实进度的下界。
+            //   · offset + testedThisRun：轮末才更新（写盘安全边界 + 历次已试）
+            //   · liveRoundTested      ：服务在每次进度回调里写入的绝对位置
+            //     （= 本轮起点 + 本轮已试），跑动中实时变大
+            // 取 max 后，进度卡与任务卡不可能再各说一个数（曾 6 / 44，且分母还不同 332 / 336）。
+            long n = Math.max((long) offset + Math.max(0, testedThisRun),
+                    Math.max(0, liveRoundTested));
             if (dictSize > 0 && n > dictSize) n = dictSize;
             return (int) Math.max(0, n);
         }
@@ -260,6 +324,9 @@ public final class TaskQueue {
                 o.put("dictName", dictName == null ? "" : dictName);
                 o.put("dictSize", dictSize);
                 o.put("offset", offset);
+                o.put("execIndex", execIndex);
+                o.put("recheck", recheckCsv == null ? "" : recheckCsv);
+                o.put("phase", phase);
                 o.put("missFail", missConfirmedFail);
                 o.put("missUnk", missInconclusive);
                 // R12：**绝不写明文**。
@@ -299,6 +366,11 @@ public final class TaskQueue {
             t.dictName = o.optString("dictName", "");
             t.dictSize = o.optInt("dictSize", 0);
             t.offset = o.optInt("offset", 0);
+            // 1.9.69：执行游标 / 待复验队列 / 阶段。旧数据缺这三项 → -1 / 空 / 1，
+            // resumeFrom() 会回退到 offset，行为与旧版一致。
+            t.execIndex = o.optInt("execIndex", -1);
+            t.recheckCsv = o.optString("recheck", "");
+            t.phase = Math.max(1, Math.min(2, o.optInt("phase", 1)));
             // 旧数据缺这两个字段 → 0（不猜）
             t.missConfirmedFail = o.optInt("missFail", 0);
             t.missInconclusive = o.optInt("missUnk", 0);
@@ -1342,6 +1414,27 @@ public final class TaskQueue {
             if (list.get(i).id.equals(id)) {
                 list.get(i).offset = offset;
                 list.get(i).elapsedMs = elapsedMs;
+                return save(ctx, list);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 只更新「续跑三件套」：执行游标 / 待复验队列 / 阶段（1.9.69）。
+     *
+     * <p>为什么不能复用 {@link #updateProgress}：那个方法要求 offset &gt; 0
+     * （调用方 saveProgress 在 offset &lt;= 0 时直接返回），而本轮全是无结论时
+     * offset 恰好是 0 —— 也正是最需要落盘执行游标的时候。
+     */
+    public static boolean updateCursorState(Context ctx, String id,
+                                            int execIndex, String recheckCsv, int phase) {
+        List<Task> list = load(ctx);
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).id.equals(id)) {
+                list.get(i).execIndex = execIndex;
+                list.get(i).recheckCsv = recheckCsv == null ? "" : recheckCsv;
+                list.get(i).phase = Math.max(1, Math.min(2, phase));
                 return save(ctx, list);
             }
         }

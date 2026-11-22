@@ -1004,7 +1004,7 @@ public class MainActivity extends Activity {
             } else {
                 boolean ok4 = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
                         .consistent4(hit, confirmed, miss, envErrors, sum);
-                statSumView.setText(L.f("已判定合计 %s 条%s", "adjudicated %s%s",
+                statSumView.setText(L.f("本轮已判定 %s 条%s", "adjudicated this round %s%s",
                         io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(sum),
                         ok4 ? "" : L.s("（分类合计不一致，请反馈）",
                                 " (category sum mismatch - please report)")));
@@ -10297,21 +10297,27 @@ public class MainActivity extends Activity {
         flowChevron.setScaleType(ImageView.ScaleType.FIT_CENTER);
         flowChevron.setImageDrawable(new io.github.wlmosv_png.wpaforge.ui.StatusIcons(
                 io.github.wlmosv_png.wpaforge.ui.StatusIcons.Kind.CHEVRON_RIGHT, ACCENT));
-        flowChevron.setPadding(px(10), px(10), px(12), px(10));
         flowChevron.setBackground(null);
         flowChevron.setClickable(true);
         flowChevron.setFocusable(true);
         flowChevron.setOnClickListener(v -> toggleStream());
-        // 1.9.68：padding 会把 20dp 画布挤小（padding 吃掉了绘制区），
-        // 所以图标用 22dp 画布 + 6dp 内边距，点击区仍由外层撑到 ~34dp。
-        // 1.9.68：padding 会**吃掉绘制区**（22dp 画布 + 6/8dp padding → 实绘只剩 ~8dp，
-        // 真机上显示成一个小逗号）。现在画布 26dp、padding 只留触控用的 2dp，
-        // 箭头本体占满画布 —— 与「攻击流」标题字等高。
-        // 1.9.68：箭头不能有左内边距 —— 它要与上方「正在尝试」「66668888」
-        // 以及下方攻击流日志左边缘落在同一条线上。
-        flowChevron.setPadding(0, px(2), px(2), px(2));
+        /*
+         * 1.9.69：箭头的尺寸/内边距一次说清，不再各调各的。
+         *
+         *   · 视图 13dp 宽 × 26dp 高（窄高）。箭头是窄高图形，
+         *     尺寸由**高度**决定（见 StatusIcons.CHEVRON_RIGHT），
+         *     所以宽度只要够放下墨迹，不必再白占 26dp。
+         *   · padding 全 0：padding 吃的是**绘制区**。历史上
+         *     6/8dp padding 把 22dp 画布挤到实绘 8dp，真机上箭头成了个小逗号。
+         *   · 图标把墨迹左缘画在自己的左缘上 → 「视图左缘 == 墨迹左缘」。
+         *
+         * 三者叠加：箭头墨迹、下方标题、上方「正在尝试 / 候选大字 / 历史候选」
+         * 全部落在卡片内容左缘同一条竖线上。
+         * 点击区不靠 padding 撑：整行 flowHeader 本来就可点，箭头只是其中一个开关。
+         */
+        flowChevron.setPadding(0, 0, 0, 0);
         LinearLayout.LayoutParams fcvp = new LinearLayout.LayoutParams(
-                Math.round(26 * dp), Math.round(26 * dp));
+                Math.round(13 * dp), Math.round(26 * dp));
         fcvp.gravity = Gravity.CENTER_VERTICAL;
         flowHeader.addView(flowChevron, fcvp);
 
@@ -11042,6 +11048,90 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    /* ─────────── 1.9.69 统一进度模型（所有进度控件只读这几个字段）───────────
+     *
+     * 用户验收标准：进度百分比、进度条、剩余时间必须完全一致。
+     * 做法是**只在这里算一次**，别处一律读结果：
+     *   · pgExec   已执行（执行游标，P 坐标；= 真正跑过多少条）
+     *   · pgExcluded 已排除（DIRECT 边界；= 有证据判错的条数）
+     *   · pgRecheck 待复验（有尝试但没拿到有效结论，下次会再试）
+     *   · pgDictSize 字典总条数（唯一分母）
+     *   · pgPhase/pgPhaseTotal/pgPhaseDone 当前阶段（1 第一轮 / 2 复验轮）
+     */
+    private int pgExec = 0;
+    private int pgExcluded = 0;
+    private int pgRecheck = 0;
+    private int pgPhase = 1;
+    private int pgPhaseTotal = 0;
+    private int pgPhaseDone = 0;
+    private int pgDictSize = 0;
+
+    /** 从任务对象 + 引擎回调同步模型字段（纯赋值，不算数、不碰 View）。 */
+    private void syncProgressModel(int liveTested) {
+        io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task t = runningTaskForProgress();
+        if (t != null) {
+            pgExec = Math.max(t.execIndex >= 0 ? t.execIndex : 0, Math.max(0, t.completedCount()));
+            pgExcluded = Math.max(0, t.offset);
+            pgRecheck = t.recheckCount();
+            pgPhase = t.phase;
+            pgDictSize = t.dictSize;
+        } else {
+            pgExec = Math.max(pgExec, Math.max(0, liveTested));
+        }
+        if (pgPhase == 2 && pgPhaseTotal > 0) {
+            // 复验轮的“已执行”按阶段算，别把第一轮的条数又加一遍
+            pgExec = Math.max(0, pgPhaseDone);
+        }
+    }
+
+    /** 当前阶段 {done, total} —— 进度条 / 百分比 / 剩余时间共用这一对。 */
+    private int[] progressPair() {
+        if (pgPhase == 2 && pgPhaseTotal > 0) {
+            return new int[]{Math.max(0, pgPhaseDone), pgPhaseTotal};
+        }
+        int total = pgDictSize > 0 ? pgDictSize : 0;
+        return new int[]{Math.max(0, pgExec), total};
+    }
+
+    /** 「已试 / 已排除 / 待复验 / 共」四个数 —— 唯一渲染点（1.9.69）。 */
+    private void renderCountsLine() {
+        if (countsLineView == null) return;
+        int total = pgDictSize > 0 ? pgDictSize : Math.max(0, lastTotal);
+        String phaseTag = pgPhase == 2
+                ? L.s("（复验轮 " + pgPhaseDone + "/" + pgPhaseTotal + "）",
+                      " (recheck " + pgPhaseDone + "/" + pgPhaseTotal + ")")
+                : "";
+        countsLineView.setText(L.f("已试 %s 条 · 已排除 %s 条 · 待复验 %s 条 / 共 %s 条%s",
+                "tried %s · ruled out %s · pending %s / of %s%s",
+                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgExec),
+                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgExcluded),
+                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgRecheck),
+                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(total),
+                phaseTag));
+    }
+
+    /** 当前 RUNNING 的任务 —— **进度口径的唯一来源**（1.9.69）。
+     *
+     * <p>进度卡、进度条、任务卡三处显示「已试多少 / 共多少」时都从这里取，
+     * 数字由 {@code Task.completedCount()} 统一算出，分母固定 {@code dictSize}。
+     * 没有在跑的任务（空闲 / 已结束）返回 {@code null}，调用方退回实时回调值。
+     */
+    private io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task runningTaskForProgress() {
+        try {
+            if (queueCache != null) {
+                for (io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task t : queueCache) {
+                    if (t != null
+                            && t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.RUNNING) {
+                        return t;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // 展示用辅助：任何异常都不该影响破解主流程
+        }
+        return null;
+    }
+
     private void hideResultCard() {
         if (resultCard != null) resultCard.setVisibility(View.GONE);
         /* **不重置候选区标题**。
@@ -11717,15 +11807,24 @@ public class MainActivity extends Activity {
             // onProgress 用的 tested 是两套计数，交替刷新会让进度条来回跳。
             // 统一由 onProgress 负责，这里只报当前在试什么。
             ui.post(() -> {
+                /* 1.9.69：新一轮（含点「继续」续跑）一开口，先把上一轮的结算卡收掉。
+                 * 旧逻辑只在「出现另一条 RUNNING 任务」时才收卡，同一个任务续跑时
+                 * taskId 不变 → 收卡分支永不触发 → 页面上同时挂着
+                 * 「收尾完成 · 原来的网络已写回」与「正在运行 1.8%」（用户截图复现）。 */
+                if (resultCard != null && resultCard.getVisibility() == View.VISIBLE) {
+                    hideResultCard();
+                }
                 curCandIndex = index;
                 // 总条数在第一条候选开始时就已经确定（服务传进来的 total），
                 // 这里只是把它显示出来 —— 不额外查询、不重新统计。
-                if (countsLineView != null && total > 0) {
-                    countsLineView.setText(L.f("已执行 %s  /  总数 %s",
-                            "tried %s  /  total %s",
-                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(lastTested),
-                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(total)));
-                }
+                /* 1.9.69：不再用「上一次 onProgress 的 lastTested」配「计划剩余条数」
+                 * 现拼一行 —— 那正是「6 / 332」的出处（分子是上一轮的、分母是计划口径，
+                 * 与任务卡的 44 / 336 天生对不上）。统一交给 runningTaskForProgress()。 */
+                syncProgressModel(lastTested);
+                int[] pair0 = progressPair();
+                final int done0 = pair0[0];
+                final int denom0 = pair0[1] > 0 ? pair0[1] : total;
+                renderCountsLine();
                 renderProgressCardState();
                 // 方案 A：候选不再塞在进度条脚下的小字里，
                 // 而是独立的「正在试」区（等宽大字 + 上两条）。
@@ -11735,12 +11834,15 @@ public class MainActivity extends Activity {
                     connectProgress.setVisibility(View.VISIBLE);
                     // 首帧也得给个形：stages 为空时 onMeasure 只给 dp(20)，
                     // 轨道画不全（表现为「第一条候选没有进度条」）。
-                    float p = total > 0 ? (float) (index - 1) / total : 0f;
+                    /* 1.9.69：首帧的进度条也必须用统一口径（done0 / denom0）。
+                     * 原来这里拿 onAttempt 的 index-1 与「计划剩余条数」算，
+                     * 于是同一屏出现「15.5%」（大字）与「1.2%」（轨道标签）两个百分比。 */
+                    float p = denom0 > 0 ? (float) done0 / denom0 : 0f;
                     java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> s0 =
                             new java.util.ArrayList<>();
                     s0.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
                             p, io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                    .percentLabel(index - 1, total)));
+                                    .percentLabel(done0, denom0)));
                     connectProgress.setStages(s0);
                     connectProgress.setDone(false);
                     // **不要在这里 setText** —— 进度文字只归 onProgress 管。
@@ -11875,20 +11977,74 @@ public class MainActivity extends Activity {
             });
         }
 
+        /**
+         * 执行游标 / 待复验 / 阶段（1.9.69）。
+         *
+         * <p>引擎每执行完一条就会调它一次，所以「已试」是**真执行位置**，
+         * 不是靠 onProgress 那些只在有结论时才涨的数字拼出来的。
+         * 复验轮不产生 onProgress（它不是第一轮的进度），进度只能从这里来；
+         * 此时**不显示剩余时间** —— 样本不足时编一个 ETA 属于误导。
+         */
         @Override
+        public void onCursorState(int execIndexP, int recheckCount, int phase,
+                                  int phaseTotal, int phaseDone) {
+            ui.post(() -> {
+                pgExec = Math.max(0, execIndexP);
+                pgRecheck = Math.max(0, recheckCount);
+                pgPhase = phase == 2 ? 2 : 1;
+                if (pgPhase == 2) {
+                    pgPhaseTotal = phaseTotal;
+                    pgPhaseDone = phaseDone;
+                }
+                renderCountsLine();
+                if (connectProgress != null && pgPhase == 2 && pgPhaseTotal > 0) {
+                    connectProgress.setVisibility(View.VISIBLE);
+                    java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
+                            new java.util.ArrayList<>();
+                    st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
+                            (float) pgPhaseDone / pgPhaseTotal,
+                            io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                    .percentLabel(pgPhaseDone, pgPhaseTotal)));
+                    connectProgress.setStages(st);
+                    connectProgress.setDone(false);
+                    connectProgress.setText(L.s("复验轮 " + pgPhaseDone + " / " + pgPhaseTotal,
+                            "Recheck " + pgPhaseDone + " / " + pgPhaseTotal), "");
+                }
+            });
+        }
+
         public void onProgress(int tested, int total, double rate, long etaMs) {
             ui.post(() -> {
                 lastTested = tested;
                 lastTotal = total;
+                /* 1.9.69：进度口径统一（用户截图「下面和上面对不上」）。
+                 *
+                 * 症状：同一屏上进度卡写「已执行 6 / 总数 332」，任务卡写
+                 * 「已试 44 / 336」—— 分子分母都不一样，谁也说不清哪个算数。
+                 *
+                 * 根因是两套计数各写各的：
+                 *   · 引擎 onProgress 传的是「本轮起点 + 本轮已试」的绝对位置；
+                 *   · 任务卡用 Task.completedCount()（续跑边界 + 历次已试）。
+                 * 两者都是真实进度的**下界**，却从来没人把它们放在一起算。
+                 *
+                 * 现在只算一次：done = max(两者)，分母固定为**字典总条数**。
+                 * 进度卡、进度条、任务卡三处共用这一个数，不可能再打架。
+                 */
+                io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task liveTask = runningTaskForProgress();
+                if (liveTask != null) liveTask.liveRoundTested = tested;
+                syncProgressModel(tested);
+                final int[] pair = progressPair();
+                final int done = pair[0];
+                final int denom = pair[1] > 0 ? pair[1] : total;
                 if (connectProgress == null) return;
                 connectProgress.setVisibility(View.VISIBLE);
-                float outer = total > 0 ? (float) tested / total : 0f;
+                float outer = denom > 0 ? (float) done / denom : 0f;
                 // 方案 A：进度只留一条轨道（原来三条轨道把同一件事说了三遍），
                 // 主视觉是「剩多久」，副标题是「已试多少 · 多快」。
                 java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
                         new java.util.ArrayList<>();
                 st.add(new io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage(
-                        outer, io.github.wlmosv_png.wpaforge.ui.CrackHud.percentLabel(tested, total)));
+                        outer, io.github.wlmosv_png.wpaforge.ui.CrackHud.percentLabel(done, denom)));
                 connectProgress.setStages(st);
                 connectProgress.setDone(false);
                 /* 进度条上只留「还剩多久」这一行大字；脚注不再重复写。
@@ -11902,17 +12058,13 @@ public class MainActivity extends Activity {
                 // **不重新计算任何东西** —— tested/total/rate/etaMs 全部是服务
                 // 在这次回调里传进来的原始值，格式化仍走既有的 CrackHud。
                 // 速率/剩余拿不到时显示「待测/待估」，不编一个数字出来。
-                if (countsLineView != null) {
-                    countsLineView.setText(L.f("已执行 %s  /  总数 %s",
-                            "tried %s  /  total %s",
-                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(tested),
-                            io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(total)));
-                }
+                // 1.9.69：四个数只在 renderCountsLine() 里算一次
+                renderCountsLine();
                 if (statPctView != null) {
                     boolean known = total > 0;
                     statPctView.setText(known
                             ? io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                    .percentLabel(tested, total)
+                                    .percentLabel(done, denom)
                             : "—");
                     statPctView.setTextColor(known ? ACCENT : AmberTheme.TEXT_FAINT);
                 }
@@ -11926,7 +12078,7 @@ public class MainActivity extends Activity {
                     statEtaView.setText("");
                 }
                 // 候选跑完了但还没收到"结束"回调 → 收尾中（恢复临时网络配置等）
-                boolean nowFinishing = total > 0 && tested >= total;
+                boolean nowFinishing = denom > 0 && done >= denom;
                 if (nowFinishing && !finishingNow) {
                     // 第一次进入收尾：把进度条收掉。
                     // 它已经没有信息可给（100% 了），留着只会继续放流动效 ——
@@ -12261,7 +12413,9 @@ public class MainActivity extends Activity {
                 io.github.wlmosv_png.wpaforge.audit.DictRule.formatCount(task.dictSize),
                 task.completedCount(), task.dictSize,
                 task.testedThisRun > 0
-                    ? L.f("   · 本轮 %d 条", "   · %d this run", task.testedThisRun) : "",
+                    ? L.f("   · 本次累计 %d 条 · 已排除 %d 条",
+                            "   · %d so far · %d ruled out",
+                            task.testedThisRun, Math.max(0, task.offset)) : "",
                 hit,
                 missCaveat(task)));
         meta.setTextSize(AmberTheme.FS_SMALL);

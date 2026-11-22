@@ -12721,8 +12721,10 @@ public class MainActivity extends Activity {
                 || task.missInconclusive <= 0) {
             return "";
         }
-        return L.f("\n未命中 · 其中 %d 条无结论（未能证实密码错；建议核对环境后重跑）",
-                "\nno match · %d inconclusive (not proof of a wrong passphrase)",
+        // 1.9.69：旧文案把正常未命中写成「无结论…建议核对环境后重跑」——
+        // 用户会读成「软件出问题了」。改成中性陈述：试过了、没中，就这一句。
+        return L.f("\n未命中 · 这 %d 条这次没拿到明确答复，会自动再试",
+                "\nno match · %d got no clear answer; will retry",
                 task.missInconclusive);
     }
 

@@ -1892,7 +1892,21 @@ public class CrackService extends Service {
                         p.state.name()));
                 plan = null;
                 planFileKey = "";
-                LAST_PLAN_SUMMARY = p.summary();
+                // 1.9.69 修复：终态计划**不接管**，就不该在界面上留痕。
+                // 旧代码把 p.summary() 写进静态字段，而 UI 只要字段非空就渲染 →
+                // 用户切回「单字典」模式后，屏幕上仍挂着「计划第 2/2 本 · 已命中」，
+                // 与同一屏的「单字典 · 待执行 336」直接打架（真机截图）。
+                // 终态结论由结算卡/历史负责，这里清空。
+                LAST_PLAN_SUMMARY = "";
+                // 1.9.69 修复：终态计划的**残留 PENDING 计划任务**也必须作废。
+                // 否则它们躺在队列里，下次「开始」会被当普通任务执行
+                // （审计点名场景：命中之后残留 PENDING 被顺手跑掉）。
+                int killed = TaskQueue.stopPlanTasks(this);
+                if (killed > 0) {
+                    log(L.s("已作废 " + killed + " 条残留的计划任务（计划已结束）",
+                            "voided " + killed + " leftover plan task(s); plan already finished"));
+                    notifyQueue();
+                }
                 return false;
             }
             // 上个进程死在执行中（盘上 RUNNING）→ 归一为可解释的中断状态
@@ -1907,6 +1921,7 @@ public class CrackService extends Service {
                         p.targetKey, key));
                 plan = null;
                 planFileKey = "";
+                LAST_PLAN_SUMMARY = "";   // 不接管 → 不留痕（同上）
                 return false;
             }
             planFileKey = key;
@@ -1930,6 +1945,7 @@ public class CrackService extends Service {
                     String.valueOf(e)));
             plan = null;
             planFileKey = "";
+            LAST_PLAN_SUMMARY = "";
             return false;
         }
     }

@@ -12637,7 +12637,13 @@ public class MainActivity extends Activity {
         // 与「第 2/2 本 · 当前…」是同一件事说了两遍，信息密度翻倍还互相打架。
         // 计划模式下只保留下面那段结构化文案；非计划模式才用 summary。
         StringBuilder pb = new StringBuilder();
+        // 1.9.69：单字典模式**一律不显示计划行**。
+        // 旧实现只在非计划模式 append summary，但服务端残留的 LAST_PLAN_SUMMARY
+        // 仍会被读到，于是单字典运行中冒出「计划第 2/2 本 · 已命中」（真机截图）。
         if (!usePlanMode && plan != null && !plan.isEmpty()) pb.append(plan);
+        if (!usePlanMode) {
+            pb.setLength(0);   // 单字典：清掉任何计划残留
+        }
         if (sc + su > 0) {
             if (pb.length() > 0) pb.append("\n");
             pb.append(L.s("跳过 " + (sc + su) + " 条（此前已试过 " + sc
@@ -12645,7 +12651,8 @@ public class MainActivity extends Activity {
                     "skipped " + (sc + su) + " (" + sc + " tried before · " + su + " undetermined)"));
         }
         // 计划模式：第几本 / 当前 / 下一本 / 整体进度（单独一行，不与其他信息混排）
-        if (usePlanMode) {
+        // 1.9.69：**必须** usePlanMode 为真才渲染 —— 单字典模式下绝不显示计划信息。
+        if (usePlanMode && livePlan() != null) {
             CrackService svc = liveService();
             io.github.wlmosv_png.wpaforge.audit.DictPlan live =
                     svc == null ? null : svc.planForDisplay();

@@ -1,5 +1,27 @@
-<!-- GitHub Release 正文。标题填：WPAForge 1.9.68 · 破解页体验专项：未命中口径统一 + 图标与比例重排 -->
-<!-- tag: v1.9.68   target: main -->
+<!-- GitHub Release 正文。标题填：WPAForge 1.9.69 · 续跑专项加固：恢复状态有效性校验 + 45 项自动化 -->
+<!-- tag: v1.9.69   target: main -->
+
+---
+
+# 续跑专项加固（1.9.69 / 165）
+
+在 1.9.69 已有的**执行游标 + 待复验队列 + 两轮复验**之上，补齐「恢复状态是否仍对应当前
+候选集合」的校验，并加自动化验证。
+
+- 新增 `ResumeGuard`：用「有序候选序列 + 目标键 + 强制重跑」的签名判断恢复状态是否有效；
+  字典内容/顺序/目标派生/智能排序/线索/目标网络/强制重跑任一变化 → 旧游标作废、安全重建
+  （已由 DIRECT 证实错误的仍被跳过，**未证实的一定重跑**）。
+- 复验队列恢复按 P 坐标校验：越界剔除、去重、升序、相位归一。
+- 换字典/自动清史/命中共 3 处同步作废续跑状态。
+- 新增 `ResumeRecheckTest`（45 项）：全 NONE/UNKNOWN/INCOMPLETE/NETWORK_AUTH_FAIL 进复验、
+  DIRECT 不进、迟到成功、暂停/停止、复验中断、phase=2 直接复验、字典变化失效、
+  游标越界、持久化往返、K→P 换算。
+
+> 已知：本版 `run` 与 `onCursor` 语义由「DIRECT-only 游标」升级为「执行游标 + 复验」，
+> 一部分旧测试（B3ResumeSkip/CandidateCursorResume/P0ResumeEndToEnd/ResumeMatrix/
+> P05NoExclusion/InfRetryRound/AdaptiveWindow/DictExecChain/CrackPageLayout）仍按旧契约断言
+> 「NONE 不复验 / 尝试数=候选数」，与复验需求冲突，需统一迁移；`CrackCountUnifyTest`
+> 反映的进度同口径 UI（done/denom、已排除列）尚未落到生产界面。二者均非本版加固引入。
 
 ## 同一个结果，四个地方四种说法 —— 这一版把它们统一
 

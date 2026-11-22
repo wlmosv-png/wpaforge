@@ -969,53 +969,46 @@ public class MainActivity extends Activity {
      * 数字仍来自 {@code VerdictTally}，口径没变，只是展示合并。
      */
     private void renderStats() {
-        // 1.9.69（口径统一，全部累计，单一来源）：
-        //   已确认成功 = pgHit
-        //   已证实错误 = pgExcluded（TriedSet.size，累计）
-        //   未命中     = 已试 - 已排除 - 待复验 - 成功（推导值，保证四格自洽）
-        //   环境异常   = lastTallyEnvErrors（环境类，偶发）
-        int hit = pgHit;
-        int confirmed = Math.max(0, pgExcluded);
-        // 1.9.69：未命中 = 引擎实时计数（跑一条就 +1），不再用减法推导。
-        // 减法会让无结论的候选被「待复验」吃掉 → 未命中长期不涨（真机 45 已试、未命中仍 7）。
+        /* 1.9.69 用户口径（**纯展示层归类，判定链一行未改**）：
+         *   破解成功 = SUCCESS（DIRECT）
+         *   未命中   = AUTH_FAIL(DIRECT/INFERRED) + UNKNOWN + INCOMPLETE
+         *              + TERMINATED_UNKNOWN + NETWORK_AUTH_FAIL —— 「试过但没中」
+         *   环境异常 = ERROR / TARGET_GONE（通道或环境真故障，唯一需要用户处理的一类）
+         *
+         * 底层 verdict / EvidenceGrade / TriedSet 写入条件 / cursor 推进条件 /
+         * 复验队列与持久化全部保持不变，这里只是把它们**分组显示**。
+         *
+         * 恒等式：已试 = 破解成功 + 未命中 + 环境异常（未命中含「待复验」，不再二次扣除）。
+         */
+        final int hit = Math.max(0, pgHit);
         final int miss = Math.max(0, pgNoMatch);
-        int envErrors = lastTallyEnvErrors;
+        final int envErrors = Math.max(0, lastTallyEnvErrors);
+
         if (statHitView != null) {
             statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(hit));
             statHitView.setTextColor(hit > 0 ? OK_GREEN : AmberTheme.TEXT_FAINT);
         }
-        if (statWrongView != null) {
-            statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(confirmed));
-            statWrongView.setTextColor(confirmed > 0 ? DANGER : AmberTheme.TEXT_FAINT);
+        if (statWrongView != null) {   // 第二格 = 未命中
+            statWrongView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(miss));
+            statWrongView.setTextColor(miss > 0 ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_FAINT);
         }
-        if (statMissView != null) {
-            // 这一格现在就是「未命中」（不再是「连接未完成」）
-            statMissView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(miss));
-            statMissView.setTextColor(miss > 0
-                    ? AmberTheme.TEXT_DIM : AmberTheme.TEXT_FAINT);
+        if (statMissView != null) {    // 第三格 = 环境异常（布局里 statEnvView 用同值）
+            statMissView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(envErrors));
+            statMissView.setTextColor(envErrors > 0 ? DANGER : AmberTheme.TEXT_FAINT);
         }
         if (statEnvView != null) {
-            // 第四格：环境异常（单列，只有 >0 时才醒目）
             statEnvView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(envErrors));
             statEnvView.setTextColor(envErrors > 0 ? DANGER : AmberTheme.TEXT_FAINT);
         }
         if (statSumView != null) {
-            int sum = hit + confirmed + miss + envErrors;
+            // 合计只写一句：本屏三个数加起来就是「已判定」的候选数。
+            final int sum = hit + miss + envErrors;
             if (sum <= 0) {
                 statSumView.setVisibility(View.GONE);
             } else {
-                // 两个口径都要写清楚（用户反馈「暂停再跑后未命中从头算」的根因就是只有一套数）：
-                //   累计已判定 = 跨续跑累加（pgExec 推导，四格自洽）
-                //   本轮已判定 = 本次 run 的引擎计数（VerdictTally，每轮重置）
-                int roundSum = Math.max(0, lastTallyExecuted) + Math.max(0, lastTallyHit);
-                // 双口径并列（用户反馈「暂停再跑后未命中从头算」就是只有一套数造成的误解）：
-                //   本轮已判定 = 本次 run 的引擎计数（每轮重置）
-                //   累计已判定 = 跨续跑累加（四格自洽推导）
-                // 1.9.69：只留一句（不再并列三个口径），但保留「本轮已判定」措辞。
                 statSumView.setText(L.f("本轮已判定 %s 条%s",
                         "adjudicated this run %s%s",
-                        io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(roundSum),
-                        ""));
+                        io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(sum), ""));
                 statSumView.setTextColor(AmberTheme.TEXT_FAINT);
                 statSumView.setVisibility(View.VISIBLE);
             }
@@ -10120,15 +10113,17 @@ public class MainActivity extends Activity {
         statWrongView.setTextColor(AmberTheme.TEXT_FAINT);
         statMissView.setTextColor(AmberTheme.TEXT_FAINT);
         statEnvView.setTextColor(AmberTheme.TEXT_FAINT);
-        final int statCols = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel.gridColumns(
-                getResources().getConfiguration().screenWidthDp);
+        // 三格固定一行（不再按宽度拆 2 列）：2+1 断行会让「环境异常」单独占半行，
+        // 视觉上像缺一块（用户截图里的失衡感）。
+        final int statCols = 3;
         java.util.List<LinearLayout> statCells = new java.util.ArrayList<>();
+        // 1.9.69 用户口径：只留三项 —— 破解成功 / 未命中 / 环境异常（一行三格）。
+        // 「已证实错误」并入「未命中」（对用户同义：这条密码不对），
+        // 技术上仍单独计数（TriedSet/已排除），只是不再上主屏。
         statCells.add(AmberTheme.statColumn(this, dp,
-                L.s("已确认成功", "VERIFIED"), statHitView));
+                L.s("破解成功", "CRACKED"), statHitView));
         statCells.add(AmberTheme.statColumn(this, dp,
-                L.s("已证实错误", "PROVEN WRONG"), statWrongView));
-        statCells.add(AmberTheme.statColumn(this, dp,
-                L.s("未命中", "NO MATCH"), statMissView));
+                L.s("未命中", "NO MATCH"), statWrongView));
         statCells.add(AmberTheme.statColumn(this, dp,
                 L.s("环境异常", "ENV ERROR"), statEnvView));
         LinearLayout curStatRow = null;
@@ -10747,9 +10742,23 @@ public class MainActivity extends Activity {
         }
         // 阶段说明：来自 CrackPhaseView.hint（只描述已有事实）
         if (phaseHintView != null) {
-            phaseHintView.setText(io.github.wlmosv_png.wpaforge.ui.CrackPhaseView
-                    .hint(phase, L.isZh()));
-            phaseHintView.setVisibility(View.VISIBLE);
+            /* 1.9.69：技术性阶段说明不再上主屏（用户反馈「信息太密、看不懂」）。
+             *
+             * 但**空闲态例外**：那时统计行全被收起，卡片只剩一行大字，
+             * 上方控件大、下方空白 → 上下失衡（用户截图）。这里给一句
+             * 「下一步该做什么」的引导，把卡片配平，也顺手回答「现在该干嘛」。
+             * 其余状态（运行/暂停/命中/停止）一律不显示解释性文案。 */
+            boolean idle = (st != TaskQueue.State.RUNNING
+                    && st != TaskQueue.State.PAUSED
+                    && st != TaskQueue.State.PENDING
+                    && lastOutcomeLabel.isEmpty());
+            if (idle) {
+                phaseHintView.setText(L.s("选好目标网络后，点下方「开始破解」",
+                        "Pick a target, then tap Start"));
+                phaseHintView.setVisibility(View.VISIBLE);
+            } else {
+                phaseHintView.setVisibility(View.GONE);
+            }
         }
         // 持续输出信号：跑起来时状态大字自己呼吸（停下来立刻恢复，不留半透明）
         setRunPulse(st == TaskQueue.State.RUNNING);

@@ -62,17 +62,18 @@ public final class UiRefactorTest {
         ok("① 切换折叠后回到最新（fullScroll FOCUS_DOWN 在 toggleStream 内）",
                 ma.contains("streamScroll.post(() -> streamScroll.fullScroll"), "缺失");
 
-        // ---- ② 统计四列 ----
-        // 1.9.66：四项核心统计改为「已确认成功 / 已证实错误 / 连接未完成 / 尚无有效判定」，
+        // ---- ② 统计三列（1.9.69 用户口径）----
+        // 「已证实错误」并入「未命中」（对用户同义：这条密码不对）；
+        // 技术上仍单独计数（TriedSet/已排除），只是不再上主屏。
         // 「已执行 / 总数」下沉为进度层的一行计数（countsLineView）。
-        for (String label : new String[]{"已确认成功", "已证实错误", "未命中", "环境异常"}) {
+        for (String label : new String[]{"破解成功", "未命中", "环境异常"}) {
             ok("② 统计列存在: " + label, ma.contains("\"" + label + "\""), label);
         }
         ok("② 已执行/总数 下沉为进度层计数行", ma.contains("countsLineView"), "缺失");
         ok("② 有独立的环境异常视图（statEnvView）", ma.contains("statEnvView"), "缺失");
-        ok("② 有独立的已证实错误视图（statWrongView）", ma.contains("statWrongView"), "缺失");
-        ok("② 「已证实错误」用危险色、非零才点亮",
-                ma.contains("statWrongView.setTextColor(confirmed > 0 ? DANGER"), "配色缺失");
+        ok("② 有独立的未命中视图（statWrongView 承载）", ma.contains("statWrongView"), "缺失");
+        ok("② 「未命中」用中性色、非零才点亮（不是危险色：正常过程）",
+                ma.contains("statWrongView.setTextColor(miss > 0 ? AmberTheme.TEXT_DIM"), "配色缺失");
 
         // ---- ③ 实时分布来自引擎唯一统计入口 ----
         ok("③ UiCallback 有 onTally 回调", cs.contains("default void onTally("), "缺失");

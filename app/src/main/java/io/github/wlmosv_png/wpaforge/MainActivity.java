@@ -12323,10 +12323,11 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // 任务多于 1 个才显示汇总条
-        if (queueCache.size() > 1) {
-            queueBox.addView(summaryBar());
-        }
+        /* 1.9.69：**不再显示汇总条**。
+         *
+         * 真机验收：多个任务时顶部出现一条横跨整行的「✓ 2」，视觉上像错位的横幅，
+         * 而且它表达的信息（有几条已完成/暂停）在下面每张任务卡的徽章里已经写了，
+         * 属于重复。用户反馈「信息太密」，这里直接去掉，只留任务卡本身。 */
         for (TaskQueue.Task task : queueCache) {
             queueBox.addView(taskCard(task));
         }

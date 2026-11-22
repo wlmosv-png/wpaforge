@@ -1011,17 +1011,11 @@ public class MainActivity extends Activity {
                 // 双口径并列（用户反馈「暂停再跑后未命中从头算」就是只有一套数造成的误解）：
                 //   本轮已判定 = 本次 run 的引擎计数（每轮重置）
                 //   累计已判定 = 跨续跑累加（四格自洽推导）
-                statSumView.setText(
-                        L.f("本轮已判定 %s 条%s",
-                                "adjudicated this run %s%s",
-                                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(roundSum),
-                                "")
-                        + L.f(" · 累计已判定 %s 条 · 待复验 %s 条",
-                                " · total %s · pending re-verify %s",
-                                io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                        .thousands(confirmed + miss + hit),
-                                io.github.wlmosv_png.wpaforge.ui.CrackHud
-                                        .thousands(Math.max(0, pgRecheck))));
+                // 1.9.69：只留一句（不再并列三个口径），但保留「本轮已判定」措辞。
+                statSumView.setText(L.f("本轮已判定 %s 条%s",
+                        "adjudicated this run %s%s",
+                        io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(roundSum),
+                        ""));
                 statSumView.setTextColor(AmberTheme.TEXT_FAINT);
                 statSumView.setVisibility(View.VISIBLE);
             }
@@ -1045,12 +1039,11 @@ public class MainActivity extends Activity {
             breakdownView.setVisibility(View.GONE);
             return;
         }
-        breakdownView.setText(L.s(
-                "另有 " + io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(recheck)
-                        + " 条这次没拿到明确答复（路由器响应慢/信号弱），会自动再试一遍",
-                recheck + " got no clear answer this time (slow AP / weak signal); will retry"));
-        breakdownView.setTextColor(AmberTheme.TEXT_FAINT);
-        breakdownView.setVisibility(View.VISIBLE);
+        // 1.9.69：这段解释**不再上屏**。
+        // 用户反馈：① 信息太密；② 承诺「会自动再试一遍」用户无法验证，反而像推诿。
+        // 机制仍然存在（复验轮照跑），只是不在这里解释 —— 详情/日志里可查。
+        breakdownView.setVisibility(View.GONE);
+        breakdownView.setText("");
     }
 
 
@@ -11114,11 +11107,10 @@ public class MainActivity extends Activity {
                 ? L.s("（复验轮 " + pgPhaseDone + "/" + pgPhaseTotal + "）",
                       " (recheck " + pgPhaseDone + "/" + pgPhaseTotal + ")")
                 : "";
-        countsLineView.setText(L.f("已试 %s 条 · 已确认错误 %s 条 · 稍后重试 %s 条 / 共 %s 条%s",
-                "tried %s · ruled out %s · pending %s / of %s%s",
+        countsLineView.setText(L.f("已试 %s 条 · 已确认错误 %s 条 / 共 %s 条%s",
+                "tried %s · ruled out %s / of %s%s",
                 io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgExec),
                 io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgExcluded),
-                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgRecheck),
                 io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(total),
                 phaseTag));
     }
@@ -12606,8 +12598,11 @@ public class MainActivity extends Activity {
         int su = CrackService.lastSkippedUndetermined();
 
         // 第一层：计划与跳过（planLineView）
+        // 1.9.69：**不再同时打印 summary 与结构化两行** —— 用户截图里「计划第 2/2 本…」
+        // 与「第 2/2 本 · 当前…」是同一件事说了两遍，信息密度翻倍还互相打架。
+        // 计划模式下只保留下面那段结构化文案；非计划模式才用 summary。
         StringBuilder pb = new StringBuilder();
-        if (plan != null && !plan.isEmpty()) pb.append(plan);
+        if (!usePlanMode && plan != null && !plan.isEmpty()) pb.append(plan);
         if (sc + su > 0) {
             if (pb.length() > 0) pb.append("\n");
             pb.append(L.s("跳过 " + (sc + su) + " 条（此前已试过 " + sc
@@ -12624,11 +12619,15 @@ public class MainActivity extends Activity {
                 String next = (live.index + 1 < live.items.size())
                         ? live.items.get(live.index + 1).name : L.s("（最后一本）", "(last)");
                 if (pb.length() > 0) pb.append("\n");
-                pb.append(L.f("第 %d/%d 本 · 当前「%s」%s · 下一本「%s」 · 整体 %d%%",
-                        "#%d of %d · now \"%s\" %s · next \"%s\" · %d%% overall",
+                // 1.9.69：cur.dictSize 为 0（计划还没回写条数）时不要显示刺眼的 "0/0"。
+                String curProg = "";
+                if (cur != null && cur.dictSize > 0) {
+                    curProg = "  " + cur.offset + "/" + cur.dictSize;
+                }
+                pb.append(L.f("第 %d/%d 本 · 「%s」%s · 下一本「%s」 · 整体 %d%%",
+                        "#%d of %d · \"%s\"%s · next \"%s\" · %d%% overall",
                         live.displayIndex(), live.items.size(),
-                        cur == null ? "-" : cur.name,
-                        cur == null ? "" : (cur.offset + "/" + cur.dictSize),
+                        cur == null ? "-" : cur.name, curProg,
                         next, Math.round(live.progress() * 100)));
             }
         }

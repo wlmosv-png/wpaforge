@@ -976,8 +976,9 @@ public class MainActivity extends Activity {
         //   环境异常   = lastTallyEnvErrors（环境类，偶发）
         int hit = pgHit;
         int confirmed = Math.max(0, pgExcluded);
-        final int miss = Math.max(0, pgExec - Math.max(0, pgExcluded)
-                - Math.max(0, pgRecheck) - hit);
+        // 1.9.69：未命中 = 引擎实时计数（跑一条就 +1），不再用减法推导。
+        // 减法会让无结论的候选被「待复验」吃掉 → 未命中长期不涨（真机 45 已试、未命中仍 7）。
+        final int miss = Math.max(0, pgNoMatch);
         int envErrors = lastTallyEnvErrors;
         if (statHitView != null) {
             statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(hit));
@@ -1006,8 +1007,7 @@ public class MainActivity extends Activity {
                 // 两个口径都要写清楚（用户反馈「暂停再跑后未命中从头算」的根因就是只有一套数）：
                 //   累计已判定 = 跨续跑累加（pgExec 推导，四格自洽）
                 //   本轮已判定 = 本次 run 的引擎计数（VerdictTally，每轮重置）
-                int roundSum = Math.max(0, lastTallyHit) + Math.max(0, lastTallyConfirmed)
-                        + Math.max(0, lastTallyExecuted - lastTallyHit - lastTallyConfirmed);
+                int roundSum = Math.max(0, lastTallyExecuted) + Math.max(0, lastTallyHit);
                 // 双口径并列（用户反馈「暂停再跑后未命中从头算」就是只有一套数造成的误解）：
                 //   本轮已判定 = 本次 run 的引擎计数（每轮重置）
                 //   累计已判定 = 跨续跑累加（四格自洽推导）
@@ -1046,9 +1046,9 @@ public class MainActivity extends Activity {
             return;
         }
         breakdownView.setText(L.s(
-                "待复验 " + io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(recheck)
-                        + " 条（本次未取得有效结论，稍后复验）",
-                recheck + " pending re-verify (no verdict yet, retried later)"));
+                "另有 " + io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(recheck)
+                        + " 条这次没拿到明确答复（路由器响应慢/信号弱），会自动再试一遍",
+                recheck + " got no clear answer this time (slow AP / weak signal); will retry"));
         breakdownView.setTextColor(AmberTheme.TEXT_FAINT);
         breakdownView.setVisibility(View.VISIBLE);
     }
@@ -10148,7 +10148,12 @@ public class MainActivity extends Activity {
                 if (ci > 0) rlp.topMargin = px(14);
                 statRow.addView(curStatRow, rlp);
             }
-            curStatRow.addView(statCells.get(ci), weight());
+            // 1.9.69：每格必须**占满**自己的份额（MATCH_PARENT + weight=1），
+            // 否则内容宽度只有 WRAP_CONTENT，右侧会留一大块空白（用户截图圈出的地方）。
+            LinearLayout cell = statCells.get(ci);
+            cell.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            curStatRow.addView(cell);
         }
         LinearLayout.LayoutParams srlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -11072,6 +11077,7 @@ public class MainActivity extends Activity {
     private int pgPhaseDone = 0;
     private int pgDictSize = 0;
     private int pgHit = 0;
+    private int pgNoMatch = 0;   // 1.9.69：实时「未命中」（跑一条 +1）
 
     /** 从任务对象 + 引擎回调同步模型字段（纯赋值，不算数、不碰 View）。 */
     private void syncProgressModel(int liveTested) {
@@ -11108,7 +11114,7 @@ public class MainActivity extends Activity {
                 ? L.s("（复验轮 " + pgPhaseDone + "/" + pgPhaseTotal + "）",
                       " (recheck " + pgPhaseDone + "/" + pgPhaseTotal + ")")
                 : "";
-        countsLineView.setText(L.f("已试 %s 条 · 已排除 %s 条 · 待复验 %s 条 / 共 %s 条%s",
+        countsLineView.setText(L.f("已试 %s 条 · 已确认错误 %s 条 · 稍后重试 %s 条 / 共 %s 条%s",
                 "tried %s · ruled out %s · pending %s / of %s%s",
                 io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgExec),
                 io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(pgExcluded),
@@ -11972,6 +11978,13 @@ public class MainActivity extends Activity {
         }
 
         @Override
+        public void onTallyNoMatch(int noMatch) {
+            ui.post(() -> {
+                pgNoMatch = Math.max(0, noMatch);
+                renderStats();
+            });
+        }
+
         public void onTallyCategorized(int suspectedWrong, int notFinished,
                                        int undecided, int envErrors) {
             ui.post(() -> {
@@ -12012,6 +12025,15 @@ public class MainActivity extends Activity {
                 }
                 renderCountsLine();
                 renderStats();
+                // 1.9.69：任务卡要**实时**跟着执行位置走（用户反馈「底下的数字不实时」）。
+                // 只更新缓存对象 + 轻量重画，不触发磁盘读（refreshQueue 会 load）。
+                io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task live = runningTaskForProgress();
+                if (live != null) {
+                    live.execIndex = Math.max(live.execIndex, pgExec);
+                    live.excluded = Math.max(0, pgExcluded);
+                    // 不动 recheckCsv：它是落盘权威，界面只读 recheckCount()。
+                    renderQueue();
+                }
                 if (connectProgress != null && pgPhase == 2 && pgPhaseTotal > 0) {
                     connectProgress.setVisibility(View.VISIBLE);
                     java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =

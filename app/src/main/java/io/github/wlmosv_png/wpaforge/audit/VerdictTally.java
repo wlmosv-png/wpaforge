@@ -89,6 +89,17 @@ public final class VerdictTally {
     private int notFinished;
     /** 无法判断（UNKNOWN 且非环境原因）。 */
     private int undecided;
+    /**
+     * **未命中**条数（1.9.69 口径修正）：本轮「执行过、且没拿到成功」的候选数。
+     *
+     * <p>为什么必须独立成一个桶：用户要的是「跑一条，未命中就 +1」这种可感知的反馈。
+     * 旧实现让界面用 {@code 已试 - 已排除 - 待复验 - 成功} 推导，于是
+     * 无结论的候选被「待复验」抢走，未命中长期停在 7 不动（真机截图）。
+     *
+     * <p>它不是「已证实错误」：后者要求 DIRECT 证据。这里只表达
+     * 「这条试过了、这次没中」，与「还会复验」并不冲突（待复验是另一个维度）。
+     */
+    private int noMatch;
 
     public void reset() {
         confirmedFail = 0;
@@ -101,6 +112,7 @@ public final class VerdictTally {
         suspectedWrong = 0;
         notFinished = 0;
         undecided = 0;
+        noMatch = 0;
     }
 
     /**
@@ -145,6 +157,9 @@ public final class VerdictTally {
             return;
         }
         executed++;
+        // 1.9.69：每条「执行过且非成功」的候选都计入未命中（用户可感知的实时反馈）。
+        // 与「已证实错误」(DIRECT) 不冲突：未命中是「试过没中」，已证实错误是「有证据判错」。
+        noMatch++;
         // 2026-11-22：按用户可理解类别分桶（纯统计，不影响上面任何既有分支）
         if (v == CrackEngine.Verdict.AUTH_FAIL) {
             if (!EvidenceGrade.persistable(g)) suspectedWrong++;
@@ -247,6 +262,11 @@ public final class VerdictTally {
     /** 无法判断条数（UNKNOWN 且非环境原因）。 */
     public int undecided() {
         return undecided;
+    }
+
+    /** **未命中**条数：本轮执行过、未成功的候选（用户可感知的实时反馈）。 */
+    public int noMatch() {
+        return noMatch;
     }
 
     /**

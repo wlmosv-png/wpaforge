@@ -178,6 +178,9 @@ public class CrackService extends Service {
          * </ul>
          * 这三个数字让用户能区分「为什么没结论」。
          */
+        /** 1.9.69：实时「未命中」条数（跑一条就该 +1，让用户看见它在动）。 */
+        default void onTallyNoMatch(int noMatch) { }
+
         default void onTallyCategorized(int suspectedWrong, int notFinished,
                                         int undecided, int envErrors) {
         }
@@ -1646,6 +1649,7 @@ public class CrackService extends Service {
                         for (UiCallback cb : callbacks) {
                             cb.onTally(c, i, n);
                             cb.onTallyFull(c, i, n, env, exec, hitN);
+                            cb.onTallyNoMatch(eng.noMatchCount());
                             cb.onTallyCategorized(eng.suspectedWrongCount(),
                                     eng.notFinishedCount(), eng.undecidedCount(), env);
                         }

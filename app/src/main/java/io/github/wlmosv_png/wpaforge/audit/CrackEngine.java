@@ -4086,6 +4086,11 @@ public final class CrackEngine {
     }
 
     /** 无法判断条数（UNKNOWN 且非环境原因）。 */
+    /** **未命中**条数：本轮执行过、未成功的候选（用户可感知的实时反馈）。 */
+    public int noMatchCount() {
+        return tally.noMatch();
+    }
+
     public int undecidedCount() {
         return tally.undecided();
     }

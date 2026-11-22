@@ -94,6 +94,9 @@ public final class TaskQueue {
         /** 本轮实时的绝对位置（服务每次进度回调写入，**不落盘**、不参与续跑判定）。
          *  只用于让「进度卡 / 任务卡 / 进度条」三处显示同一个数字。 */
         public int liveRoundTested;
+        /** 1.9.69：本目标**已排除**条数（= TriedSet.size，累计）。界面「已排除」唯一来源，
+         *  不再拿 offset（那是个位置，不是计数）。 */
+        public int excluded = 0;
         /**
          * **执行游标**（1.9.69，P 坐标 = 原始字典下标）：下一条要执行的候选。
          *
@@ -265,15 +268,24 @@ public final class TaskQueue {
          * 不参与断点续跑，只在 UI 上让数字自洽。
          */
         public int completedCount() {
-            // 1.9.69：两个口径取**较大者**，两者都是真实进度的下界。
-            //   · offset + testedThisRun：轮末才更新（写盘安全边界 + 历次已试）
-            //   · liveRoundTested      ：服务在每次进度回调里写入的绝对位置
-            //     （= 本轮起点 + 本轮已试），跑动中实时变大
-            // 取 max 后，进度卡与任务卡不可能再各说一个数（曾 6 / 44，且分母还不同 332 / 336）。
-            long n = Math.max((long) offset + Math.max(0, testedThisRun),
-                    Math.max(0, liveRoundTested));
+            // 1.9.69（口径统一）：**已试 = 执行游标 execIndex**（真实执行位置，P 坐标）。
+            // 为什么优先 execIndex：offset 是「DIRECT 判定边界」，把它与 testedThisRun
+            // 相加会把位置和次数混算 → 虚高（真机进度卡 21、任务卡 26 打架）。
+            // 但旧数据/未接线时 execIndex 为 -1，必须保留回退路径：
+            //   · liveRoundTested：服务在进度回调里写的本轮绝对位置；
+            //   · offset + testedThisRun：轮末落盘的安全边界 + 历次已试（最保守的下界）。
+            int n;
+            if (execIndex >= 0) {
+                n = execIndex;
+            } else {
+                n = Math.max((long) offset + Math.max(0, testedThisRun),
+                        Math.max(0, liveRoundTested)) > Integer.MAX_VALUE
+                        ? Integer.MAX_VALUE
+                        : (int) Math.max((long) offset + Math.max(0, testedThisRun),
+                                Math.max(0, liveRoundTested));
+            }
             if (dictSize > 0 && n > dictSize) n = dictSize;
-            return (int) Math.max(0, n);
+            return Math.max(0, n);
         }
 
         /** 展示用进度（0..1），与 {@link #completedCount()} 同源。 */
@@ -331,6 +343,7 @@ public final class TaskQueue {
                 o.put("dictSize", dictSize);
                 o.put("offset", offset);
                 o.put("execIndex", execIndex);
+                o.put("excluded", excluded);
                 o.put("recheck", recheckCsv == null ? "" : recheckCsv);
                 o.put("phase", phase);
                 o.put("resumeSig", resumeSig == null ? "" : resumeSig);
@@ -376,6 +389,7 @@ public final class TaskQueue {
             // 1.9.69：执行游标 / 待复验队列 / 阶段。旧数据缺这三项 → -1 / 空 / 1，
             // resumeFrom() 会回退到 offset，行为与旧版一致。
             t.execIndex = o.optInt("execIndex", -1);
+            t.excluded = o.optInt("excluded", 0);
             t.recheckCsv = o.optString("recheck", "");
             t.phase = Math.max(1, Math.min(2, o.optInt("phase", 1)));
             t.resumeSig = o.optString("resumeSig", "");
@@ -1437,12 +1451,20 @@ public final class TaskQueue {
      */
     public static boolean updateCursorState(Context ctx, String id,
                                             int execIndex, String recheckCsv, int phase) {
+        return updateCursorState(ctx, id, execIndex, recheckCsv, phase, -1);
+    }
+
+    /** 写游标状态 + 已排除计数（{@code excluded < 0} = 不改它）。 */
+    public static boolean updateCursorState(Context ctx, String id,
+                                            int execIndex, String recheckCsv, int phase,
+                                            int excluded) {
         List<Task> list = load(ctx);
         for (int i = 0; i < list.size(); i++) {
             if (list.get(i).id.equals(id)) {
                 list.get(i).execIndex = execIndex;
                 list.get(i).recheckCsv = recheckCsv == null ? "" : recheckCsv;
                 list.get(i).phase = Math.max(1, Math.min(2, phase));
+                if (excluded >= 0) list.get(i).excluded = excluded;
                 return save(ctx, list);
             }
         }

@@ -2248,6 +2248,10 @@ public class CrackService extends Service {
     }
 
     /** 上次落盘「续跑三件套」的时刻（节流用）。 */
+    /** 1.9.69：本目标「已排除」实时计数（= TriedSet.size），供界面读（不落盘）。 */
+    public static volatile int LAST_EXCLUDED = 0;
+    public static int lastExcludedCount() { return LAST_EXCLUDED; }
+
     private long lastCursorSaveAt = 0L;
 
     /**
@@ -2261,12 +2265,14 @@ public class CrackService extends Service {
      */
     private void saveCursorState(TaskQueue.Task ft, boolean force) {
         if (ft == null) return;
+        LAST_EXCLUDED = triedSet == null ? 0 : triedSet.size();
+        ft.excluded = LAST_EXCLUDED;
         long now = System.currentTimeMillis();
         if (!force && now - lastCursorSaveAt < 1500L) return;
         lastCursorSaveAt = now;
         try {
             TaskQueue.updateCursorState(this, ft.id, Math.max(0, ft.execIndex),
-                    ft.recheckCsv, ft.phase);
+                    ft.recheckCsv, ft.phase, LAST_EXCLUDED);
         } catch (Throwable ignored) {
             // 展示/续跑信息写失败不应炸掉破解流程
         }
@@ -2845,6 +2851,8 @@ public class CrackService extends Service {
             }
         }
 
+        ft.excluded = triedSet == null ? 0 : triedSet.size();
+        LAST_EXCLUDED = ft.excluded;
         TaskQueue.update(this, ft);
 
         // ── 多字典计划：上报本本结论，并按状态机派出下一本 ──────────────────

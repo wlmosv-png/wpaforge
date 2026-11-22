@@ -969,15 +969,16 @@ public class MainActivity extends Activity {
      * 数字仍来自 {@code VerdictTally}，口径没变，只是展示合并。
      */
     private void renderStats() {
-        int hit = lastTallyHit;
-        int confirmed = lastTallyConfirmed;
-        int notFinished = lastTallyNotFinished;
-        int suspected = lastTallySuspected;
-        int networkFail = lastTallyNetAuthFail;
-        int undecided = lastTallyUndecided;
+        // 1.9.69（口径统一，全部累计，单一来源）：
+        //   已确认成功 = pgHit
+        //   已证实错误 = pgExcluded（TriedSet.size，累计）
+        //   未命中     = 已试 - 已排除 - 待复验 - 成功（推导值，保证四格自洽）
+        //   环境异常   = lastTallyEnvErrors（环境类，偶发）
+        int hit = pgHit;
+        int confirmed = Math.max(0, pgExcluded);
+        final int miss = Math.max(0, pgExec - Math.max(0, pgExcluded)
+                - Math.max(0, pgRecheck) - hit);
         int envErrors = lastTallyEnvErrors;
-        final int miss = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
-                .missTotal(notFinished, suspected, networkFail, undecided);
         if (statHitView != null) {
             statHitView.setText(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(hit));
             statHitView.setTextColor(hit > 0 ? OK_GREEN : AmberTheme.TEXT_FAINT);
@@ -1002,13 +1003,26 @@ public class MainActivity extends Activity {
             if (sum <= 0) {
                 statSumView.setVisibility(View.GONE);
             } else {
-                boolean ok4 = io.github.wlmosv_png.wpaforge.ui.CrackStatsModel
-                        .consistent4(hit, confirmed, miss, envErrors, sum);
-                statSumView.setText(L.f("本轮已判定 %s 条%s", "adjudicated this round %s%s",
-                        io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(sum),
-                        ok4 ? "" : L.s("（分类合计不一致，请反馈）",
-                                " (category sum mismatch - please report)")));
-                statSumView.setTextColor(ok4 ? AmberTheme.TEXT_FAINT : AmberTheme.WARN);
+                // 两个口径都要写清楚（用户反馈「暂停再跑后未命中从头算」的根因就是只有一套数）：
+                //   累计已判定 = 跨续跑累加（pgExec 推导，四格自洽）
+                //   本轮已判定 = 本次 run 的引擎计数（VerdictTally，每轮重置）
+                int roundSum = Math.max(0, lastTallyHit) + Math.max(0, lastTallyConfirmed)
+                        + Math.max(0, lastTallyExecuted - lastTallyHit - lastTallyConfirmed);
+                // 双口径并列（用户反馈「暂停再跑后未命中从头算」就是只有一套数造成的误解）：
+                //   本轮已判定 = 本次 run 的引擎计数（每轮重置）
+                //   累计已判定 = 跨续跑累加（四格自洽推导）
+                statSumView.setText(
+                        L.f("本轮已判定 %s 条%s",
+                                "adjudicated this run %s%s",
+                                io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(roundSum),
+                                "")
+                        + L.f(" · 累计已判定 %s 条 · 待复验 %s 条",
+                                " · total %s · pending re-verify %s",
+                                io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                        .thousands(confirmed + miss + hit),
+                                io.github.wlmosv_png.wpaforge.ui.CrackHud
+                                        .thousands(Math.max(0, pgRecheck))));
+                statSumView.setTextColor(AmberTheme.TEXT_FAINT);
                 statSumView.setVisibility(View.VISIBLE);
             }
         }
@@ -1026,23 +1040,15 @@ public class MainActivity extends Activity {
      */
     private void renderBreakdown() {
         if (breakdownView == null) return;
-        int suspected = lastTallySuspected;
-        int others = lastTallyNotFinished + lastTallyNetAuthFail + lastTallyUndecided;
-        if (suspected <= 0 && others <= 0) {
+        int recheck = Math.max(0, pgRecheck);
+        if (recheck <= 0) {
             breakdownView.setVisibility(View.GONE);
             return;
         }
-        StringBuilder sb = new StringBuilder();
-        if (suspected > 0) {
-            sb.append(L.s("其中疑似密码错误 ", "of which suspected wrong "))
-              .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(suspected));
-        }
-        if (others > 0) {
-            if (sb.length() > 0) sb.append("   ");
-            sb.append(L.s("其他未命中 ", "other misses "))
-              .append(io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(others));
-        }
-        breakdownView.setText(sb.toString());
+        breakdownView.setText(L.s(
+                "待复验 " + io.github.wlmosv_png.wpaforge.ui.CrackHud.thousands(recheck)
+                        + " 条（本次未取得有效结论，稍后复验）",
+                recheck + " pending re-verify (no verdict yet, retried later)"));
         breakdownView.setTextColor(AmberTheme.TEXT_FAINT);
         breakdownView.setVisibility(View.VISIBLE);
     }
@@ -11065,19 +11071,20 @@ public class MainActivity extends Activity {
     private int pgPhaseTotal = 0;
     private int pgPhaseDone = 0;
     private int pgDictSize = 0;
+    private int pgHit = 0;
 
     /** 从任务对象 + 引擎回调同步模型字段（纯赋值，不算数、不碰 View）。 */
     private void syncProgressModel(int liveTested) {
         io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task t = runningTaskForProgress();
         if (t != null) {
-            pgExec = Math.max(t.execIndex >= 0 ? t.execIndex : 0, Math.max(0, t.completedCount()));
-            pgExcluded = Math.max(0, t.offset);
-            pgRecheck = t.recheckCount();
+            pgExec = Math.max(pgExec, t.completedCount());   // 只增不减，避免过期快照回退
+            pgRecheck = Math.max(0, t.recheckCount());
             pgPhase = t.phase;
-            pgDictSize = t.dictSize;
-        } else {
-            pgExec = Math.max(pgExec, Math.max(0, liveTested));
+            if (t.dictSize > 0) pgDictSize = t.dictSize;
+            pgHit = t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.DONE_HIT ? 1 : 0;
         }
+        // 「已排除」改用服务端实时计数（TriedSet.size），不再拿 offset（位置）当条数。
+        pgExcluded = Math.max(0, io.github.wlmosv_png.wpaforge.CrackService.lastExcludedCount());
         if (pgPhase == 2 && pgPhaseTotal > 0) {
             // 复验轮的“已执行”按阶段算，别把第一轮的条数又加一遍
             pgExec = Math.max(0, pgPhaseDone);
@@ -11121,7 +11128,8 @@ public class MainActivity extends Activity {
             if (queueCache != null) {
                 for (io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task t : queueCache) {
                     if (t != null
-                            && t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.RUNNING) {
+                            && (t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.RUNNING
+                                || t.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.PAUSED)) {
                         return t;
                     }
                 }
@@ -11991,12 +11999,19 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 pgExec = Math.max(0, execIndexP);
                 pgRecheck = Math.max(0, recheckCount);
+                pgExcluded = Math.max(0, io.github.wlmosv_png.wpaforge.CrackService.lastExcludedCount());
                 pgPhase = phase == 2 ? 2 : 1;
+                io.github.wlmosv_png.wpaforge.audit.TaskQueue.Task pt = runningTaskForProgress();
+                if (pt != null) {
+                    if (pt.dictSize > 0) pgDictSize = pt.dictSize;
+                    pgHit = pt.state == io.github.wlmosv_png.wpaforge.audit.TaskQueue.State.DONE_HIT ? 1 : 0;
+                }
                 if (pgPhase == 2) {
                     pgPhaseTotal = phaseTotal;
                     pgPhaseDone = phaseDone;
                 }
                 renderCountsLine();
+                renderStats();
                 if (connectProgress != null && pgPhase == 2 && pgPhaseTotal > 0) {
                     connectProgress.setVisibility(View.VISIBLE);
                     java.util.List<io.github.wlmosv_png.wpaforge.ui.StagedProgress.Stage> st =
@@ -12415,7 +12430,9 @@ public class MainActivity extends Activity {
                 task.testedThisRun > 0
                     ? L.f("   · 本次累计 %d 条 · 已排除 %d 条",
                             "   · %d so far · %d ruled out",
-                            task.testedThisRun, Math.max(0, task.offset)) : "",
+                            task.testedThisRun,
+                            Math.max(0, task.excluded > 0 ? task.excluded
+                                    : io.github.wlmosv_png.wpaforge.CrackService.lastExcludedCount())) : "",
                 hit,
                 missCaveat(task)));
         meta.setTextSize(AmberTheme.FS_SMALL);
@@ -12571,9 +12588,9 @@ public class MainActivity extends Activity {
         if (plan != null && !plan.isEmpty()) pb.append(plan);
         if (sc + su > 0) {
             if (pb.length() > 0) pb.append("\n");
-            pb.append(L.s("跳过 " + (sc + su) + " 条（已证实错误 " + sc
-                            + " · 没跑出结果 " + su + "）",
-                    "skipped " + (sc + su) + " (" + sc + " proven · " + su + " no result)"));
+            pb.append(L.s("跳过 " + (sc + su) + " 条（此前已试过 " + sc
+                            + " · 未确定 " + su + "）",
+                    "skipped " + (sc + su) + " (" + sc + " tried before · " + su + " undetermined)"));
         }
         // 计划模式：第几本 / 当前 / 下一本 / 整体进度（单独一行，不与其他信息混排）
         if (usePlanMode) {

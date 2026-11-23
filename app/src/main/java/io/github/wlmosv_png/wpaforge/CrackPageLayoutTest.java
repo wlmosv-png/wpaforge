@@ -292,10 +292,12 @@ public class CrackPageLayoutTest {
                         && streamHeight.contains("streamParams.height = 0;")
                         && streamHeight.contains("streamWrapView.setVisibility(empty ? View.GONE : View.VISIBLE);"));
         // 底部安全区：32dp 打底（实测手势区 96px）+ attach 之后读到的导航栏高度
+        // 1.9.69：insets 改由监听器下发（不再 root.post + getRootWindowInsets）。
+        // 断言收紧为「底部 inset 叠加在内容内边距上」+「兜底 padding 仍在」。
         ok("底部为手势区/导航栏留出系统下边距（双保险）",
-                ma.contains("content.setPadding(px(16), px(8), px(16), px(32));")
-                        && ma.contains("root.getRootWindowInsets()")
-                        && ma.contains("in.getSystemWindowInsetBottom()"));
+                ma.contains("content.setPadding(px(16) + left, px(8)")
+                        && ma.contains("px(32) + bottom")
+                        && ma.contains("setOnApplyWindowInsetsListener"));
         ok("空状态区分「真没日志」与「被筛选藏起来」",
                 ma.contains("已按「关键」筛选")
                         && ma.contains("if (!streamLines.isEmpty()) {"));

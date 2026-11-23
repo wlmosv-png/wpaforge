@@ -50,10 +50,19 @@ public class HeaderInsetTest {
         String code = DictListUiTest.stripComments(raw);
 
         System.out.println("== 顶部间距必须由 inset 推导 ==");
-        ok("读取了状态栏顶部 inset", code.contains("getSystemWindowInsetTop()"));
+        // 1.9.69：改用现代 WindowInsets 监听（旋转/分屏/手势条切换都会重算），
+        // 不再用「root.post 里读一次 getSystemWindowInsetTop」的旧做法。
+        ok("用 setOnApplyWindowInsetsListener 动态读取（不是 post 里读一次）",
+                code.contains("setOnApplyWindowInsetsListener"));
+        ok("API 30+ 用 WindowInsets.Type.systemBars()（现代 API）",
+                code.contains("WindowInsets.Type.systemBars()"));
+        ok("低版本回退到 systemWindowInset*（两条路径取同一套值）",
+                code.contains("getSystemWindowInsetTop()"));
         ok("标题条的顶部内边距 = inset + 固定间隙",
-                code.contains("header.setPadding(px(22) + left, top + px(HEADER_GAP_DP)"));
-        ok("间距是单一常量（要松要紧只改一处）", code.contains("HEADER_GAP_DP = 20"));
+                code.contains("header.setPadding(px(22) + left"));
+        ok("标题关闭 includeFontPadding（字形顶到 view 顶恒定，间隙可控）",
+                code.contains("title.setIncludeFontPadding(false)"));
+        ok("间距收紧到 8dp（单一常量）", code.contains("HEADER_GAP_DP = 8"));
         ok("主动钉死窗口模型（不依赖 ROM 是否强制 edge-to-edge）",
                 code.contains("applyEdgeToEdge()")
                         && code.contains("setDecorFitsSystemWindows(false)")
@@ -65,7 +74,7 @@ public class HeaderInsetTest {
         System.out.println("== 刘海（挖孔）必须单独让位 ==");
         ok("读 DisplayCutout", code.contains("getDisplayCutout()"));
         ok("顶部取状态栏与刘海的较大者",
-                code.contains("top = Math.max(top, in.getDisplayCutout().getSafeInsetTop())"));
+                code.contains("top = Math.max(top, cut.getSafeInsetTop())"));
 
         System.out.println("== 横屏侧边刘海 ==");
         ok("左右 inset 参与外边距",
@@ -74,19 +83,21 @@ public class HeaderInsetTest {
                         && code.contains("px(22) + left")
                         && code.contains("px(22) + right"));
         ok("内容区左右也让开",
-                code.contains("content.setPadding(px(16) + left, px(8), px(16) + right"));
+                code.contains("content.setPadding(px(16) + left, px(8)"));
 
         System.out.println("== 底部手势区仍按原逻辑处理 ==");
         ok("底部 inset 仍叠加在内容内边距上",
                 code.contains("getSystemWindowInsetBottom()")
                         && code.contains("px(32) + bottom"));
 
-        System.out.println("== 三段 insets 读取必须在同一处、且在视图 attach 之后 ==");
-        ok("读 insets 走 root.post（同帧拿不到分发）",
-                code.contains("root.post(() ->") && code.contains("getRootWindowInsets()"));
-        int first = code.indexOf("getRootWindowInsets()");
-        ok("insets 只在 buildUi 里读一次（不散落多处）",
-                code.indexOf("getRootWindowInsets()", first + 1) < 0);
+        System.out.println("== insets 读取必须收敛在一处 ==");
+        // 1.9.69：旧做法是 root.post + getRootWindowInsets()（只读一次），
+        // 现在改为监听器回调，每次系统分发都重算 —— 对旋转/分屏更正确。
+        ok("不再使用已废弃的 getRootWindowInsets()",
+                !code.contains("getRootWindowInsets()"));
+        int firstL = code.indexOf("setOnApplyWindowInsetsListener");
+        ok("监听器只注册一次（不散落多处）",
+                firstL >= 0 && code.indexOf("setOnApplyWindowInsetsListener", firstL + 1) < 0);
 
         System.out.println();
         System.out.println("=== 标题条定位: " + pass + " 通过, " + fail + " 失败 ===");

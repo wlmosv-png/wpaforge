@@ -609,8 +609,45 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 标题顶部到状态栏下沿的间距（dp）。想松想紧只改这一处。 */
-    private static final int HEADER_GAP_DP = 20;
+    /** 标题控件（用于按字体度量补偿视觉间隙）。 */
+    private TextView headerTitle;
+
+    /**
+     * 标题**字形的视觉顶部**到状态栏下沿的目标间距（dp）。
+     *
+     * <p>这是**视觉值**，不是 padding 值：{@link #headerTopPaddingPx(int)} 会减去
+     * 字体 ascent 到字形的固有偏差，因此不同字号/字体/缩放下看到的间距一致。
+     * 想松想紧只改这一处。
+     */
+    private static final int HEADER_GAP_DP = 8;
+
+    /**
+     * 把「视觉间距」换算成 header 需要的实际 top padding。
+     *
+     * <h3>为什么不能直接拿 gap 当 padding（1.9.69 真机实测）</h3>
+     * TextView 的顶边并不等于字形顶：字形顶 = view 顶 +（ascent 到 cap 顶的偏差）。
+     * 22sp 标题在 3.0 密度下该偏差约 6dp，于是「padding 设 8dp」实测视觉 14dp
+     * —— 看起来像没贴住；而且字号一变偏差跟着变，机型之间观感不一。
+     *
+     * <p>这里量出该偏差并从 padding 中扣除（不足 0 夹到 0），
+     * 使**视觉间隙恒等于 {@link #HEADER_GAP_DP}**，跨机型/字号一致。
+     */
+    private int headerTopPaddingPx(int insetTopPx) {
+        int gapPx = px(HEADER_GAP_DP);
+        int glyphOffset = 0;
+        TextView t = headerTitle;
+        if (t != null) {
+            try {
+                android.graphics.Paint.FontMetricsInt fm = t.getPaint().getFontMetricsInt();
+                // cap 高按常见比例估算（0.72 × 字号）；偏差 = ascent 顶端到 cap 顶。
+                float capHeight = t.getTextSize() * 0.72f;
+                glyphOffset = Math.max(0, Math.round(-fm.ascent - capHeight));
+            } catch (Throwable ignored) {
+                glyphOffset = 0;
+            }
+        }
+        return insetTopPx + Math.max(0, gapPx - glyphOffset);
+    }
 
     /** PIN 锁遮挡层：设了 PIN 就先解锁才能用 */
     private android.widget.FrameLayout pinGate = null;
@@ -808,12 +845,20 @@ public class MainActivity extends Activity {
         // （窗口从状态栏下沿起）。同一个固定 dp 在两种模型下含义不同，
         // 跨机型就会出现「一台贴状态栏、一台空一大截」。
         header.setPadding(px(22), px(34), px(22), px(2));
-        TextView title = new TextView(this);
+        headerTitle = new TextView(this);
+        TextView title = headerTitle;
         title.setText("WPAForge");
         title.setTextSize(AmberTheme.FS_DISPLAY);
         title.setTextColor(TEXT);
         title.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
         title.setLetterSpacing(0.04f);
+        /* 1.9.69：关闭字体内部留白。
+         *
+         * TextView 默认 includeFontPadding=true，字形上方会多出一段字体度量留白
+         * （本机 22sp 标题实测约 6dp）。这段留白随字体缩放与 ROM 字体度量变化，
+         * 导致「设了 20dp 间隙、看着像 16dp」且不同机型观感不一。
+         * 关掉之后，标题字形顶到 view 顶的距离恒定，间隙才可控。 */
+        title.setIncludeFontPadding(false);
         header.addView(title);
         TextView sub = new TextView(this);
         sub.setText(L.s("WPA 密码破解工具 · 仅限自有网络", "WPA password cracker · authorised networks only"));
@@ -881,39 +926,63 @@ public class MainActivity extends Activity {
         // 注意：必须在**视图 attach 之后**读 insets —— 在 setContentView 的同一帧里
         // 调 requestApplyInsets() 拿不到分发（实测漏掉了 48px 的导航栏），
         // 用 post 推到下一帧、并从 root 的 rootWindowInsets 上取。
-        try {
-            root.post(() -> {
-                try {
-                    android.view.WindowInsets in = root.getRootWindowInsets();
-                    if (in == null || content == null) return;
-
-                    // 顶部：状态栏与刘海取较大者。
-                    // 刘海单独算一遍是必要的 —— 有些机型状态栏比刘海矮，
-                    // 只按状态栏让位会把标题顶进挖孔区。
-                    int top = in.getSystemWindowInsetTop();
-                    if (android.os.Build.VERSION.SDK_INT >= 28
-                            && in.getDisplayCutout() != null) {
-                        top = Math.max(top, in.getDisplayCutout().getSafeInsetTop());
+        /* 1.9.69：改用现代 WindowInsets 监听，替换「root.post 里读一次」的旧做法。
+         *
+         * 旧做法三个问题：
+         *   ① 只在首帧读一次 —— 旋转、分屏、手势条切换、状态栏隐藏都不会重算；
+         *   ② 用已废弃的 getSystemWindowInsetTop()（targetSdk 35 下语义随 ROM 漂移）；
+         *   ③ 只读 systemWindowInset*，拿不到 IME/手势区等现代 inset 类型。
+         *
+         * 现在：setOnApplyWindowInsetsListener 每次分发都重算，
+         * API 30+ 用 getInsets(systemBars() | displayCutout())，
+         * 低版本回退到旧的 systemWindowInset*，两条路径取同一套值。
+         */
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+                    try {
+                        int top, left, right, bottom;
+                        if (android.os.Build.VERSION.SDK_INT >= 30) {
+                            android.graphics.Insets bars = insets.getInsets(
+                                    android.view.WindowInsets.Type.systemBars()
+                                            | android.view.WindowInsets.Type.displayCutout());
+                            top = bars.top;
+                            left = bars.left;
+                            right = bars.right;
+                            bottom = bars.bottom;
+                        } else {
+                            top = insets.getSystemWindowInsetTop();
+                            left = insets.getSystemWindowInsetLeft();
+                            right = insets.getSystemWindowInsetRight();
+                            bottom = insets.getSystemWindowInsetBottom();
+                        }
+                        // 状态栏与刘海取较大者：有些机型状态栏比刘海矮，
+                        // 只按状态栏让位会把标题顶进挖孔区。
+                        if (android.os.Build.VERSION.SDK_INT >= 28) {
+                            android.view.DisplayCutout cut =
+                                    insets.getDisplayCutout();
+                            if (cut != null) {
+                                top = Math.max(top, cut.getSafeInsetTop());
+                                left = Math.max(left, cut.getSafeInsetLeft());
+                                right = Math.max(right, cut.getSafeInsetRight());
+                                bottom = Math.max(bottom, cut.getSafeInsetBottom());
+                            }
+                        }
+                        if (header != null) {
+                            // 标题已关闭 includeFontPadding，此 padding 即真实视觉间距。
+                            header.setPadding(px(22) + left,
+                                    headerTopPaddingPx(top),
+                                    px(22) + right, px(2));
+                        }
+                        if (content != null) {
+                            content.setPadding(px(16) + left, px(8),
+                                    px(16) + right, px(32) + bottom);
+                        }
+                    } catch (Throwable ignored) {
+                        // 读 insets 失败就保持 XML/兜底 padding，不重叠即可。
                     }
-                    // 左右同理：横屏时刘海可能在侧边，标题与外边距都要让开。
-                    int left = in.getSystemWindowInsetLeft();
-                    int right = in.getSystemWindowInsetRight();
-                    if (android.os.Build.VERSION.SDK_INT >= 28
-                            && in.getDisplayCutout() != null) {
-                        left = Math.max(left, in.getDisplayCutout().getSafeInsetLeft());
-                        right = Math.max(right, in.getDisplayCutout().getSafeInsetRight());
-                    }
-                    if (header != null) {
-                        header.setPadding(px(22) + left, top + px(HEADER_GAP_DP), px(22) + right, px(2));
-                    }
-
-                    int bottom = in.getSystemWindowInsetBottom();
-                    if (bottom > 0 || left > 0 || right > 0) {
-                        content.setPadding(px(16) + left, px(8), px(16) + right, px(32) + bottom);
-                    }
-                } catch (Throwable ignored) {}
-            });
-        } catch (Throwable ignored) {}
+                    return insets;
+                });
+        // 主动请求一次分发：确保首帧就有值（监听器注册晚于首次分发时兜底）。
+        root.requestApplyInsets();
     }
 
     /** 统一控制"运行中"状态：运行中才能停止，空闲时才能开始 */

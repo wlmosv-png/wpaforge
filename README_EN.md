@@ -118,6 +118,8 @@ router back-off or a manual stop, the correct password may be among them.
 
 Inconclusive results (timeout, weak signal, manual stop) are **never treated as a wrong password**
 and will be retried.
+After the first pass completes, these candidates are retried once within the same run; those still
+without a conclusion remain pending for the next run.
 
 
 ## How it finds passwords

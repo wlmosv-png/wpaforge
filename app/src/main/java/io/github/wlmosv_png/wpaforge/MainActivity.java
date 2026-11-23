@@ -565,6 +565,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         L.init(this);
         dp = getResources().getDisplayMetrics().density;
+        applyEdgeToEdge();
         buildUi();
         // 旧版单一计划文件 → 按目标分文件（一次性，幂等，不删旧文件）。
         // 放在这里是为了：只开破解页（没进字典管理）时也能看到迁移后的计划。
@@ -576,6 +577,40 @@ public class MainActivity extends Activity {
         requestNotifPermission();
         if (Prefs.pinEnabled(this)) setupPinGate();
     }
+
+    /**
+     * 把窗口模型钉死：**内容延伸到状态栏之下，由我们自己按 inset 让位**。
+     *
+     * <h3>为什么必须主动声明，而不是读 ROM 的现状</h3>
+     * 同一份布局在两类机器上量的是两回事：
+     * <pre>
+     *   非 edge-to-edge：窗口自状态栏下沿起 → 顶部内边距应只留「间隙」
+     *   edge-to-edge   ：窗口自屏幕顶起   → 顶部内边距应是「状态栏高 + 间隙」
+     * </pre>
+     * 本机实测为非 edge-to-edge（{@code overrideNonDecorFrame=[0,120][1080,2328]}），
+     * 别的 ROM 可能强制 edge-to-edge，而个别 ROM 在非 edge-to-edge 下**仍会报出
+     * 状态栏高度的 inset** —— 那时 `inset + 间隙` 会把状态栏高度算两遍。
+     * 与其猜 ROM 属于哪一类，不如自己声明：声明之后 inset 的含义唯一。
+     *
+     * <p>只影响窗口与系统栏的关系，不改任何内容布局 —— 内容仍由 header 的
+     * 内边距让位（见 buildUi 里读 insets 的那段）。
+     */
+    private void applyEdgeToEdge() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                getWindow().setDecorFitsSystemWindows(false);
+            } else {
+                getWindow().getDecorView().setSystemUiVisibility(
+                        android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+            }
+        } catch (Throwable ignored) {
+            // 声明失败就退回原行为：header 的兜底内边距仍然管用，不会重叠。
+        }
+    }
+
+    /** 标题顶部到状态栏下沿的间距（dp）。想松想紧只改这一处。 */
+    private static final int HEADER_GAP_DP = 20;
 
     /** PIN 锁遮挡层：设了 PIN 就先解锁才能用 */
     private android.widget.FrameLayout pinGate = null;
@@ -765,7 +800,13 @@ public class MainActivity extends Activity {
         // 顶部标题条
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        // 方案 A：这一条压扁一点，把纵向空间让给破解页的主区
+        // 方案 A：这一条压扁一点，把纵向空间让给破解页的主区。
+        //
+        // 这里的 34dp 只是**拿不到 insets 时的兜底值**；真正的顶部间距在下面
+        // 由状态栏/刘海 inset 决定（见 root.post 那段）。原因：应用在有些机器上是
+        // edge-to-edge（窗口从屏幕顶起，状态栏压在内容上），在另一些机器上不是
+        // （窗口从状态栏下沿起）。同一个固定 dp 在两种模型下含义不同，
+        // 跨机型就会出现「一台贴状态栏、一台空一大截」。
         header.setPadding(px(22), px(34), px(22), px(2));
         TextView title = new TextView(this);
         title.setText("WPAForge");
@@ -845,9 +886,30 @@ public class MainActivity extends Activity {
                 try {
                     android.view.WindowInsets in = root.getRootWindowInsets();
                     if (in == null || content == null) return;
+
+                    // 顶部：状态栏与刘海取较大者。
+                    // 刘海单独算一遍是必要的 —— 有些机型状态栏比刘海矮，
+                    // 只按状态栏让位会把标题顶进挖孔区。
+                    int top = in.getSystemWindowInsetTop();
+                    if (android.os.Build.VERSION.SDK_INT >= 28
+                            && in.getDisplayCutout() != null) {
+                        top = Math.max(top, in.getDisplayCutout().getSafeInsetTop());
+                    }
+                    // 左右同理：横屏时刘海可能在侧边，标题与外边距都要让开。
+                    int left = in.getSystemWindowInsetLeft();
+                    int right = in.getSystemWindowInsetRight();
+                    if (android.os.Build.VERSION.SDK_INT >= 28
+                            && in.getDisplayCutout() != null) {
+                        left = Math.max(left, in.getDisplayCutout().getSafeInsetLeft());
+                        right = Math.max(right, in.getDisplayCutout().getSafeInsetRight());
+                    }
+                    if (header != null) {
+                        header.setPadding(px(22) + left, top + px(HEADER_GAP_DP), px(22) + right, px(2));
+                    }
+
                     int bottom = in.getSystemWindowInsetBottom();
-                    if (bottom > 0) {
-                        content.setPadding(px(16), px(8), px(16), px(32) + bottom);
+                    if (bottom > 0 || left > 0 || right > 0) {
+                        content.setPadding(px(16) + left, px(8), px(16) + right, px(32) + bottom);
                     }
                 } catch (Throwable ignored) {}
             });
@@ -2921,12 +2983,20 @@ public class MainActivity extends Activity {
                     + "  · 可信等级：" + io.github.wlmosv_png.wpaforge.wps.WpsHitJudge
                             .levelText(lvl, zh));
         } else {
-            // 自动退避期间把倒计时接在状态行后面 —— 用户必须看得出「它没死，
-            // 是在等」，否则会以为卡住然后手动停掉。
+            // 状态行尾注按重要性排序：
+            //   ① 阶段 1 穷尽（拆半对本 AP 不成立）—— 这是**终态结论**，必须盖过「进行中」；
+            //   ② 自动退避倒计时 —— 用户必须看得出「它没死，是在等」；
+            //   ③ 都没有就只显示判词。
             int remain = wpsPauseRemainSec;
-            wpsStatusLine.setText(remain > 0 && wpsBackoff != null
-                    ? verdictTxt + "  ·  " + wpsBackoff.waitText(remain, zh)
-                    : verdictTxt);
+            if (s.halfPhase1Exhausted) {
+                wpsStatusLine.setText(verdictTxt + L.s(
+                        "  ·  阶段 1 已穷尽、未检出半接受 —— 阶段 2 无前缀可用",
+                        "  ·  phase 1 exhausted, no half-accept — phase 2 has no prefix"));
+            } else if (remain > 0 && wpsBackoff != null) {
+                wpsStatusLine.setText(verdictTxt + "  ·  " + wpsBackoff.waitText(remain, zh));
+            } else {
+                wpsStatusLine.setText(verdictTxt);
+            }
         }
 
         StringBuilder sb = new StringBuilder();
@@ -3691,8 +3761,28 @@ public class MainActivity extends Activity {
                     if (p != null) pins.add(p);
                 }
                 if (pins.isEmpty()) {
-                    wpsLog(L.s("[!] 阶段 1 已试完全部 10000 个前 4 位，仍未找到。",
-                            "[!] phase 1 exhausted all 10000 prefixes."));
+                    /* 阶段 1 穷尽（2026-11-15）。
+                     *
+                     * 拆半攻击的全部前提是：AP 在**前 4 位正确**时会给出可辨的半接受反馈，
+                     * 阶段 2 才有前缀可枚举（stage2Pin 需要一个 4 位前缀）。
+                     * 没有这个反馈，阶段 2 在数学上就无法构造 —— 不是漏了一个按钮。
+                     *
+                     * 旧实现在这里只打一行「仍未找到」就 break：用户点「继续」会立刻
+                     * 再次落到同一分支、再次结束，看起来像「点了继续就自动结束」；
+                     * 而状态卡还停在 `判定=RUNNING | 结论=进行中`，与事实不符。
+                     *
+                     * 现在把它变成一个**说得清的终态**：讲清为什么，并给出可执行的后路。 */
+                    wpsLog(L.s("[!] 阶段 1 已试完全部 10000 个前 4 位，且**未检测到半接受信号**。",
+                            "[!] phase 1 exhausted all 10000 prefixes; no half-accept signal seen."));
+                    wpsLog(L.s("[!] 拆半依赖 AP 的半接受反馈；本 AP 未给出 -> 阶段 2 无前缀可用，无法继续。",
+                            "[!] half-split needs an AP half-accept signal; none seen -> phase 2 has no prefix."));
+                    wpsLog(L.s("[i] 后路：① 改跑「厂商算法 / 内置弱 PIN 表」（不依赖半接受）；"
+                                    + "② 重试阶段 1（部分 AP 的半接受窗口不稳定）；"
+                                    + "③ 完整枚举 10^7 次（本机按现有速度不可行）。",
+                            "[i] Options: (1) vendor algorithm / built-in weak PIN list; "
+                                    + "(2) re-run phase 1; (3) full enumeration (10^7, not feasible here)."));
+                    wpsSession.halfPhase1Exhausted = true;
+                    saveHalfState();
                     break;
                 }
                 java.util.List<io.github.wlmosv_png.wpaforge.wps.WpsController.Result> rs =

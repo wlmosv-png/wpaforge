@@ -141,6 +141,15 @@ public final class WpsEngine {
 
     /** 会话统计。 */
     public static final class Session {
+
+        /**
+         * 阶段 1 已穷尽、且**未检测到半接受信号**（2026-11-15）。
+         *
+         * <p>只用于界面与日志：说明「拆半对本 AP 不成立、阶段 2 无前缀可用」，
+         * 以免状态卡停在「进行中」而线程其实已经退出。
+         * **不参与任何判定**，也不改变 {@link #verdict}。
+         */
+        public boolean halfPhase1Exhausted;
         public int tried;
         public int everLongAssoc;      // 出现过「真 WPS」的次数
         public int consecutiveKick;    // 连续被踢次数

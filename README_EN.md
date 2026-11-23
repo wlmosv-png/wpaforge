@@ -12,7 +12,7 @@
 <br>
 [![Website](https://img.shields.io/badge/website-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)
 
-<sub>[中文](README.md)</sub>
+<sub>[中文](README.md) · [日本語](README_JA.md)</sub>
 
 </div>
 

@@ -147,14 +147,14 @@ public final class PlanRecovery {
                     revive ? "计划继续：当前字典任务原为 " + match.state
                             + "（计划已明确指向它，按计划恢复执行）"
                             : "计划继续：复用队列里当前字典的任务",
-                    match.id, revive, null, null, Math.max(0, cur.offset),
+                    match.id, revive, null, null, cur.resumeStart(),
                     DictPlan.State.RUNNING, null);
         }
 
         // ⑤ 队列里没有这一本 → 幂等补建（不改变 offset，不重跑已完成的字典）
         return new Decision(Action.CREATE_NEXT,
                 "计划当前字典在队列里没有任务：幂等补建",
-                null, false, cur.path, cur.name, Math.max(0, cur.offset),
+                null, false, cur.path, cur.name, cur.resumeStart(),
                 DictPlan.State.RUNNING, null);
     }
 

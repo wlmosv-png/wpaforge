@@ -145,8 +145,19 @@ public final class DictPlan {
         public String sha256 = "";
         /** 展开候选时用的解析规则版本，见 {@link #PARSE_RULES_VERSION}。 */
         public int parseRules = PARSE_RULES_VERSION;
-        /** 本字典**自己**的续跑位置 —— 每本独立，绝不互相污染。 */
+        /** 本字典**自己**的续跑位置（DIRECT 判定边界）—— 每本独立，绝不互相污染。 */
         public int offset = 0;
+        /**
+         * 本字典的**执行游标**快照（1.9.69）。
+         *
+         * <p>为什么必须与 {@link #offset} 分开：{@code offset} 只由 DIRECT 推进，
+         * 目标网络不给证据时恒为 0。计划崩溃后靠它重建任务，若拿 {@code offset}
+         * 当起点，续跑就会**倒退到第 1 条**（真机「已试 45 条又从头跑」）。
+         * 这里存真实执行位置，重建时优先用它。
+         *
+         * <p>{@code -1} = 未记录（旧计划文件）→ 重建时回退 {@code offset}。
+         */
+        public int execOffset = -1;
         /** 候选条数（加载后回填）。 */
         public int dictSize = 0;
         /** 本字典自己的结论。 */
@@ -161,9 +172,20 @@ public final class DictPlan {
             this.name = name == null ? "" : name;
         }
 
+        /**
+         * 计划恢复时的**起点**（1.9.69）。
+         *
+         * <p>优先用执行游标 {@link #execOffset}（真实执行位置），
+         * 未记录（旧计划）才回退 {@link #offset}（DIRECT 边界）。
+         * 这样「全无结论」的计划崩溃后重建任务不会倒退到第 1 条。
+         */
+        public int resumeStart() {
+            return execOffset >= 0 ? execOffset : Math.max(0, offset);
+        }
+
         public float progress() {
             if (dictSize <= 0) return 0f;
-            return Math.min(1f, (float) offset / dictSize);
+            return Math.min(1f, (float) resumeStart() / dictSize);
         }
     }
 
@@ -517,6 +539,8 @@ public final class DictPlan {
                 e.put("sha", it.sha256 == null ? "" : it.sha256);
                 e.put("rules", it.parseRules);
                 e.put("offset", it.offset);
+                // 1.9.69：执行游标快照（崩溃重建用）。旧文件没有此键 → 读出 -1 回退 offset。
+                e.put("execOffset", it.execOffset);
                 e.put("size", it.dictSize);
                 e.put("local", it.local.name());
                 e.put("skipped", it.skipped);
@@ -564,6 +588,7 @@ public final class DictPlan {
                     it.sha256 = e.optString("sha", "");
                     it.parseRules = e.optInt("rules", PARSE_RULES_VERSION);
                     it.offset = Math.max(0, e.optInt("offset", 0));
+                    it.execOffset = e.optInt("execOffset", -1);
                     it.dictSize = Math.max(0, e.optInt("size", 0));
                     try {
                         it.local = State.valueOf(e.optString("local", State.IDLE.name()));

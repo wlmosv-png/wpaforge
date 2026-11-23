@@ -2010,6 +2010,9 @@ public class CrackService extends Service {
         DictPlan.Item cur = p.current();
         if (cur != null) {
             cur.offset = Math.max(0, ft.offset);
+            // 1.9.69：同时记**执行游标**。只记 offset（DIRECT 边界）会让
+            // 「全无结论」的计划崩溃后重建任务时从第 1 条重来（续跑倒退）。
+            cur.execOffset = ft.resumeFrom();
             if (ft.dictSize > 0) cur.dictSize = ft.dictSize;
         }
         // 目标快照：崩溃后队列可能被清空，计划要能**独立**重建任务

@@ -12,6 +12,14 @@
 <br>
 [![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)
 
+<br>
+
+**[⬇ 直接下载最新版](https://wlmosv.dpdns.org/dl)** &nbsp;·&nbsp; 1.6 MB · Android 8.0+ · 需 Root
+
+<img src="docs/qr-dl.png" alt="扫码安装" width="104">
+
+<sub>源码可查 · 全程离线 · 校验值见 Release 附件 `sha256sum.txt`</sub>
+
 <sub>[English](README_EN.md) · [日本語](README_JA.md)</sub>
 
 </div>

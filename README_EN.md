@@ -12,6 +12,14 @@
 <br>
 [![Website](https://img.shields.io/badge/website-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)
 
+<br>
+
+**[⬇ Download the latest build](https://wlmosv.dpdns.org/dl)** &nbsp;·&nbsp; 1.6 MB · Android 8.0+ · Root required
+
+<img src="docs/qr-dl.png" alt="Scan to install" width="104">
+
+<sub>Source is auditable · fully offline · checksums in the release `sha256sum.txt`</sub>
+
 <sub>[中文](README.md) · [日本語](README_JA.md)</sub>
 
 </div>

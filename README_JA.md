@@ -12,6 +12,14 @@
 <br>
 [![Website](https://img.shields.io/badge/website-wlmosv.dpdns.org-C68A00?style=flat-square&labelColor=1C1C24&logo=cloudflare&logoColor=FFD54F)](https://wlmosv.dpdns.org/wpaforge/)
 
+<br>
+
+**[⬇ 最新版をダウンロード](https://wlmosv.dpdns.org/dl)** &nbsp;·&nbsp; 1.6 MB · Android 8.0+ · Root 必須
+
+<img src="docs/qr-dl.png" alt="QR でインストール" width="104">
+
+<sub>ソース公開 · 完全オフライン · チェックサムはリリースの `sha256sum.txt`</sub>
+
 <sub>[中文](README.md) · [English](README_EN.md)</sub>
 
 </div>
